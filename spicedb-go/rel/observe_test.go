@@ -103,3 +103,50 @@ func TestErrFilterFailsClosed(t *testing.T) {
 	require.Error(t, txn.MustMatch(f))
 	require.ErrorIs(t, ErrFilter(nil).Validate(), ErrInvalidFilter)
 }
+
+func TestTupleSyntaxRoundTripsCaveatsAndExpiration(t *testing.T) {
+	exp := time.Date(2030, 1, 2, 3, 4, 5, 600, time.FixedZone("x", 3600))
+	base := MustFromTuple("document:readme#viewer@user:alice")
+	caveated, err := base.WithCaveat("ip_range", map[string]any{"cidr": "10.0.0.0/8", "nested": map[string]any{"a": "]"}})
+	require.NoError(t, err)
+
+	for _, r := range []Relationship{
+		base,
+		caveated,
+		base.WithExpiration(exp),
+		caveated.WithExpiration(exp),
+		MustFromTuple("document:readme#viewer@user:alice[only_name]"),
+	} {
+		parsed, err := FromTuple(r.String())
+		require.NoError(t, err, r.String())
+		require.Equal(t, r.String(), parsed.String())
+		require.Equal(t, r.CaveatName(), parsed.CaveatName())
+		require.Equal(t, r.CaveatContext(), parsed.CaveatContext())
+		if r.Expiration() != nil {
+			require.True(t, r.Expiration().Equal(*parsed.Expiration()))
+		}
+	}
+	require.Equal(t, `document:readme#viewer@user:alice[ip_range:{"cidr":"10.0.0.0/8","nested":{"a":"]"}}][expiration:2030-01-02T02:04:05.0000006Z]`, caveated.WithExpiration(exp).String())
+
+	direct, err := FromTuple("document:readme#viewer@user:alice#...")
+	require.NoError(t, err)
+	require.Equal(t, "", direct.SubjectRelation(), "... is SpiceDB's direct-subject relation")
+
+	for _, bad := range []string{
+		"document:readme#viewer@user:alice[",
+		"document:readme#viewer@user:alice[c:{bad}]",
+		"document:readme#viewer@user:alice[c:{}]x",
+		"document:readme#viewer@user:alice[expiration:not-a-time]",
+		"document:readme#viewer@user:alice[expiration:2030-01-01T00:00:00Z][c]",
+	} {
+		_, err := FromTuple(bad)
+		require.Error(t, err, bad)
+	}
+}
+
+func TestRelationshipCopyHelpers(t *testing.T) {
+	r := MustFromTuple("document:readme#viewer@user:alice[expiration:2030-01-01T00:00:00Z]")
+	moved := r.WithResource(MustNewObject("folder", "root")).WithRelation("owner").WithSubject(MustNewSubject(MustNewObject("team", "eng"), "member"))
+	require.Equal(t, "folder:root#owner@team:eng#member[expiration:2030-01-01T00:00:00Z]", moved.String())
+	require.Equal(t, "document:readme#viewer@user:alice[expiration:2030-01-01T00:00:00Z]", r.String(), "copies leave the original unchanged")
+}

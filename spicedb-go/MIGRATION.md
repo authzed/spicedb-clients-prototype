@@ -44,6 +44,15 @@ c, err := client.NewPlaintext("spicedb:50051", "key",
 `grpcutil.WithBearerToken` from your dial options, because the key is already
 attached.
 
+## Existing connections
+
+If you already hold a connection (an in-memory or buffered-listener connection,
+or one from SpiceDB's test server), wrap it instead of dialing:
+
+```go
+c, err := client.NewFromConn(conn) // conn stays yours; c.Close() leaves it open
+```
+
 ## Deadlines and retries
 
 Every unary call (including bulk checks and paged reads) gets a 30-second
@@ -52,6 +61,15 @@ per-call `With<Operation>Timeout` or a client-wide `WithDefaultTimeout`.
 Idempotent reads retry `Unavailable` and `Aborted` up to three times with
 jittered backoff, and writes are never retried. Streams have no default
 deadline.
+
+Tools with their own policy should not stack it on the client's:
+
+```go
+c, err := client.NewPlaintext(endpoint, key,
+	client.WithDefaultDeadline(client.DefaultDeadlineDisabled), // no 30s budget
+	client.WithRetries(client.RetriesDisabled),                  // or WithRetryPolicy(...)
+	client.WithStreamRetries(client.StreamRetriesDisabled))     // e.g. never reopen Watch
+```
 
 ## Checks
 
@@ -117,6 +135,9 @@ id := r.SubjectID()               // also ResourceType, ResourceID, SubjectType,
 
 `rel.MustFromTuple("document:readme#viewer@user:alice")` and the other `Must*`
 constructors cover constants and tests (gochugaru's `rel.MustFromTriple`).
+`FromTuple` and `String()` use SpiceDB's full syntax, including
+`[caveat:{...}]` and `[expiration:...]`, so you no longer need SpiceDB's
+`tuple.Parse`. Use `WithResource`/`WithRelation`/`WithSubject` to rewrite one.
 
 Writes are `rel.Txn` values passed to `Write`. Preconditions use
 `MustMatch`/`MustNotMatch`. Every native value prints, logs (`slog`, or JSON
@@ -129,6 +150,24 @@ _ = txn.Touch(rel.MustFromTuple("org:acme#admin@user:alice"))
 logger.Info("writing", "updates", txn.Updates(), "count", txn.Len())
 result, err := c.Write(ctx, client.WriteRequest{Transaction: txn})
 ```
+
+## Paging, cursors and transport data
+
+Reads, exports and resource lookups page internally, and each item carries its
+`AfterResultCursor` (and, for reads, `ReadAt`). To resume, repeat the same
+request and page size with `WithReadRelationshipsCursor` (or the export/lookup
+equivalent); SpiceDB rejects a cursor sent with different arguments.
+
+Anything at the transport level (server version headers, trailers that SpiceDB
+versions before 1.30 used for debug traces) is available on every operation:
+
+```go
+var header metadata.MD
+_, err := c.ReadSchema(ctx, client.ReadSchemaRequest{}, client.WithResponseMetadata[client.ReadSchemaOption](&header, nil))
+```
+
+For output that must stay protocol-shaped (JSON for scripts, backup files), use
+`client/protoconv` with `protojson`.
 
 ## Revisions
 

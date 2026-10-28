@@ -18,7 +18,7 @@ import (
 // relationships is the slice of *client.Client a typical consumer depends on.
 type relationships interface {
 	Write(context.Context, client.WriteRequest, ...client.WriteOption) (client.WriteResult, error)
-	ReadRelationships(context.Context, client.ReadRelationshipsRequest, ...client.ReadRelationshipsOption) iter.Seq2[rel.Relationship, error]
+	ReadRelationships(context.Context, client.ReadRelationshipsRequest, ...client.ReadRelationshipsOption) iter.Seq2[client.ReadRelationship, error]
 	DeleteRelationships(context.Context, client.DeleteRequest, ...client.DeleteOption) (client.DeleteResult, error)
 	Check(context.Context, client.PermissionCheck, ...client.CheckOption) (client.CheckResult, error)
 	CheckBulk(context.Context, []client.PermissionCheck, ...client.CheckOption) ([]client.CheckResult, error)

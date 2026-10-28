@@ -41,7 +41,7 @@ func (c *Client) RegisterRelationshipCounter(ctx context.Context, request Regist
 	if e != nil {
 		return RegisterRelationshipCounterResult{}, e
 	}
-	_, e = c.esc.ExperimentalRegisterRelationshipCounter(ctx, &v1.ExperimentalRegisterRelationshipCounterRequest{Name: request.Name, RelationshipFilter: f})
+	_, e = c.esc.ExperimentalRegisterRelationshipCounter(ctx, &v1.ExperimentalRegisterRelationshipCounterRequest{Name: request.Name, RelationshipFilter: f}, o.callOptions...)
 	return RegisterRelationshipCounterResult{}, mapGRPCError("register relationship counter", e)
 }
 
@@ -59,8 +59,8 @@ func (c *Client) CountRelationships(ctx context.Context, request CountRelationsh
 	if request.Name == "" {
 		return CountRelationshipsResult{}, invalid("counter name required")
 	}
-	resp, e := retry(ctx, "count relationships", func() (*v1.ExperimentalCountRelationshipsResponse, error) {
-		return c.esc.ExperimentalCountRelationships(ctx, &v1.ExperimentalCountRelationshipsRequest{Name: request.Name})
+	resp, e := retry(ctx, c, "count relationships", func() (*v1.ExperimentalCountRelationshipsResponse, error) {
+		return c.esc.ExperimentalCountRelationships(ctx, &v1.ExperimentalCountRelationshipsRequest{Name: request.Name}, o.callOptions...)
 	})
 	if e != nil {
 		return CountRelationshipsResult{}, e
@@ -85,7 +85,7 @@ func (c *Client) UnregisterRelationshipCounter(ctx context.Context, request Unre
 	if request.Name == "" {
 		return UnregisterRelationshipCounterResult{}, invalid("counter name required")
 	}
-	_, e = c.esc.ExperimentalUnregisterRelationshipCounter(ctx, &v1.ExperimentalUnregisterRelationshipCounterRequest{Name: request.Name})
+	_, e = c.esc.ExperimentalUnregisterRelationshipCounter(ctx, &v1.ExperimentalUnregisterRelationshipCounterRequest{Name: request.Name}, o.callOptions...)
 	return UnregisterRelationshipCounterResult{}, mapGRPCError("unregister relationship counter", e)
 }
 
@@ -122,8 +122,8 @@ func (c *Client) RoaringLookupResources(ctx context.Context, request RoaringLook
 		return RoaringLookupResourcesResult{}, invalid("client has no connection")
 	}
 	stub := materialize.NewRoaringLookupResourcesServiceClient(c.proto.Connection())
-	resp, e := retry(ctx, "roaring lookup resources", func() (*materialize.ExperimentalRoaringLookupResourcesResponse, error) {
-		return stub.ExperimentalRoaringLookupResources(ctx, &materialize.ExperimentalRoaringLookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject)})
+	resp, e := retry(ctx, c, "roaring lookup resources", func() (*materialize.ExperimentalRoaringLookupResourcesResponse, error) {
+		return stub.ExperimentalRoaringLookupResources(ctx, &materialize.ExperimentalRoaringLookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject)}, o.callOptions...)
 	})
 	if e != nil {
 		return RoaringLookupResourcesResult{}, e

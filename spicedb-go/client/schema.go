@@ -25,7 +25,9 @@ func (c *Client) ReadSchema(ctx context.Context, request ReadSchemaRequest, opts
 		return ReadSchemaResult{}, e
 	}
 	defer cancel()
-	resp, e := retry(ctx, "read schema", func() (*v1.ReadSchemaResponse, error) { return c.ssc.ReadSchema(ctx, &v1.ReadSchemaRequest{}) })
+	resp, e := retry(ctx, c, "read schema", func() (*v1.ReadSchemaResponse, error) {
+		return c.ssc.ReadSchema(ctx, &v1.ReadSchemaRequest{}, o.callOptions...)
+	})
 	if e != nil {
 		return ReadSchemaResult{}, e
 	}
@@ -41,7 +43,7 @@ func (c *Client) WriteSchema(ctx context.Context, request WriteSchemaRequest, op
 		return WriteSchemaResult{}, e
 	}
 	defer cancel()
-	resp, e := c.ssc.WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: request.Schema})
+	resp, e := c.ssc.WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: request.Schema}, o.callOptions...)
 	if e != nil {
 		return WriteSchemaResult{}, mapGRPCError("write schema", e)
 	}
@@ -111,8 +113,8 @@ func (c *Client) ReflectSchema(ctx context.Context, request ReflectSchemaRequest
 	if e != nil {
 		return ReflectSchemaResult{}, e
 	}
-	resp, err := retry(ctx, "reflect schema", func() (*v1.ReflectSchemaResponse, error) {
-		return c.ssc.ReflectSchema(ctx, &v1.ReflectSchemaRequest{Consistency: cs, OptionalFilters: schemaFilters(o.schemaFilters)})
+	resp, err := retry(ctx, c, "reflect schema", func() (*v1.ReflectSchemaResponse, error) {
+		return c.ssc.ReflectSchema(ctx, &v1.ReflectSchemaRequest{Consistency: cs, OptionalFilters: schemaFilters(o.schemaFilters)}, o.callOptions...)
 	})
 	if err != nil {
 		return ReflectSchemaResult{}, err
@@ -180,8 +182,8 @@ func (c *Client) ComputablePermissions(ctx context.Context, request ComputablePe
 	if request.DefinitionName == "" || request.RelationName == "" {
 		return ComputablePermissionsResult{}, invalid("definition and relation required")
 	}
-	resp, e := retry(ctx, "computable permissions", func() (*v1.ComputablePermissionsResponse, error) {
-		return c.ssc.ComputablePermissions(ctx, &v1.ComputablePermissionsRequest{Consistency: cs, DefinitionName: request.DefinitionName, RelationName: request.RelationName, OptionalDefinitionNameFilter: o.definitionFilter})
+	resp, e := retry(ctx, c, "computable permissions", func() (*v1.ComputablePermissionsResponse, error) {
+		return c.ssc.ComputablePermissions(ctx, &v1.ComputablePermissionsRequest{Consistency: cs, DefinitionName: request.DefinitionName, RelationName: request.RelationName, OptionalDefinitionNameFilter: o.definitionFilter}, o.callOptions...)
 	})
 	if e != nil {
 		return ComputablePermissionsResult{}, e
@@ -205,8 +207,8 @@ func (c *Client) DependentRelations(ctx context.Context, request DependentRelati
 	if request.DefinitionName == "" || request.PermissionName == "" {
 		return DependentRelationsResult{}, invalid("definition and permission required")
 	}
-	resp, e := retry(ctx, "dependent relations", func() (*v1.DependentRelationsResponse, error) {
-		return c.ssc.DependentRelations(ctx, &v1.DependentRelationsRequest{Consistency: cs, DefinitionName: request.DefinitionName, PermissionName: request.PermissionName})
+	resp, e := retry(ctx, c, "dependent relations", func() (*v1.DependentRelationsResponse, error) {
+		return c.ssc.DependentRelations(ctx, &v1.DependentRelationsRequest{Consistency: cs, DefinitionName: request.DefinitionName, PermissionName: request.PermissionName}, o.callOptions...)
 	})
 	if e != nil {
 		return DependentRelationsResult{}, e
@@ -260,8 +262,8 @@ func (c *Client) DiffSchema(ctx context.Context, request DiffSchemaRequest, opts
 	if e != nil {
 		return DiffSchemaResult{}, e
 	}
-	resp, e := retry(ctx, "diff schema", func() (*v1.DiffSchemaResponse, error) {
-		return c.ssc.DiffSchema(ctx, &v1.DiffSchemaRequest{Consistency: cs, ComparisonSchema: request.ComparisonSchema})
+	resp, e := retry(ctx, c, "diff schema", func() (*v1.DiffSchemaResponse, error) {
+		return c.ssc.DiffSchema(ctx, &v1.DiffSchemaRequest{Consistency: cs, ComparisonSchema: request.ComparisonSchema}, o.callOptions...)
 	})
 	if e != nil {
 		return DiffSchemaResult{}, e

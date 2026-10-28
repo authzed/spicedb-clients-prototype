@@ -44,6 +44,15 @@
   - `Close` is idempotent. Native errors preserve status, causes, reason, domain and metadata; `errors.Is` and `errors.As` work for status, item and progress errors.
   - `*Error` implements `GRPCStatus`: a server error returns the server's status (details included); any other error returns a status built from `Code` and its message. `CodeOf` classifies `*Error`, raw status and context errors. `ServerMessage` holds the server's message verbatim; `Message` adds the operation. `NewError` builds errors for test doubles.
 
+- **Serve tooling without the raw escape hatch.**
+  - `NewFromConn` wraps a caller-owned `grpc.ClientConnInterface`; transport and credential options are rejected there, operation options apply, and `Close` never closes it.
+  - `WithCallOptions[O]`/`WithResponseMetadata[O]` are generic over every operation option type; options apply to every attempt, chunk and page.
+  - Retry behavior is client-wide: `RetryPolicy` (default three retries of Unavailable/Aborted, 100ms full-jitter), `WithRetries(RetriesDisabled)`, `WithStreamRetries(StreamRetriesDisabled)`. Mutations never retry. `WithDefaultDeadline(DefaultDeadlineDisabled)` removes the default budget.
+  - Paged reads yield `ReadRelationship`/`ExportedRelationship` (embedding `rel.Relationship`) and `LookupResource` with cursors; every page repeats the caller's consistency and page size, because SpiceDB hashes both into the cursor.
+  - `client/protoconv` exports conversions; relationship-level conversion lives in `internal/conv`, shared with the client.
+  - Imports report the server's final status on an aborted stream. Bulk checks can return per-item errors (`ItemErrorsReturned`). Watch can request schema changes. Deletes can be all-or-nothing and delete-all reports per-batch progress.
+  - `rel.FromTuple`/`String` implement SpiceDB's full tuple syntax; `spicedb-gen/tuplecompat` checks them against SpiceDB's parser.
+
 - **Make native values observable and testable.**
   - `rel` values implement `String`, and relationships, updates, filters and preconditions implement `MarshalJSON` and `slog.LogValuer` as diagnostic forms (there is no `UnmarshalJSON`). `Txn.Len` avoids copying.
   - `Filter.Matches` applies server filter semantics client-side. `ErrFilter` carries a construction error that `Validate` reports, so typed builders fail closed instead of widening scope. `Must*` constructors exist for constants and tests.

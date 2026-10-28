@@ -38,8 +38,8 @@ func (c *Client) ExpandPermissionTree(ctx context.Context, request ExpandPermiss
 	if request.Permission == "" {
 		return ExpandPermissionTreeResult{}, invalid("permission required")
 	}
-	resp, e := retry(ctx, "expand permission tree", func() (*v1.ExpandPermissionTreeResponse, error) {
-		return c.psc.ExpandPermissionTree(ctx, &v1.ExpandPermissionTreeRequest{Consistency: cs, Resource: object(request.Resource), Permission: request.Permission})
+	resp, e := retry(ctx, c, "expand permission tree", func() (*v1.ExpandPermissionTreeResponse, error) {
+		return c.psc.ExpandPermissionTree(ctx, &v1.ExpandPermissionTreeRequest{Consistency: cs, Resource: object(request.Resource), Permission: request.Permission}, o.callOptions...)
 	})
 	if e != nil {
 		return ExpandPermissionTreeResult{}, e

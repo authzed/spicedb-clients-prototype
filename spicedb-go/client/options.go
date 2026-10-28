@@ -9,8 +9,7 @@ import (
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/internal/native"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"google.golang.org/grpc"
 )
 
 type operationOptions struct {
@@ -29,6 +28,11 @@ type operationOptions struct {
 	preconditions               []rel.Precondition
 	filter                      *rel.Filter
 	subjectRelation             string
+	callOptions                 []grpc.CallOption
+	itemErrors                  bool
+	schemaChanges               bool
+	disallowPartialDeletion     bool
+	deleteProgress              func(DeleteResult)
 	err                         error
 }
 
@@ -50,7 +54,7 @@ func (c *Client) operation(ctx context.Context, o operationOptions, stream bool)
 		return nil, nil, mapGRPCError("operation", e)
 	}
 	d := o.timeout
-	if d == 0 && !stream {
+	if d == 0 && !stream && !c.noDefaultDeadline {
 		d = c.defaultTimeout
 		if d == 0 {
 			d = 30 * time.Second
@@ -63,8 +67,11 @@ func (c *Client) operation(ctx context.Context, o operationOptions, stream bool)
 	x, cancel := context.WithCancel(ctx)
 	return x, cancel, nil
 }
-func retry[T any](ctx context.Context, op string, call func() (T, error)) (T, error) {
+
+// retry runs an idempotent read under the client's retry policy.
+func retry[T any](ctx context.Context, c *Client, op string, call func() (T, error)) (T, error) {
 	var zero T
+	policy := c.retryPolicy()
 	for attempt := 0; ; attempt++ {
 		if e := ctx.Err(); e != nil {
 			return zero, mapGRPCError(op, e)
@@ -73,18 +80,29 @@ func retry[T any](ctx context.Context, op string, call func() (T, error)) (T, er
 		if e == nil {
 			return r, nil
 		}
-		code := status.Code(e)
-		if attempt >= 3 || (code != codes.Unavailable && code != codes.Aborted) {
+		if attempt >= policy.MaxRetries || !policy.retryable(e) {
 			return zero, mapGRPCError(op, e)
 		}
-		delay := time.Duration(rand.Int64N(int64(100*time.Millisecond) << attempt))
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return zero, mapGRPCError(op, ctx.Err())
-		case <-timer.C:
+		if e := policy.backoff(ctx, op, attempt, e); e != nil {
+			return zero, mapGRPCError(op, e)
 		}
+	}
+}
+
+// backoff reports the retry and sleeps a full-jitter delay, returning early
+// with the context's error if it ends first.
+func (p RetryPolicy) backoff(ctx context.Context, op string, attempt int, cause error) error {
+	delay := time.Duration(rand.Int64N(int64(p.delayBound(attempt))))
+	if p.OnRetry != nil {
+		p.OnRetry(RetryEvent{Operation: op, Attempt: attempt + 1, Err: mapGRPCError(op, cause), Delay: delay})
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 func snapshotContext(ctx map[string]any) (map[string]any, error) {
@@ -449,21 +467,6 @@ func WithDeleteAllMustNotMatch(f rel.Filter) DeleteAllOption {
 			return
 		}
 		o.preconditions = append(o.preconditions, rel.Precondition{Filter: f, Operation: rel.PreconditionMustNotMatch})
-	}
-}
-
-func transient(e error) bool {
-	c := status.Code(e)
-	return c == codes.Unavailable || c == codes.Aborted
-}
-func backoff(ctx context.Context, attempt int) error {
-	timer := time.NewTimer(time.Duration(rand.Int64N(int64(100*time.Millisecond) << attempt)))
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
 	}
 }
 

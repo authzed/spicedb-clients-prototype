@@ -37,8 +37,8 @@ func (c *Client) CountRelationshipsByFilter(ctx context.Context, request CountRe
 		return CountRelationshipsByFilterResult{}, e
 	}
 	stub := materialize.NewRelationshipsServiceClient(c.proto.Connection())
-	response, e := retry(ctx, "count relationships by filter", func() (*materialize.ExperimentalCountRelationshipsByFilterResponse, error) {
-		return stub.ExperimentalCountRelationshipsByFilter(ctx, &materialize.ExperimentalCountRelationshipsByFilterRequest{RelationshipFilter: f})
+	response, e := retry(ctx, c, "count relationships by filter", func() (*materialize.ExperimentalCountRelationshipsByFilterResponse, error) {
+		return stub.ExperimentalCountRelationshipsByFilter(ctx, &materialize.ExperimentalCountRelationshipsByFilterRequest{RelationshipFilter: f}, o.callOptions...)
 	})
 	if e != nil {
 		return CountRelationshipsByFilterResult{}, e
@@ -201,8 +201,8 @@ func (c *Client) WatchPermissionSets(ctx context.Context, request WatchPermissio
 		}
 		defer cancel()
 		stub := materialize.NewWatchPermissionSetsServiceClient(c.proto.Connection())
-		for p, e := range receive(ctx, "watch permission sets", true, func(ctx context.Context) (receiver[*materialize.WatchPermissionSetsResponse], error) {
-			return stub.WatchPermissionSets(ctx, &materialize.WatchPermissionSetsRequest{OptionalStartingAfter: optionalToken(o.start)})
+		for p, e := range receive(ctx, c, "watch permission sets", true, func(ctx context.Context) (receiver[*materialize.WatchPermissionSetsResponse], error) {
+			return stub.WatchPermissionSets(ctx, &materialize.WatchPermissionSetsRequest{OptionalStartingAfter: optionalToken(o.start)}, o.callOptions...)
 		}) {
 			if e != nil {
 				yield(PermissionSetEvent{}, e)
@@ -259,8 +259,8 @@ func (c *Client) LookupPermissionSets(ctx context.Context, request LookupPermiss
 			req.OptionalStartingAfterCursor = permissionSetCursor(*o.permissionSetCursor)
 		}
 		stub := materialize.NewWatchPermissionSetsServiceClient(c.proto.Connection())
-		for p, e := range receive(ctx, "lookup permission sets", true, func(ctx context.Context) (receiver[*materialize.LookupPermissionSetsResponse], error) {
-			return stub.LookupPermissionSets(ctx, req)
+		for p, e := range receive(ctx, c, "lookup permission sets", true, func(ctx context.Context) (receiver[*materialize.LookupPermissionSetsResponse], error) {
+			return stub.LookupPermissionSets(ctx, req, o.callOptions...)
 		}) {
 			if e != nil {
 				yield(LookupPermissionSet{}, e)
@@ -307,8 +307,8 @@ func (c *Client) DownloadPermissionSets(ctx context.Context, request DownloadPer
 	}
 	defer cancel()
 	stub := materialize.NewWatchPermissionSetsServiceClient(c.proto.Connection())
-	p, e := retry(ctx, "download permission sets", func() (*materialize.DownloadPermissionSetsResponse, error) {
-		return stub.DownloadPermissionSets(ctx, &materialize.DownloadPermissionSetsRequest{OptionalAtRevision: optionalToken(o.start)})
+	p, e := retry(ctx, c, "download permission sets", func() (*materialize.DownloadPermissionSetsResponse, error) {
+		return stub.DownloadPermissionSets(ctx, &materialize.DownloadPermissionSetsRequest{OptionalAtRevision: optionalToken(o.start)}, o.callOptions...)
 	})
 	if e != nil {
 		return DownloadPermissionSetsResult{}, e

@@ -34,6 +34,23 @@ type Client struct {
 
 	conn   *grpc.ClientConn
 	closed atomic.Bool
+
+	// borrowed is a caller-owned connection supplied to NewClientFromConn.
+	// Connection returns it; Close never closes it.
+	borrowed grpc.ClientConnInterface
+}
+
+// NewClientFromConn wraps an existing connection, such as an in-memory or
+// buffered-listener connection. The connection stays caller-owned: Close does
+// not close it, and no credentials or transport options are added.
+func NewClientFromConn(conn grpc.ClientConnInterface) *Client {
+	return &Client{
+		PermissionsServiceClient:  v1.NewPermissionsServiceClient(conn),
+		SchemaServiceClient:       v1.NewSchemaServiceClient(conn),
+		WatchServiceClient:        v1.NewWatchServiceClient(conn),
+		ExperimentalServiceClient: v1.NewExperimentalServiceClient(conn),
+		borrowed:                  conn,
+	}
 }
 
 // Option configures a Client.
@@ -476,7 +493,13 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 // ownership; Close remains the owner's responsibility. It returns nil for a
 // client assembled from stub test doubles without a transport.
 func (c *Client) Connection() grpc.ClientConnInterface {
-	if c == nil || c.conn == nil {
+	if c == nil {
+		return nil
+	}
+	if c.borrowed != nil {
+		return c.borrowed
+	}
+	if c.conn == nil {
 		return nil
 	}
 	return c.conn

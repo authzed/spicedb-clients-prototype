@@ -161,7 +161,7 @@ func TestAdoptionAgainstServer(t *testing.T) {
 	for r, err := range tc.ReadRelationships(ctx, client.ReadRelationshipsRequest{Filter: acme.AdminFilter(), Consistency: cs}) {
 		require.NoError(t, err)
 		admins = append(admins, r.SubjectID())
-		txn.Delete(FromRelationship(r))
+		txn.Delete(FromRelationship(r.Relationship))
 	}
 	require.ElementsMatch(t, []string{"alice", "bob"}, admins)
 	_, err = tc.WriteTxn(ctx, txn)

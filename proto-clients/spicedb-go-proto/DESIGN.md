@@ -110,6 +110,10 @@ manage their contexts. Cancellation/close releases transports, and Close is
 idempotent. The authenticated RawProto accessor reuses this client; it is not a
 new connection path.
 
+`NewClientFromConn(grpc.ClientConnInterface)` wraps a caller-owned connection
+(in-memory, buffered listener, test server). It adds no credentials, and
+`Close` never closes the supplied connection; `Connection()` returns it.
+
 The secondary `Connection() grpc.ClientConnInterface` accessor borrows the existing
 authenticated connection to construct additional generated service clients. It
 returns nil for hand-built stub-only clients, opens nothing, and transfers no

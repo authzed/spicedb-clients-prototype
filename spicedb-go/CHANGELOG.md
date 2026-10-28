@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **Fix:** paged `ReadRelationships` and `LookupResources` failed on their
+  second page ("the cursor provided does not have the same arguments as the
+  original API call"): the pager switched later pages to an exact snapshot and
+  shrank the last page's limit, and SpiceDB hashes both into the cursor. Every
+  page now repeats the caller's consistency and page size; the cursor pins the
+  revision, and total limits are enforced client-side.
+- **BREAKING:** `ReadRelationships` yields `client.ReadRelationship` and
+  `ExportRelationships` yields `client.ExportedRelationship`. Both embed
+  `rel.Relationship` (methods still apply; pass `r.Relationship` where a
+  `rel.Relationship` is required) and add `AfterResultCursor`, plus `ReadAt`
+  for reads. `LookupResource` gains `AfterResultCursor`. Resume with
+  `WithReadRelationshipsCursor`, `WithExportRelationshipsCursor` or
+  `WithLookupResourcesCursor`, repeating the request and page size.
+- `NewFromConn` builds a client over a caller-owned connection (in-memory,
+  buffered listener, SpiceDB's test server); `Close` leaves it open.
+- `ImportRelationships` reports the server's status when it aborts the stream
+  (for example `ErrAlreadyExists`) instead of `io.EOF`.
+  `WithImportRelationshipsBatchSize` sets relationships per message.
+- Retries are configurable: `WithRetryPolicy(RetryPolicy{...})` (max retries,
+  codes, backoff, `OnRetry` callback), `WithRetries(RetriesDisabled)`, and
+  `WithStreamRetries(StreamRetriesDisabled)`. Mutations are never retried.
+- `WithDefaultDeadline(DefaultDeadlineDisabled)` turns off the 30s default.
+- `client/protoconv` exports native↔proto conversions for relationships,
+  filters, preconditions, updates, consistency and tokens, plus result→proto
+  conversions for checks (with traces), lookups, expand, reads and writes.
+- `WithBulkItemErrors(ItemErrorsReturned)` returns per-item errors on
+  `CheckResult.Err` instead of failing the whole bulk check.
+- `WithCallOptions[O]` and `WithResponseMetadata[O]` pass gRPC call options
+  and capture headers/trailers on any operation.
+- `WithUpdatesSchemaChanges(SchemaChangesIncluded)` and
+  `WatchEvent.SchemaUpdated`.
+- `WithDeletePartial(PartialDisallowed)` for all-or-nothing deletes (a zero
+  limit uses the server default) and `WithDeleteAllProgress(func(DeleteResult))`.
+- `rel.FromTuple` and `Relationship.String` cover SpiceDB's full tuple syntax,
+  including `[caveat:{...}]` and `[expiration:...]`, verified against SpiceDB's
+  parser. New copy helpers `WithResource`, `WithRelation` and `WithSubject`.
+
 - The proto tier is now the canonical Go binding for `authzed.api.v1` and
   `authzed.api.materialize.v0`. It no longer depends on authzed-go, and it
   generates vtproto, protoc-gen-validate and grpc-gateway output plus

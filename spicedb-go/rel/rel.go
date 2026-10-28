@@ -2,6 +2,7 @@
 package rel
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -107,15 +108,43 @@ func (r Relationship) WithCaveat(name string, ctx map[string]any) (Relationship,
 	return r, nil
 }
 func (r Relationship) WithExpiration(t time.Time) Relationship { r.expiration = &t; return r }
+
+// String formats the relationship in SpiceDB's tuple syntax, including the
+// caveat and expiration when present:
+//
+//	document:readme#viewer@user:alice[ip_range:{"cidr":"10.0.0.0/8"}][expiration:2030-01-01T00:00:00Z]
+//
+// Caveat context keys are sorted; expiration is formatted in UTC with
+// RFC 3339 (nanosecond precision when needed). FromTuple parses the result.
 func (r Relationship) String() string {
 	s := fmt.Sprintf("%s:%s#%s@%s:%s", r.resource.Type(), r.resource.ID(), r.relation, r.subject.Object().Type(), r.subject.Object().ID())
 	if r.subject.relation != "" {
 		s += "#" + r.subject.relation
 	}
+	if r.caveatName != "" {
+		s += "[" + r.caveatName
+		if len(r.caveatContext) > 0 {
+			if b, err := json.Marshal(r.caveatContext); err == nil {
+				s += ":" + string(b)
+			}
+		}
+		s += "]"
+	}
+	if r.expiration != nil {
+		s += "[expiration:" + r.expiration.UTC().Format(time.RFC3339Nano) + "]"
+	}
 	return s
 }
+
+// FromTuple parses SpiceDB's tuple syntax, including optional
+// [caveat_name] or [caveat_name:{json context}] and [expiration:<RFC 3339>]
+// suffixes, in that order. A subject relation of "..." means a direct subject.
 func FromTuple(tuple string) (Relationship, error) {
-	parts := strings.Split(tuple, "@")
+	main, suffix := tuple, ""
+	if i := strings.IndexByte(tuple, '['); i >= 0 {
+		main, suffix = tuple[:i], tuple[i:]
+	}
+	parts := strings.Split(main, "@")
 	if len(parts) != 2 {
 		return Relationship{}, fmt.Errorf("tuple requires one @")
 	}
@@ -138,14 +167,91 @@ func FromTuple(tuple string) (Relationship, error) {
 		return Relationship{}, e
 	}
 	relation := ""
-	if len(ss) == 2 {
+	if len(ss) == 2 && ss[1] != "..." {
 		relation = ss[1]
 	}
 	sub, e := NewSubject(s, relation)
 	if e != nil {
 		return Relationship{}, e
 	}
-	return NewRelationship(o, rr[1], sub)
+	r, e := NewRelationship(o, rr[1], sub)
+	if e != nil {
+		return Relationship{}, e
+	}
+	return parseTupleSuffix(r, suffix)
+}
+
+// parseTupleSuffix applies an optional caveat bracket followed by an optional
+// expiration bracket.
+func parseTupleSuffix(r Relationship, suffix string) (Relationship, error) {
+	if suffix == "" {
+		return r, nil
+	}
+	const expirationPrefix = "[expiration:"
+	if !strings.HasPrefix(suffix, expirationPrefix) || strings.HasPrefix(suffix, expirationPrefix+"{") {
+		name, context, rest, err := parseCaveatBracket(suffix)
+		if err != nil {
+			return Relationship{}, err
+		}
+		if r, err = r.WithCaveat(name, context); err != nil {
+			return Relationship{}, err
+		}
+		suffix = rest
+	}
+	if suffix == "" {
+		return r, nil
+	}
+	if !strings.HasPrefix(suffix, expirationPrefix) || !strings.HasSuffix(suffix, "]") {
+		return Relationship{}, fmt.Errorf("invalid tuple suffix %q", suffix)
+	}
+	t, err := time.Parse(time.RFC3339Nano, suffix[len(expirationPrefix):len(suffix)-1])
+	if err != nil {
+		return Relationship{}, fmt.Errorf("invalid tuple expiration: %w", err)
+	}
+	r = r.WithExpiration(t)
+	return r, r.Validate()
+}
+
+// parseCaveatBracket parses "[name]" or "[name:{json}]" at the start of s and
+// returns what follows it. The context is decoded as one JSON value, so a "]"
+// inside a context string does not end the bracket.
+func parseCaveatBracket(s string) (name string, context map[string]any, rest string, err error) {
+	body := s[1:]
+	end := strings.IndexAny(body, ":]")
+	if end <= 0 {
+		return "", nil, "", fmt.Errorf("invalid tuple caveat %q", s)
+	}
+	name = body[:end]
+	if body[end] == ']' {
+		return name, nil, body[end+1:], nil
+	}
+	dec := json.NewDecoder(strings.NewReader(body[end+1:]))
+	if err := dec.Decode(&context); err != nil {
+		return "", nil, "", fmt.Errorf("invalid tuple caveat context: %w", err)
+	}
+	after := body[end+1:][dec.InputOffset():]
+	if !strings.HasPrefix(after, "]") {
+		return "", nil, "", fmt.Errorf("invalid tuple caveat %q", s)
+	}
+	return name, context, after[1:], nil
+}
+
+// WithResource returns a copy of the relationship on a different resource.
+func (r Relationship) WithResource(resource ObjectRef) Relationship {
+	r.resource = resource
+	return r
+}
+
+// WithRelation returns a copy of the relationship with a different relation.
+func (r Relationship) WithRelation(relation string) Relationship {
+	r.relation = relation
+	return r
+}
+
+// WithSubject returns a copy of the relationship with a different subject.
+func (r Relationship) WithSubject(subject SubjectRef) Relationship {
+	r.subject = subject
+	return r
 }
 
 type RelationFilterKind uint8

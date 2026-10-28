@@ -147,9 +147,11 @@ func (s *Store) Write(_ context.Context, request client.WriteRequest, _ ...clien
 }
 
 // ReadRelationships yields a snapshot of the relationships matching the
-// request's filter, in insertion order.
-func (s *Store) ReadRelationships(_ context.Context, request client.ReadRelationshipsRequest, _ ...client.ReadRelationshipsOption) iter.Seq2[rel.Relationship, error] {
+// request's filter, in insertion order, each read at the store's current
+// revision. Options, including a start cursor, are ignored.
+func (s *Store) ReadRelationships(_ context.Context, request client.ReadRelationshipsRequest, _ ...client.ReadRelationshipsOption) iter.Seq2[client.ReadRelationship, error] {
 	s.mu.Lock()
+	readAt := s.token()
 	var matched []rel.Relationship
 	err := request.Filter.Validate()
 	if err == nil {
@@ -160,13 +162,14 @@ func (s *Store) ReadRelationships(_ context.Context, request client.ReadRelation
 		}
 	}
 	s.mu.Unlock()
-	return func(yield func(rel.Relationship, error) bool) {
+	return func(yield func(client.ReadRelationship, error) bool) {
 		if err != nil {
-			yield(rel.Relationship{}, client.NewError(client.CodeInvalidArgument, err.Error()))
+			yield(client.ReadRelationship{}, client.NewError(client.CodeInvalidArgument, err.Error()))
 			return
 		}
-		for _, r := range matched {
-			if !yield(r, nil) {
+		for i, r := range matched {
+			item := client.ReadRelationship{Relationship: r, AfterResultCursor: strconv.Itoa(i + 1), ReadAt: readAt}
+			if !yield(item, nil) {
 				return
 			}
 		}

@@ -53,6 +53,7 @@ var wantExamples = []string{
 	"retry_policy",
 	"schema_management",
 	"schema_reflection",
+	"tooling_escape_hatches",
 	"unrepresentable_values",
 	"watch_changes",
 	"write_relationships",

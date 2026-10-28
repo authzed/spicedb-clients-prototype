@@ -19,8 +19,16 @@ type ImportRelationshipsResult struct{ ImportedCount uint64 }
 
 // ImportRelationships uses bounded batches with backpressure, and never retries uploads.
 // If the producer panics, deferred cancellation releases the started upload.
+//
+// One call is one stream and one server transaction: either every relationship
+// is imported or none is. Callers wanting several transactions make several
+// calls. WithImportRelationshipsBatchSize sets relationships per message.
+//
+// When the server aborts the stream (for example ALREADY_EXISTS for a
+// duplicate relationship), the error is the server's status, not the io.EOF
+// the failed send reports.
 func (c *Client) ImportRelationships(ctx context.Context, request ImportRelationshipsRequest, opts ...ImportRelationshipsOption) (ImportRelationshipsResult, error) {
-	o := operationOptions{}
+	o := operationOptions{pageSize: defaultImportBatchSize}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -32,19 +40,26 @@ func (c *Client) ImportRelationships(ctx context.Context, request ImportRelation
 	if request.Relationships == nil {
 		return ImportRelationshipsResult{}, invalid("relationships iterator required")
 	}
-	stream, e := c.psc.ImportBulkRelationships(ctx)
+	stream, e := c.psc.ImportBulkRelationships(ctx, o.callOptions...)
 	if e != nil {
 		return ImportRelationshipsResult{}, mapGRPCError("import relationships", e)
 	}
-	batch := make([]*v1.Relationship, 0, defaultImportBatchSize)
+	batchSize := int(o.pageSize)
+	batch := make([]*v1.Relationship, 0, batchSize)
 	send := func() error {
 		if e := ctx.Err(); e != nil {
 			return mapGRPCError("import relationships", e)
 		}
 		if e := stream.Send(&v1.ImportBulkRelationshipsRequest{Relationships: batch}); e != nil {
+			// A client-streaming Send that fails because the server ended
+			// the stream reports io.EOF; the real status is only available
+			// from CloseAndRecv.
+			if _, closeErr := stream.CloseAndRecv(); closeErr != nil {
+				e = closeErr
+			}
 			return mapGRPCError("import relationships", e)
 		}
-		batch = make([]*v1.Relationship, 0, defaultImportBatchSize)
+		batch = make([]*v1.Relationship, 0, batchSize)
 		return nil
 	}
 	for r := range request.Relationships {
@@ -56,7 +71,7 @@ func (c *Client) ImportRelationships(ctx context.Context, request ImportRelation
 			return ImportRelationshipsResult{}, e
 		}
 		batch = append(batch, p)
-		if len(batch) == defaultImportBatchSize {
+		if len(batch) == batchSize {
 			if e := send(); e != nil {
 				return ImportRelationshipsResult{}, e
 			}
@@ -76,7 +91,16 @@ func (c *Client) ImportRelationships(ctx context.Context, request ImportRelation
 
 type ExportRelationshipsRequest struct{ Consistency consistency.Strategy }
 
-func (c *Client) ExportRelationships(ctx context.Context, request ExportRelationshipsRequest, opts ...ExportRelationshipsOption) iter.Seq2[rel.Relationship, error] {
+// ExportedRelationship is an exported relationship with its paging state. It
+// embeds rel.Relationship; pass r.Relationship where one is required.
+type ExportedRelationship struct {
+	rel.Relationship
+	// AfterResultCursor resumes an export after this item's response, via
+	// WithExportRelationshipsCursor. Every item in one response shares it.
+	AfterResultCursor string
+}
+
+func (c *Client) ExportRelationships(ctx context.Context, request ExportRelationshipsRequest, opts ...ExportRelationshipsOption) iter.Seq2[ExportedRelationship, error] {
 	o := operationOptions{pageSize: defaultExportPageSize}
 	for _, opt := range opts {
 		opt(&o)
@@ -87,22 +111,22 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 	if o.filter != nil {
 		f, fe = filter(*o.filter)
 	}
-	return func(yield func(rel.Relationship, error) bool) {
+	return func(yield func(ExportedRelationship, error) bool) {
 		ctx, cancel, e := c.operation(ctx, o, true)
 		if e != nil {
-			yield(rel.Relationship{}, e)
+			yield(ExportedRelationship{}, e)
 			return
 		}
 		defer cancel()
 		if ce != nil {
-			yield(rel.Relationship{}, ce)
+			yield(ExportedRelationship{}, ce)
 			return
 		}
 		if fe != nil {
-			yield(rel.Relationship{}, fe)
+			yield(ExportedRelationship{}, fe)
 			return
 		}
-		var cur *v1.Cursor
+		cur := cursor(o.cursor)
 		var total uint64
 		exposed := false
 		for {
@@ -114,12 +138,12 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 			pageCtx, pageCancel := context.WithCancel(ctx)
 			count := uint32(0)
 			prev := cur.GetToken()
-			for resp, e := range receive(pageCtx, "export relationships", !exposed, func(ctx context.Context) (receiver[*v1.ExportBulkRelationshipsResponse], error) {
-				return c.psc.ExportBulkRelationships(ctx, req)
+			for resp, e := range receive(pageCtx, c, "export relationships", !exposed, func(ctx context.Context) (receiver[*v1.ExportBulkRelationshipsResponse], error) {
+				return c.psc.ExportBulkRelationships(ctx, req, o.callOptions...)
 			}) {
 				if e != nil {
 					pageCancel()
-					yield(rel.Relationship{}, e)
+					yield(ExportedRelationship{}, e)
 					return
 				}
 				cur = resp.GetAfterResultCursor()
@@ -127,13 +151,13 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 					r, e := nativeRelationship(p)
 					if e != nil {
 						pageCancel()
-						yield(rel.Relationship{}, e)
+						yield(ExportedRelationship{}, e)
 						return
 					}
 					count++
 					total++
 					exposed = true
-					if !yield(r, nil) {
+					if !yield(ExportedRelationship{Relationship: r, AfterResultCursor: cur.GetToken()}, nil) {
 						pageCancel()
 						return
 					}
@@ -148,7 +172,7 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 				return
 			}
 			if cur.GetToken() == "" || cur.GetToken() == prev {
-				yield(rel.Relationship{}, &Error{Code: CodeInternal, Message: "spicedb: export page did not advance cursor"})
+				yield(ExportedRelationship{}, &Error{Code: CodeInternal, Message: "spicedb: export page did not advance cursor"})
 				return
 			}
 		}

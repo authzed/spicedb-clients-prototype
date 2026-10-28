@@ -28,6 +28,21 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - A documented escape hatch may expose the existing authenticated connection
     or protocol client; it must not create a connection or transfer ownership.
   - Supplied connections remain caller-owned unless ownership is explicitly transferred.
+  - Every client has a constructor from an existing connection or channel, such as
+    an in-memory or buffered-listener connection. Close never closes a supplied
+    connection. Operation options (deadlines, retry policy) still apply;
+    credential and transport options do not, because the connection already carries them.
+  - Every operation accepts a transport escape hatch: per-call transport options
+    and capture of response headers and trailers. This is the supported route to
+    transport-level data, including data that pre-1.30 servers send in trailers.
+    Callers do not need the raw protocol client for it.
+  - Native↔protocol conversions for requests, results, relationships, filters,
+    preconditions, consistency, updates and traces are exported in a secondary
+    namespace, so tools that persist or print protocol-shaped data reuse them.
+
+- **Support SpiceDB 1.30 and later natively.**
+  - Behavior that only older servers need is reachable through the transport
+    escape hatch, not first-class API.
   - Generate protocol bindings from the upstream schema; do not edit generated
     protocol source by hand.
 
@@ -104,6 +119,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Per-item failures remain typed errors with the caller's absolute input index.
   - Split checks into at most 1,000 items per request. Each result carries its
     own chunk's revision; chunks do not imply a shared snapshot.
+  - By default the first per-item failure fails the call. A named mode instead
+    returns every item's result, with per-item errors carried on the result
+    alongside the other items' decisions. An errored item never grants.
 
 - **Preserve caller data and represent immutability honestly.**
   - Merge call-level check context with per-item overrides by key; the item wins.
@@ -128,6 +146,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     variants for compile-time constants and tests, such as Go `Must*`.
   - Relationship accessors offer short paths for the most common fields
     (resource ID and subject ID) in addition to the nested object accessors.
+  - Tuple parsing and formatting cover SpiceDB's full syntax, including
+    `[caveat:{...}]` and `[expiration:...]`, and round-trip with SpiceDB's own
+    parser. Copy helpers replace a relationship's resource or subject.
 
 ## Check debug tracing
 
@@ -165,6 +186,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Streams and imports have no default lifetime timeout, but accept explicit
     total deadlines. Finite lookups and exports support deadlines even when
     their underlying RPC streams.
+  - A named mode disables the client default deadline. The caller's own deadline
+    or cancellation still applies. Zero or negative durations are never used as
+    a magic "disabled" value.
 
 - **Carry native cancellation through every layer.**
   - Check cancellation before new work and during backoff; distinguish caller
@@ -182,6 +206,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Stream establishment may retry only before any item is exposed. Never
     restart a partially consumed stream.
   - All retries share the original deadline and cancellation signal.
+  - The policy above is the default. A client-wide retry policy option sets max
+    attempts, retryable read codes, backoff, and an on-retry callback, and a named
+    mode disables retries entirely. Stream-establishment retry has its own named
+    setting, so long-lived streams like watch can opt out. No configuration can
+    make a mutation replay.
 
 ## Streams and ownership
 
@@ -198,6 +227,23 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
 - **Import incrementally with backpressure and predictable cleanup.**
   - Accept native iterable or async-iterable inputs.
   - Producer errors, cancellation, and conversion failures cancel an active upload.
+  - When the server aborts a client stream, report the server's final status
+    (for example `ALREADY_EXISTS` for a duplicate), never the transport's
+    end-of-stream signal from the failed send.
+  - The relationships-per-message batch size is configurable. One import call is
+    one stream and one transaction; callers wanting several transactions make
+    several calls.
+
+- **Expose paging state on paged reads.**
+  - Relationship reads, exports and resource lookups yield each item with its
+    after-result cursor and its response's read-at revision, and accept a
+    starting cursor. Cursors stay a type distinct from revision tokens.
+  - Every page of a paged read repeats the caller's consistency and one fixed
+    page size. SpiceDB hashes request arguments, including consistency and
+    limit, into each cursor and rejects a cursor sent with different arguments;
+    the cursor itself pins later pages to the first page's revision. Enforce a
+    total limit client-side rather than by shrinking the last page's limit.
+    Live tests must read across more than one page.
 
 ## Filters and deletion
 
@@ -207,6 +253,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Examples prefer filters, including a resource-type-only filter for a whole
     type. Reject nonempty object types combined with nonempty relationship filters.
   - Snapshot caller-owned collections and preserve exact subject relation scope.
+  - A named mode requests schema-change events, combinable with checkpoints.
+    Events report a schema-updated fact distinct from relationship updates.
 
 - **Filters must preserve the caller's exact intended scope.**
   - Distinguish subject relation filters `Any`, `Direct`, and `Named(name)`.
@@ -218,6 +266,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
 - **Separate bounded deletion from deletion to completion.**
   - Bounded deletion requires a positive total limit, issues one bounded request,
     and returns revision, count, completion, and any server resume cursor.
+  - A named all-or-nothing mode disallows partial deletion: the server rejects a
+    delete that exceeds its limit instead of deleting part of it. In that mode
+    the limit may be omitted to use the server's default.
+  - Delete-to-completion accepts a per-batch progress callback with the
+    cumulative acknowledged count, revision and cursor.
   - Name the operation `deleteAllRelationshipsNonAtomic` using native language
     conventions. It uses a separate positive page size, defaulting to 1,000, and
     one operation budget. An `autoPage` flag must not change the meaning of a limit.

@@ -13,6 +13,9 @@ type WatchEvent struct {
 	Updates        []rel.Update
 	ChangesThrough consistency.ZedToken
 	IsCheckpoint   bool
+	// SchemaUpdated reports a schema change at ChangesThrough. Sent only when
+	// requested with WithUpdatesSchemaChanges(SchemaChangesIncluded).
+	SchemaUpdated bool
 }
 type UpdatesRequest struct {
 	// ObjectTypes cannot be combined with Filters.
@@ -57,15 +60,23 @@ func (c *Client) Updates(ctx context.Context, request UpdatesRequest, opts ...Up
 		if o.start.String() != "" {
 			req.OptionalStartCursor = &v1.ZedToken{Token: o.start.String()}
 		}
-		if o.checkpoints {
-			req.OptionalUpdateKinds = []v1.WatchKind{v1.WatchKind_WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES, v1.WatchKind_WATCH_KIND_INCLUDE_CHECKPOINTS}
+		if o.checkpoints || o.schemaChanges {
+			req.OptionalUpdateKinds = []v1.WatchKind{v1.WatchKind_WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES}
+			if o.checkpoints {
+				req.OptionalUpdateKinds = append(req.OptionalUpdateKinds, v1.WatchKind_WATCH_KIND_INCLUDE_CHECKPOINTS)
+			}
+			if o.schemaChanges {
+				req.OptionalUpdateKinds = append(req.OptionalUpdateKinds, v1.WatchKind_WATCH_KIND_INCLUDE_SCHEMA_UPDATES)
+			}
 		}
-		for resp, e := range receive(ctx, "watch", true, func(ctx context.Context) (receiver[*v1.WatchResponse], error) { return c.wsc.Watch(ctx, req) }) {
+		for resp, e := range receive(ctx, c, "watch", true, func(ctx context.Context) (receiver[*v1.WatchResponse], error) {
+			return c.wsc.Watch(ctx, req, o.callOptions...)
+		}) {
 			if e != nil {
 				yield(WatchEvent{}, e)
 				return
 			}
-			event := WatchEvent{ChangesThrough: consistency.NewZedToken(resp.GetChangesThrough().GetToken()), IsCheckpoint: resp.GetIsCheckpoint()}
+			event := WatchEvent{ChangesThrough: consistency.NewZedToken(resp.GetChangesThrough().GetToken()), IsCheckpoint: resp.GetIsCheckpoint(), SchemaUpdated: resp.GetSchemaUpdated()}
 			for _, p := range resp.GetUpdates() {
 				u, e := nativeUpdate(p)
 				if e != nil {

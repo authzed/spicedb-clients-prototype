@@ -43,20 +43,24 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 			yield(LookupResource{}, je)
 			return
 		}
-		var cur *v1.Cursor
+		cur := cursor(o.cursor)
 		var total uint64
 		exposed := false
+		// Every page repeats the caller's consistency and one page size:
+		// SpiceDB rejects a cursor sent with different arguments, and the
+		// cursor pins later pages to the first page's revision. The total
+		// limit is enforced here.
+		size := o.pageSize
+		if o.limit > 0 {
+			size = uint32(min(uint64(size), o.limit))
+		}
 		for {
-			size := o.pageSize
-			if o.limit > 0 {
-				size = uint32(min(uint64(size), o.limit-total))
-			}
 			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug}
 			pageCtx, pageCancel := context.WithCancel(ctx)
 			count := uint32(0)
 			prev := cur.GetToken()
-			for resp, e := range receive(pageCtx, "lookup resources", !exposed, func(ctx context.Context) (receiver[*v1.LookupResourcesResponse], error) {
-				return c.psc.LookupResources(ctx, req)
+			for resp, e := range receive(pageCtx, c, "lookup resources", !exposed, func(ctx context.Context) (receiver[*v1.LookupResourcesResponse], error) {
+				return c.psc.LookupResources(ctx, req, o.callOptions...)
 			}) {
 				if e != nil {
 					pageCancel()
@@ -65,15 +69,12 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 				}
 				count++
 				cur = resp.GetAfterResultCursor()
-				if !exposed && resp.GetLookedUpAt().GetToken() != "" {
-					cs, _ = strategy(consistency.Snapshot(consistency.NewZedToken(resp.GetLookedUpAt().GetToken())))
-				}
 				exposed = true
 				if o.lookupPermissionshipFilter == LookupHasPermissionOnly && resp.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
 					continue
 				}
 				total++
-				r := LookupResource{ResourceID: resp.GetResourceObjectId(), Permissionship: permissionshipFromProto(resp.GetPermissionship()), PartialCaveat: partialCaveatFromProto(resp.GetPartialCaveatInfo()), LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken())}
+				r := LookupResource{ResourceID: resp.GetResourceObjectId(), Permissionship: permissionshipFromProto(resp.GetPermissionship()), PartialCaveat: partialCaveatFromProto(resp.GetPartialCaveatInfo()), LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken()), AfterResultCursor: cur.GetToken()}
 				if !yield(r, nil) {
 					pageCancel()
 					return
@@ -134,8 +135,8 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 			req.OptionalConcreteLimit = uint32(o.limit)
 		}
 		var count uint64
-		for resp, e := range receive(ctx, "lookup subjects", true, func(ctx context.Context) (receiver[*v1.LookupSubjectsResponse], error) {
-			return c.psc.LookupSubjects(ctx, req)
+		for resp, e := range receive(ctx, c, "lookup subjects", true, func(ctx context.Context) (receiver[*v1.LookupSubjectsResponse], error) {
+			return c.psc.LookupSubjects(ctx, req, o.callOptions...)
 		}) {
 			if e != nil {
 				yield(LookupSubject{}, e)

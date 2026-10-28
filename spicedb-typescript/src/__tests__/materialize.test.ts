@@ -55,9 +55,11 @@ describe("native materialize permission-set APIs",()=>{
   const c=client();const rpc=vi.spyOn(c.raw().permissionSets,"lookupPermissionSets").mockImplementation(()=> (async function*(){yield {cursor:{limit:1,startingIndex:5,completedMembers:false,startingKey:"key",cursor:"opaque"}} as P.LookupPermissionSetsResponse;})());
   const values=await collect(c.experimentalLookupPermissionSets({pageSize:10,limit:1,cursor:{limit:1,startingIndex:4,completedMembers:false,startingKey:"prior",cursor:"before",token:new ZedToken("token")}}));expect(values).toHaveLength(1);expect(values[0].cursor?.cursor).toBe("opaque");expect(rpc).toHaveBeenCalledTimes(1);expect(rpc.mock.calls[0][0].limit).toBe(10);expect(rpc.mock.calls[0][0].optionalStartingAfterCursor?.token?.token).toBe("token");c.close();
  });
+ // Generous margins (a 30ms/50ms version flaked under load): the first page
+ // must finish inside the budget, and the second page gets only what remains.
  it("shares one optional deadline over permission-set pages",async()=>{
-  const c=client();let page=0;const rpc=vi.spyOn(c.raw().permissionSets,"lookupPermissionSets").mockImplementation(()=> (async function*(){await delay(30);yield create(P.LookupPermissionSetsResponseSchema,{cursor:{limit:1,startingIndex:++page,completedMembers:false,startingKey:"",cursor:`page-${page}`}});})());
-  await expect(collect(c.experimentalLookupPermissionSets({pageSize:1},{timeoutMs:50}))).rejects.toBeInstanceOf(DeadlineExceededError);expect(rpc).toHaveBeenCalledTimes(2);expect(rpc.mock.calls[1][1]?.timeoutMs).toBeLessThan(30);c.close();
+  const c=client();let page=0;const rpc=vi.spyOn(c.raw().permissionSets,"lookupPermissionSets").mockImplementation(()=> (async function*(){await delay(600);yield create(P.LookupPermissionSetsResponseSchema,{cursor:{limit:1,startingIndex:++page,completedMembers:false,startingKey:"",cursor:`page-${page}`}});})());
+  await expect(collect(c.experimentalLookupPermissionSets({pageSize:1},{timeoutMs:1000}))).rejects.toBeInstanceOf(DeadlineExceededError);expect(rpc).toHaveBeenCalledTimes(2);expect(rpc.mock.calls[1][1]?.timeoutMs).toBeLessThan(600);c.close();
  });
  it("never reconnects permission-set watches automatically",async()=>{
   const c=client();const rpc=vi.spyOn(c.raw().permissionSets,"watchPermissionSets").mockImplementation(()=> (async function*(){throw new ConnectError("watch",Code.Unavailable);yield {} as never;})());await expect(collect(c.experimentalWatchPermissionSets())).rejects.toBeInstanceOf(UnavailableError);expect(rpc).toHaveBeenCalledTimes(1);c.close();

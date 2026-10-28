@@ -6,14 +6,19 @@ import com.authzed.spicedb.CheckOptions;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.ClientOperation;
 import com.authzed.spicedb.Consistency;
+import com.authzed.spicedb.DeleteAllOptions;
 import com.authzed.spicedb.DeleteOptions;
 import com.authzed.spicedb.ExportOptions;
 import com.authzed.spicedb.ExportedRelationship;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.ImportOptions;
+import com.authzed.spicedb.LookupOptions;
+import com.authzed.spicedb.LookupResult;
+import com.authzed.spicedb.Materialize;
 import com.authzed.spicedb.ObjectRef;
 import com.authzed.spicedb.PartialDeletion;
 import com.authzed.spicedb.PermissionCheck;
+import com.authzed.spicedb.PermissionSetOptions;
 import com.authzed.spicedb.PermissionsApi;
 import com.authzed.spicedb.Permissionship;
 import com.authzed.spicedb.ReadOptions;
@@ -21,16 +26,19 @@ import com.authzed.spicedb.ReadRelationship;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.ResponseMetadata;
 import com.authzed.spicedb.RetryPolicy;
+import com.authzed.spicedb.SpiceDBApi;
 import com.authzed.spicedb.SpiceDBClient;
 import com.authzed.spicedb.SubjectRef;
 import com.authzed.spicedb.Transaction;
 import com.authzed.spicedb.TransportOptions;
+import com.authzed.spicedb.WatchOptions;
 import com.authzed.spicedb.WriteOptions;
 import com.authzed.spicedb.WriteResult;
 import com.authzed.spicedb.ZedToken;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.SpiceDBException;
+import io.grpc.Channel;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import java.time.Clock;
@@ -52,9 +60,9 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 /**
- * An in-memory test double for {@link PermissionsApi}: the relationship, import/export, schema and
- * check operations of {@link SpiceDBClient}, with the same signatures, so code written against
- * {@code PermissionsApi} accepts either.
+ * An in-memory test double for {@link SpiceDBApi}, the full method set of {@link SpiceDBClient},
+ * with the same signatures, so code written against {@code SpiceDBApi} (or its relationship, schema
+ * and check subset {@link PermissionsApi}) accepts either.
  *
  * <ul>
  *   <li>Writes apply atomically, evaluate preconditions with {@link Filter#matches} (server filter
@@ -71,8 +79,17 @@ import java.util.stream.StreamSupport;
  *   <li>{@link #writeSchema} stores the text without compiling it; {@link #readSchema} returns it,
  *       or {@code NOT_FOUND} before any write. {@link #reflectSchema} returns the result registered
  *       with {@link #setReflectSchemaResult}.
+ *   <li>{@link #readSchema} reports the current revision, or none after {@link
+ *       #setReadSchemaRevision}{@code (SchemaRevision.OMITTED)}, as some SpiceDB deployments do.
  *   <li>Checks return registered results ({@link #setCheckResult}, {@link #setCheckError});
- *       unregistered checks are {@code NO_PERMISSION}. The double does not evaluate schema.
+ *       unregistered checks are {@code NO_PERMISSION}, and {@code checkAny}/{@code checkAll} are
+ *       bulk checks over them. The double does not evaluate schema.
+ *   <li>{@link #deleteAllRelationshipsNonAtomic} deletes every match in one step after checking its
+ *       preconditions and reports progress once; {@link #close} does nothing.
+ *   <li>Operations without in-memory semantics (lookups, expand, schema analysis, watch, counters
+ *       and the other experimental operations) are recorded and consult the fault hook like any
+ *       other, then throw {@code UNIMPLEMENTED} in the client's error shape. {@link #rawChannel}
+ *       returns {@code null}.
  *   <li>Every operation reports the metadata registered with {@link #setResponseMetadata} to the
  *       call's {@link TransportOptions#responseMetadata()} capture.
  *   <li>Every call is recorded ({@link #calls}, {@link #callsOf}) with its arguments and options,
@@ -90,7 +107,7 @@ import java.util.stream.StreamSupport;
  * honored, and the rest are accepted and ignored. Consistency arguments are accepted and ignored:
  * the double is always fully consistent. Thread-safe.
  */
-public final class InMemorySpiceDB implements PermissionsApi {
+public final class InMemorySpiceDB implements SpiceDBApi {
   /** SpiceDB's default limit for {@code DeleteRelationships} without one. */
   public static final int DEFAULT_DELETE_LIMIT = 1_000;
 
@@ -105,6 +122,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
   private final List<Call> calls = new ArrayList<>();
   private final Map<ClientOperation, Integer> callCounts = new EnumMap<>(ClientOperation.class);
   private Function<Fault, ? extends RuntimeException> faultHook;
+  private SchemaRevision schemaRevision = SchemaRevision.INCLUDED;
 
   /**
    * One recorded call.
@@ -138,8 +156,8 @@ public final class InMemorySpiceDB implements PermissionsApi {
      */
     CALL,
     /**
-     * Before import batch {@link Fault#item()} (0-based) is sent. Batches have the call's {@code
-     * ImportOptions.batchSize} (default 1,000).
+     * Before import batch {@link Fault#item()} (0-based) is sent; {@link Fault#batch()} holds its
+     * relationships. Batches have the call's {@code ImportOptions.batchSize} (default 1,000).
      */
     IMPORT_BATCH,
     /** After every import batch, before the import commits. */
@@ -153,8 +171,47 @@ public final class InMemorySpiceDB implements PermissionsApi {
    *
    * @param item the batch index for {@link FaultStage#IMPORT_BATCH} and the item index for {@link
    *     FaultStage#ITEM}; 0 otherwise
+   * @param batch the relationships in the batch at {@link FaultStage#IMPORT_BATCH}; empty otherwise
    */
-  public record Fault(Call call, FaultStage stage, int item) {}
+  public record Fault(Call call, FaultStage stage, int item, List<Relationship> batch) {
+    public Fault {
+      batch = batch == null ? List.of() : List.copyOf(batch);
+    }
+
+    /** A fault point without import batch contents. */
+    public Fault(Call call, FaultStage stage, int item) {
+      this(call, stage, item, List.of());
+    }
+  }
+
+  /** Whether {@link #readSchema} reports a revision. */
+  public enum SchemaRevision {
+    /** Report the current revision. The default. */
+    INCLUDED,
+    /**
+     * Report none ({@code SchemaResult.revision()} is {@code null}), as some SpiceDB deployments
+     * do, so code that falls back to another revision source can be tested.
+     */
+    OMITTED
+  }
+
+  /** Selects whether {@link #readSchema} reports a revision. */
+  public synchronized void setReadSchemaRevision(SchemaRevision mode) {
+    if (mode == null) throw new InvalidArgumentException("mode must not be null");
+    schemaRevision = mode;
+  }
+
+  private static final String CURSOR_PREFIX = "inmemory-cursor-";
+
+  /**
+   * The cursor that resumes a read or export after the first {@code n} matching relationships (in
+   * write order): the same cursor this double puts on the {@code n}-th item. The format, {@code
+   * "inmemory-cursor-"} followed by the decimal {@code n}, is stable for tests.
+   */
+  public static String cursorAfter(int n) {
+    if (n < 0) throw new InvalidArgumentException("n must not be negative");
+    return CURSOR_PREFIX + n;
+  }
 
   /**
    * Builds the error the real client throws when SpiceDB answers with {@code code} and {@code
@@ -217,12 +274,16 @@ public final class InMemorySpiceDB implements PermissionsApi {
 
   /** Runs the fault hook, if any, at one point of a call, throwing the fault it returns. */
   private void fault(Call call, FaultStage stage, int item) {
+    fault(call, stage, item, List.of());
+  }
+
+  private void fault(Call call, FaultStage stage, int item, List<Relationship> batch) {
     Function<Fault, ? extends RuntimeException> hook;
     synchronized (this) {
       hook = faultHook;
     }
     if (hook == null) return;
-    var error = hook.apply(new Fault(call, stage, item));
+    var error = hook.apply(new Fault(call, stage, item, batch));
     if (error != null) throw error;
   }
 
@@ -324,7 +385,8 @@ public final class InMemorySpiceDB implements PermissionsApi {
   private static int cursorStart(String cursor) {
     if (cursor == null || cursor.isEmpty()) return 0;
     try {
-      int n = Integer.parseInt(cursor.substring("inmemory-cursor-".length()));
+      if (!cursor.startsWith(CURSOR_PREFIX)) throw new NumberFormatException();
+      int n = Integer.parseInt(cursor.substring(CURSOR_PREFIX.length()));
       if (n < 0) throw new NumberFormatException();
       return n;
     } catch (RuntimeException e) {
@@ -422,7 +484,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
     var out = new ArrayList<ReadRelationship>();
     for (int i = start; i < matches.size(); i++) {
       if (options.limit() > 0 && out.size() >= options.limit()) break;
-      out.add(new ReadRelationship(matches.get(i), "inmemory-cursor-" + (i + 1), token()));
+      out.add(new ReadRelationship(matches.get(i), cursorAfter(i + 1), token()));
     }
     return faultingStream(call, out);
   }
@@ -546,10 +608,14 @@ public final class InMemorySpiceDB implements PermissionsApi {
     var batch = new ArrayList<Relationship>();
     for (var r : input) {
       if (r == null) throw new InvalidArgumentException("relationships must not contain null");
-      if (batch.size() % batchSize == 0)
-        fault(call, FaultStage.IMPORT_BATCH, batch.size() / batchSize);
       batch.add(r);
     }
+    for (int start = 0; start < batch.size(); start += batchSize)
+      fault(
+          call,
+          FaultStage.IMPORT_BATCH,
+          start / batchSize,
+          batch.subList(start, Math.min(start + batchSize, batch.size())));
     fault(call, FaultStage.IMPORT_COMMIT, 0);
     respond(options.transport());
     var staged = new LinkedHashMap<String, Relationship>();
@@ -587,7 +653,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
     var out = new ArrayList<ExportedRelationship>();
     for (int i = start; i < matches.size(); i++) {
       if (options.limit() > 0 && out.size() >= options.limit()) break;
-      out.add(new ExportedRelationship(matches.get(i), "inmemory-cursor-" + (i + 1)));
+      out.add(new ExportedRelationship(matches.get(i), cursorAfter(i + 1)));
     }
     return faultingStream(call, out);
   }
@@ -606,7 +672,8 @@ public final class InMemorySpiceDB implements PermissionsApi {
     if (schema == null)
       throw ErrorMapper.newError(
           Status.Code.NOT_FOUND, "No schema has been defined; please call WriteSchema to start");
-    return new SpiceDBClient.SchemaResult(schema, token());
+    return new SpiceDBClient.SchemaResult(
+        schema, schemaRevision == SchemaRevision.OMITTED ? null : token());
   }
 
   @Override
@@ -647,5 +714,328 @@ public final class InMemorySpiceDB implements PermissionsApi {
           Status.Code.NOT_FOUND, "No schema has been defined; please call WriteSchema to start");
     return new SpiceDBClient.ReflectSchemaResult(
         reflectResult.definitions(), reflectResult.caveats(), token());
+  }
+
+  /** A bulk check (recorded as {@link ClientOperation#CHECK_BULK}), as the client does. */
+  @Override
+  public boolean checkAny(Collection<PermissionCheck> requests) {
+    return checkAny(requests, CheckOptions.builder().build());
+  }
+
+  @Override
+  public boolean checkAny(Collection<PermissionCheck> requests, CheckOptions options) {
+    return checkBulk(requests, options).stream().anyMatch(CheckResult::hasPermission);
+  }
+
+  /** A bulk check (recorded as {@link ClientOperation#CHECK_BULK}), as the client does. */
+  @Override
+  public boolean checkAll(Collection<PermissionCheck> requests) {
+    return checkAll(requests, CheckOptions.builder().build());
+  }
+
+  @Override
+  public boolean checkAll(Collection<PermissionCheck> requests, CheckOptions options) {
+    var results = checkBulk(requests, options);
+    return !results.isEmpty() && results.stream().allMatch(CheckResult::hasPermission);
+  }
+
+  @Override
+  public SpiceDBClient.DeleteResult deleteAllRelationshipsNonAtomic(Filter filter) {
+    return deleteAllRelationshipsNonAtomic(filter, DeleteAllOptions.builder().build());
+  }
+
+  /**
+   * Deletes every match in one step after checking the preconditions, and reports progress once.
+   * Page size and resume cursor are accepted and ignored.
+   */
+  @Override
+  public synchronized SpiceDBClient.DeleteResult deleteAllRelationshipsNonAtomic(
+      Filter filter, DeleteAllOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    begin(ClientOperation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC, options, filter);
+    rejectRetry(options.retryPolicy(), "delete relationships");
+    if (filter == null) throw new InvalidArgumentException("filter must not be null");
+    respond(options.transport());
+    var preconditions = new ArrayList<Transaction.Precondition>();
+    for (var f : options.mustMatch())
+      preconditions.add(
+          new Transaction.Precondition(Transaction.PreconditionOperation.MUST_MATCH, f));
+    for (var f : options.mustNotMatch())
+      preconditions.add(
+          new Transaction.Precondition(Transaction.PreconditionOperation.MUST_NOT_MATCH, f));
+    checkPreconditions(preconditions);
+    var matches = matching(filter);
+    for (var r : matches) relationships.remove(key(r));
+    revision++;
+    var result = new SpiceDBClient.DeleteResult(token(), matches.size(), true, null);
+    if (options.onProgress() != null) options.onProgress().accept(result);
+    return result;
+  }
+
+  /** Does nothing: the double holds no transport. */
+  @Override
+  public void close() {}
+
+  /** {@code null}: the double has no transport. */
+  @Override
+  public Channel rawChannel() {
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Operations without in-memory semantics: recorded, consult the fault hook, then UNIMPLEMENTED.
+  // ---------------------------------------------------------------------------------------------
+
+  private static SpiceDBException notImplemented() {
+    return ErrorMapper.newError(Status.Code.UNIMPLEMENTED, "not implemented by InMemorySpiceDB");
+  }
+
+  /**
+   * Records the call, runs its {@link FaultStage#CALL} hook, refuses a retry opt-in on a mutation
+   * that is never idempotent (as the client does), then throws UNIMPLEMENTED.
+   */
+  private <T> T unimplemented(ClientOperation operation, CallOptions options, Object... arguments) {
+    return unimplementedWithRetry(
+        operation, options, options == null ? null : options.retryPolicy(), arguments);
+  }
+
+  private <T> T unimplementedWithRetry(
+      ClientOperation operation, Object options, RetryPolicy retry, Object... arguments) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    begin(operation, options, arguments);
+    if (operation.isNeverIdempotent())
+      rejectRetry(retry, operation.name().toLowerCase(java.util.Locale.ROOT).replace('_', ' '));
+    throw notImplemented();
+  }
+
+  /**
+   * Records the call and returns a stream that, when first consumed, runs the {@link
+   * FaultStage#CALL} hook and then throws UNIMPLEMENTED, where the real client reports a failed
+   * call.
+   */
+  private <T> Stream<T> unimplementedStream(
+      ClientOperation operation, Object options, Object... arguments) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var call = record(operation, options, arguments);
+    Iterator<T> it =
+        new Iterator<>() {
+          @Override
+          public boolean hasNext() {
+            fault(call, FaultStage.CALL, 0);
+            throw notImplemented();
+          }
+
+          @Override
+          public T next() {
+            hasNext();
+            throw new NoSuchElementException();
+          }
+        };
+    return StreamSupport.stream(
+        Spliterators.spliteratorUnknownSize(it, Spliterator.ORDERED), false);
+  }
+
+  @Override
+  public Stream<LookupResult.LookupResource> lookupResources(
+      Consistency consistency, String resourceType, String permission, SubjectRef subject) {
+    return lookupResources(
+        consistency, resourceType, permission, subject, LookupOptions.builder().build());
+  }
+
+  @Override
+  public Stream<LookupResult.LookupResource> lookupResources(
+      Consistency consistency,
+      String resourceType,
+      String permission,
+      SubjectRef subject,
+      LookupOptions options) {
+    return unimplementedStream(
+        ClientOperation.LOOKUP_RESOURCES, options, consistency, resourceType, permission, subject);
+  }
+
+  @Override
+  public Stream<LookupResult.LookupSubject> lookupSubjects(
+      Consistency consistency, ObjectRef resource, String permission, String subjectType) {
+    return lookupSubjects(
+        consistency, resource, permission, subjectType, LookupOptions.builder().build());
+  }
+
+  @Override
+  public Stream<LookupResult.LookupSubject> lookupSubjects(
+      Consistency consistency,
+      ObjectRef resource,
+      String permission,
+      String subjectType,
+      LookupOptions options) {
+    return unimplementedStream(
+        ClientOperation.LOOKUP_SUBJECTS, options, consistency, resource, permission, subjectType);
+  }
+
+  @Override
+  public SpiceDBClient.ComputablePermissionsResult computablePermissions(
+      Consistency consistency, String definitionName, String relationName) {
+    return computablePermissions(
+        consistency, definitionName, relationName, CallOptions.builder().build());
+  }
+
+  @Override
+  public SpiceDBClient.ComputablePermissionsResult computablePermissions(
+      Consistency consistency, String definitionName, String relationName, CallOptions options) {
+    return unimplemented(
+        ClientOperation.COMPUTABLE_PERMISSIONS, options, consistency, definitionName, relationName);
+  }
+
+  @Override
+  public SpiceDBClient.DependentRelationsResult dependentRelations(
+      Consistency consistency, String definitionName, String permissionName) {
+    return dependentRelations(
+        consistency, definitionName, permissionName, CallOptions.builder().build());
+  }
+
+  @Override
+  public SpiceDBClient.DependentRelationsResult dependentRelations(
+      Consistency consistency, String definitionName, String permissionName, CallOptions options) {
+    return unimplemented(
+        ClientOperation.DEPENDENT_RELATIONS, options, consistency, definitionName, permissionName);
+  }
+
+  @Override
+  public SpiceDBClient.DiffSchemaResult diffSchema(
+      Consistency consistency, String comparisonSchema) {
+    return diffSchema(consistency, comparisonSchema, CallOptions.builder().build());
+  }
+
+  @Override
+  public SpiceDBClient.DiffSchemaResult diffSchema(
+      Consistency consistency, String comparisonSchema, CallOptions options) {
+    return unimplemented(ClientOperation.DIFF_SCHEMA, options, consistency, comparisonSchema);
+  }
+
+  @Override
+  public SpiceDBClient.ExpandResult expandPermissionTree(
+      Consistency consistency, ObjectRef resource, String permission) {
+    return expandPermissionTree(consistency, resource, permission, CallOptions.builder().build());
+  }
+
+  @Override
+  public SpiceDBClient.ExpandResult expandPermissionTree(
+      Consistency consistency, ObjectRef resource, String permission, CallOptions options) {
+    return unimplemented(
+        ClientOperation.EXPAND_PERMISSION_TREE, options, consistency, resource, permission);
+  }
+
+  @Override
+  public Stream<SpiceDBClient.WatchEvent> updates(
+      List<String> objectTypes, ZedToken startRevision) {
+    return updates(objectTypes, startRevision, WatchOptions.builder().build());
+  }
+
+  @Override
+  public Stream<SpiceDBClient.WatchEvent> updates(
+      List<String> objectTypes, ZedToken startRevision, WatchOptions options) {
+    return unimplementedStream(ClientOperation.WATCH, options, objectTypes, startRevision);
+  }
+
+  @Override
+  public void experimentalRegisterRelationshipCounter(String name, Filter filter) {
+    experimentalRegisterRelationshipCounter(name, filter, CallOptions.builder().build());
+  }
+
+  @Override
+  public void experimentalRegisterRelationshipCounter(
+      String name, Filter filter, CallOptions options) {
+    unimplemented(ClientOperation.REGISTER_RELATIONSHIP_COUNTER, options, name, filter);
+  }
+
+  @Override
+  public SpiceDBClient.CountResult experimentalCountRelationships(String name) {
+    return experimentalCountRelationships(name, CallOptions.builder().build());
+  }
+
+  @Override
+  public SpiceDBClient.CountResult experimentalCountRelationships(
+      String name, CallOptions options) {
+    return unimplemented(ClientOperation.COUNT_RELATIONSHIPS, options, name);
+  }
+
+  @Override
+  public void experimentalUnregisterRelationshipCounter(String name) {
+    experimentalUnregisterRelationshipCounter(name, CallOptions.builder().build());
+  }
+
+  @Override
+  public void experimentalUnregisterRelationshipCounter(String name, CallOptions options) {
+    unimplemented(ClientOperation.UNREGISTER_RELATIONSHIP_COUNTER, options, name);
+  }
+
+  @Override
+  public Materialize.RoaringLookupResourcesResult experimentalRoaringLookupResources(
+      Consistency consistency, String resourceType, String permission, SubjectRef subject) {
+    return experimentalRoaringLookupResources(
+        consistency, resourceType, permission, subject, LookupOptions.builder().build());
+  }
+
+  @Override
+  public Materialize.RoaringLookupResourcesResult experimentalRoaringLookupResources(
+      Consistency consistency,
+      String resourceType,
+      String permission,
+      SubjectRef subject,
+      LookupOptions options) {
+    return unimplementedWithRetry(
+        ClientOperation.ROARING_LOOKUP_RESOURCES,
+        options,
+        null,
+        consistency,
+        resourceType,
+        permission,
+        subject);
+  }
+
+  @Override
+  public SpiceDBClient.CountResult experimentalCountRelationshipsByFilter(Filter filter) {
+    return experimentalCountRelationshipsByFilter(filter, CallOptions.builder().build());
+  }
+
+  @Override
+  public SpiceDBClient.CountResult experimentalCountRelationshipsByFilter(
+      Filter filter, CallOptions options) {
+    return unimplemented(ClientOperation.COUNT_RELATIONSHIPS_BY_FILTER, options, filter);
+  }
+
+  @Override
+  public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
+      ZedToken startRevision) {
+    return experimentalWatchPermissionSets(startRevision, CallOptions.builder().build());
+  }
+
+  @Override
+  public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
+      ZedToken startRevision, CallOptions options) {
+    return unimplementedStream(ClientOperation.WATCH_PERMISSION_SETS, options, startRevision);
+  }
+
+  @Override
+  public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(
+      ZedToken atRevision) {
+    return experimentalLookupPermissionSets(atRevision, PermissionSetOptions.builder().build());
+  }
+
+  @Override
+  public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(
+      ZedToken atRevision, PermissionSetOptions options) {
+    return unimplementedStream(ClientOperation.LOOKUP_PERMISSION_SETS, options, atRevision);
+  }
+
+  @Override
+  public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
+      ZedToken atRevision) {
+    return experimentalDownloadPermissionSets(atRevision, CallOptions.builder().build());
+  }
+
+  @Override
+  public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
+      ZedToken atRevision, CallOptions options) {
+    return unimplemented(ClientOperation.DOWNLOAD_PERMISSION_SETS, options, atRevision);
   }
 }

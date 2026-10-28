@@ -1,18 +1,56 @@
 //! Canonical request-shaped operations. Every future and stream owns its transport handle.
 use super::*;
+use crate::options::{CallOptions, RetryEvent, RetryPolicy};
 use futures::StreamExt;
 use std::future::Future;
+use std::sync::Arc;
 use tokio::time::Instant;
 
-tokio::task_local! { static DEADLINE: Option<Instant>; }
-pub(super) fn remaining_timeout(fallback: Duration) -> Duration {
-    DEADLINE
-        .try_with(|d| {
-            d.map(|d| d.saturating_duration_since(Instant::now()))
-                .unwrap_or(fallback)
-        })
-        .unwrap_or(fallback)
+/// What one operation runs under: its total budget, transport escape hatch
+/// and the client's retry policy. Built when the operation is called; the
+/// deadline starts when execution begins.
+#[derive(Clone)]
+pub(crate) struct Plan {
+    timeout: Option<Duration>,
+    call: CallOptions,
+    retry: Option<Arc<RetryPolicy>>,
+    stream_retries: bool,
 }
+
+/// [`Plan`] with its deadline started, in scope for every RPC the operation
+/// makes, so retries, chunks and pages share one budget.
+#[derive(Clone)]
+struct Exec {
+    deadline: Option<Instant>,
+    call: CallOptions,
+    retry: Option<Arc<RetryPolicy>>,
+    stream_retries: bool,
+}
+
+tokio::task_local! { static EXEC: Exec; }
+
+impl Plan {
+    fn start(&self) -> Result<Exec, SpiceDBError> {
+        Ok(Exec {
+            deadline: deadline(self.timeout)?,
+            call: self.call.clone(),
+            retry: self.retry.clone(),
+            stream_retries: self.stream_retries,
+        })
+    }
+}
+
+impl SpiceDBClient {
+    pub(crate) fn plan(&self, timeout: Option<Duration>, call: &CallOptions) -> Plan {
+        Plan {
+            timeout,
+            call: call.clone(),
+            retry: self.retry.clone(),
+            stream_retries: self.stream_retries == crate::options::StreamRetryMode::Enabled,
+        }
+    }
+}
+
 fn deadline(timeout: Option<Duration>) -> Result<Option<Instant>, SpiceDBError> {
     timeout
         .map(|t| {
@@ -30,31 +68,32 @@ fn elapsed() -> SpiceDBError {
     SpiceDBError::DeadlineExceeded("total operation deadline exceeded".into())
 }
 async fn bounded<T>(
-    duration: Option<Duration>,
+    plan: Plan,
     future: impl Future<Output = Result<T, SpiceDBError>>,
 ) -> Result<T, SpiceDBError> {
-    let end = deadline(duration)?;
-    DEADLINE
-        .scope(end, async move {
-            match end {
-                Some(end) => tokio::time::timeout_at(end, future)
-                    .await
-                    .map_err(|_| elapsed())?,
-                None => future.await,
-            }
-        })
-        .await
+    let exec = plan.start()?;
+    let end = exec.deadline;
+    EXEC.scope(exec, async move {
+        match end {
+            Some(end) => tokio::time::timeout_at(end, future)
+                .await
+                .map_err(|_| elapsed())?,
+            None => future.await,
+        }
+    })
+    .await
 }
 fn stream_budget<T: Send + 'static>(
-    duration: Option<Duration>,
+    plan: Plan,
     stream: impl Stream<Item = Result<T, SpiceDBError>> + Send + 'static,
 ) -> impl Stream<Item = Result<T, SpiceDBError>> + Send {
     async_stream::try_stream! {
-        let end = deadline(duration)?;
+        let exec = plan.start()?;
+        let end = exec.deadline;
         futures::pin_mut!(stream);
         loop {
-            let next = DEADLINE
-                .scope(end, async {
+            let next = EXEC
+                .scope(exec.clone(), async {
                     match end {
                         Some(end) => tokio::time::timeout_at(end, stream.next())
                             .await
@@ -70,62 +109,189 @@ fn stream_budget<T: Send + 'static>(
         }
     }
 }
-fn wire<T>(value: T) -> tonic::Request<T> {
+
+/// Builds a request carrying the operation's remaining budget and the caller's
+/// request metadata.
+pub(super) fn wire<T>(value: T) -> tonic::Request<T> {
     let mut request = tonic::Request::new(value);
-    if let Ok(Some(end)) = DEADLINE.try_with(|d| *d) {
-        request.set_timeout(end.saturating_duration_since(Instant::now()));
-    }
+    let _ = EXEC.try_with(|exec| {
+        *request.metadata_mut() = exec.call.metadata.clone();
+        if let Some(end) = exec.deadline {
+            request.set_timeout(end.saturating_duration_since(Instant::now()));
+        }
+    });
     request
+}
+
+fn capture() -> Option<crate::options::ResponseMetadata> {
+    EXEC.try_with(|exec| exec.call.capture.clone())
+        .ok()
+        .flatten()
+}
+
+/// Records a response's metadata for [`CallOptions::with_response_metadata`].
+/// tonic merges unary trailers into the response metadata, so both slots get it.
+fn record_metadata(metadata: &tonic::metadata::MetadataMap, unary: bool) {
+    if let Some(c) = capture() {
+        c.set_headers(metadata);
+        if unary {
+            c.set_trailers(metadata);
+        }
+    }
+}
+
+/// Records a failed RPC's status metadata (headers and trailers) and maps it.
+pub(super) fn status_error(status: tonic::Status) -> SpiceDBError {
+    if let Some(c) = capture() {
+        c.set_headers(status.metadata());
+        c.set_trailers(status.metadata());
+    }
+    error::from_grpc_status(status)
+}
+
+/// Reads the next message of a server stream, recording its trailers when it
+/// ends.
+pub(super) async fn next_message<T>(
+    stream: &mut tonic::Streaming<T>,
+) -> Result<Option<T>, SpiceDBError> {
+    match stream.message().await {
+        Ok(Some(m)) => Ok(Some(m)),
+        Ok(None) => {
+            if let (Some(c), Ok(Some(trailers))) = (capture(), stream.trailers().await) {
+                c.set_trailers(&trailers);
+            }
+            Ok(None)
+        }
+        Err(status) => Err(status_error(status)),
+    }
+}
+
+/// One attempt, never replayed: mutations.
+pub(crate) async fn call_once<F, Fut, T>(f: F) -> Result<tonic::Response<T>, SpiceDBError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+{
+    attempt_loop(f, false, None).await
+}
+
+/// An idempotent unary read under the client's retry policy.
+pub(crate) async fn retry_call<F, Fut, T>(f: F) -> Result<tonic::Response<T>, SpiceDBError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+{
+    let policy = EXEC
+        .try_with(|e| e.retry.clone())
+        .unwrap_or_else(|_| Some(Arc::new(RetryPolicy::default())));
+    attempt_loop(f, true, policy).await
+}
+
+/// Opens a server stream (or fetches a page) under the retry policy, unless
+/// stream-establishment retries are disabled. Nothing has been exposed yet.
+pub(crate) async fn open_stream<F, Fut, T>(f: F) -> Result<tonic::Response<T>, SpiceDBError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+{
+    let policy = EXEC
+        .try_with(|e| e.retry.clone().filter(|_| e.stream_retries))
+        .unwrap_or_else(|_| Some(Arc::new(RetryPolicy::default())));
+    attempt_loop(f, false, policy).await
+}
+
+async fn attempt_loop<F, Fut, T>(
+    f: F,
+    unary: bool,
+    policy: Option<Arc<RetryPolicy>>,
+) -> Result<tonic::Response<T>, SpiceDBError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match f().await {
+            Ok(response) => {
+                record_metadata(response.metadata(), unary);
+                return Ok(response);
+            }
+            Err(status) => {
+                let err = status_error(status);
+                let Some(policy) = policy.as_ref() else {
+                    return Err(err);
+                };
+                if attempt >= policy.max_retries || !policy.retryable(err.code()) {
+                    return Err(err);
+                }
+                let delay = policy.delay(attempt);
+                attempt += 1;
+                if let Some(cb) = &policy.on_retry {
+                    cb.call(&RetryEvent {
+                        attempt,
+                        error: err,
+                        delay,
+                    });
+                }
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
 }
 
 impl SpiceDBClient {
     /// Checks one question with the singular CheckPermission RPC. Tracing is opt-in.
     pub async fn check(&self, request: PermissionCheck) -> Result<CheckResult, SpiceDBError> {
         let options = request.options.clone().unwrap_or_default();
-        bounded(Some(self.effective_timeout(options.timeout)), async {
-            request.validate()?;
-            let context = merge_check_context(options.context.as_ref(), request.context.as_ref());
-            if let Some(c) = &context {
-                validate_context(c)?;
-            }
-            let value = proto::CheckPermissionRequest {
-                consistency: Some(request.consistency.to_proto()),
-                resource: Some(request.resource.to_proto()),
-                permission: request.permission,
-                subject: Some(request.subject.to_proto()),
-                context: context.as_ref().map(check_context_to_proto),
-                with_tracing: options.tracing == TracingMode::Enabled,
-            };
-            let result = self
-                .retry(|| async {
-                    self.proto
-                        .permissions
-                        .clone()
-                        .check_permission(wire(value.clone()))
-                        .await
+        bounded(
+            self.plan(self.effective_timeout(options.timeout), &options.call),
+            async {
+                request.validate()?;
+                let context =
+                    merge_check_context(options.context.as_ref(), request.context.as_ref());
+                if let Some(c) = &context {
+                    validate_context(c)?;
+                }
+                let value = proto::CheckPermissionRequest {
+                    consistency: Some(request.consistency.to_proto()),
+                    resource: Some(request.resource.to_proto()),
+                    permission: request.permission,
+                    subject: Some(request.subject.to_proto()),
+                    context: context.as_ref().map(check_context_to_proto),
+                    with_tracing: options.tracing == TracingMode::Enabled,
+                };
+                let result = self
+                    .retry(|| async {
+                        self.proto
+                            .permissions
+                            .clone()
+                            .check_permission(wire(value.clone()))
+                            .await
+                    })
+                    .await?
+                    .into_inner();
+                Ok(CheckResult {
+                    permissionship: check_permissionship_from_proto(result.permissionship),
+                    missing_context: result
+                        .partial_caveat_info
+                        .map(|c| c.missing_required_context)
+                        .unwrap_or_default(),
+                    checked_at: result
+                        .checked_at
+                        .map(|t| t.token.into())
+                        .unwrap_or_default(),
+                    debug_trace: result
+                        .debug_trace
+                        .as_ref()
+                        .map(DebugInformation::from_proto),
+                    expiration: result
+                        .optional_expires_at
+                        .as_ref()
+                        .and_then(timestamp_from_proto),
+                    error: None,
                 })
-                .await?
-                .into_inner();
-            Ok(CheckResult {
-                permissionship: check_permissionship_from_proto(result.permissionship),
-                missing_context: result
-                    .partial_caveat_info
-                    .map(|c| c.missing_required_context)
-                    .unwrap_or_default(),
-                checked_at: result
-                    .checked_at
-                    .map(|t| t.token.into())
-                    .unwrap_or_default(),
-                debug_trace: result
-                    .debug_trace
-                    .as_ref()
-                    .map(DebugInformation::from_proto),
-                expiration: result
-                    .optional_expires_at
-                    .as_ref()
-                    .and_then(timestamp_from_proto),
-            })
-        })
+            },
+        )
         .await
     }
     /// Checks ordered questions in chunks of at most 1,000 under one total budget.
@@ -134,7 +300,10 @@ impl SpiceDBClient {
         request: BulkCheckRequest,
     ) -> Result<Vec<CheckResult>, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 if let Some(c) = &request.options.context {
                     validate_context(c)?;
@@ -216,9 +385,22 @@ impl SpiceDBClient {
                                     status.message.clone(),
                                     prost::Message::encode_to_vec(status).into(),
                                 ));
-                                return Err(SpiceDBError::BulkItem {
+                                let error = SpiceDBError::BulkItem {
                                     index,
                                     source: Box::new(cause),
+                                };
+                                if request.options.item_errors
+                                    != crate::options::BulkItemErrors::Returned
+                                {
+                                    return Err(error);
+                                }
+                                results.push(CheckResult {
+                                    permissionship: Permissionship::Unspecified,
+                                    missing_context: Vec::new(),
+                                    checked_at: revision.clone().into(),
+                                    debug_trace: None,
+                                    expiration: None,
+                                    error: Some(error),
                                 });
                             }
                             None => {
@@ -237,7 +419,10 @@ impl SpiceDBClient {
     /// Commits exactly one transaction, never replaying ambiguous mutations.
     pub async fn write(&self, request: WriteRequest) -> Result<WriteResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 for (_, relationship) in request.transaction.updates() {
                     relationship.validate()?;
@@ -248,7 +433,6 @@ impl SpiceDBClient {
                 let revision = self
                     .write_impl(
                         &request.transaction,
-                        request.options.timeout,
                         request.options.transaction_metadata.as_ref(),
                     )
                     .await?;
@@ -264,10 +448,12 @@ impl SpiceDBClient {
         request: ReadSchemaRequest,
     ) -> Result<ReadSchemaResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
-                let (schema_text, revision) =
-                    self.read_schema_impl(request.options.timeout).await?;
+                let (schema_text, revision) = self.read_schema_impl().await?;
                 Ok(ReadSchemaResult {
                     schema_text,
                     revision: revision.into(),
@@ -281,13 +467,13 @@ impl SpiceDBClient {
         request: WriteSchemaRequest,
     ) -> Result<WriteSchemaResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 Ok(WriteSchemaResult {
-                    revision: self
-                        .write_schema_impl(&request.schema, request.options.timeout)
-                        .await?
-                        .into(),
+                    revision: self.write_schema_impl(&request.schema).await?.into(),
                 })
             },
         )
@@ -298,15 +484,14 @@ impl SpiceDBClient {
         request: ReflectSchemaRequest,
     ) -> Result<ReflectSchemaResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 request.consistency.validate()?;
-                self.reflect_schema_impl(
-                    &request.consistency,
-                    request.options.timeout,
-                    &request.options.filters,
-                )
-                .await
+                self.reflect_schema_impl(&request.consistency, &request.options.filters)
+                    .await
             },
         )
         .await
@@ -316,7 +501,10 @@ impl SpiceDBClient {
         request: ComputablePermissionsRequest,
     ) -> Result<ComputablePermissionsResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 request.consistency.validate()?;
                 required("definition_name", &request.definition_name)?;
@@ -326,7 +514,6 @@ impl SpiceDBClient {
                         &request.consistency,
                         &request.definition_name,
                         &request.relation_name,
-                        request.options.timeout,
                         request.options.definition_name_filter.as_deref(),
                     )
                     .await?;
@@ -343,7 +530,10 @@ impl SpiceDBClient {
         request: DependentRelationsRequest,
     ) -> Result<DependentRelationsResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 request.consistency.validate()?;
                 required("definition_name", &request.definition_name)?;
@@ -353,7 +543,6 @@ impl SpiceDBClient {
                         &request.consistency,
                         &request.definition_name,
                         &request.permission_name,
-                        request.options.timeout,
                     )
                     .await?;
                 Ok(DependentRelationsResult {
@@ -369,15 +558,14 @@ impl SpiceDBClient {
         request: DiffSchemaRequest,
     ) -> Result<DiffSchemaResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 request.consistency.validate()?;
                 let (diffs, revision) = self
-                    .diff_schema_impl(
-                        &request.consistency,
-                        &request.comparison_schema,
-                        request.options.timeout,
-                    )
+                    .diff_schema_impl(&request.consistency, &request.comparison_schema)
                     .await?;
                 Ok(DiffSchemaResult {
                     diffs,
@@ -392,7 +580,10 @@ impl SpiceDBClient {
         request: ExpandPermissionTreeRequest,
     ) -> Result<ExpandPermissionTreeResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 request.consistency.validate()?;
                 required("permission", &request.permission)?;
@@ -401,7 +592,6 @@ impl SpiceDBClient {
                     request.resource.object_type(),
                     request.resource.object_id(),
                     &request.permission,
-                    request.options.timeout,
                 )
                 .await
             },
@@ -414,13 +604,15 @@ impl SpiceDBClient {
         request: ExperimentalRegisterRelationshipCounterRequest,
     ) -> Result<ExperimentalRegisterRelationshipCounterResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 required("name", &request.name)?;
                 self.experimental_register_relationship_counter_impl(
                     &request.name,
                     &request.filter,
-                    request.options.timeout,
                 )
                 .await?;
                 Ok(ExperimentalRegisterRelationshipCounterResult {})
@@ -434,10 +626,13 @@ impl SpiceDBClient {
         request: ExperimentalCountRelationshipsRequest,
     ) -> Result<ExperimentalCountRelationshipsResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 required("name", &request.name)?;
-                self.experimental_count_relationships_impl(&request.name, request.options.timeout)
+                self.experimental_count_relationships_impl(&request.name)
                     .await
             },
         )
@@ -449,14 +644,14 @@ impl SpiceDBClient {
         request: ExperimentalUnregisterRelationshipCounterRequest,
     ) -> Result<ExperimentalUnregisterRelationshipCounterResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 required("name", &request.name)?;
-                self.experimental_unregister_relationship_counter_impl(
-                    &request.name,
-                    request.options.timeout,
-                )
-                .await?;
+                self.experimental_unregister_relationship_counter_impl(&request.name)
+                    .await?;
                 Ok(ExperimentalUnregisterRelationshipCounterResult {})
             },
         )
@@ -468,7 +663,10 @@ impl SpiceDBClient {
         request: ExperimentalRoaringLookupResourcesRequest,
     ) -> Result<ExperimentalRoaringLookupResourcesResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 request.consistency.validate()?;
                 required("resource_type", &request.resource_type)?;
@@ -478,7 +676,6 @@ impl SpiceDBClient {
                     &request.resource_type,
                     &request.permission,
                     &request.subject,
-                    request.options.timeout,
                 )
                 .await
             },
@@ -491,14 +688,29 @@ impl SpiceDBClient {
         request: DeleteRequest,
     ) -> Result<DeleteResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
-            self.delete_page(
-                &request.filter,
-                request.limit.get(),
-                &request.options.preconditions,
-                request.options.cursor.as_deref(),
-                request.options.transaction_metadata.as_ref(),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
             ),
+            async {
+                let allow_partial =
+                    request.options.partial != crate::options::DeletePartial::Disallowed;
+                if allow_partial && request.limit.is_none() {
+                    return Err(invalid(
+                        "limit",
+                        "a positive limit is required unless partial deletion is disallowed",
+                    ));
+                }
+                self.delete_page(
+                    &request.filter,
+                    request.limit.map_or(0, |l| l.get()),
+                    allow_partial,
+                    &request.options.preconditions,
+                    request.options.cursor.as_deref(),
+                    request.options.transaction_metadata.as_ref(),
+                )
+                .await
+            },
         )
         .await
     }
@@ -512,7 +724,10 @@ impl SpiceDBClient {
     ) -> Result<DeleteResult, SpiceDBError> {
         let mut progress: Option<DeleteResult> = None;
         let result = bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 let mut cursor = request.options.cursor.clone();
                 loop {
@@ -520,6 +735,7 @@ impl SpiceDBClient {
                         .delete_page(
                             &request.filter,
                             request.options.page_size.get(),
+                            true,
                             &request.options.preconditions,
                             cursor.as_deref(),
                             request.options.transaction_metadata.as_ref(),
@@ -529,6 +745,9 @@ impl SpiceDBClient {
                     page.deleted_count += progress.as_ref().map_or(0, |p| p.deleted_count);
                     cursor = page.cursor.clone().filter(|token| !token.is_empty());
                     progress = Some(page.clone());
+                    if let Some(callback) = &request.options.progress {
+                        callback.call(&page);
+                    }
                     if page.complete {
                         return Ok(page);
                     }
@@ -566,6 +785,7 @@ impl SpiceDBClient {
         &self,
         filter: &Filter,
         limit: u32,
+        allow_partial: bool,
         preconditions: &[Precondition],
         cursor: Option<&str>,
         metadata: Option<&Context>,
@@ -576,21 +796,22 @@ impl SpiceDBClient {
         let request = proto::DeleteRelationshipsRequest {
             relationship_filter: Some(filter.to_proto()?),
             optional_limit: limit,
-            optional_allow_partial_deletions: true,
+            optional_allow_partial_deletions: allow_partial,
             optional_preconditions: preconditions_to_proto(preconditions)?,
             optional_transaction_metadata: metadata.map(check_context_to_proto),
             optional_cursor: cursor
                 .filter(|s| !s.is_empty())
                 .map(|s| proto::Cursor { token: s.into() }),
         };
-        let response = self
-            .proto
-            .permissions
-            .clone()
-            .delete_relationships(wire(request))
-            .await
-            .map_err(error::from_grpc_status)?
-            .into_inner();
+        let response = call_once(|| async {
+            self.proto
+                .permissions
+                .clone()
+                .delete_relationships(wire(request.clone()))
+                .await
+        })
+        .await?
+        .into_inner();
         let wire_progress = response.deletion_progress;
         let progress = DeleteResult {
             revision: response
@@ -623,29 +844,38 @@ impl SpiceDBClient {
 }
 
 impl SpiceDBClient {
-    /// Dropping the returned stream immediately releases its RPC and pending pagination.
+    /// Reads matching relationships, paging internally. Each item carries its
+    /// after-result cursor and its response's read-at revision.
+    ///
+    /// Every page repeats the caller's consistency and page size: SpiceDB
+    /// hashes both into each cursor and rejects a cursor sent with different
+    /// arguments, and the cursor itself pins later pages to the first page's
+    /// revision. A total limit is enforced client-side. To resume, repeat the
+    /// same request and page size with `with_cursor(item.after_result_cursor)`.
+    /// Dropping the returned stream immediately releases its RPC and pending
+    /// pagination.
     pub fn read_relationships(
         &self,
         request: ReadRelationshipsRequest,
-    ) -> impl Stream<Item = Result<Relationship, SpiceDBError>> + Send + 'static {
+    ) -> impl Stream<Item = Result<ReadRelationship, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
         stream_budget(
-            request.options.timeout,
+            self.plan(request.options.timeout, &request.options.call),
             async_stream::try_stream! {
                 request.consistency.validate()?;
                 let filter = request.filter.to_proto()?;
-                let mut consistency = request.consistency.to_proto();
+                let consistency = request.consistency.to_proto();
+                let page_size = request.options.page_size.get();
                 let mut cursor = request.options.cursor.map(|token| proto::Cursor { token });
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
-                    let limit = request.options.page_size.get().min(remaining);
-                    let response = retry_call(|| async {
+                    let response = open_stream(|| async {
                         permissions
                             .clone()
                             .read_relationships(wire(proto::ReadRelationshipsRequest {
                                 consistency: Some(consistency.clone()),
                                 relationship_filter: Some(filter.clone()),
-                                optional_limit: limit,
+                                optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
                             }))
                             .await
@@ -653,21 +883,22 @@ impl SpiceDBClient {
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = stream.message().await.map_err(error::from_grpc_status)? {
-                        if let Some(t) = response.read_at {
-                            consistency = crate::consistency::snapshot(t.token.into()).to_proto();
-                        }
-                        cursor = response.after_result_cursor;
+                    while let Some(response) = next_message(&mut stream).await? {
+                        cursor = response.after_result_cursor.clone();
                         count += 1;
-                        remaining -= 1;
                         if let Some(r) = response.relationship {
-                            yield Relationship::from_proto(&r);
-                        }
-                        if remaining == 0 {
-                            break;
+                            remaining -= 1;
+                            yield ReadRelationship {
+                                relationship: Relationship::from_proto(&r),
+                                after_result_cursor: response.after_result_cursor.map(|c| c.token),
+                                read_at: response.read_at.map(|t| t.token.into()).unwrap_or_default(),
+                            };
+                            if remaining == 0 {
+                                break;
+                            }
                         }
                     }
-                    if count < limit {
+                    if remaining == 0 || count < page_size {
                         break;
                     }
                     if cursor.is_none() {
@@ -679,13 +910,16 @@ impl SpiceDBClient {
             },
         )
     }
+    /// Looks up resources, paging internally with the caller's consistency and
+    /// page size on every page (see [`read_relationships`](Self::read_relationships)).
+    /// Each item carries its after-result cursor and looked-up-at revision.
     pub fn lookup_resources(
         &self,
         request: LookupResourcesRequest,
     ) -> impl Stream<Item = Result<LookupResource, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
         stream_budget(
-            request.options.timeout,
+            self.plan(request.options.timeout, &request.options.call),
             async_stream::try_stream! {
                 request.consistency.validate()?;
                 required("resource_type", &request.resource_type)?;
@@ -693,13 +927,13 @@ impl SpiceDBClient {
                 if let Some(c) = &request.options.context {
                     validate_context(c)?;
                 }
-                let mut consistency = request.consistency.to_proto();
+                let consistency = request.consistency.to_proto();
+                let page_size = request.options.page_size.get();
                 let mut cursor = request.options.cursor.map(|token| proto::Cursor { token });
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
                     let previous_cursor = cursor.clone();
-                    let limit = request.options.page_size.get().min(remaining);
-                    let response = retry_call(|| async {
+                    let response = open_stream(|| async {
                         permissions
                             .clone()
                             .lookup_resources(wire(proto::LookupResourcesRequest {
@@ -709,7 +943,7 @@ impl SpiceDBClient {
                                 subject: Some(request.subject.to_proto()),
                                 context: request.options.context.as_ref().map(check_context_to_proto),
                                 with_debug: request.options.debug == DebugMode::Enabled,
-                                optional_limit: limit,
+                                optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
                             }))
                             .await
@@ -717,13 +951,12 @@ impl SpiceDBClient {
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = stream.message().await.map_err(error::from_grpc_status)? {
+                    while let Some(response) = next_message(&mut stream).await? {
                         let revision: ZedToken = response
                             .looked_up_at
                             .map(|t| t.token.into())
                             .unwrap_or_default();
-                        consistency = crate::consistency::snapshot(revision.clone()).to_proto();
-                        cursor = response.after_result_cursor;
+                        cursor = response.after_result_cursor.clone();
                         count += 1;
                         if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
                             && response.permissionship != proto::LookupPermissionship::HasPermission as i32 {
@@ -735,12 +968,13 @@ impl SpiceDBClient {
                             permissionship: permissionship_from_proto(response.permissionship),
                             partial_caveat: partial_caveat_from_proto(response.partial_caveat_info.as_ref()),
                             looked_up_at: revision,
+                            after_result_cursor: response.after_result_cursor.map(|c| c.token),
                         };
                         if remaining == 0 {
                             break;
                         }
                     }
-                    if remaining == 0 || count < limit {
+                    if remaining == 0 || count < page_size {
                         break;
                     }
                     if cursor.as_ref().is_none_or(|c| c.token.is_empty()) || cursor == previous_cursor {
@@ -758,7 +992,7 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
         stream_budget(
-            request.options.timeout,
+            self.plan(request.options.timeout, &request.options.call),
             async_stream::try_stream! {
                 request.consistency.validate()?;
                 required("permission", &request.permission)?;
@@ -772,7 +1006,7 @@ impl SpiceDBClient {
                         Err(invalid("subject_relation", "use absence for direct"))?;
                     }
                 }
-                let response = retry_call(|| async {
+                let response = open_stream(|| async {
                     permissions
                         .clone()
                         .lookup_subjects(wire(proto::LookupSubjectsRequest {
@@ -797,7 +1031,7 @@ impl SpiceDBClient {
                 })
                 .await?;
                 let mut stream = response.into_inner();
-                while let Some(response) = stream.message().await.map_err(error::from_grpc_status)? {
+                while let Some(response) = next_message(&mut stream).await? {
                     let mut subject = resolved_subject_from_proto(response.subject.as_ref());
                     #[allow(deprecated)]
                     if response.subject.is_none() {
@@ -836,27 +1070,32 @@ impl SpiceDBClient {
             },
         )
     }
+    /// Exports relationships, paging with the caller's consistency and page
+    /// size on every page. Each item carries its response's after-result
+    /// cursor (shared by every item of that response; exports report no
+    /// per-response revision). Resume by repeating the request and page size
+    /// with `with_cursor`.
     pub fn export_relationships(
         &self,
         request: ExportRelationshipsRequest,
-    ) -> impl Stream<Item = Result<Relationship, SpiceDBError>> + Send + 'static {
+    ) -> impl Stream<Item = Result<ExportedRelationship, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
         stream_budget(
-            request.options.timeout,
+            self.plan(request.options.timeout, &request.options.call),
             async_stream::try_stream! {
                 request.consistency.validate()?;
                 let filter = request.options.filter.map(|f| f.to_proto()).transpose()?;
                 let consistency = request.consistency.to_proto();
+                let page_size = request.options.page_size.get();
                 let mut cursor = request.options.cursor.map(|token| proto::Cursor { token });
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
-                    let limit = request.options.page_size.get().min(remaining);
-                    let response = retry_call(|| async {
+                    let response = open_stream(|| async {
                         permissions
                             .clone()
                             .export_bulk_relationships(wire(proto::ExportBulkRelationshipsRequest {
                                 consistency: Some(consistency.clone()),
-                                optional_limit: limit,
+                                optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
                                 optional_relationship_filter: filter.clone(),
                             }))
@@ -865,12 +1104,16 @@ impl SpiceDBClient {
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = stream.message().await.map_err(error::from_grpc_status)? {
-                        cursor = response.after_result_cursor;
+                    while let Some(response) = next_message(&mut stream).await? {
+                        cursor = response.after_result_cursor.clone();
+                        let after = response.after_result_cursor.map(|c| c.token);
                         for relationship in response.relationships {
                             count += 1;
                             remaining -= 1;
-                            yield Relationship::from_proto(&relationship);
+                            yield ExportedRelationship {
+                                relationship: Relationship::from_proto(&relationship),
+                                after_result_cursor: after.clone(),
+                            };
                             if remaining == 0 {
                                 break;
                             }
@@ -879,7 +1122,7 @@ impl SpiceDBClient {
                             break;
                         }
                     }
-                    if count < limit {
+                    if remaining == 0 || count < page_size {
                         break;
                     }
                     if cursor.is_none() {
@@ -898,7 +1141,7 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>> + Send + 'static {
         let watch = self.proto.watch.clone();
         stream_budget(
-            request.options.timeout,
+            self.plan(request.options.timeout, &request.options.call),
             async_stream::try_stream! {
                 if !request.object_types.is_empty() && !request.options.filters.is_empty() {
                     Err(invalid(
@@ -930,10 +1173,10 @@ impl SpiceDBClient {
                         kinds
                     },
                 };
-                let mut stream = retry_call(|| async { watch.clone().watch(wire(request.clone())).await })
+                let mut stream = open_stream(|| async { watch.clone().watch(wire(request.clone())).await })
                     .await?
                     .into_inner();
-                while let Some(response) = stream.message().await.map_err(error::from_grpc_status)? {
+                while let Some(response) = next_message(&mut stream).await? {
                     let updates = response
                         .updates
                         .iter()
@@ -971,20 +1214,25 @@ impl SpiceDBClient {
             },
         )
     }
-    /// Backpressured upload in batches of 1,000. No detached producer or mutation retry.
+    /// Backpressured upload in batches of 1,000 relationships per message
+    /// (configurable with `ImportRelationshipsOptions::with_batch_size`). One
+    /// call is one stream and one transaction. When the server aborts the
+    /// stream (for example `AlreadyExists` for a duplicate), the server's
+    /// final status is returned. No detached producer or mutation retry.
     pub async fn import_relationships(
         &self,
         request: ImportRelationshipsRequest,
     ) -> Result<ImportRelationshipsResult, SpiceDBError> {
-        bounded(request.options.timeout,async{
+        bounded(self.plan(request.options.timeout, &request.options.call), async {
             let failure=std::sync::Arc::new(std::sync::Mutex::new(None));let producer_failure=failure.clone();
             let failed=std::sync::Arc::new(tokio::sync::Notify::new());let producer_failed=failed.clone();
             let source=request.relationships;
+            let batch_size=request.options.batch_size.map_or(DEFAULT_IMPORT_BATCH_SIZE, |n| n.get()) as usize;
             let upload=async_stream::stream!{
                 futures::pin_mut!(source);
                 loop {
-                    let mut relationships = Vec::with_capacity(DEFAULT_IMPORT_BATCH_SIZE);
-                    while relationships.len() < DEFAULT_IMPORT_BATCH_SIZE {
+                    let mut relationships = Vec::with_capacity(batch_size);
+                    while relationships.len() < batch_size {
                         match source.next().await {
                             Some(Ok(r)) => match r.validate() {
                                 Ok(()) => relationships.push(r.to_proto()),
@@ -1013,7 +1261,9 @@ impl SpiceDBClient {
             let mut service=self.proto.permissions.clone();
             let response=tokio::select!{ biased; _=failed.notified()=>return Err(failure.lock().unwrap().take().expect("producer notified failure")), response=service.import_bulk_relationships(wire(upload))=>response };
             if let Some(error)=failure.lock().unwrap().take(){return Err(error);}
-            Ok(ImportRelationshipsResult{imported_count:response.map_err(error::from_grpc_status)?.into_inner().num_loaded})
+            let response = response.map_err(status_error)?;
+            record_metadata(response.metadata(), true);
+            Ok(ImportRelationshipsResult{imported_count:response.into_inner().num_loaded})
         }).await
     }
 }
@@ -1085,7 +1335,10 @@ impl SpiceDBClient {
         request: ExperimentalCountRelationshipsByFilterRequest,
     ) -> Result<ExperimentalCountRelationshipsByFilterResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 let filter = request.filter.to_proto()?;
                 let response = self
@@ -1117,11 +1370,11 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<PermissionSetEvent, SpiceDBError>> + Send + 'static {
         let service = self.proto.permission_sets.clone();
         stream_budget(
-            request.options.timeout,
+            self.plan(request.options.timeout, &request.options.call),
             async_stream::try_stream! {
                 let value=materialize_proto::WatchPermissionSetsRequest{optional_starting_after:request.options.start_revision.map(|t|t.to_proto())};
-                let mut stream=retry_call(||async{service.clone().watch_permission_sets(wire(value.clone())).await}).await?.into_inner();
-                while let Some(response) = stream.message().await.map_err(error::from_grpc_status)? {
+                let mut stream=open_stream(||async{service.clone().watch_permission_sets(wire(value.clone())).await}).await?.into_inner();
+                while let Some(response) = next_message(&mut stream).await? {
                     use materialize_proto::watch_permission_sets_response::Response;
                     yield match response.response {
                         Some(Response::Change(c)) => PermissionSetEvent::Change(set_change(c)),
@@ -1164,14 +1417,14 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<LookupPermissionSetsResult, SpiceDBError>> + Send + 'static {
         let service = self.proto.permission_sets.clone();
         stream_budget(
-            request.options.timeout,
+            self.plan(request.options.timeout, &request.options.call),
             async_stream::try_stream! {
                 let value = materialize_proto::LookupPermissionSetsRequest {
                     limit: request.limit.get(),
                     optional_at_revision: request.options.at_revision.map(|t| t.to_proto()),
                     optional_starting_after_cursor: request.options.cursor.map(|c| c.to_proto()),
                 };
-                let mut stream = retry_call(|| async {
+                let mut stream = open_stream(|| async {
                     service
                         .clone()
                         .lookup_permission_sets(wire(value.clone()))
@@ -1179,7 +1432,7 @@ impl SpiceDBClient {
                 })
                 .await?
                 .into_inner();
-                while let Some(response) = stream.message().await.map_err(error::from_grpc_status)? {
+                while let Some(response) = next_message(&mut stream).await? {
                     yield LookupPermissionSetsResult {
                         change: response.change.map(set_change),
                         cursor: response.cursor.map(PermissionSetCursor::from_proto),
@@ -1194,7 +1447,10 @@ impl SpiceDBClient {
         request: DownloadPermissionSetsRequest,
     ) -> Result<DownloadPermissionSetsResult, SpiceDBError> {
         bounded(
-            Some(self.effective_timeout(request.options.timeout)),
+            self.plan(
+                self.effective_timeout(request.options.timeout),
+                &request.options.call,
+            ),
             async {
                 let value = materialize_proto::DownloadPermissionSetsRequest {
                     optional_at_revision: request.options.at_revision.map(|t| t.to_proto()),

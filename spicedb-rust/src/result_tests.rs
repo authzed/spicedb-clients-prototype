@@ -7,6 +7,7 @@ fn test_check_result_must_use() {
         checked_at: "rev-1".into(),
         debug_trace: None,
         expiration: None,
+        error: None,
     };
     assert!(result.has_permission());
 }
@@ -19,6 +20,7 @@ fn test_check_result_conditional_is_not_has_permission() {
         checked_at: "rev-1".into(),
         debug_trace: None,
         expiration: None,
+        error: None,
     };
     assert!(!result.has_permission());
     assert_eq!(result.missing_context, vec!["now".to_string()]);

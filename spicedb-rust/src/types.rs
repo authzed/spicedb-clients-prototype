@@ -11,6 +11,9 @@ use spicedb_proto::authzed::api::v1 as proto;
 
 use crate::error::SpiceDBError;
 
+#[path = "observe.rs"]
+mod observe;
+
 /// Native JSON context. Requests own every nested value.
 pub type Context = HashMap<String, serde_json::Value>;
 
@@ -20,6 +23,7 @@ pub type Context = HashMap<String, serde_json::Value>;
 /// ```compile_fail
 /// spicedb::consistency::at_least("plain string");
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct ZedToken(String);
@@ -59,6 +63,7 @@ impl ZedToken {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Relationship {
@@ -66,6 +71,7 @@ pub struct Relationship {
     relation: String,
     subject: SubjectRef,
     caveat_name: String,
+    #[cfg_attr(feature = "serde", serde(skip))]
     caveat_specified: bool,
     caveat_context: Option<Context>,
     expiration: Option<DateTime<Utc>>,
@@ -87,26 +93,6 @@ impl Relationship {
             caveat_context: None,
             expiration: None,
         })
-    }
-    pub fn from_tuple(tuple: &str) -> Result<Self, SpiceDBError> {
-        let invalid = || {
-            invalid(
-                "tuple",
-                "expected resource:type#relation@subject:id[#relation]",
-            )
-        };
-        let (resource, subject) = tuple.split_once('@').ok_or_else(invalid)?;
-        let (resource, relation) = resource.split_once('#').ok_or_else(invalid)?;
-        let (rt, rid) = resource.split_once(':').ok_or_else(invalid)?;
-        let (subject, sr) = subject
-            .split_once('#')
-            .map_or((subject, None), |(s, r)| (s, Some(r.to_owned())));
-        let (st, sid) = subject.split_once(':').ok_or_else(invalid)?;
-        Self::new(
-            ObjectRef::new(rt, rid)?,
-            relation,
-            SubjectRef::new(ObjectRef::new(st, sid)?, sr)?,
-        )
     }
     pub fn resource(&self) -> &ObjectRef {
         &self.resource
@@ -201,24 +187,6 @@ impl Relationship {
         }
     }
 }
-impl fmt::Display for Relationship {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:{}#{}@{}:{}",
-            self.resource.object_type,
-            self.resource.object_id,
-            self.relation,
-            self.subject.object.object_type,
-            self.subject.object.object_id
-        )?;
-        if let Some(r) = &self.subject.relation {
-            write!(f, "#{}", r)?;
-        }
-        Ok(())
-    }
-}
-
 pub(crate) fn invalid(field: &str, reason: &str) -> SpiceDBError {
     SpiceDBError::InvalidArgument(format!("{field}: {reason}").into())
 }
@@ -274,6 +242,7 @@ pub(crate) fn timestamp_from_proto(t: &prost_types::Timestamp) -> Option<DateTim
         .and_then(|n| DateTime::from_timestamp(t.seconds, n))
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SubjectRelationFilter {
@@ -282,6 +251,7 @@ pub enum SubjectRelationFilter {
     Named(String),
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Filter {
@@ -444,6 +414,7 @@ impl Filter {
 }
 
 /// The type of mutation in a relationship update.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UpdateOperation {
@@ -469,6 +440,7 @@ pub enum UpdateOperation {
 
 /// A relationship mutation (create, touch, or delete) as received from the
 /// watch API.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Update {
@@ -515,6 +487,7 @@ pub struct WatchEvent {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WatchOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) filters: Vec<Filter>,
     /// Resume from this revision instead of from head. Pass a
@@ -531,6 +504,12 @@ pub struct WatchOptions {
 }
 
 impl WatchOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn with_content(mut self, content: WatchContent) -> Self {
         self.content = content;
         self
@@ -568,6 +547,7 @@ impl WatchOptions {
 ///
 /// Transactions take `&Relationship` (borrow) rather than moving the
 /// relationship, so callers can reuse relationship values.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Transaction {
@@ -576,6 +556,7 @@ pub struct Transaction {
 }
 
 /// A precondition that must hold for a write transaction to succeed.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Precondition {
@@ -584,6 +565,7 @@ pub struct Precondition {
 }
 
 /// The type of precondition check.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PreconditionOperation {
@@ -729,6 +711,7 @@ pub struct RelationReference {
 }
 
 /// A single difference between two schemas.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ObjectRef {
@@ -771,6 +754,7 @@ impl ObjectRef {
         })
     }
 }
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SubjectRef {
@@ -939,8 +923,9 @@ pub enum Permissionship {
     ConditionalPermission,
 }
 
+/// Equality compares the error, when present, by code and display text.
 #[must_use]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CheckResult {
     /// The server's answer for this check.
@@ -953,7 +938,24 @@ pub struct CheckResult {
     pub checked_at: ZedToken,
     pub debug_trace: Option<DebugInformation>,
     pub expiration: Option<DateTime<Utc>>,
+    /// Set only by `check_bulk` with `BulkItemErrors::Returned`: this item's
+    /// failure as [`SpiceDBError::BulkItem`] with its absolute input index.
+    /// An errored item's permissionship is `Unspecified`, so it never grants.
+    pub error: Option<SpiceDBError>,
 }
+
+impl PartialEq for CheckResult {
+    fn eq(&self, other: &Self) -> bool {
+        let error_key = |e: &Option<SpiceDBError>| e.as_ref().map(|e| (e.code(), e.to_string()));
+        self.permissionship == other.permissionship
+            && self.missing_context == other.missing_context
+            && self.checked_at == other.checked_at
+            && self.debug_trace == other.debug_trace
+            && self.expiration == other.expiration
+            && error_key(&self.error) == error_key(&other.error)
+    }
+}
+impl Eq for CheckResult {}
 
 impl CheckResult {
     /// Returns `true` only when the permission was granted outright.
@@ -962,7 +964,7 @@ impl CheckResult {
     /// could not evaluate the caveat, so treating it as a grant would
     /// authorize on an unevaluated condition.
     pub fn has_permission(&self) -> bool {
-        self.permissionship == Permissionship::HasPermission
+        self.error.is_none() && self.permissionship == Permissionship::HasPermission
     }
 }
 
@@ -981,10 +983,48 @@ pub struct LookupResource {
     pub permissionship: Permissionship,
     /// Non-`None` when `permissionship` is `ConditionalPermission`.
     pub partial_caveat: Option<PartialCaveatInfo>,
-    /// The revision (ZedToken) this result was computed at. Identical for
-    /// every item yielded by a single `lookup_resources` call — it's a
-    /// property of the call, not of the individual resource.
+    /// The revision (ZedToken) this result was computed at. Every page is
+    /// pinned to the first page's revision by its cursor.
     pub looked_up_at: ZedToken,
+    /// Resumes the lookup after this item: repeat the request and page size
+    /// with `LookupResourcesOptions::with_cursor`.
+    pub after_result_cursor: Option<String>,
+}
+
+/// One relationship from `read_relationships`, with its paging state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReadRelationship {
+    pub relationship: Relationship,
+    /// Resumes the read after this item: repeat the request and page size
+    /// with `ReadRelationshipsOptions::with_cursor`. A pagination cursor, not
+    /// a revision.
+    pub after_result_cursor: Option<String>,
+    /// The revision this item's response was read at.
+    pub read_at: ZedToken,
+}
+
+impl ReadRelationship {
+    pub fn into_relationship(self) -> Relationship {
+        self.relationship
+    }
+}
+
+/// One relationship from `export_relationships`, with its paging state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExportedRelationship {
+    pub relationship: Relationship,
+    /// Resumes the export after this item's response (every item of one
+    /// response shares it): repeat the request and page size with
+    /// `ExportRelationshipsOptions::with_cursor`.
+    pub after_result_cursor: Option<String>,
+}
+
+impl ExportedRelationship {
+    pub fn into_relationship(self) -> Relationship {
+        self.relationship
+    }
 }
 
 /// A subject resolved by `lookup_subjects` — either the matched subject, or
@@ -1073,6 +1113,7 @@ pub(crate) fn check_result_from_bulk_item(
         checked_at: checked_at.into(),
         debug_trace: item.debug_trace.as_ref().map(DebugInformation::from_proto),
         expiration: None,
+        error: None,
     }
 }
 
@@ -1176,6 +1217,12 @@ fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
     match &v.kind {
         Some(Kind::NullValue(_)) => serde_json::Value::Null,
         Some(Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+        // Protobuf numbers are doubles. An integral value within the exactly
+        // representable range comes back as a JSON integer, as protojson and
+        // SpiceDB's tuple formatter print it (`5`, not `5.0`).
+        Some(Kind::NumberValue(n)) if n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_992.0 => {
+            serde_json::Value::Number((*n as i64).into())
+        }
         Some(Kind::NumberValue(n)) => serde_json::Number::from_f64(*n)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
@@ -1247,6 +1294,7 @@ pub enum RemoteCredentialsPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CheckOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) tracing: TracingMode,
     /// Call-level caveat context, applied to every relationship the call
     /// evaluates and merged key-by-key with each relationship's own context,
@@ -1256,9 +1304,23 @@ pub struct CheckOptions {
     /// that default rather than removing the bound — see root DESIGN.md,
     /// "RULE: A unary call must have a deadline".
     pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) item_errors: crate::options::BulkItemErrors,
 }
 
 impl CheckOptions {
+    /// How `check_bulk` reports per-item failures: fail the call on the first
+    /// (default) or return every item with errors on [`CheckResult::error`].
+    /// Singular `check` has no items and ignores it.
+    pub fn with_bulk_item_errors(mut self, mode: crate::options::BulkItemErrors) -> Self {
+        self.item_errors = mode;
+        self
+    }
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn with_tracing(mut self, tracing: TracingMode) -> Self {
         self.tracing = tracing;
         self
@@ -1483,10 +1545,17 @@ impl BulkCheckRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct WriteOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) transaction_metadata: Option<Context>,
 }
 impl WriteOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1520,6 +1589,7 @@ impl WriteRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ReadRelationshipsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) page_size: std::num::NonZeroU32,
     pub(crate) limit: Option<u32>,
@@ -1528,6 +1598,7 @@ pub struct ReadRelationshipsOptions {
 impl Default for ReadRelationshipsOptions {
     fn default() -> Self {
         Self {
+            call: Default::default(),
             timeout: None,
             page_size: std::num::NonZeroU32::new(512).unwrap(),
             limit: None,
@@ -1536,6 +1607,12 @@ impl Default for ReadRelationshipsOptions {
     }
 }
 impl ReadRelationshipsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1589,6 +1666,7 @@ pub enum LookupPermissionshipFilter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LookupResourcesOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) permissionship_filter: LookupPermissionshipFilter,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) page_size: std::num::NonZeroU32,
@@ -1600,6 +1678,7 @@ pub struct LookupResourcesOptions {
 impl Default for LookupResourcesOptions {
     fn default() -> Self {
         Self {
+            call: Default::default(),
             permissionship_filter: LookupPermissionshipFilter::All,
             timeout: None,
             page_size: std::num::NonZeroU32::new(512).unwrap(),
@@ -1611,6 +1690,12 @@ impl Default for LookupResourcesOptions {
     }
 }
 impl LookupResourcesOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     /// Filter results client-side; pagination continues past skipped results.
     pub fn with_permissionship_filter(mut self, value: LookupPermissionshipFilter) -> Self {
         self.permissionship_filter = value;
@@ -1676,6 +1761,7 @@ impl LookupResourcesRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LookupSubjectsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) context: Option<Context>,
     pub(crate) subject_relation: Option<String>,
@@ -1685,6 +1771,7 @@ pub struct LookupSubjectsOptions {
 impl Default for LookupSubjectsOptions {
     fn default() -> Self {
         Self {
+            call: Default::default(),
             timeout: None,
             context: None,
             subject_relation: None,
@@ -1694,6 +1781,12 @@ impl Default for LookupSubjectsOptions {
     }
 }
 impl LookupSubjectsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1750,9 +1843,16 @@ impl LookupSubjectsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ReadSchemaOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ReadSchemaOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1785,9 +1885,16 @@ impl Default for ReadSchemaRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct WriteSchemaOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl WriteSchemaOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1817,10 +1924,17 @@ impl WriteSchemaRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ReflectSchemaOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) filters: Vec<ReflectionFilter>,
 }
 impl ReflectSchemaOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1854,10 +1968,17 @@ impl ReflectSchemaRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ComputablePermissionsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) definition_name_filter: Option<String>,
 }
 impl ComputablePermissionsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1899,9 +2020,16 @@ impl ComputablePermissionsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct DependentRelationsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl DependentRelationsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1939,9 +2067,16 @@ impl DependentRelationsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct DiffSchemaOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl DiffSchemaOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1976,9 +2111,16 @@ impl DiffSchemaRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ExpandPermissionTreeOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExpandPermissionTreeOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2016,6 +2158,7 @@ impl ExpandPermissionTreeRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ExportRelationshipsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) page_size: std::num::NonZeroU32,
     pub(crate) filter: Option<Filter>,
@@ -2025,6 +2168,7 @@ pub struct ExportRelationshipsOptions {
 impl Default for ExportRelationshipsOptions {
     fn default() -> Self {
         Self {
+            call: Default::default(),
             timeout: None,
             page_size: std::num::NonZeroU32::new(512).unwrap(),
             filter: None,
@@ -2034,6 +2178,12 @@ impl Default for ExportRelationshipsOptions {
     }
 }
 impl ExportRelationshipsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2097,9 +2247,16 @@ impl UpdatesRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ExperimentalRegisterRelationshipCounterOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalRegisterRelationshipCounterOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2131,9 +2288,16 @@ impl ExperimentalRegisterRelationshipCounterRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ExperimentalCountRelationshipsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalCountRelationshipsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2163,9 +2327,16 @@ impl ExperimentalCountRelationshipsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ExperimentalUnregisterRelationshipCounterOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalUnregisterRelationshipCounterOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2198,9 +2369,16 @@ impl ExperimentalUnregisterRelationshipCounterRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ExperimentalRoaringLookupResourcesOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalRoaringLookupResourcesOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2241,12 +2419,26 @@ impl ExperimentalRoaringLookupResourcesRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct DeleteOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) preconditions: Vec<Precondition>,
     pub(crate) cursor: Option<String>,
     pub(crate) transaction_metadata: Option<Context>,
+    pub(crate) partial: crate::options::DeletePartial,
 }
 impl DeleteOptions {
+    /// `DeletePartial::Disallowed` makes the delete all-or-nothing: the server
+    /// rejects a delete exceeding the limit instead of deleting part of it.
+    pub fn with_partial(mut self, mode: crate::options::DeletePartial) -> Self {
+        self.partial = mode;
+        self
+    }
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2285,14 +2477,28 @@ impl DeleteOptions {
 #[non_exhaustive]
 pub struct DeleteRequest {
     pub(crate) filter: Filter,
-    pub(crate) limit: std::num::NonZeroU32,
+    /// `None` uses the server's configured default limit, which is only
+    /// allowed with `DeletePartial::Disallowed`.
+    pub(crate) limit: Option<std::num::NonZeroU32>,
     pub(crate) options: DeleteOptions,
 }
 impl DeleteRequest {
+    /// One bounded delete of at most `limit` relationships.
     pub fn new(filter: Filter, limit: std::num::NonZeroU32) -> Self {
         Self {
             filter,
-            limit,
+            limit: Some(limit),
+            options: DeleteOptions::new(),
+        }
+    }
+    /// A delete bounded by the server's configured default limit. Only valid
+    /// together with `DeleteOptions::with_partial(DeletePartial::Disallowed)`
+    /// (all-or-nothing); otherwise the call fails with `InvalidArgument`
+    /// before any RPC.
+    pub fn server_default_limit(filter: Filter) -> Self {
+        Self {
+            filter,
+            limit: None,
             options: DeleteOptions::new(),
         }
     }
@@ -2304,24 +2510,41 @@ impl DeleteRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DeleteAllOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) preconditions: Vec<Precondition>,
     pub(crate) cursor: Option<String>,
     pub(crate) transaction_metadata: Option<Context>,
     pub(crate) page_size: std::num::NonZeroU32,
+    pub(crate) progress: Option<crate::options::Callback<DeleteResult>>,
 }
 impl Default for DeleteAllOptions {
     fn default() -> Self {
         Self {
+            call: Default::default(),
             timeout: None,
             preconditions: Vec::new(),
             cursor: None,
             transaction_metadata: None,
             page_size: std::num::NonZeroU32::new(1000).unwrap(),
+            progress: None,
         }
     }
 }
 impl DeleteAllOptions {
+    /// Called after every acknowledged batch with the cumulative result so far
+    /// (count, latest revision and cursor). It runs inline and should return
+    /// quickly: the operation budget keeps running.
+    pub fn with_progress(mut self, f: impl Fn(&DeleteResult) + Send + Sync + 'static) -> Self {
+        self.progress = Some(crate::options::Callback::new(f));
+        self
+    }
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2381,9 +2604,16 @@ impl DeleteAllRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ExperimentalCountRelationshipsByFilterOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalCountRelationshipsByFilterOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2413,10 +2643,17 @@ impl ExperimentalCountRelationshipsByFilterRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct WatchPermissionSetsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) start_revision: Option<ZedToken>,
 }
 impl WatchPermissionSetsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2453,11 +2690,18 @@ impl Default for WatchPermissionSetsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct LookupPermissionSetsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) at_revision: Option<ZedToken>,
     pub(crate) cursor: Option<PermissionSetCursor>,
 }
 impl LookupPermissionSetsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2495,10 +2739,17 @@ impl LookupPermissionSetsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct DownloadPermissionSetsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
     pub(crate) at_revision: Option<ZedToken>,
 }
 impl DownloadPermissionSetsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2607,14 +2858,29 @@ pub enum ExperimentalCountRelationshipsResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ImportRelationshipsOptions {
+    pub(crate) call: crate::options::CallOptions,
     pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) batch_size: Option<std::num::NonZeroU32>,
 }
 impl ImportRelationshipsOptions {
+    /// Per-call transport escape hatch: request metadata and response
+    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
+        self.call = call;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
     pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+    /// Relationships per stream message (default 1,000). This does not split
+    /// the import: one call is one stream and one transaction, so callers
+    /// wanting several transactions make several calls.
+    pub fn with_batch_size(mut self, batch_size: std::num::NonZeroU32) -> Self {
+        self.batch_size = Some(batch_size);
         self
     }
 }

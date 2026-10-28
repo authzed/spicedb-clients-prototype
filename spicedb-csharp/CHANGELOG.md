@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+### Adoption fixes (tooling, test doubles, legacy coexistence)
+
+- **Fix:** paged `ReadRelationshipsAsync`, `LookupResourcesAsync` and
+  `ExportRelationshipsAsync` shrank the last page's limit to fit `Limit`, and SpiceDB
+  hashes the limit into each cursor, so a read whose limit was not a multiple of the page
+  size failed on its next page with "the cursor provided does not have the same arguments
+  as the original API call" (reproduced against SpiceDB). Every page now repeats the
+  caller's consistency and page size; `Limit` is enforced client-side.
+- **BREAKING:** `ReadRelationshipsAsync` yields `ReadRelationship` and
+  `ExportRelationshipsAsync` yields `ExportedRelationship`, carrying `AfterResultCursor`
+  (and `ReadAt` for reads). `LookupResource` gains `AfterResultCursor`. Resume with
+  `ReadOptions`/`ExportOptions`/`LookupOptions.ResumeCursor`, repeating the request and
+  page size.
+  ```csharp
+  // Before
+  await foreach (Relationship r in client.ReadRelationshipsAsync(Full(), filter)) Use(r);
+  // After
+  await foreach (ReadRelationship item in client.ReadRelationshipsAsync(Full(), filter)) Use(item.Relationship);
+  ```
+- **BREAKING:** `DeleteRelationshipsAsync(Filter, int? limit, ...)`: the limit is
+  nullable. `DeleteOptions.Partial = PartialDeletion.Disallowed` makes the delete
+  all-or-nothing, and a null limit then uses the server default; the default `Allowed`
+  mode still requires a positive limit. Callers passing an `int` are unchanged at source
+  level. `DeleteAllOptions.Progress` (`IProgress<DeleteResult>`) reports cumulative
+  progress after every batch.
+- **BREAKING:** `Transaction` stores native values. `Updates` (`RelationshipUpdate`) and
+  `Preconditions` (new native `Precondition` record with `PreconditionOperation`) are
+  public snapshots, and `Count` gives the update count. Code in the `SpiceDB.Client`
+  namespace that referred to the protocol `Precondition` type unqualified must now write
+  `Authzed.Api.V1.Precondition`.
+- New `SpiceDBClient.CreateFromCallInvoker(callInvoker, options)` wraps a caller-owned
+  `CallInvoker` (in-memory or test-server channels, intercepted invokers). It adds no
+  credentials, never disposes the transport, and applies operation options. The proto
+  tier gains `SpiceDBProtoClient(CallInvoker)`.
+- `ClientOptions.RetryPolicy` (`RetryPolicy` with `MaxRetries`, `RetryableCodes`,
+  `InitialBackoff`, `MaxBackoff`, `OnRetry`), `ClientOptions.Retries = Retries.Disabled`
+  and `ClientOptions.StreamRetries = StreamRetries.Disabled` configure retries
+  client-wide. Mutations never retry under any policy.
+- `ClientOptions.DefaultDeadline = DefaultDeadline.Disabled` removes the 30s default
+  unary deadline; per-operation timeouts and cancellation tokens still apply.
+- Every options type gains `Transport` (`TransportOptions`): request `Headers` for every
+  RPC of the operation and a `ResponseMetadata` sink for response headers and trailers.
+- `SpiceDBException` interoperates with gRPC status inspection: `StatusCode`, `Status`,
+  `Trailers` and `ToRpcException()` for server, local and caller-built errors;
+  `ServerMessage` keeps the server's message verbatim; `SpiceDBException.Create(code,
+  message)` builds errors for test doubles; `SpiceDBException.CodeOf(exception)` and
+  `FromRpcException(rpc)` classify and map raw `RpcException`s.
+- `CheckOptions.ItemErrors = BulkItemErrors.Returned` returns per-item errors on
+  `CheckResult.Error` (never a grant) instead of failing the bulk check.
+- `ImportRelationshipsAsync` reports the server's final status when it aborts the stream
+  (for example `AlreadyExistsException` for a duplicate), verified against SpiceDB.
+  `ImportOptions.BatchSize` documents that one call is one transaction.
+- `SpiceDB.Client.Protocol.ProtoConvert` exports native↔protocol conversions for
+  references, relationships, updates, filters, preconditions, consistency, tokens,
+  check requests, transactions, and check (with traces), lookup, expand, read and write
+  results.
+- `Relationship.FromTuple` and `ToString` cover SpiceDB's full tuple syntax, including
+  `[caveat:{...}]` and `[expiration:...]`. New `WithResource`, `WithRelation`,
+  `WithSubject` copy helpers and `ResourceType`/`ResourceId`/`SubjectType`/`SubjectId`/
+  `SubjectRelation` shortcuts. `ObjectRef`, `SubjectRef`, `RelationshipUpdate`, `Filter`,
+  `SubjectRelationFilter`, `Precondition` and `Transaction` have readable `ToString`
+  forms and non-empty JSON forms (`SubjectRelationFilter.Kind`/`Name`).
+- `Filter.Matches(Relationship)` applies SpiceDB filter semantics client-side.
+- New `ISpiceDBRelationshipClient`, implemented by `SpiceDBClient` and by the new
+  in-memory double `SpiceDB.Client.Testing.InMemorySpiceDBClient` (preconditions,
+  CREATE conflicts, filtered reads and deletes, registered check results and errors).
+- The proto tier is the single copy of the generated types: a generated `Authzed.Net`
+  bridge assembly type-forwards `Authzed.Api.V1`/`Authzed.Api.Materialize.V0` to
+  `SpiceDB.Proto`, so the legacy package and this client coexist in one process. See
+  MIGRATION.md.
+- Package floors are exact minimums (Grpc 2.80.0, Google.Protobuf 3.34.1,
+  Google.Api.CommonProtos 2.17.0) instead of floating wildcards, and the proto tier's
+  tests moved to their own project so `SpiceDB.Proto` carries no test dependencies.
+- New example `ToolingEscapeHatches`; `ReadRelationships` and `LookupResources` examples
+  now read across several pages and resume from cursors.
+
 ### Changed
 
 - **BREAKING CHANGE — named behavioral options.** Replace `Tracing = true`

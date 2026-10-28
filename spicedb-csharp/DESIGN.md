@@ -51,7 +51,12 @@
 - **Preserve filter scope and acknowledged deletion progress.**
   - `Filter` is immutable. Subject relation filters distinguish `Any`, `Direct`,
     and `Named`; exact relationship filters retain all tuple identity fields.
-  - `DeleteRelationshipsAsync(filter, limit, options)` makes one bounded call.
+  - `DeleteRelationshipsAsync(filter, limit, options)` makes one call. In the default
+    `PartialDeletion.Allowed` mode `limit` is required and positive; with
+    `DeleteOptions.Partial = PartialDeletion.Disallowed` the delete is all-or-nothing (the
+    server rejects a delete exceeding the limit) and a null `limit` uses the server default.
+    `DeleteAllOptions.Progress` (`IProgress<DeleteResult>`) is reported synchronously after
+    every acknowledged batch with the cumulative count, latest revision and cursor.
     `DeleteAllRelationshipsNonAtomicAsync(filter, options)` uses a separate positive
     page size (default 1,000), one budget, and preconditions on every page.
   - `DeleteResult` preserves count, revision, completion and any resume cursor.
@@ -68,11 +73,20 @@
 - **Share deadlines and release transport resources deterministically.**
   - Unary calls default to a 30-second total monotonic budget, configurable via
     client or operation options. Retries, chunks and pages spend the same budget.
+    `ClientOptions.DefaultDeadline = DefaultDeadline.Disabled` removes the default
+    budget; per-operation `Timeout` and the caller's token still apply. Zero or
+    negative durations stay invalid rather than meaning "disabled".
     Streams/imports have no default timeout but accept an explicit total timeout.
   - Caller cancellation preserves its native token; remote cancellation and
     deadline expiry retain separate typed categories and original diagnostics.
-  - Retry idempotent reads only for unavailable/aborted errors with bounded
-    jittered backoff. Never replay mutations or partially consumed streams.
+  - By default, idempotent reads retry Unavailable/Aborted up to three times with
+    full-jitter backoff from 100 ms (`RetryPolicy.Default`). `ClientOptions.RetryPolicy`
+    replaces it client-wide (`MaxRetries`, `RetryableCodes` such as an opted-in
+    `ResourceExhausted`, `InitialBackoff`, `MaxBackoff`, and an `OnRetry` callback receiving
+    a `RetryEvent`); `Retries.Disabled` makes every operation one attempt;
+    `StreamRetries.Disabled` opens each server stream (reads, lookups, exports, watch) once.
+    Mutations (writes, deletes, imports, counter registration) are never replayed under any
+    policy, and a partially consumed stream is never restarted.
   - Enumerator disposal, early loop exit, cancellation and client disposal stop
     active transport calls. Imports apply bounded backpressure and cancel and
     dispose producers on early server rejection, producer failure or cancellation.
@@ -82,10 +96,30 @@
     counters, watch metadata/checkpoints, and all nondeprecated materialize RPCs
     use native immutable results. Experimental operations are explicitly named.
   - Read/export pages default to 512. Lookup limits cap total yielded results;
-    unsupported settings fail explicitly. Permission-set lookup is one bounded
+    unsupported settings fail explicitly. Every page repeats the caller's consistency and
+    one fixed page size, because SpiceDB hashes both into each cursor (and the cursor pins
+    later pages to the first page's revision); `Limit` is enforced client-side, never by
+    shrinking the last page. `ReadRelationshipsAsync` yields `ReadRelationship`
+    (relationship, `AfterResultCursor`, `ReadAt`), `ExportRelationshipsAsync` yields
+    `ExportedRelationship` (relationship, `AfterResultCursor`; export responses carry no
+    revision), and `LookupResource` carries `AfterResultCursor` beside `LookedUpAt`.
+    `ReadOptions`, `ExportOptions` and `LookupOptions` accept `ResumeCursor`; resuming
+    requires the same request and page size. Cursors are strings, never `ZedToken`. Permission-set lookup is one bounded
     page with `PermissionSetLookupOptions.ResumeCursor` for continuation.
   - `Transaction` collects create/touch/delete operations and match/nonmatch
     preconditions, snapshotting them for writes. Metadata remains native JSON.
+    `Count` reports the update count without copying; `Updates` (`RelationshipUpdate`) and
+    `Preconditions` (native `Precondition` with `PreconditionOperation`) expose snapshots.
+  - Imports send `ImportOptions.BatchSize` relationships per message (default 1,000). One
+    call is one stream and one transaction; callers wanting several transactions make
+    several calls. When the server aborts the stream (for example `ALREADY_EXISTS` for a
+    duplicate) the call reports the server's final status as its typed exception, never
+    the failed send.
+  - `WatchOptions.Content` combines `WatchContent.SchemaUpdates` with relationships and
+    checkpoints; `WatchEvent.SchemaUpdated` reports a schema change distinctly.
+  - SpiceDB 1.30 and later is supported natively. Data older servers send only in
+    trailers (such as pre-1.30 check debug traces) is reached through the transport
+    escape hatch below, not first-class API.
 
 - **Require an explicit decision for remote plaintext credentials.**
   - `CreateSystemTls(endpoint, key, options)` uses platform trust.
@@ -119,3 +153,93 @@
   - `WatchOptions.RelationshipFilters` snapshots the filter list and forwards resource type/ID/prefix, relation, and subject constraints, including direct and named subject relations.
   - Pass an empty object-type list when specifying relationship filters. Nonempty object types and relationship filters are mutually exclusive and rejected before any RPC. Both lists empty watches all relationships.
   - Existing object-type calls remain available; watch examples prefer type-only relationship filters and retain cursor, cancellation, and content options.
+
+- **Be the single copy of the generated protocol types.**
+  - `SpiceDB.Proto` is the canonical binding for `Authzed.Api.V1` and
+    `Authzed.Api.Materialize.V0`. The official legacy package, `Authzed.Net` (1.6.0 on
+    NuGet), ships the same type names in its own assembly, so referencing both failed to
+    compile (CS0433) and could load two copies of every message. .NET has no global
+    descriptor registry that throws, so the conflict shows up at compile time and as
+    split type identity.
+  - The bridge is the .NET form of aliasing: `proto-clients/spicedb-csharp-proto/bridge/Authzed.Net`
+    builds an assembly named `Authzed.Net` (2.0.0) containing only
+    `[assembly: TypeForwardedTo]` for every exported generated type, written by
+    `bridge/generator` (`mage bridge`). Source and already-compiled legacy binaries then
+    resolve to `SpiceDB.Proto` types and pass values to this client without conversion.
+    Authzed.Net's `V0` and `V1Alpha1` namespaces have no upstream counterpart any more and
+    are not forwarded. The proto tier's tests load both assemblies in one process.
+
+- **Serve tooling without the raw escape hatch.**
+  - `CreateFromCallInvoker(callInvoker, options)` wraps a caller-owned `CallInvoker` (an
+    in-memory or test-server channel's invoker, an intercepted invoker, or
+    `channel.CreateCallInvoker()`). It adds no credentials, rejects
+    `RemotePlaintextCredentials.Allow` (transport and credentials belong to the invoker),
+    applies operation options (deadlines, retry policy), and never disposes anything on
+    `DisposeAsync`. `CreateFromChannel` remains for borrowed channels that need the preshared key.
+  - Every options type has `Transport` (`TransportOptions`): `Headers` are added to every
+    RPC the operation makes (snapshotted, copied per attempt), and `ResponseMetadata`, a
+    mutable sink, receives the response headers and trailers of the operation's last RPC,
+    including on failure. Deadline and cancellation stay owned by the native options and
+    `CancellationToken`, so per-call deadline or token overrides are not exposed.
+  - `SpiceDB.Client.Protocol.ProtoConvert` exports native↔protocol conversions: object and
+    subject refs, relationships, updates, filters, preconditions, consistency, tokens,
+    `PermissionCheck`→`CheckPermissionRequest`, `Transaction`→`WriteRelationshipsRequest`,
+    and results (`CheckResult` with its recursive trace, `LookupResource`, `LookupSubject`,
+    `ExpandResult`/`PermissionTree`, `ReadRelationship`, `WriteResult`). The client uses
+    the same conversions.
+  - `CheckOptions.ItemErrors = BulkItemErrors.Returned` makes bulk checks return every
+    item; a failed item's `CheckResult.Error` holds its typed exception (with `InputIndex`),
+    its permissionship is `Unspecified`, and `HasPermission` is false. `Fail` (default)
+    throws for the first failing item.
+
+- **Interoperate with gRPC status inspection in both directions.**
+  - `SpiceDBException.StatusCode` is the matching `Grpc.Core.StatusCode` for every error:
+    server errors report the server's code; local validation is `InvalidArgument`, a local
+    total-deadline expiry is `DeadlineExceeded`, and caller-built errors report their
+    type's code. `Status`, `Trailers` and `ToRpcException()` return the server's own status
+    and trailers (so `GetRpcStatus()` and `ErrorInfo` details survive) or ones built from
+    the code. The server's `RpcException` stays the `InnerException`.
+  - `ServerMessage` holds the server's status message verbatim (null for local errors);
+    `Message` is the display message.
+  - Caller cancellation stays a native `OperationCanceledException` carrying the caller's
+    token. `SpiceDBException.CodeOf(exception)` classifies any exception: native errors,
+    raw `RpcException`s, cancellation (`Cancelled`), `TimeoutException`
+    (`DeadlineExceeded`), and inner-exception chains. `SpiceDBException.FromRpcException`
+    maps a raw `RpcException` (for example from a fake) to the typed exception.
+  - `SpiceDBException.Create(code, message)` is the public constructor for test doubles: it
+    returns the subclass for the code with `ServerMessage` set, exactly as the server
+    mapping would.
+
+- **Make native values observable and testable without a server.**
+  - `ObjectRef`, `SubjectRef`, `Relationship`, `RelationshipUpdate` (`TOUCH(...)`),
+    `Filter` (zed-like, `*` for unset), `SubjectRelationFilter` (`*`, `...`, name),
+    `Precondition` and `Transaction` override `ToString`. Their public properties are the
+    structured log and `System.Text.Json` form; enums serialize as names and
+    `SubjectRelationFilter` exposes `Kind`/`Name`, so nothing serializes as `{}`.
+  - `Relationship` has short accessors (`ResourceType`, `ResourceId`, `SubjectType`,
+    `SubjectId`, `SubjectRelation`, ignored by JSON) and copy helpers `WithResource`,
+    `WithRelation`, `WithSubject` that keep caveat and expiration.
+  - `Relationship.FromTuple` and `ToString` cover SpiceDB's full tuple syntax:
+    `[caveat]`, `[caveat:{json}]` (keys sorted on output) and `[expiration:RFC 3339 UTC]`,
+    with `...` as a direct subject. Tests use the vectors of spicedb-go's
+    SpiceDB-parser compatibility test, and a live example round-trips caveats and
+    expirations through the server. Sub-100ns expiration precision rounds to ticks.
+  - `Filter.Matches(relationship)` applies SpiceDB filter semantics, including
+    `Any`/`Direct`/`Named` subject relations and ID prefixes.
+  - Constructors validate and throw `InvalidArgumentException`, so they already serve
+    compile-time constants and tests; there are no separate panicking (`Must*`) variants.
+  - `SpiceDB.Client.Testing.InMemorySpiceDBClient` is the in-memory double. It and
+    `SpiceDBClient` both implement `ISpiceDBRelationshipClient` (checks, bulk checks,
+    writes, bounded and complete deletes, reads, with identical signatures), because C#
+    cannot apply a caller-defined interface to a sealed class after the fact. It applies
+    preconditions, CREATE conflicts and filters through `Filter.Matches`, and returns
+    registered check results or errors (`SetCheckResult`, `SetCheckError`).
+
+- **Document the path off Authzed.Net and keep dependency floors low.**
+  - `MIGRATION.md` covers moving from `Authzed.Net`, with before/after snippets.
+  - `SpiceDB.Client` and `SpiceDB.Proto` declare exact lowest working versions
+    (`Grpc.Net.Client`/`Grpc.Core.Api`/`Grpc.StatusProto` 2.80.0, `Google.Protobuf`
+    3.34.1, `Google.Api.CommonProtos` 2.17.0, matching `Authzed.Net` 1.6.0) instead of
+    floating wildcards. Test frameworks live only in test and example projects: the proto
+    tier's tests moved from `SpiceDB.Proto.csproj` to `tests/SpiceDB.Proto.Tests.csproj`,
+    which `SpiceDB.Client.sln` runs.

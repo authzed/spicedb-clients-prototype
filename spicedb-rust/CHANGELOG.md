@@ -31,7 +31,7 @@
   tower and hyper stack, and `tonic::Status::from(SpiceDBError)`,
   `SpiceDBClient::from_channel` with its own `Channel` and `spicedb::tonic`
   interoperate with its code. Applications on tonic 0.12 or 0.13 must upgrade.
-- Endpoints accept `http://host[:port]` and `https://host[:port]` URLs as well
+- Endpoints accept `http://host:port` and `https://host[:port]` URLs as well
   as `host:port`. With `builder` the scheme selects plaintext or TLS;
   `new_plaintext`, `.plaintext()` and `new_system_tls` require it to agree.
   The loopback check runs on the URL's host, so `http://127.0.0.1:50051`

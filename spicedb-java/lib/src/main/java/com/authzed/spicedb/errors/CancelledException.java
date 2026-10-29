@@ -4,10 +4,10 @@ package com.authzed.spicedb.errors;
 public class CancelledException extends SpiceDBException {
 
   public CancelledException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.CANCELLED, message, null);
   }
 
   public CancelledException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.CANCELLED, message, cause);
   }
 }

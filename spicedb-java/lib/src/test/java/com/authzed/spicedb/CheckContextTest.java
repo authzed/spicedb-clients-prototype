@@ -2,13 +2,13 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsPair;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem;
-import build.buf.gen.authzed.api.v1.CheckPermissionResponse;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ZedToken;
+import com.authzed.api.v1.CheckBulkPermissionsPair;
+import com.authzed.api.v1.CheckBulkPermissionsRequest;
+import com.authzed.api.v1.CheckBulkPermissionsResponse;
+import com.authzed.api.v1.CheckBulkPermissionsResponseItem;
+import com.authzed.api.v1.CheckPermissionResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ZedToken;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import io.grpc.stub.StreamObserver;

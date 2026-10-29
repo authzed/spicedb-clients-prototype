@@ -121,4 +121,19 @@ class WriteRelationshipsTest extends SpiceDBIntegrationTest {
             .count();
     assertThat(count).isZero();
   }
+
+  @Test
+  void an_empty_write_checks_preconditions_and_returns_the_current_revision() {
+    // SpiceDB accepts a write with no updates: it evaluates the preconditions and returns the
+    // current revision, so an empty transaction doubles as an atomic "does this still hold?".
+    var probe = new Transaction();
+    probe.mustNotMatch(Filter.of("document").withResourceId("never-written"));
+    WriteResult result = client.write(probe);
+    assertThat(result.revision()).isNotNull();
+    assertThat(result.revision().value()).isNotEmpty();
+
+    var failing = new Transaction();
+    failing.mustMatch(Filter.of("document").withResourceId("never-written"));
+    assertThatThrownBy(() -> client.write(failing)).isInstanceOf(FailedPreconditionException.class);
+  }
 }

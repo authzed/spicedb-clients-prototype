@@ -33,6 +33,11 @@ func (e *BulkCheckError) Error() string {
 	return fmt.Sprintf("spicedb: check item %d: %v", e.Index, e.Err)
 }
 func (e *BulkCheckError) Unwrap() error { return e.Err }
+
+// GRPCStatus reports the item's own status (the server's message once, without
+// the item and operation prefixes Error adds), so status.Convert and
+// status.Code see the same thing as for the unwrapped error.
+func (e *BulkCheckError) GRPCStatus() *status.Status { return statusOf(e.Err) }
 func checkItem(r PermissionCheck, defaults map[string]any) (*v1.CheckBulkPermissionsRequestItem, error) {
 	if e := r.Resource.Validate(); e != nil {
 		return nil, invalid("resource: %s", e)
@@ -69,9 +74,7 @@ func mergeCheckContext(defaults, item map[string]any) map[string]any {
 // Check uses the singular CheckPermission RPC, including its native tracing flag.
 func (c *Client) Check(ctx context.Context, request PermissionCheck, opts ...CheckOption) (CheckResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return CheckResult{}, e
@@ -82,8 +85,8 @@ func (c *Client) Check(ctx context.Context, request PermissionCheck, opts ...Che
 		return CheckResult{}, e
 	}
 	cs, _ := strategy(request.Consistency)
-	resp, e := retry(ctx, "check", func() (*v1.CheckPermissionResponse, error) {
-		return c.psc.CheckPermission(ctx, &v1.CheckPermissionRequest{Consistency: cs, Resource: item.Resource, Permission: item.Permission, Subject: item.Subject, Context: item.Context, WithTracing: o.tracing})
+	resp, e := retry(ctx, c.retrySettings(o), "check", func() (*v1.CheckPermissionResponse, error) {
+		return c.psc.CheckPermission(ctx, &v1.CheckPermissionRequest{Consistency: cs, Resource: item.Resource, Permission: item.Permission, Subject: item.Subject, Context: item.Context, WithTracing: o.tracing}, o.callOptions...)
 	})
 	if e != nil {
 		return CheckResult{}, e
@@ -92,42 +95,55 @@ func (c *Client) Check(ctx context.Context, request PermissionCheck, opts ...Che
 }
 func (c *Client) CheckBulk(ctx context.Context, requests []PermissionCheck, opts ...CheckOption) ([]CheckResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return nil, e
 	}
 	defer cancel()
-	items := make([]*v1.CheckBulkPermissionsRequestItem, len(requests))
+	out := make([]CheckResult, len(requests))
+	// sent maps each wire item back to its input index; in ItemErrorsReturned
+	// mode, items that fail local validation are answered locally and skipped.
+	var items []*v1.CheckBulkPermissionsRequestItem
+	var sent []int
 	for i, r := range requests {
 		if i > 0 && r.Consistency != requests[0].Consistency {
 			return nil, &BulkCheckError{i, invalid("mixed consistency strategies or revision tokens")}
 		}
-		items[i], e = checkItem(r, o.checkContext)
+		item, e := checkItem(r, o.checkContext)
 		if e != nil {
-			return nil, &BulkCheckError{i, e}
+			if !o.itemErrors {
+				return nil, &BulkCheckError{i, e}
+			}
+			out[i] = CheckResult{Err: &BulkCheckError{i, e}}
+			continue
 		}
+		items = append(items, item)
+		sent = append(sent, i)
 	}
-	out := make([]CheckResult, 0, len(items))
 	if len(items) == 0 {
 		return out, nil
 	}
 	cs, _ := strategy(requests[0].Consistency)
 	for start := 0; start < len(items); start += defaultCheckBatchSize {
 		end := min(start+defaultCheckBatchSize, len(items))
-		results, e := c.checkChunk(ctx, cs, items[start:end], start, o.tracing)
+		results, e := c.checkChunk(ctx, cs, items[start:end], sent[start:end], o)
 		if e != nil {
 			return nil, e
 		}
-		out = append(out, results...)
+		for i, r := range results {
+			out[sent[start+i]] = r
+		}
 	}
 	return out, nil
 }
-func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1.CheckBulkPermissionsRequestItem, offset int, tracing bool) ([]CheckResult, error) {
-	resp, e := retry(ctx, "check bulk", func() (*v1.CheckBulkPermissionsResponse, error) {
-		return c.psc.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{Consistency: cs, Items: items, WithTracing: tracing})
+
+// checkChunk sends one bulk request. indices holds each item's absolute input
+// index, for errors.
+func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1.CheckBulkPermissionsRequestItem, indices []int, o operationOptions) ([]CheckResult, error) {
+	offset := indices[0]
+	resp, e := retry(ctx, c.retrySettings(o), "check bulk", func() (*v1.CheckBulkPermissionsResponse, error) {
+		return c.psc.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{Consistency: cs, Items: items, WithTracing: o.tracing}, o.callOptions...)
 	})
 	if e != nil {
 		return nil, e
@@ -138,13 +154,18 @@ func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1
 	out := make([]CheckResult, len(items))
 	for i, pair := range resp.GetPairs() {
 		if pair.GetRequest() == nil || !proto.Equal(pair.GetRequest(), items[i]) {
-			return nil, &BulkCheckError{offset + i, &Error{Code: CodeInternal, Message: "spicedb: missing, duplicate or misordered response request"}}
+			return nil, &BulkCheckError{indices[i], &Error{Code: CodeInternal, Message: "spicedb: missing, duplicate or misordered response request"}}
 		}
 		if perr := pair.GetError(); perr != nil {
-			return nil, &BulkCheckError{offset + i, mapGRPCError("check bulk", status.FromProto(perr).Err())}
+			itemErr := &BulkCheckError{indices[i], mapGRPCError("check bulk", status.FromProto(perr).Err())}
+			if !o.itemErrors {
+				return nil, itemErr
+			}
+			out[i] = CheckResult{Err: itemErr, CheckedAt: consistency.NewZedToken(resp.GetCheckedAt().GetToken())}
+			continue
 		}
 		if pair.GetItem() == nil {
-			return nil, &BulkCheckError{offset + i, &Error{Code: CodeInternal, Message: "spicedb: response pair has neither result nor error"}}
+			return nil, &BulkCheckError{indices[i], &Error{Code: CodeInternal, Message: "spicedb: response pair has neither result nor error"}}
 		}
 		out[i] = checkResultFromBulkItem(pair.GetItem(), resp.GetCheckedAt().GetToken())
 	}
@@ -154,9 +175,7 @@ func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1
 // CheckIter consumes input with backpressure. Its optional timeout starts at iteration.
 func (c *Client) CheckIter(ctx context.Context, requests iter.Seq[PermissionCheck], opts ...CheckOption) iter.Seq2[CheckResult, error] {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	return func(yield func(CheckResult, error) bool) {
 		ctx, cancel, e := c.operation(ctx, o, true)
 		if e != nil {
@@ -172,22 +191,45 @@ func (c *Client) CheckIter(ctx context.Context, requests iter.Seq[PermissionChec
 		var pcs *v1.Consistency
 		index := 0
 		items := make([]*v1.CheckBulkPermissionsRequestItem, 0, defaultCheckBatchSize)
-		flush := func() bool {
-			if len(items) == 0 {
-				return true
-			}
-			out, e := c.checkChunk(ctx, pcs, items, index-len(items), o.tracing)
-			items = items[:0]
-			if e != nil {
-				yield(CheckResult{}, e)
-				return false
-			}
-			for _, r := range out {
+		var sent []int
+		// local holds ItemErrorsReturned results for items that failed local
+		// validation, keyed by input index, so output stays in input order.
+		local := map[int]CheckResult{}
+		flushed := 0
+		emitLocal := func(upTo int) bool {
+			for ; flushed < upTo; flushed++ {
+				r, ok := local[flushed]
+				if !ok {
+					return true
+				}
+				delete(local, flushed)
 				if !yield(r, nil) {
 					return false
 				}
 			}
 			return true
+		}
+		flush := func() bool {
+			if len(items) == 0 {
+				return emitLocal(index)
+			}
+			out, e := c.checkChunk(ctx, pcs, items, sent, o)
+			chunkIndices := sent
+			items, sent = items[:0], nil
+			if e != nil {
+				yield(CheckResult{}, e)
+				return false
+			}
+			for i, r := range out {
+				if !emitLocal(chunkIndices[i]) {
+					return false
+				}
+				flushed = chunkIndices[i] + 1
+				if !yield(r, nil) {
+					return false
+				}
+			}
+			return emitLocal(index)
 		}
 		for r := range requests {
 			if e := ctx.Err(); e != nil {
@@ -207,10 +249,19 @@ func (c *Client) CheckIter(ctx context.Context, requests iter.Seq[PermissionChec
 			}
 			item, e := checkItem(r, o.checkContext)
 			if e != nil {
-				yield(CheckResult{}, &BulkCheckError{index, e})
-				return
+				if !o.itemErrors {
+					yield(CheckResult{}, &BulkCheckError{index, e})
+					return
+				}
+				local[index] = CheckResult{Err: &BulkCheckError{index, e}}
+				index++
+				if len(items) == 0 && !emitLocal(index) {
+					return
+				}
+				continue
 			}
 			items = append(items, item)
+			sent = append(sent, index)
 			index++
 			if len(items) == defaultCheckBatchSize && !flush() {
 				return

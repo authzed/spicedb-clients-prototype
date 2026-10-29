@@ -2628,8 +2628,8 @@ const file_authzed_api_v1_experimental_service_proto_rawDesc = "" +
 	"\x1eExperimentalCountRelationships\x125.authzed.api.v1.ExperimentalCountRelationshipsRequest\x1a6.authzed.api.v1.ExperimentalCountRelationshipsResponse\"?\x92A\x0e\n" +
 	"\fExperimental\x82\xd3\xe4\x93\x02(:\x01*\"#/v1/experimental/countrelationships\x12\xfc\x01\n" +
 	")ExperimentalUnregisterRelationshipCounter\x12@.authzed.api.v1.ExperimentalUnregisterRelationshipCounterRequest\x1aA.authzed.api.v1.ExperimentalUnregisterRelationshipCounterResponse\"J\x92A\x0e\n" +
-	"\fExperimental\x82\xd3\xe4\x93\x023:\x01*\"./v1/experimental/unregisterrelationshipcounterBJ\n" +
-	"\x12com.authzed.api.v1P\x01Z2github.com/authzed/authzed-go/proto/authzed/api/v1b\x06proto3"
+	"\fExperimental\x82\xd3\xe4\x93\x023:\x01*\"./v1/experimental/unregisterrelationshipcounterBo\n" +
+	"\x12com.authzed.api.v1P\x01ZWgithub.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1;v1b\x06proto3"
 
 var (
 	file_authzed_api_v1_experimental_service_proto_rawDescOnce sync.Once

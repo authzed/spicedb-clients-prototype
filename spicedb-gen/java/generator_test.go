@@ -2,6 +2,7 @@ package java
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
@@ -77,7 +78,7 @@ func TestGenerate(t *testing.T) {
 	assert.Contains(t, content, "package com.authzed.spicedb.gen.test;")
 
 	// Check sealed Subject interface.
-	assert.Contains(t, content, "public sealed interface Subject permits")
+	assert.Contains(t, content, "public sealed interface Subject\n      permits")
 
 	// Check caveat context classes.
 	assert.Contains(t, content, "public static final class IpRangeContext")
@@ -90,15 +91,15 @@ func TestGenerate(t *testing.T) {
 	assert.Contains(t, content, "public sealed interface DocumentViewSubject extends Subject")
 
 	// Check base ref record.
-	assert.Contains(t, content, "public record UserRef(String id) implements")
+	assert.Contains(t, content, "public record UserRef(String id)\n      implements")
 	assert.Contains(t, content, `return "user"`)
 
 	// Check caveated ref record.
-	assert.Contains(t, content, "public record UserIpRange(String id, IpRangeContext context) implements")
+	assert.Contains(t, content, "public record UserIpRange(String id, IpRangeContext context)\n      implements")
 	assert.Contains(t, content, `return "ip_range"`)
 
 	// Check sub-ref record.
-	assert.Contains(t, content, "public record TeamMemberRef(String id) implements")
+	assert.Contains(t, content, "public record TeamMemberRef(String id)\n      implements")
 
 	// Check non-subject definition ref.
 	assert.Contains(t, content, "public record DocumentRef(String id)")
@@ -119,11 +120,11 @@ func TestGenerate(t *testing.T) {
 
 	// Check type sentinels.
 	assert.Contains(t, content, "public static final UserType UserType = new UserType()")
-	assert.Contains(t, content, "public static final class UserType implements")
+	assert.Contains(t, content, "public static final class UserType\n      implements")
 	assert.Contains(t, content, "public static final TeamMemberType TeamMemberType = new TeamMemberType()")
 
 	// Check TypedRelationship record.
-	assert.Contains(t, content, "public record TypedRelationship(")
+	assert.Contains(t, content, "public static final class TypedRelationship implements Deletable {")
 
 	// Check factory methods.
 	assert.Contains(t, content, "public static UserRef User(String id)")
@@ -202,7 +203,7 @@ func TestCheckAcceptsContext(t *testing.T) {
 
 	// New overload: context accepted as a trailing Map<String, Object>.
 	assert.Contains(t, content,
-		"public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, CheckOptions options) {")
+		"public <S extends Subject> CheckResult check(\n        Consistency c, Permission<S> perm, S subject, CheckOptions options) {")
 
 	// Pass-through: context is handed to the 4-arg checkPermission untouched.
 	assert.Contains(t, content, "return client.check(request, options);")
@@ -213,8 +214,8 @@ func TestCheckAcceptsContext(t *testing.T) {
 	// actual check, since checkItemFromRel never reads caveatContext/
 	// caveatName. This NotContains guards against the old inert call
 	// reappearing in EITHER check() overload.
-	assert.NotContains(t, content, "r = r.withCaveat(subject.caveatName(), subject.caveatContext());")
-	assert.Contains(t, content, "subjectRef(subject), c, subject.caveatContext());")
+	assert.Contains(t, content, "var request = perm.forSubject(subject).toPermissionCheck(c);")
+	assert.Contains(t, content, "          subjectRef(subject),\n          consistency,\n          subject.caveatContext());")
 	assert.Contains(t, content, "return client.check(request, options);")
 	assert.NotContains(t, content, "withCheckContext")
 	assert.NotContains(t, content, "WithOptions")
@@ -229,144 +230,186 @@ func TestBuildTemplateData(t *testing.T) {
 	s, err := schema.ParseFile("../testdata/sample.zed")
 	require.NoError(t, err)
 
-	data := buildTemplateData(s, "com.example.permissions")
-
-	// Package is set correctly.
+	data, err := buildTemplateData(s, "com.example.permissions")
+	require.NoError(t, err)
 	assert.Equal(t, "com.example.permissions", data.Package)
+	require.Len(t, data.CaveatContexts, 2)
 
-	// 2 caveat context types.
-	require.Len(t, data.CaveatContextTypes, 2)
-	caveatNames := []string{data.CaveatContextTypes[0].CaveatName, data.CaveatContextTypes[1].CaveatName}
-	assert.Contains(t, caveatNames, "ip_range")
-	assert.Contains(t, caveatNames, "time_window")
-
-	// Verify ip_range caveat context.
-	var ipRange CaveatContextData
-	for _, c := range data.CaveatContextTypes {
-		if c.CaveatName == "ip_range" {
-			ipRange = c
-			break
-		}
+	// Subject shapes: base, caveated, userset (relation and permission), wildcard, expiring.
+	for _, name := range []string{
+		"UserRef", "UserIpRange", "UserTimeWindow", "UserExpiring", "UserWildcardRef",
+		"TeamMemberRef", "OrganizationCanAdminRef", "OrganizationCanAdminExpiring",
+		"OrganizationRef", "DocumentRef", "InvitationRef",
+	} {
+		assert.Contains(t, data.SubjectTypes, name)
 	}
-	assert.Equal(t, "IpRangeContext", ipRange.ClassName)
-	require.Len(t, ipRange.Params, 1)
-	assert.Equal(t, "allowedCidr", ipRange.Params[0].FieldName)
-	assert.Equal(t, "allowed_cidr", ipRange.Params[0].ParamName)
-	assert.Equal(t, "String", ipRange.Params[0].JavaType)
-	assert.Equal(t, "withAllowedCidr", ipRange.Params[0].WithMethod)
-
-	// Verify time_window caveat context.
-	var timeWindow CaveatContextData
-	for _, c := range data.CaveatContextTypes {
-		if c.CaveatName == "time_window" {
-			timeWindow = c
-			break
-		}
+	for _, name := range []string{"UserType", "TeamMemberType", "OrganizationCanAdminType", "OrganizationType"} {
+		assert.Contains(t, data.SentinelNames, name)
 	}
-	assert.Equal(t, "TimeWindowContext", timeWindow.ClassName)
-	require.Len(t, timeWindow.Params, 2)
-
-	// Subject ref types include expected types.
-	refTypeNames := make([]string, len(data.SubjectRefTypes))
-	for i, srt := range data.SubjectRefTypes {
-		refTypeNames[i] = srt.TypeName
+	for _, name := range []string{
+		"DocumentViewerSubject", "DocumentViewerKeySubject", "DocumentViewerRelationSubject",
+		"DocumentViewSubject", "InvitationGrantSubject", "InvitationTimedGrantSubject",
+		"InvitationInviterKeySubject", "OrganizationCreatorSubject", "OrganizationGuestSubject",
+	} {
+		assert.Contains(t, data.InterfaceNames, name)
 	}
-	assert.Contains(t, refTypeNames, "UserRef")
-	assert.Contains(t, refTypeNames, "UserIpRange")
-	assert.Contains(t, refTypeNames, "UserTimeWindow")
-	assert.Contains(t, refTypeNames, "TeamMemberRef")
 
-	// Type sentinels include expected types.
-	sentinelNames := make([]string, len(data.TypeSentinels))
-	for i, ts := range data.TypeSentinels {
-		sentinelNames[i] = ts.VarName
+	byName := map[string]DefinitionData{}
+	for _, d := range data.Defs {
+		byName[d.Name] = d
 	}
-	assert.Contains(t, sentinelNames, "UserType")
-	assert.Contains(t, sentinelNames, "TeamMemberType")
+	// A userset on a relation keeps the accessor; the writer moves to forX.
+	assert.Equal(t, "forMember", byName["team"].Writers["member"])
+	assert.Equal(t, "TeamMemberRef", byName["team"].SubRefMethods["member"])
+	// A userset on a permission gets xSubject(), so x() stays the permission accessor.
+	assert.Equal(t, "OrganizationCanAdminRef", byName["organization"].SubRefMethods["canAdminSubject"])
+	assert.Equal(t, "admin", byName["organization"].Writers["admin"])
+}
 
-	// Sealed interfaces include both relation and permission interfaces.
-	ifaceNames := make([]string, len(data.SealedInterfaces))
-	for i, si := range data.SealedInterfaces {
-		ifaceNames[i] = si.Name
+// TestAdoptionPositions pins the generated surface for the schema positions that
+// real migrations could not express: permission usersets, wildcards,
+// expiration-only relations and identity keys, relation checks,
+// by-name lookups and typed filters/constants.
+func TestAdoptionPositions(t *testing.T) {
+	content := generateSample(t)
+	for _, want := range []string{
+		// permission usersets
+		"public OrganizationCanAdminRef canAdminSubject() {",
+		"public Permission<OrganizationCanAdminSubject> canAdmin() {",
+		"public sealed interface InvitationGrantSubject extends Subject permits OrganizationCanAdminRef {}",
+		"public OrganizationCanAdminExpiring withExpiration(Instant expiration) {",
+		"permits OrganizationCanAdminExpiring {}",
+		// wildcards
+		"public static UserWildcardRef UserWildcard() {",
+		"public sealed interface OrganizationCreatorSubject extends Subject permits UserWildcardRef {}",
+		"permits UserRef, UserWildcardRef {}",
+		// identity keys
+		"public sealed interface InvitationInviterSubject extends Subject permits UserExpiring {}",
+		"public sealed interface InvitationInviterKeySubject extends Subject permits UserRef {}",
+		"public RelationshipKey inviterKey(InvitationInviterKeySubject subject) {",
+		"public record UserExpiring(String id, Instant expiration)",
+		// relation checks
+		"public Permission<OrganizationMemberRelationSubject> memberRelation() {",
+		// by-name lookups
+		"public Permission<?> permissionByName(String name) {",
+		"public Permission<?> relationByName(String name) {",
+		"public TypedRelationship relationshipByName(String relation, Subject subject) {",
+		"if (subject instanceof OrganizationCreatorSubject s) {",
+		"public static final class OrganizationRelations {",
+		`public static final String CAN_ADMIN = "can_admin";`,
+		// filters and constants
+		"public static Filter OrganizationFilter() {",
+		"public Filter adminFilter() {",
+		"public static Filter withSubject(Filter filter, Subject subject) {",
+		// transactions, bulk checks and native round trips
+		"public WriteResult writeTxn(Txn txn, WriteOptions options) {",
+		"public List<CheckResult> checkBulk(Consistency c, List<TypedCheck> checks) {",
+		"public static TypedRelationship fromRelationship(Relationship relationship) {",
+		"public static TypedRelationship ofError(RuntimeException error) {",
+	} {
+		assert.Contains(t, content, want)
 	}
-	assert.Contains(t, ifaceNames, "DocumentViewerSubject")
-	assert.Contains(t, ifaceNames, "DocumentEditorSubject")
-	assert.Contains(t, ifaceNames, "DocumentOwnerSubject")
-	assert.Contains(t, ifaceNames, "DocumentViewSubject")
-	assert.Contains(t, ifaceNames, "DocumentEditSubject")
-	assert.Contains(t, ifaceNames, "DocumentDeleteSubject")
-	assert.Contains(t, ifaceNames, "TeamMemberSubject")
+	// Writers never admit type sentinels, and checks of permissions reached through a
+	// permission userset admit the users behind it.
+	assert.Contains(t, content, "public sealed interface DocumentEditorSubject extends Subject permits UserRef {}")
+	assert.Contains(t, content, "permits OrganizationCanAdminRef, OrganizationCanAdminType, UserRef, UserType {}")
+	// WriteTxn does not shadow the native write.
+	assert.NotContains(t, content, "public WriteResult write(Txn")
+}
 
-	// Subject sealed interface permits include sub-interfaces.
-	var subjectIface SealedInterfaceData
-	for _, si := range data.SealedInterfaces {
-		if si.Name == "Subject" {
-			subjectIface = si
-			break
-		}
+func generateSample(t *testing.T) string {
+	t.Helper()
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+	files, err := (&Generator{}).Generate(s, map[string]string{"package": "com.authzed.spicedb.gen.test"})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	return string(files[0].Content)
+}
+
+func TestPackageOption(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+	files, err := (&Generator{}).Generate(s, map[string]string{"package": "com.example.authzperms"})
+	require.NoError(t, err)
+	assert.Contains(t, string(files[0].Content), "\npackage com.example.authzperms;\n")
+}
+
+func TestNoLineExceedsFormatterWidth(t *testing.T) {
+	// google-java-format's limit; the fixture's spotlessCheck verifies the full format.
+	for i, line := range strings.Split(generateSample(t), "\n") {
+		assert.LessOrEqual(t, len(line), 100, "line %d: %s", i+1, line)
+		assert.False(t, strings.HasSuffix(line, " "), "line %d has trailing whitespace", i+1)
+		assert.NotContains(t, line, "\t", "line %d has a tab", i+1)
 	}
-	require.NotEmpty(t, subjectIface.Permits, "Subject sealed interface should have permits")
-	assert.Contains(t, subjectIface.Permits, "DocumentViewerSubject")
-	assert.Contains(t, subjectIface.Permits, "DocumentViewSubject")
-	// Concrete types (UserRef, TeamMemberRef) are not direct Subject permits;
-	// they implement sub-interfaces which in turn extend Subject.
-	assert.NotContains(t, subjectIface.Permits, "UserRef")
-	assert.NotContains(t, subjectIface.Permits, "TeamMemberRef")
+}
 
-	// UserRef implements all expected interfaces.
-	var userRef SubjectRefTypeData
-	for _, srt := range data.SubjectRefTypes {
-		if srt.TypeName == "UserRef" {
-			userRef = srt
-			break
-		}
+func TestFormatterOption(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+	// Any stdin->stdout command is accepted; tr upper-cases to prove the output was piped.
+	files, err := (&Generator{}).Generate(s, map[string]string{"package": "p", "formatter": "tr a-z A-Z"})
+	require.NoError(t, err)
+	assert.Contains(t, string(files[0].Content), "PUBLIC FINAL CLASS PERMISSIONS")
+
+	_, err = (&Generator{}).Generate(s, map[string]string{"package": "p", "formatter": "false"})
+	require.Error(t, err)
+}
+
+func TestCollisionsFailNamingBothSources(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema string
+		want   []string
+	}{
+		{
+			name: "permission named like a relation accessor",
+			schema: `definition user {}
+definition doc {
+	relation viewer: user
+	permission viewer_relation = viewer
+}`,
+			want: []string{`"DocViewerRelationSubject"`, `relation "viewer" (relation check subjects)`, `permission "viewer_relation"`},
+		},
+		{
+			name: "permission named like a built-in member",
+			schema: `definition user {}
+definition doc {
+	relation viewer: user
+	permission filter = viewer
+}`,
+			want: []string{`"filter"`, `permission "filter"`},
+		},
+		{
+			name: "two relations produce one interface",
+			schema: `use expiration
+definition user {}
+definition doc {
+	relation viewer: user with expiration
+	relation viewer_key: user
+}`,
+			want: []string{`"DocViewerKeySubject"`, `relation "viewer" (key subjects)`, `relation "viewer_key" (writer subjects)`},
+		},
+		{
+			name: "reserved word",
+			schema: `definition user {}
+definition doc {
+	relation new: user
+}`,
+			want: []string{`"new"`, "reserved word"},
+		},
 	}
-	assert.Contains(t, userRef.Interfaces, "DocumentViewerSubject")
-	assert.Contains(t, userRef.Interfaces, "DocumentEditorSubject")
-	assert.Contains(t, userRef.Interfaces, "DocumentOwnerSubject")
-	assert.Contains(t, userRef.Interfaces, "DocumentViewSubject")
-	assert.Contains(t, userRef.Interfaces, "DocumentEditSubject")
-	assert.Contains(t, userRef.Interfaces, "DocumentDeleteSubject")
-
-	// Permission vars include expected entries.
-	permVarNames := make([]string, len(data.PermissionVars))
-	for i, pv := range data.PermissionVars {
-		permVarNames[i] = pv.VarName
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := schema.ParseString(tc.schema)
+			require.NoError(t, err)
+			_, err = (&Generator{}).Generate(s, map[string]string{"package": "p"})
+			require.Error(t, err)
+			for _, w := range tc.want {
+				assert.Contains(t, err.Error(), w)
+			}
+		})
 	}
-	assert.Contains(t, permVarNames, "Document_View")
-	assert.Contains(t, permVarNames, "Document_Edit")
-	assert.Contains(t, permVarNames, "Document_Delete")
-
-	// Team definition has forMember relation and member sub-ref.
-	var teamDef DefinitionData
-	for _, d := range data.Definitions {
-		if d.Name == "team" {
-			teamDef = d
-			break
-		}
-	}
-	require.Len(t, teamDef.Relations, 1)
-	assert.Equal(t, "member", teamDef.Relations[0].Name)
-	assert.Equal(t, "forMember", teamDef.Relations[0].MethodName, "relation method should be renamed due to sub-ref conflict")
-
-	require.Len(t, teamDef.SubRefMethods, 1)
-	assert.Equal(t, "member", teamDef.SubRefMethods[0].MethodName)
-	assert.Equal(t, "TeamMemberRef", teamDef.SubRefMethods[0].ReturnType)
-
-	// Verify DocumentViewerSubject permits include both ref types and sentinel types.
-	var viewerIface SealedInterfaceData
-	for _, si := range data.SealedInterfaces {
-		if si.Name == "DocumentViewerSubject" {
-			viewerIface = si
-			break
-		}
-	}
-	assert.Contains(t, viewerIface.Permits, "UserRef")
-	assert.Contains(t, viewerIface.Permits, "UserIpRange")
-	assert.Contains(t, viewerIface.Permits, "UserTimeWindow")
-	assert.Contains(t, viewerIface.Permits, "TeamMemberRef")
-	assert.Contains(t, viewerIface.Permits, "UserType")
-	assert.Contains(t, viewerIface.Permits, "TeamMemberType")
 }
 
 func TestToPascalCase(t *testing.T) {
@@ -423,11 +466,4 @@ func TestCelTypeToJavaType(t *testing.T) {
 			assert.Equal(t, tt.expected, celTypeToJavaType(tt.input))
 		})
 	}
-}
-
-func TestJavaSubjectRefTypeName(t *testing.T) {
-	assert.Equal(t, "UserRef", javaSubjectRefTypeName(schema.SubjectType{Definition: "user"}))
-	assert.Equal(t, "TeamMemberRef", javaSubjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member"}))
-	assert.Equal(t, "UserIpRange", javaSubjectRefTypeName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
-	assert.Equal(t, "UserExpiring", javaSubjectRefTypeName(schema.SubjectType{Definition: "user", Expiration: true}))
 }

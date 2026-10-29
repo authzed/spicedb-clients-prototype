@@ -2,6 +2,158 @@
 
 ## Unreleased
 
+### Full-client test double
+
+- `SpiceDBClientInterface` lists `SpiceDBClient`'s full public method set; the
+  client and `InMemorySpiceDB` both implement it. The double's operations
+  without in-memory semantics (lookups, expand, schema introspection, `watch`,
+  the experimental methods) are recorded (new `InMemoryOperation` names),
+  consult the fault hook, and fail with `Code.Unimplemented`; `raw()` throws.
+- `Fault.batch` carries an import batch's relationships at
+  `FaultStage.ImportBatch`, which now fires once each batch is full (or the
+  input ends) rather than before its first item.
+- `InMemorySpiceDB.cursorAfter(n)` builds the resume cursor the double puts on
+  the n-th matching item (the decimal count, stable for tests).
+- `setReadSchemaRevision(SchemaRevision.Omitted)` makes the double's
+  `readSchema` report an empty revision.
+- `operationRetryPolicies` keys are checked against the fixed list of
+  operation names. Previously any method name was accepted, including the
+  client's private helpers (for example `stream` or `unary`), so a policy under
+  such a key was silently never applied; it now throws `InvalidArgumentError`.
+
+### Tooling and typed-client follow-ups
+
+- `operationRetryPolicies` (client option, keyed by `OperationName`) sets the
+  retry policy for every call of one operation, e.g. `{ watch: noRetries }`.
+  Precedence: a call's `retryPolicy`, then the operation's, then the
+  client-wide settings; it also governs stream establishment. For `write` it
+  retries only idempotent transactions (others are sent once, not rejected);
+  never-idempotent operations (deletes, delete-all, imports, counter
+  registration and unregistration) reject a policy with retries when the
+  client is built. A zero-retry policy is allowed everywhere.
+- `Transaction.isIdempotent()` exposes the retry-eligibility rule (touch-only,
+  no preconditions) the client uses.
+- `InMemorySpiceDB` records every call (`calls`, `callsOf(operation)`: operation,
+  per-operation index, request, options) and injects faults (`setFaultHook`,
+  `failNext`) at `FaultStage.Call`, `ImportBatch`, `ImportCommit` and `Item`;
+  `InMemorySpiceDB.serverError` builds errors shaped like the client's. A failed
+  write or import applies nothing. `deleteAllRelationshipsNonAtomic` and
+  `checkBulk` record one call, not their internal pages or items.
+- `CallOptions.retryPolicy` overrides the retry policy for one call, including
+  stream establishment (exempt one stream while retrying everything else, or
+  opt one `watch` into reopening). A touch-only `write` without preconditions
+  and `writeSchema` may opt in to retries per call; every other mutation
+  (creates, deletes, preconditioned writes, imports, counter registration,
+  delete-all) rejects the opt-in with `InvalidArgumentError` before any
+  request.
+- `paging: Paging.SingleRequest` on `readRelationships` and `lookupResources`
+  sends exactly one request, as the raw API does (limit = `limit` or
+  unbounded; `pageSize` ignored; no follow-up page).
+- `protoconv.checkBulkToProto` rebuilds a whole bulk-check response (per-item
+  errors as statuses, `checkedAt`) and `protoconv.checkBulkRequestItemToProto`
+  converts one item; `protoconv.lookupSubjectToProto` now also fills the
+  deprecated top-level fields SpiceDB still sends.
+- `InMemorySpiceDB` adds `importRelationships`, `exportRelationships`,
+  `readSchema`, `writeSchema`, `reflectSchema` (`setReflectSchemaResult`) and
+  `setResponseMetadata` (reported to `onHeader`/`onTrailer`); honors read and
+  export cursors, limits and the export filter (read items now carry
+  `afterResultCursor`); rejects the same retry opt-ins as the client; and
+  returns errors shaped like the real client's (server failures carry
+  Connect's `[code]` prefix, `serverMessage` and a `ConnectError` cause; local
+  validation does not). Precondition failures now read
+  ``unable to satisfy write precondition `MUST_MATCH(...)` ``.
+- Empty writes were already sent to SpiceDB (which checks their preconditions
+  and returns the current revision); this is now documented and tested, in the
+  client and the test double.
+- Bulk item errors and errors carrying `deleteProgress` report the server's
+  status once through `toConnectError`/`errorCode` (tested).
+- Generated typed clients: `--typescript.rename=<definition>=<Name>` overrides
+  a definition's identifiers (the collision error suggests it); names the
+  module imports from the native client (`definition subject` → `SubjectRef`)
+  now fail generation as collisions instead of producing uncompilable output;
+  caveats calling custom CEL functions generate; `TypedTransaction` exposes
+  `updates`, `preconditions` and `error`; `withSubjectAnyRelation`.
+  **BREAKING (generated):** `withSubject(filter, User)` (a definition factory)
+  now pins the direct subject relation like every other `withSubject` call;
+  use `withSubjectAnyRelation` for the old behavior. `rKey(subject)` builders
+  are generated only for relations admitting caveated or expiring subjects;
+  elsewhere delete the writer's relationship (`r(subject)`) or use its
+  `.key()`. Generated comments use the right article.
+
+### Adoption changes (2026-10-28)
+
+- **Fix:** paged `lookupResources` (and `experimentalLookupPermissionSets`)
+  failed on a later page whenever `limit` was not a multiple of `pageSize`
+  ("the cursor provided does not have the same arguments as the original API
+  call"): the pager shrank the last page's limit, and SpiceDB hashes the limit
+  into the cursor. Every page now repeats the caller's consistency and page
+  size; totals are enforced client-side.
+- **BREAKING:** the `maxRetries` client option is replaced by a retry policy.
+  Before: `createSpiceDBClient(e, t, { maxRetries: 0 })`.
+  After: `createSpiceDBClient(e, t, { retries: Retries.Disabled })`, or
+  `{ retryPolicy: { ...DEFAULT_RETRY_POLICY, maxRetries: 1 } }`. A policy sets
+  `maxRetries`, `retryableCodes` (opt into others such as `Code.ResourceExhausted`),
+  `initialBackoffMs`, `maxBackoffMs` and an `onRetry` callback.
+  `streamRetries: StreamRetries.Disabled` opens server streams once. Mutations
+  are never retried.
+- **BREAKING:** `relationshipFromTuple` parses one full tuple, including
+  `[caveat:{...}]` and `[expiration:...]`.
+  Before: `relationshipFromTuple("document:readme#viewer", "user:alice")`.
+  After: `relationshipFromTuple("document:readme#viewer@user:alice")`.
+  `relationshipToString(rel)` formats the same syntax.
+- **BREAKING (generated clients):** subject refs carry a `_ref` discriminator,
+  writers return a `TypedRelationship` class (`relationship()`, `toString()`,
+  `filter()`, `key()`), multi-word relation and permission members are
+  camelCase, and check overloads take `Permission<"type", "name">` values.
+  Before: `Invitation("i").timed_grant(...)`, `TypedRelationship` was a plain
+  object type. After: `Invitation("i").timedGrant(...)`, and hand-built
+  `{ _type, _id }` subject literals are no longer accepted (use the factories).
+- `SpiceDBClient.fromTransport(transport, options?)` builds a client over a
+  caller-owned Connect `Transport` (in-memory, test server, preconfigured
+  HTTP/2); `close()` leaves it open.
+- Every operation's `CallOptions` accepts `headers`, `onHeader` and `onTrailer`,
+  forwarded to every attempt, chunk and page.
+- `defaultDeadline: DefaultDeadline.Disabled` removes the 30 s default budget.
+- Errors: every `SpiceDBError` has `code` (Connect's `Code`) and, for server
+  errors, `serverMessage` (verbatim). `toConnectError()`, `errorCode(err)`,
+  `toConnectError(err)`, `SpiceDBError.from(err)` and
+  `SpiceDBError.fromCode(code, message)` interoperate with `ConnectError` in
+  both directions. `Code` is re-exported.
+- `checkBulk(requests, { itemErrors: BulkItemErrors.Returned })` returns every
+  item, with per-item failures on `CheckResult.error`.
+- `importRelationships(rels, { batchSize })`; an import the server aborts
+  reports the server's status (e.g. `AlreadyExistsError`).
+- `deleteRelationships(filter, { partial: DeletePartial.Disallowed })` is
+  all-or-nothing and may omit `limit`; `deleteAllRelationshipsNonAtomic(filter,
+  { onProgress })` reports each acknowledged batch.
+- `readRelationships` yields `ReadRelationship` (adds `afterResultCursor`,
+  `readAt`) and accepts a client-side `limit`; `exportRelationships` yields
+  `ExportedRelationship` (adds `afterResultCursor`); `LookupResource` adds
+  `afterResultCursor`.
+- Observability: `relationshipToString`, `objectRefToString`,
+  `subjectRefToString`, `filterToString`, `updateToString`,
+  `preconditionToString`; `Transaction.length`, `updates`, `preconditions`,
+  `toString()`, `toJSON()`; `Consistency.toString()`/`toJSON()`.
+- `filterMatches(filter, rel)` applies SpiceDB's filter semantics client-side.
+- `protoconv` namespace: native <-> protocol conversions for tools.
+- `InMemorySpiceDB`: an in-memory test double for `write`, `readRelationships`,
+  `deleteRelationships`, `deleteAllRelationshipsNonAtomic`, `check` and
+  `checkBulk` with the client's signatures.
+- Generated clients (spicedb-gen): permission-userset subjects
+  (`Organization(id).canAdminSubject()`), wildcard refs (`UserWildcard()`),
+  expiring variants (`.withExpiration(at)`), identity-only keys
+  (`Invitation(id).inviterKey(user)`), relation checks (`memberRelation`),
+  `TypedTransaction` with `TypedClient.writeTransaction`, `checkBulkTyped` and
+  `checksFor`, `fromRelationship`/`errRelationship`, typed filters
+  (`OrganizationFilter()`, `ref.filter()`, `ref.adminFilter()`, `withSubject`),
+  name constants and lists, validated `permissionByName`/`relationByName`/
+  `relationshipByName`, observable `Permission`/`PermissionRef`, and
+  `--typescript.client-module` / `--typescript.format=prettier`.
+- Dependencies: `@bufbuild/protobuf` ^2.11.0 and `@connectrpc/connect` ^2.0.0
+  (lowest verified); `@types/node` is an optional peer (>=20.19.0).
+- See `MIGRATION.md` for moving from `@authzed/authzed-node`, and
+  `AI_INTEGRATION_GUIDE.md` for integration patterns.
+
 - Resource lookups accept `permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly` to exclude conditional and unknown results locally. The default is `All`; limits count yielded matches.
 
 ### Changed

@@ -12,9 +12,10 @@ from spicedb import (
     Filter, SubjectFilter, SubjectRelationFilter, DeleteProgress, DeleteResult,
     ZedToken, UnavailableError, Transaction, WriteResult, PermissionCheck, ObjectRef,
     SubjectRef, Tracing, WatchContent, full, LookupDebug, Wildcards,
-    LookupPermissionshipFilter, PermissionSetCursor, CountResult,
+    LookupPermissionshipFilter, PermissionSetCursor, CountResult, BulkItemErrors, DeletePartial,
+    InvalidArgumentError,
 )
-from testdata.permissions import Document, DocumentView, User, TypedTransaction
+from testdata.permissions import Document, DOCUMENT_VIEW, User, TypedTransaction
 
 
 @pytest.mark.parametrize("native,typed", [(SpiceDBClient, TypedClient), (AioClient, AioTypedClient)])
@@ -26,7 +27,8 @@ def test_every_native_public_operation_is_explicit(native, typed):
 
 
 def test_passthrough_signatures_preserve_native_types_and_defaults():
-    schema_methods = {"check", "lookup_resources", "lookup_subjects", "read_relationships", "write"}
+    # from_channel returns the TypedClient wrapper rather than the native client.
+    schema_methods = {"check", "lookup_resources", "lookup_subjects", "read_relationships", "from_channel"}
     for native, typed in [(SpiceDBClient, TypedClient), (AioClient, AioTypedClient)]:
         for name, method in inspect.getmembers(native, callable):
             if name.startswith("_") or name in schema_methods:
@@ -51,7 +53,7 @@ async def test_native_delete_pagination_options_and_failure_progress(native_type
     # Generated protobuf modules lack static declarations for message classes.
     responses = [p.DeleteRelationshipsResponse(  # pyright: ignore[reportAttributeAccessIssue]
         deleted_at=core.ZedToken(token="ack"), relationships_deleted_count=2,  # pyright: ignore[reportAttributeAccessIssue]
-        deletion_progress=2, after_result_cursor=core.Cursor(token="next")), error]  # pyright: ignore[reportAttributeAccessIssue]
+        deletion_progress=2, after_result_cursor=core.Cursor(token="next")), error]  # pyright: ignore
     rpc = AsyncMock(side_effect=responses) if native_type is AioClient else Mock(side_effect=responses)
     native._permissions = Mock(DeleteRelationships=rpc)
     guard = Filter("document", relation="owner")
@@ -79,7 +81,7 @@ async def test_bounded_delete_returns_native_result(native_type, wrapper):
     filter = Filter("document")
     guard = Filter("document", relation="owner")
     assert await resolve(wrapper(native).delete_relationships(filter, limit=3, must_not_match=[guard], metadata={"key": "value"}, timeout=5)) is result
-    native.delete_relationships.assert_called_once_with(filter, limit=3, must_match=(), must_not_match=[guard], metadata={"key": "value"}, timeout=5)
+    native.delete_relationships.assert_called_once_with(filter, limit=3, partial=DeletePartial.ALLOWED, must_match=(), must_not_match=[guard], metadata={"key": "value"}, timeout=5, call_options=None)
 
 
 class WatchCall:
@@ -141,17 +143,32 @@ async def test_bulk_import_experimental_and_native_transaction_forwarding(native
         setattr(native, name, AsyncMock(return_value=result) if native_type is AioClient else Mock(return_value=result))
     client = wrapper(native)
     consistency = full()
-    assert await resolve(client.check_bulk(checks, consistency=consistency, context={"test": True}, tracing=Tracing.ENABLED, timeout=5)) is results
-    native.check_bulk.assert_called_once_with(checks, consistency=consistency, context={"test": True}, tracing=Tracing.ENABLED, timeout=5)
+    assert await resolve(client.check_bulk(checks, consistency=consistency, context={"test": True}, tracing=Tracing.ENABLED, item_errors=BulkItemErrors.RETURN, timeout=5)) is results
+    native.check_bulk.assert_called_once_with(checks, consistency=consistency, context={"test": True}, tracing=Tracing.ENABLED, item_errors=BulkItemErrors.RETURN, timeout=5, call_options=None)
     producer = iter(())
     assert await resolve(client.import_relationships(producer, timeout=5)) == 7
     assert native.import_relationships.call_args.args[0] is producer
     filter = Filter("document")
     assert await resolve(client.experimental_count_relationships_by_filter(filter, timeout=5)) is count
-    for txn in (Transaction(), TypedTransaction()):
-        assert await resolve(client.write(txn, metadata={"test": True}, timeout=5)) is write_result
-        assert native.write.call_args.args[0] is (txn._txn if isinstance(txn, TypedTransaction) else txn)
-        assert native.write.call_args.kwargs["metadata"] == {"test": True}
+    native_txn = Transaction()
+    assert await resolve(client.write(native_txn, metadata={"test": True}, timeout=5)) is write_result
+    assert native.write.call_args.args[0] is native_txn
+    assert native.write.call_args.kwargs["metadata"] == {"test": True}
+    typed = TypedTransaction().touch(Document("one").viewer(User("alice")))
+    assert await resolve(client.write_txn(typed, metadata={"test": True}, timeout=5)) is write_result
+    built = native.write.call_args.args[0]
+    assert isinstance(built, Transaction) and built is not native_txn
+    assert native.write.call_args.kwargs == {"metadata": {"test": True}, "timeout": 5, "call_options": None}
+
+
+@pytest.mark.parametrize("native_type,wrapper", FLAVORS)
+async def test_write_txn_raises_construction_errors_before_any_rpc(native_type, wrapper):
+    native = Mock()
+    native.write = AsyncMock() if native_type is AioClient else Mock()
+    txn = TypedTransaction().touch(Document("").viewer(User("alice")))
+    with pytest.raises(InvalidArgumentError):
+        await resolve(wrapper(native).write_txn(txn))
+    native.write.assert_not_called()
 
 
 @pytest.mark.parametrize("wrapper", [TypedClient, AioTypedClient])
@@ -159,7 +176,7 @@ def test_schema_stream_options_and_materialize_cursor_forwarding(wrapper):
     native = Mock()
     client = wrapper(native)
     consistency = full()
-    assert client.lookup_resources(consistency, DocumentView, User("alice"), page_size=4, limit=7, debug=LookupDebug.ENABLED, context={"x": True}, permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY) is native.lookup_resources.return_value
+    assert client.lookup_resources(consistency, DOCUMENT_VIEW, User("alice"), page_size=4, limit=7, debug=LookupDebug.ENABLED, context={"x": True}, permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY) is native.lookup_resources.return_value
     options = native.lookup_resources.call_args.kwargs
     assert (options["page_size"], options["limit"], options["debug"], options["context"]) == (4, 7, LookupDebug.ENABLED, {"x": True})
     assert client.lookup_subjects(consistency, Document("one").view, User, page_size=3, limit=6, wildcards=Wildcards.EXCLUDE) is native.lookup_subjects.return_value
@@ -177,15 +194,20 @@ def test_schema_stream_options_and_materialize_cursor_forwarding(wrapper):
 
 @pytest.mark.parametrize("native,typed", FLAVORS)
 def test_schema_helpers_expose_every_native_behavior_option(native, typed):
+    # typed method -> (native method, native arguments the typed method adapts)
     schema_arguments = {
-        "check": {"check", "consistency"},
-        "lookup_resources": {"resource_type", "permission", "subject", "consistency"},
-        "lookup_subjects": {"resource", "permission", "subject_type", "subject_relation", "consistency"},
-        "read_relationships": {"filter", "consistency"},
-        "write": {"transaction"},
+        "check": ("check", {"check", "consistency"}),
+        "lookup_resources": ("lookup_resources", {"resource_type", "permission", "subject", "consistency"}),
+        "lookup_subjects": ("lookup_subjects", {"resource", "permission", "subject_type", "subject_relation", "consistency"}),
+        "read_relationships": ("read_relationships", {"filter", "consistency"}),
+        "check_dynamic": ("check", {"check", "consistency"}),
+        "write_txn": ("write", {"transaction"}),
+        "touch": ("write", {"transaction"}),
+        "create": ("write", {"transaction"}),
+        "delete": ("write", {"transaction"}),
     }
-    for name, adapted in schema_arguments.items():
-        native_signature = inspect.signature(getattr(native, name))
+    for name, (native_name, adapted) in schema_arguments.items():
+        native_signature = inspect.signature(getattr(native, native_name))
         typed_signature = inspect.signature(getattr(typed, name))
         for parameter, expected in native_signature.parameters.items():
             if parameter in adapted or parameter == "self":

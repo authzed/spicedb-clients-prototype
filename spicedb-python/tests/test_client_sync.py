@@ -4,7 +4,7 @@ Request-building and response-mapping are covered once in test_requests.py and
 test_mapping.py -- this file only asserts the sync client drives them correctly.
 """
 from spicedb import ZedToken
-from spicedb import TransportSecurity
+from spicedb import TransportSecurity, RetryPolicy
 
 from spicedb import PermissionCheck
 from unittest import mock
@@ -166,7 +166,7 @@ def test_transient_error_is_retried_then_succeeds(make_client):
     """
     from authzed.api.v1 import schema_service_pb2 as ssp
 
-    c = make_client(max_retries=2)
+    c = make_client(retry_policy=RetryPolicy(max_retries=2))
     ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
     stub = mock.Mock(side_effect=[_SyncRpcError(grpc.StatusCode.UNAVAILABLE), ok])
     with mock.patch.object(c._schema, "ReadSchema", stub):
@@ -180,7 +180,7 @@ def test_mutation_transient_error_is_attempted_once_only(make_client):
     actually committed but the response was lost, a retry would surface
     ALREADY_EXISTS/FAILED_PRECONDITION for a write that in fact succeeded.
     DESIGN.md, "Automatic retry is for idempotent operations only"."""
-    c = make_client(max_retries=3)
+    c = make_client(retry_policy=RetryPolicy(max_retries=3))
     stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.UNAVAILABLE))
     with mock.patch.object(c._permissions, "WriteRelationships", stub):
         from spicedb import Transaction
@@ -195,7 +195,7 @@ def test_mutation_transient_error_is_attempted_once_only(make_client):
 def test_resource_exhausted_is_never_retried(make_client):
     from spicedb.errors import ResourceExhaustedError
 
-    c = make_client(max_retries=3)
+    c = make_client(retry_policy=RetryPolicy(max_retries=3))
     stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.RESOURCE_EXHAUSTED))
     with mock.patch.object(c._schema, "ReadSchema", stub):
         with pytest.raises(ResourceExhaustedError):
@@ -207,14 +207,14 @@ def test_backoff_has_jitter(make_client):
     """Backoff must vary between runs -- assert the jitter exists, not an
     exact value. Without jitter every client in a fleet retries on the
     same schedule after a server restart (thundering herd)."""
-    c = make_client(max_retries=1)
-    seen = {c._backoff_seconds(2) for _ in range(50)}
+    c = make_client(retry_policy=RetryPolicy(max_retries=1))
+    seen = {c._backoff_seconds(c._retry_policy, 2) for _ in range(50)}
     assert len(seen) > 1, "backoff should vary between calls"
     assert all((0 <= v <= 0.4 for v in seen))
 
 
 def test_transient_error_gives_up_after_max_retries(make_client):
-    c = make_client(max_retries=1)
+    c = make_client(retry_policy=RetryPolicy(max_retries=1))
     stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.UNAVAILABLE))
     with mock.patch.object(c._schema, "ReadSchema", stub):
         with pytest.raises(UnavailableError):
@@ -223,7 +223,7 @@ def test_transient_error_gives_up_after_max_retries(make_client):
 
 
 def test_non_transient_error_is_not_retried(make_client):
-    c = make_client(max_retries=3)
+    c = make_client(retry_policy=RetryPolicy(max_retries=3))
     stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.PERMISSION_DENIED))
     with mock.patch.object(c._schema, "ReadSchema", stub):
         with pytest.raises(PermissionDeniedError):
@@ -282,7 +282,7 @@ def test_read_relationships_returns_a_plain_iterator(make_client):
         got = list(
             c.read_relationships(Filter(resource_type="document"), consistency=full())
         )
-    assert [r.resource.object_id for r in got] == ["0", "1", "2"]
+    assert [r.relationship.resource.object_id for r in got] == ["0", "1", "2"]
 
 
 def test_read_relationships_stops_when_page_is_short(make_client):
@@ -310,7 +310,7 @@ def test_streaming_retries_establishment_only_before_first_yield(make_client):
     """Retrying after an item was yielded would duplicate it for the caller."""
     from authzed.api.v1 import permission_service_pb2 as psp
 
-    c = make_client(max_retries=3)
+    c = make_client(retry_policy=RetryPolicy(max_retries=3))
 
     def _one_then_fail():
         yield psp.ReadRelationshipsResponse(
@@ -323,7 +323,7 @@ def test_streaming_retries_establishment_only_before_first_yield(make_client):
     stub = mock.Mock(return_value=_FakeSyncCall(_one_then_fail()))
     with mock.patch.object(c._permissions, "ReadRelationships", stub):
         it = c.read_relationships(Filter(resource_type="document"), consistency=full())
-        assert next(it).resource.object_id == "a"
+        assert next(it).relationship.resource.object_id == "a"
         with pytest.raises(UnavailableError):
             next(it)
     assert stub.call_count == 1, "must NOT retry after an item was yielded"

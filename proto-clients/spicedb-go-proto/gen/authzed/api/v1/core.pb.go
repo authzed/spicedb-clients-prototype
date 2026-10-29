@@ -843,8 +843,8 @@ const file_authzed_api_v1_core_proto_rawDesc = "" +
 	"\x10DirectSubjectSet\x12<\n" +
 	"\bsubjects\x18\x01 \x03(\v2 .authzed.api.v1.SubjectReferenceR\bsubjects\"_\n" +
 	"\x11PartialCaveatInfo\x12J\n" +
-	"\x18missing_required_context\x18\x01 \x03(\tB\x10\xfaB\x05\x92\x01\x02\b\x01\xbaH\x05\x92\x01\x02\b\x01R\x16missingRequiredContextBJ\n" +
-	"\x12com.authzed.api.v1P\x01Z2github.com/authzed/authzed-go/proto/authzed/api/v1b\x06proto3"
+	"\x18missing_required_context\x18\x01 \x03(\tB\x10\xfaB\x05\x92\x01\x02\b\x01\xbaH\x05\x92\x01\x02\b\x01R\x16missingRequiredContextBo\n" +
+	"\x12com.authzed.api.v1P\x01ZWgithub.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1;v1b\x06proto3"
 
 var (
 	file_authzed_api_v1_core_proto_rawDescOnce sync.Once

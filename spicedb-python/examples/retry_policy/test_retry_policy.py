@@ -22,7 +22,7 @@ from spicedb import ObjectRef, SubjectRef, PermissionCheck
 import grpc
 import pytest
 from authzed.api.v1 import permission_service_pb2, permission_service_pb2_grpc
-from spicedb import Relationship, full
+from spicedb import CallOptions, InvalidArgumentError, Operation, Relationship, Retries, RetryPolicy, full
 from spicedb.aio import SpiceDBClient
 from spicedb.errors import ResourceExhaustedError, UnavailableError
 from spicedb.types import Transaction
@@ -122,6 +122,37 @@ async def test_a_mutation_is_not_retried() -> None:
         await server.stop(None)
 
 
+async def test_an_idempotent_write_may_opt_in_for_one_call() -> None:
+    """A touch-only write without preconditions replays safely, so one call
+    may ask for retries with ``CallOptions(retry_policy=...)``.
+
+    A CREATE, or any write guarded by a precondition, could change meaning on
+    replay, so the same opt-in is refused before any request is sent.
+    """
+    servicer = _CountingServer()
+    server, port = await _serve(servicer)
+    retry_twice = CallOptions(retry_policy=RetryPolicy(max_retries=2, initial_backoff=0.01))
+    try:
+        async with SpiceDBClient(
+            f"127.0.0.1:{port}", token="some-token", transport_security=TransportSecurity.PLAINTEXT
+        ) as client:
+            touch = Transaction().touch(
+                Relationship(ObjectRef("document", "readme"), "viewer", SubjectRef(ObjectRef("user", "alice")))
+            )
+            with pytest.raises(UnavailableError):
+                await client.write(touch, call_options=retry_twice)
+            assert servicer.write_attempts == 3, "one attempt plus the two retries this call opted into"
+
+            create = Transaction().create(
+                Relationship(ObjectRef("document", "readme"), "viewer", SubjectRef(ObjectRef("user", "alice")))
+            )
+            with pytest.raises(InvalidArgumentError):
+                await client.write(create, call_options=retry_twice)
+            assert servicer.write_attempts == 3, "a refused opt-in sends nothing"
+    finally:
+        await server.stop(None)
+
+
 async def test_resource_exhausted_is_not_retried_even_on_a_read() -> None:
     """In SpiceDB this code means load-shed or a deterministic MaxDepthExceeded.
 
@@ -145,5 +176,52 @@ async def test_resource_exhausted_is_not_retried_even_on_a_read() -> None:
         assert servicer.check_attempts == 1, (
             f"RESOURCE_EXHAUSTED must not be retried: saw {servicer.check_attempts} attempts, which turns a load-shedding SpiceDB into a client-driven retry storm"
         )
+    finally:
+        await server.stop(None)
+
+
+async def test_a_client_wide_policy_for_one_operation() -> None:
+    """``operation_retry_policies`` sets the policy for every call of one
+    operation, without touching each call site.
+
+    Here every touch-only write is retried, while a CREATE on the same client
+    is simply not retried (and not refused): the per-operation policy applies
+    only where replay is safe, by the same rule as
+    ``Transaction.is_idempotent()``. A per-call option still wins.
+    """
+    servicer = _CountingServer()
+    server, port = await _serve(servicer)
+    try:
+        async with SpiceDBClient(
+            f"127.0.0.1:{port}",
+            token="some-token",
+            transport_security=TransportSecurity.PLAINTEXT,
+            operation_retry_policies={Operation.WRITE: RetryPolicy(max_retries=2, initial_backoff=0.01)},
+        ) as client:
+            touch = Transaction().touch(DOC)
+            assert touch.is_idempotent()
+            with pytest.raises(UnavailableError):
+                await client.write(touch)
+            assert servicer.write_attempts == 3, "one attempt plus the operation policy's two retries"
+
+            create = Transaction().create(DOC)
+            assert not create.is_idempotent()
+            with pytest.raises(UnavailableError):
+                await client.write(create)
+            assert servicer.write_attempts == 4, "a CREATE is never replayed"
+
+            with pytest.raises(UnavailableError):
+                await client.write(touch, call_options=CallOptions(retry_policy=Retries.DISABLED))
+            assert servicer.write_attempts == 5, "the per-call opt-out wins"
+
+        # Operations that are never safe to replay refuse a retrying policy
+        # when the client is built, not on first use.
+        with pytest.raises(InvalidArgumentError):
+            SpiceDBClient(
+                f"127.0.0.1:{port}",
+                token="some-token",
+                transport_security=TransportSecurity.PLAINTEXT,
+                operation_retry_policies={Operation.DELETE_RELATIONSHIPS: RetryPolicy()},
+            )
     finally:
         await server.stop(None)

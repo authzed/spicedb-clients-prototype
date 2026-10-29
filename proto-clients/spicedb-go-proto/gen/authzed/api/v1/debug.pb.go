@@ -612,8 +612,8 @@ const file_authzed_api_v1_debug_proto_rawDesc = "" +
 	"\x12RESULT_UNEVALUATED\x10\x01\x12\x10\n" +
 	"\fRESULT_FALSE\x10\x02\x12\x0f\n" +
 	"\vRESULT_TRUE\x10\x03\x12\x1f\n" +
-	"\x1bRESULT_MISSING_SOME_CONTEXT\x10\x04BJ\n" +
-	"\x12com.authzed.api.v1P\x01Z2github.com/authzed/authzed-go/proto/authzed/api/v1b\x06proto3"
+	"\x1bRESULT_MISSING_SOME_CONTEXT\x10\x04Bo\n" +
+	"\x12com.authzed.api.v1P\x01ZWgithub.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1;v1b\x06proto3"
 
 var (
 	file_authzed_api_v1_debug_proto_rawDescOnce sync.Once

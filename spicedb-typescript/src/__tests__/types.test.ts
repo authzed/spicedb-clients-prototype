@@ -8,14 +8,14 @@ describe("native relationship values", () => {
         const rel = relationship("document:readme", "viewer", "user:jimmy");
         expect(rel).toEqual({ resource: { objectType: "document", objectId: "readme" }, relation: "viewer", subject: { object: { objectType: "user", objectId: "jimmy" } } });
         expect(fromProtoRelationship(toProtoRelationship(rel))).toEqual(rel);
-        expect(relationshipFromTuple("document:readme#viewer", "user:jimmy")).toEqual(rel);
+        expect(relationshipFromTuple("document:readme#viewer@user:jimmy")).toEqual(rel);
     });
     it("parses and round trips userset subjects", () => {
         const rel = relationship("document:readme", "viewer", "group:eng#member");
         expect(rel.subject).toEqual({ object: { objectType: "group", objectId: "eng" }, relation: "member" });
         expect(fromProtoRelationship(toProtoRelationship(rel))).toEqual(rel);
     });
-    it.each([() => relationship("invalid", "viewer", "user:a"), () => relationship("document:a", "viewer", "invalid"), () => relationshipFromTuple("document:a", "user:a")])("rejects malformed tuples", fn => expect(fn).toThrow(InvalidArgumentError));
+    it.each([() => relationship("invalid", "viewer", "user:a"), () => relationship("document:a", "viewer", "invalid"), () => relationshipFromTuple("document:a@user:a")])("rejects malformed tuples", fn => expect(fn).toThrow(InvalidArgumentError));
     it("round trips caveat JSON including nested nulls and expiration", () => {
         const rel: Relationship = { ...relationship("document:a", "viewer", "user:a"), caveat: { name: "region", context: { nested: { list: [null, 1, true, "yes"] } } }, expiration: new Date("2026-01-01Z") };
         const result = fromProtoRelationship(toProtoRelationship(rel));

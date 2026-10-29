@@ -100,4 +100,24 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
 
     assertThat(resourceIDs).containsExactly("thirddoc");
   }
+
+  @Test
+  void a_single_request_returns_everything_in_one_call() {
+    // Paging.SINGLE_REQUEST sends exactly one request, as the raw API does: unbounded without a
+    // limit, so a page size of 1 does not split it. Items still carry their cursors.
+    List<LookupResult.LookupResource> results;
+    try (var stream =
+        client.lookupResources(
+            full(),
+            "document",
+            "view",
+            SubjectRef.direct(new ObjectRef("user", "alice")),
+            LookupOptions.builder().pageSize(1).paging(Paging.SINGLE_REQUEST).build())) {
+      results = stream.toList();
+    }
+    assertThat(results)
+        .extracting(LookupResult.LookupResource::resourceId)
+        .containsExactlyInAnyOrder("firstdoc", "seconddoc");
+    assertThat(results).allSatisfy(r -> assertThat(r.afterResultCursor()).isNotEmpty());
+  }
 }

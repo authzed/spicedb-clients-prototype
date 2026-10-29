@@ -1,4 +1,4 @@
-import { TransportSecurity } from "../modes.js";
+import { TransportSecurity, Retries } from "../modes.js";
 /**
  * The escape hatch reaches a real stub and makes a real call.
  *
@@ -83,7 +83,7 @@ describe("SpiceDBClient raw()", () => {
             endpoint: `localhost:${port}`,
             token: TOKEN,
             transportSecurity: TransportSecurity.Plaintext,
-            maxRetries: 0
+            retries: Retries.Disabled
         });
         try {
             const response = await client.raw().permissions.checkBulkPermissions(bulkRequest());
@@ -104,7 +104,7 @@ describe("SpiceDBClient raw()", () => {
             endpoint: `localhost:${port}`,
             token: TOKEN,
             transportSecurity: TransportSecurity.Plaintext,
-            maxRetries: 0
+            retries: Retries.Disabled
         });
         try {
             // Not a second connection built behind the caller's back: the same

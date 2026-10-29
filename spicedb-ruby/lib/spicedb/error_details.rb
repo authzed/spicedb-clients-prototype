@@ -3,6 +3,9 @@
 require 'grpc'
 require 'grpc/google_rpc_status_utils'
 require 'google/rpc/error_details_pb'
+# Any#unpack and Any.pack live here; without it every detail lookup below
+# would fail (and be swallowed), silently dropping the server's reason.
+require 'google/protobuf/well_known_types'
 
 module SpiceDB
   # Reads SpiceDB's structured explanation of a failure -- the

@@ -24,9 +24,7 @@ func WithCountRelationshipsByFilterTimeout(d time.Duration) CountRelationshipsBy
 // Experimental: CountRelationshipsByFilter reads the materialize relationship count on the authenticated connection.
 func (c *Client) CountRelationshipsByFilter(ctx context.Context, request CountRelationshipsByFilterRequest, opts ...CountRelationshipsByFilterOption) (CountRelationshipsByFilterResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return CountRelationshipsByFilterResult{}, e
@@ -37,8 +35,8 @@ func (c *Client) CountRelationshipsByFilter(ctx context.Context, request CountRe
 		return CountRelationshipsByFilterResult{}, e
 	}
 	stub := materialize.NewRelationshipsServiceClient(c.proto.Connection())
-	response, e := retry(ctx, "count relationships by filter", func() (*materialize.ExperimentalCountRelationshipsByFilterResponse, error) {
-		return stub.ExperimentalCountRelationshipsByFilter(ctx, &materialize.ExperimentalCountRelationshipsByFilterRequest{RelationshipFilter: f})
+	response, e := retry(ctx, c.retrySettings(o), "count relationships by filter", func() (*materialize.ExperimentalCountRelationshipsByFilterResponse, error) {
+		return stub.ExperimentalCountRelationshipsByFilter(ctx, &materialize.ExperimentalCountRelationshipsByFilterRequest{RelationshipFilter: f}, o.callOptions...)
 	})
 	if e != nil {
 		return CountRelationshipsByFilterResult{}, e
@@ -190,9 +188,7 @@ func WithWatchPermissionSetsStart(token consistency.ZedToken) WatchPermissionSet
 // Experimental: WatchPermissionSets streams native normalized permission-set changes. Cancel ctx to interrupt a pending receive.
 func (c *Client) WatchPermissionSets(ctx context.Context, request WatchPermissionSetsRequest, opts ...WatchPermissionSetsOption) iter.Seq2[PermissionSetEvent, error] {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	return func(yield func(PermissionSetEvent, error) bool) {
 		ctx, cancel, e := c.operation(ctx, o, true)
 		if e != nil {
@@ -201,8 +197,8 @@ func (c *Client) WatchPermissionSets(ctx context.Context, request WatchPermissio
 		}
 		defer cancel()
 		stub := materialize.NewWatchPermissionSetsServiceClient(c.proto.Connection())
-		for p, e := range receive(ctx, "watch permission sets", true, func(ctx context.Context) (receiver[*materialize.WatchPermissionSetsResponse], error) {
-			return stub.WatchPermissionSets(ctx, &materialize.WatchPermissionSetsRequest{OptionalStartingAfter: optionalToken(o.start)})
+		for p, e := range receive(ctx, c.retrySettings(o), "watch permission sets", true, func(ctx context.Context) (receiver[*materialize.WatchPermissionSetsResponse], error) {
+			return stub.WatchPermissionSets(ctx, &materialize.WatchPermissionSetsRequest{OptionalStartingAfter: optionalToken(o.start)}, o.callOptions...)
 		}) {
 			if e != nil {
 				yield(PermissionSetEvent{}, e)
@@ -241,9 +237,7 @@ func WithLookupPermissionSetsCursor(cursor PermissionSetCursor) LookupPermission
 // Experimental: LookupPermissionSets streams one bounded materialize page. Resume with the returned native Cursor.
 func (c *Client) LookupPermissionSets(ctx context.Context, request LookupPermissionSetsRequest, opts ...LookupPermissionSetsOption) iter.Seq2[LookupPermissionSet, error] {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	if request.Limit == 0 {
 		o.err = invalid("permission set lookup limit must be positive")
 	}
@@ -259,8 +253,8 @@ func (c *Client) LookupPermissionSets(ctx context.Context, request LookupPermiss
 			req.OptionalStartingAfterCursor = permissionSetCursor(*o.permissionSetCursor)
 		}
 		stub := materialize.NewWatchPermissionSetsServiceClient(c.proto.Connection())
-		for p, e := range receive(ctx, "lookup permission sets", true, func(ctx context.Context) (receiver[*materialize.LookupPermissionSetsResponse], error) {
-			return stub.LookupPermissionSets(ctx, req)
+		for p, e := range receive(ctx, c.retrySettings(o), "lookup permission sets", true, func(ctx context.Context) (receiver[*materialize.LookupPermissionSetsResponse], error) {
+			return stub.LookupPermissionSets(ctx, req, o.callOptions...)
 		}) {
 			if e != nil {
 				yield(LookupPermissionSet{}, e)
@@ -298,17 +292,15 @@ func WithDownloadPermissionSetsRevision(token consistency.ZedToken) DownloadPerm
 // Experimental: DownloadPermissionSets returns native file metadata. It does not download URLs or send credentials to them.
 func (c *Client) DownloadPermissionSets(ctx context.Context, request DownloadPermissionSetsRequest, opts ...DownloadPermissionSetsOption) (DownloadPermissionSetsResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return DownloadPermissionSetsResult{}, e
 	}
 	defer cancel()
 	stub := materialize.NewWatchPermissionSetsServiceClient(c.proto.Connection())
-	p, e := retry(ctx, "download permission sets", func() (*materialize.DownloadPermissionSetsResponse, error) {
-		return stub.DownloadPermissionSets(ctx, &materialize.DownloadPermissionSetsRequest{OptionalAtRevision: optionalToken(o.start)})
+	p, e := retry(ctx, c.retrySettings(o), "download permission sets", func() (*materialize.DownloadPermissionSetsResponse, error) {
+		return stub.DownloadPermissionSets(ctx, &materialize.DownloadPermissionSetsRequest{OptionalAtRevision: optionalToken(o.start)}, o.callOptions...)
 	})
 	if e != nil {
 		return DownloadPermissionSetsResult{}, e

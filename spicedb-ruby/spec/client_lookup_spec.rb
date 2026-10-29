@@ -46,7 +46,7 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
 
       expect(results).to eq(
         [SpiceDB::LookupResource.new(resource_id: 'doc1', permissionship: :has_permission, partial_caveat: nil,
-                                     looked_up_at: nil)]
+                                     looked_up_at: nil, cursor: 'cursor1')]
       )
     end
 

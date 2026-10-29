@@ -206,7 +206,7 @@ def test_sync_streaming_call_does_not_inherit_unary_default():
         client.close()
     finally:
         server.stop(0)
-    assert [r.resource.object_id for r in got] == ["a"]
+    assert [r.relationship.resource.object_id for r in got] == ["a"]
     assert elapsed >= _STALL_SECONDS, (
         f"the stream must outlive the tiny unary default -- it should have waited out the server's {_STALL_SECONDS}s stall (elapsed={elapsed:.2f}s)"
     )
@@ -319,7 +319,7 @@ async def test_aio_streaming_call_does_not_inherit_unary_default():
         await client.close()
     finally:
         server.stop(0)
-    assert [r.resource.object_id for r in got] == ["a"]
+    assert [r.relationship.resource.object_id for r in got] == ["a"]
     assert elapsed >= _STALL_SECONDS
 
 

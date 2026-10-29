@@ -81,12 +81,13 @@ module SpiceDB
       )
     end
 
-    def lookup_resource_from_proto(resp)
+    def lookup_resource_from_proto(resp, cursor = nil)
       LookupResource.new(
         resource_id: resp.resource_object_id,
         permissionship: permissionship_from_proto(resp.permissionship),
         partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info),
-        looked_up_at: ZedToken.from_proto(resp.looked_up_at)
+        looked_up_at: ZedToken.from_proto(resp.looked_up_at),
+        cursor: cursor
       )
     end
 

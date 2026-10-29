@@ -125,3 +125,27 @@ Export native generated debug and materialize roaring definitions from index.ts.
 `SpiceDBProtoClient.materialize` is a Connect client for RoaringLookupResourcesService
 created using the same authenticated transport as the other services. Never create
 a second session to expose it. Tests exercise a call through the supplied transport.
+
+## 2026-10-28 adoption contract
+
+- **Single protocol copy.** Root DESIGN.md's "Be the single copy of the protocol
+  bindings" exists because Go, Python, Ruby and the JVM register descriptors in a
+  process-global registry. protobuf-es v2 does not: descriptors are values and
+  registries are explicit, and `@authzed/authzed-node` (protobuf-ts) has no global
+  registry either. Both bindings load in one process and one bundle without
+  conflict, so this tier needs no bridge generator and no aliasing of the legacy
+  library. `src/__tests__/legacy-coexistence.test.ts` loads both, constructs both
+  clients, and round-trips a caveated relationship through each binding's wire
+  format. `@authzed/authzed-node` is a devDependency for that test only.
+- **No hand-maintained files in `src/gen/`.** This tier carries no legacy helpers
+  bound to generated types; everything under `src/gen/` is buf output.
+- **Caller-owned transports.** `new SpiceDBProtoClient(transport)` (no session
+  manager) wraps an existing Connect `Transport`; `close()` then releases nothing,
+  because the caller owns the transport. The idiomatic client's
+  `SpiceDBClient.fromTransport` uses exactly this.
+- **Dependency floors.** `@bufbuild/protobuf` ^2.11.0 (the runtime must be at
+  least the pinned protoc-gen-es v2.11.0), `@connectrpc/connect` and
+  `@connectrpc/connect-node` ^2.0.0, verified by building and running this tier's
+  and the idiomatic client's suites against exactly those versions.
+  `@types/node` is an optional peer (>=20.19.0) so consumers are not forced onto
+  newer Node typings.

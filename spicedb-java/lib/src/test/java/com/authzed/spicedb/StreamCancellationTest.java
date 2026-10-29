@@ -2,13 +2,13 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.RelationshipUpdate;
-import build.buf.gen.authzed.api.v1.WatchRequest;
-import build.buf.gen.authzed.api.v1.WatchResponse;
-import build.buf.gen.authzed.api.v1.WatchServiceGrpc;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ReadRelationshipsRequest;
+import com.authzed.api.v1.ReadRelationshipsResponse;
+import com.authzed.api.v1.RelationshipUpdate;
+import com.authzed.api.v1.WatchRequest;
+import com.authzed.api.v1.WatchResponse;
+import com.authzed.api.v1.WatchServiceGrpc;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
@@ -122,7 +122,9 @@ class StreamCancellationTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"));
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship);
       Iterator<Relationship> iterator = stream.iterator();
 
       Thread fetchThread =

@@ -2,7 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.materialize.v0.*;
+import com.authzed.api.materialize.v0.*;
 import io.grpc.stub.StreamObserver;
 import java.util.*;
 import org.junit.jupiter.api.Test;
@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 class MaterializeContractTest {
   @Test
   void coversEveryNondeprecatedMaterializeRpc() throws Exception {
-    var token = build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken("materialized").build();
+    var token = com.authzed.api.v1.ZedToken.newBuilder().setToken("materialized").build();
     var change =
         PermissionSetChange.newBuilder()
             .setAtRevision(token)
@@ -93,7 +93,7 @@ class MaterializeContractTest {
                         .setAtRevision(token)
                         .setTimestamp(com.google.protobuf.Timestamp.newBuilder().setSeconds(123))
                         .addFiles(
-                            build.buf.gen.authzed.api.materialize.v0.File.newBuilder()
+                            com.authzed.api.materialize.v0.File.newBuilder()
                                 .setName("set")
                                 .setUrl("https://example.invalid/set"))
                         .build());

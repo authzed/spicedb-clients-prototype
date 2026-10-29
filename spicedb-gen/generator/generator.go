@@ -19,6 +19,20 @@ type LanguageGenerator interface {
 	Generate(s *schema.Schema, opts map[string]string) ([]GeneratedFile, error)
 }
 
+// Option describes one language-specific option, passed as
+// --<language>.<Name>=<Value>.
+type Option struct {
+	Name        string // e.g. "package"
+	Value       string // placeholder for the value, e.g. "<name>"
+	Description string
+}
+
+// OptionDescriber is implemented by generators that accept options, so the
+// CLI can list them in its help.
+type OptionDescriber interface {
+	Options() []Option
+}
+
 // Registry holds all registered language generators, keyed by language name.
 var Registry = map[string]LanguageGenerator{}
 

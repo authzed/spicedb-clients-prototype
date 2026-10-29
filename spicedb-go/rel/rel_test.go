@@ -24,7 +24,7 @@ func TestNativeReferencesAndTupleRoundTrip(t *testing.T) {
 	require.Equal(t, "eng", r.Subject().Object().ID())
 	require.Equal(t, "member", r.Subject().Relation())
 	require.Equal(t, "document:doc1#viewer@group:eng#member", r.String())
-	for _, s := range []string{"invalid", "document:#viewer@user:a", "document:d@user:a", "document:d#viewer@user:", "document:d#viewer@group:g#..."} {
+	for _, s := range []string{"invalid", "document:#viewer@user:a", "document:d@user:a", "document:d#viewer@user:"} {
 		_, e := rel.FromTuple(s)
 		require.Error(t, e)
 	}

@@ -34,7 +34,7 @@ const (
 	// filter that selects nothing makes libtest exit 0, so the count the run
 	// reports is asserted rather than trusted -- the same reason
 	// .github/workflows/rust.yaml greps its output for "1 passed".
-	wantLiveTestCount = 2
+	wantLiveTestCount = 5
 )
 
 // wantExamples is every example this runner expects under examples/, by name.
@@ -59,6 +59,7 @@ var wantExamples = []string{
 	"roaring_lookup_resources",
 	"schema_management",
 	"schema_reflection",
+	"tooling_escape_hatches",
 	"unrepresentable_values",
 	"watch_changes",
 	"write_relationships",
@@ -154,7 +155,7 @@ func Gen() error {
 		fmt.Printf("==> Running tests (attempt %d/%d)...\n", attempt, maxRetries)
 
 		// Build + clippy + test
-		if err := sh.RunV("cargo", "clippy", "--all-targets", "--", "-D", "warnings"); err != nil {
+		if err := sh.RunV("cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"); err != nil {
 			if attempt == maxRetries {
 				if err := gitRun("checkout", "--", "."); err != nil {
 					return fmt.Errorf("clippy failed after %d retries, and rollback (git checkout) also failed: %w", maxRetries, err)
@@ -168,7 +169,7 @@ func Gen() error {
 			continue
 		}
 
-		if err := sh.RunV("cargo", "test"); err == nil {
+		if err := sh.RunV("cargo", "test", "--all-features"); err == nil {
 			fmt.Println("==> Tests passed!")
 			// Update baseline
 			head, _ := gitOutput("rev-parse", "HEAD")
@@ -200,18 +201,18 @@ func Test() error {
 	}
 	// --all-targets so examples/ and tests/ are linted too: without it a
 	// clippy failure in example code was invisible.
-	if err := sh.RunV("cargo", "clippy", "--all-targets", "--", "-D", "warnings"); err != nil {
+	if err := sh.RunV("cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"); err != nil {
 		return err
 	}
 	if err := CheckExamples(); err != nil {
 		return err
 	}
-	return sh.RunV("cargo", "test")
+	return sh.RunV("cargo", "test", "--all-features")
 }
 
 // Lint runs cargo clippy with warnings as errors.
 func Lint() error {
-	return sh.RunV("cargo", "clippy", "--all-targets", "--", "-D", "warnings")
+	return sh.RunV("cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings")
 }
 
 // Fmt checks that all Rust code is formatted.
@@ -283,7 +284,7 @@ func IntegrationTest() error {
 	// .github/workflows/rust.yaml does for its handshake test.
 	clientEnv := map[string]string{"SPICEDB_ENDPOINT": endpoint, "SPICEDB_TOKEN": token}
 	fmt.Println("==> Running live integration tests...")
-	out, liveErr := sh.OutputWith(clientEnv, "cargo", "test", "--", "--ignored")
+	out, liveErr := sh.OutputWith(clientEnv, "cargo", "test", "--all-features", "--", "--ignored")
 	fmt.Println(out)
 	if liveErr != nil {
 		return fmt.Errorf("integration tests failed: %w", liveErr)

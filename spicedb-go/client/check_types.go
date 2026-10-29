@@ -21,6 +21,11 @@ type CheckResult struct {
 	CheckedAt  consistency.ZedToken
 	DebugTrace *DebugInformation
 	Expiration *time.Time
+	// Err is set only by bulk checks in ItemErrorsReturned mode, for an item
+	// the server (or local validation) could not check. It is a
+	// *BulkCheckError carrying the item's input index. Such a result has
+	// PermissionshipUnspecified and never grants.
+	Err error
 }
 
 // HasPermission reports whether the subject has the permission outright. It is

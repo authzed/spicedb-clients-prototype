@@ -70,8 +70,16 @@ module SpiceDB
   end
 
   # One monotonic budget is shared by every attempt and page of an operation.
+  # It also carries the operation's per-call CallOptions and RetryPolicy.
   class Budget
-    def initialize(timeout)
+    attr_reader :call_options, :retry_policy
+
+    def initialize(timeout, call_options: nil, retry_policy: nil)
+      raise InvalidArgumentError, 'call_options: expected SpiceDB::CallOptions' unless call_options.nil? || call_options.is_a?(CallOptions)
+      raise InvalidArgumentError, 'retry_policy: expected SpiceDB::RetryPolicy' unless retry_policy.nil? || retry_policy.is_a?(RetryPolicy)
+
+      @call_options = call_options
+      @retry_policy = retry_policy
       raise InvalidArgumentError, 'timeout must be finite and positive' unless timeout.nil? || (timeout.is_a?(Numeric) && timeout.finite? && timeout.positive?)
 
       @end = timeout && (monotonic + timeout)

@@ -5,87 +5,141 @@ require_relative 'error_details'
 module SpiceDB
   # Base exception for all SpiceDB errors.
   #
+  # Ruby gRPC callers rescue +GRPC::BadStatus+ and compare +#code+ with
+  # +GRPC::Core::StatusCodes+. Every SpiceDB error IS a +GRPC::BadStatus+, so
+  # that code keeps working unchanged, and every SpiceDB error reports its
+  # matching status code: the server's code for server errors, and the class's
+  # code for locally raised and caller-constructed errors (local validation is
+  # INVALID_ARGUMENT, an exhausted budget is DEADLINE_EXCEEDED). See root
+  # DESIGN.md, "Expose native errors without losing server diagnostics".
+  #
+  # +message+ is this client's display message. +server_message+ is the
+  # server's status message verbatim, or nil for an error that never reached
+  # the server. +details+ (the +GRPC::BadStatus+ field) is the server message
+  # when there is one and the display message otherwise. +metadata+ carries a
+  # server error's trailers, so +to_rpc_status+ still decodes the rich status.
+  # A mapped error keeps the original exception as +cause+.
+  #
   # Beyond the message, a SpiceDB error carries the server's structured
   # explanation of the failure when the server sent one -- the
-  # `google.rpc.ErrorInfo` detail attached to the status. See root DESIGN.md,
-  # "RULE: Error mapping must not lose the server's detail".
+  # `google.rpc.ErrorInfo` detail attached to the status.
   #
   # @!attribute [r] reason
   #   @return [String] the name of an `authzed.api.v1.ErrorReason` enum value,
   #     e.g. `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`; empty when the server
-  #     attached no ErrorInfo. Surfaced exactly as the server sent it -- a
-  #     reason a newer server knows and this client does not is passed through
-  #     unchanged rather than coerced or rejected, because it is
-  #     server-supplied and root DESIGN.md's "RULE: A conversion that cannot
-  #     preserve meaning must fail" requires server-supplied unknowns to
-  #     degrade safely rather than raise.
+  #     attached no ErrorInfo. Surfaced exactly as the server sent it.
   # @!attribute [r] reason_domain
   #   @return [String] who produced the reason; SpiceDB uses "authzed.com"
   # @!attribute [r] reason_metadata
   #   @return [Hash{String=>String}] the specifics behind the reason, such as
   #     which precondition failed
-  class Error < StandardError
-    attr_reader :delete_progress, :input_index, :reason, :reason_domain, :reason_metadata
+  # @!attribute [r] server_message
+  #   @return [String, nil] the server's status message, verbatim
+  class Error < GRPC::BadStatus
+    attr_reader :delete_progress, :input_index, :reason, :reason_domain, :reason_metadata, :server_message
 
-    def initialize(message = nil, reason: '', reason_domain: '', reason_metadata: {})
-      super(message)
+    # The status code an error of this class reports when none is supplied.
+    def self.default_code = GRPC::Core::StatusCodes::UNKNOWN
+
+    # Builds the error class matching +code+, for test doubles and fakes. The
+    # result is indistinguishable from an error mapped from the server: it is
+    # rescued by the same class and reports the same +code+.
+    #
+    # @param code [Integer] a GRPC::Core::StatusCodes value
+    # @param message [String]
+    # @return [SpiceDB::Error]
+    def self.from_code(code, message, **)
+      raise ArgumentError, 'code must be an Integer GRPC::Core::StatusCodes value' unless code.is_a?(Integer)
+
+      GRPC_CODE_TO_ERROR.fetch(code, Error).new(message, code: code, **)
+    end
+
+    def initialize(message = nil, code: self.class.default_code, server_message: nil, metadata: {}, reason: '',
+                   reason_domain: '', reason_metadata: {})
+      display = message.nil? ? self.class.name : message.to_s
+      super(code, server_message || display, metadata || {})
+      @display_message = display
+      @server_message = server_message
       @reason = reason
       @reason_domain = reason_domain
       # Copied, not aliased: the caller's Hash must not become a live handle
-      # into a raised error, nor the error's into the caller's. Every other
-      # client copies here. `dup` is required -- `Hash#to_h` returns `self` for
-      # a Hash, so freezing its result alone would freeze the caller's object.
+      # into a raised error, nor the error's into the caller's. `dup` is
+      # required -- `Hash#to_h` returns `self` for a Hash.
       @reason_metadata = reason_metadata.to_h.dup.freeze
     end
+
+    # GRPC::BadStatus formats its message as "<code>:<details>"; a SpiceDB
+    # error keeps its display message.
+    def to_s = @display_message
+
+    def inspect = "#<#{self.class.name}: #{@display_message} (code=#{code})>"
   end
 
   # The caller does not have permission to execute the operation.
-  class PermissionDeniedError < Error; end
+  class PermissionDeniedError < Error
+    def self.default_code = GRPC::Core::StatusCodes::PERMISSION_DENIED
+  end
 
   # The requested resource was not found.
-  class NotFoundError < Error; end
+  class NotFoundError < Error
+    def self.default_code = GRPC::Core::StatusCodes::NOT_FOUND
+  end
 
   # The resource already exists.
-  class AlreadyExistsError < Error; end
+  class AlreadyExistsError < Error
+    def self.default_code = GRPC::Core::StatusCodes::ALREADY_EXISTS
+  end
 
-  # The request contained an invalid argument.
-  class InvalidArgumentError < Error; end
+  # The request contained an invalid argument. Local validation raises this.
+  class InvalidArgumentError < Error
+    def self.default_code = GRPC::Core::StatusCodes::INVALID_ARGUMENT
+  end
 
   # A precondition for the operation was not met.
-  class FailedPreconditionError < Error; end
+  class FailedPreconditionError < Error
+    def self.default_code = GRPC::Core::StatusCodes::FAILED_PRECONDITION
+  end
 
   # The service is currently unavailable.
-  class UnavailableError < Error; end
+  class UnavailableError < Error
+    def self.default_code = GRPC::Core::StatusCodes::UNAVAILABLE
+  end
 
   # The operation was cancelled.
-  class CancelledError < Error; end
+  class CancelledError < Error
+    def self.default_code = GRPC::Core::StatusCodes::CANCELLED
+  end
 
-  # The operation exceeded the deadline.
-  class DeadlineExceededError < Error; end
+  # The operation exceeded the deadline. An exhausted local budget raises this.
+  class DeadlineExceededError < Error
+    def self.default_code = GRPC::Core::StatusCodes::DEADLINE_EXCEEDED
+  end
 
   # The server has received too many requests.
-  class ResourceExhaustedError < Error; end
+  class ResourceExhaustedError < Error
+    def self.default_code = GRPC::Core::StatusCodes::RESOURCE_EXHAUSTED
+  end
 
   # The request carried no usable credentials.
   #
-  # In SpiceDB this is a wrong, expired, or rotated API token -- the most
-  # common error a new integration produces. It is distinct from
-  # PermissionDeniedError, which means the caller was identified but is not
-  # allowed, and from a bare Error, which may be an internal server fault:
-  # refresh credentials on this one, page someone on that one.
-  class UnauthenticatedError < Error; end
+  # In SpiceDB this is a wrong, expired, or rotated API token. It is distinct
+  # from PermissionDeniedError, which means the caller was identified but is
+  # not allowed, and from a bare Error, which may be an internal server fault.
+  class UnauthenticatedError < Error
+    def self.default_code = GRPC::Core::StatusCodes::UNAUTHENTICATED
+  end
 
   # A ZedToken names a revision that is no longer available.
   #
   # SpiceDB returns OUT_OF_RANGE when the revision a ZedToken refers to has
   # expired or been garbage-collected. Recovery is mechanical: discard the
   # stale token and re-read at full consistency.
-  class OutOfRangeError < Error; end
+  class OutOfRangeError < Error
+    def self.default_code = GRPC::Core::StatusCodes::OUT_OF_RANGE
+  end
 
-  # Maps gRPC status codes to SpiceDB exception classes.
-  #
-  # Uses GRPC::Core::StatusCodes constants when the grpc gem is available,
-  # falling back to integer codes.
+  # Maps gRPC status codes to SpiceDB exception classes. Codes without an
+  # entry map to SpiceDB::Error, which still reports the original code.
   GRPC_CODE_TO_ERROR = {
     1 => CancelledError,          # CANCELLED
     3 => InvalidArgumentError,    # INVALID_ARGUMENT
@@ -100,14 +154,9 @@ module SpiceDB
     16 => UnauthenticatedError    # UNAUTHENTICATED
   }.freeze
 
-  # gRPC status codes that are transient and worth retrying.
-  #
-  # RESOURCE_EXHAUSTED (8) is deliberately excluded. In SpiceDB it signals
-  # either memory load-shed (retrying adds load to an already-overloaded
-  # server) or a deterministic MaxDepthExceeded (retrying can never succeed
-  # -- it just re-runs the most expensive class of check several times
-  # before surfacing the same error). See DESIGN.md, "Automatic retry is
-  # for idempotent operations only".
+  # gRPC status codes the DEFAULT retry policy retries. RESOURCE_EXHAUSTED
+  # (8) is deliberately excluded: in SpiceDB it signals memory load-shed or a
+  # deterministic MaxDepthExceeded. A caller's RetryPolicy may opt into it.
   TRANSIENT_CODES = [
     10, # ABORTED
     14 # UNAVAILABLE
@@ -115,23 +164,22 @@ module SpiceDB
 
   module_function
 
-  # Converts a gRPC error to a typed SpiceDB exception.
+  # Converts a gRPC error to a typed SpiceDB exception. A SpiceDB error is
+  # returned unchanged.
   #
   # Prefers a usable (non-empty String) `#details` — as found on
   # `GRPC::BadStatus` — over `#message`. `Google::Rpc::Status` (used for
   # per-item bulk-check errors) also responds to `#details`, but there it is
-  # a repeated `google.protobuf.Any` field, not a message string, so it is
-  # skipped in favor of `#message`.
-  #
-  # The server's ErrorInfo detail, when present, is surfaced on the returned
-  # exception as `reason`/`reason_domain`/`reason_metadata`. See root
-  # DESIGN.md, "RULE: Error mapping must not lose the server's detail".
+  # a repeated `google.protobuf.Any` field, so it is skipped in favor of
+  # `#message`. The chosen text is kept verbatim as +server_message+.
   #
   # @param err [GRPC::BadStatus, Google::Rpc::Status] a gRPC or rich status error
   # @return [SpiceDB::Error] a typed SpiceDB exception
   def to_spicedb_error(err)
-    code = err.respond_to?(:code) ? err.code : nil
-    cls = GRPC_CODE_TO_ERROR.fetch(code, Error)
+    return err if err.is_a?(Error)
+
+    status = err.respond_to?(:code) && err.code.is_a?(Integer)
+    code = status ? err.code : GRPC::Core::StatusCodes::UNKNOWN
     details = err.respond_to?(:details) ? err.details : nil
     message = if details.is_a?(String) && !details.empty?
                 details
@@ -140,10 +188,38 @@ module SpiceDB
               else
                 err.to_s
               end
-    cls.new(message, **ErrorDetails.reason_kwargs(err))
+    metadata = err.respond_to?(:metadata) && err.metadata.is_a?(Hash) ? err.metadata : {}
+    GRPC_CODE_TO_ERROR.fetch(code, Error).new(message, code: code, server_message: status ? message : nil, metadata: metadata,
+                                                       **ErrorDetails.reason_kwargs(err))
   end
 
-  # Returns true if the error is transient and worth retrying.
+  # Classifies any error by its gRPC status code (a GRPC::Core::StatusCodes
+  # value): a SpiceDB error, a raw GRPC::BadStatus (for example raised by a
+  # fake built on the generated stubs), or a Google::Rpc::Status. nil is OK;
+  # anything else is UNKNOWN.
+  #
+  # @param err [Exception, Google::Rpc::Status, nil]
+  # @return [Integer]
+  def code_of(err)
+    return GRPC::Core::StatusCodes::OK if err.nil?
+    return err.code if err.is_a?(GRPC::BadStatus)
+    return err.code if defined?(Google::Rpc::Status) && err.is_a?(Google::Rpc::Status)
+
+    GRPC::Core::StatusCodes::UNKNOWN
+  end
+
+  # Returns the SpiceDB error class an error classifies as, so a raw
+  # GRPC::BadStatus can be tested against the same classes a native error is
+  # rescued by: `SpiceDB.error_class_of(e) <= SpiceDB::FailedPreconditionError`.
+  #
+  # @return [Class]
+  def error_class_of(err)
+    return err.class if err.is_a?(Error)
+
+    GRPC_CODE_TO_ERROR.fetch(code_of(err), Error)
+  end
+
+  # Returns true if the DEFAULT retry policy would retry the error.
   #
   # @param err [Exception]
   # @return [Boolean]

@@ -41,10 +41,10 @@ async def test_async_generated_check_forwards_mode_and_result():
 @pytest.mark.parametrize("wrapper", [TypedClient, AsyncTypedClient])
 def test_generated_lookup_forwards_filter(wrapper):
     from spicedb import LookupPermissionshipFilter
-    from testdata.permissions import DocumentView
+    from testdata.permissions import DOCUMENT_VIEW
     native = Mock()
     client = wrapper(native)
-    client.lookup_resources(full(), DocumentView, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+    client.lookup_resources(full(), DOCUMENT_VIEW, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
     assert native.lookup_resources.call_args.kwargs["permissionship_filter"] is LookupPermissionshipFilter.HAS_PERMISSION_ONLY
 
 

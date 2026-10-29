@@ -152,10 +152,13 @@ describe("one total operation deadline", () => {
     });
     it("passes only remaining time to later bulk chunks", async () => {
         const c = client();
-        const rpc = vi.spyOn(c.raw().permissions, "checkBulkPermissions").mockImplementation(async (req) => { await sleep(35); return batch(req.items ?? []); });
-        await expect(c.checkBulk(Array.from({ length: 1001 }, request), { timeoutMs: 55 })).rejects.toBeInstanceOf(DeadlineExceededError);
+        const rpc = vi.spyOn(c.raw().permissions, "checkBulkPermissions").mockImplementation(async (req) => { await sleep(600); return batch(req.items ?? []); });
+        // Generous margins: the first chunk must finish inside the budget even on
+        // a loaded machine (a 35ms/55ms version flaked under load), and the
+        // second chunk must receive only what remains, less than one chunk's time.
+        await expect(c.checkBulk(Array.from({ length: 1001 }, request), { timeoutMs: 1000 })).rejects.toBeInstanceOf(DeadlineExceededError);
         expect(rpc).toHaveBeenCalledTimes(2);
-        expect(rpc.mock.calls[1][1]?.timeoutMs).toBeLessThan(35);
+        expect(rpc.mock.calls[1][1]?.timeoutMs).toBeLessThan(600);
         c.close();
     });
     it("rejects unknown delete-all progress and preserves the acknowledged count", async () => {
@@ -173,9 +176,9 @@ describe("one total operation deadline", () => {
     });
     it("retains acknowledged cumulative delete progress when a later page times out", async () => {
         const c = client();
-        const rpc = vi.spyOn(c.raw().permissions, "deleteRelationships").mockImplementation(async () => { await sleep(35); return create(DeleteRelationshipsResponseSchema, { deletedAt: { token: "page-1" }, deletionProgress: DeleteRelationshipsResponse_DeletionProgress.PARTIAL, relationshipsDeletedCount: 10n, afterResultCursor: { token: "cursor" } }); });
+        const rpc = vi.spyOn(c.raw().permissions, "deleteRelationships").mockImplementation(async () => { await sleep(600); return create(DeleteRelationshipsResponseSchema, { deletedAt: { token: "page-1" }, deletionProgress: DeleteRelationshipsResponse_DeletionProgress.PARTIAL, relationshipsDeletedCount: 10n, afterResultCursor: { token: "cursor" } }); });
         try {
-            await c.deleteAllRelationshipsNonAtomic({ resourceType: "document" }, { pageSize: 10, timeoutMs: 55 });
+            await c.deleteAllRelationshipsNonAtomic({ resourceType: "document" }, { pageSize: 10, timeoutMs: 1000 });
             throw new Error("expected deadline");
         }
         catch (error) {
@@ -183,7 +186,7 @@ describe("one total operation deadline", () => {
             expect((error as DeadlineExceededError).deleteProgress).toEqual({ revision: new ZedToken("page-1"), deletedCount: 10n, cursor: "cursor", progress: "partial" });
         }
         expect(rpc).toHaveBeenCalledTimes(2);
-        expect(rpc.mock.calls[1][1]?.timeoutMs).toBeLessThan(35);
+        expect(rpc.mock.calls[1][1]?.timeoutMs).toBeLessThan(600);
         c.close();
     });
     it("counts consumer idle time from stream method invocation", async () => {

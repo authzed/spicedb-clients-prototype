@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="10.0.0" />
+    <!-- The real legacy package, downloaded (not referenced) so the bridge test can compare its
+         type list against the forwards without loading two copies of Authzed.Api.V1. -->
+    <PackageDownload Include="Authzed.Net" Version="[1.6.0]" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../SpiceDB.Proto.csproj" />
+    <ProjectReference Include="../bridge/Authzed.Net/Authzed.Net.csproj" />
+    <ProjectReference Include="../bridge/generator/AuthzedNetBridgeGen.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>LegacyAuthzedNet</_Parameter1>
+      <_Parameter2>$(NuGetPackageRoot)authzed.net/1.6.0/lib/net8.0/Authzed.Net.dll</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>BridgeForwards</_Parameter1>
+      <_Parameter2>$(MSBuildThisFileDirectory)../bridge/Authzed.Net/TypeForwards.g.cs</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

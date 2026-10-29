@@ -26,8 +26,9 @@ type UnregisterRelationshipCounterResult struct{}
 // Experimental: RegisterRelationshipCounter registers a mutable asynchronous counter.
 func (c *Client) RegisterRelationshipCounter(ctx context.Context, request RegisterRelationshipCounterRequest, opts ...RegisterRelationshipCounterOption) (RegisterRelationshipCounterResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
+	applyOptions(c, &o, opts)
+	if _, e := mutationRetry(o, false, "register relationship counter"); e != nil {
+		return RegisterRelationshipCounterResult{}, e
 	}
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
@@ -41,16 +42,14 @@ func (c *Client) RegisterRelationshipCounter(ctx context.Context, request Regist
 	if e != nil {
 		return RegisterRelationshipCounterResult{}, e
 	}
-	_, e = c.esc.ExperimentalRegisterRelationshipCounter(ctx, &v1.ExperimentalRegisterRelationshipCounterRequest{Name: request.Name, RelationshipFilter: f})
+	_, e = c.esc.ExperimentalRegisterRelationshipCounter(ctx, &v1.ExperimentalRegisterRelationshipCounterRequest{Name: request.Name, RelationshipFilter: f}, o.callOptions...)
 	return RegisterRelationshipCounterResult{}, mapGRPCError("register relationship counter", e)
 }
 
 // Experimental: CountRelationships reads a registered asynchronous counter.
 func (c *Client) CountRelationships(ctx context.Context, request CountRelationshipsRequest, opts ...CountRelationshipsOption) (CountRelationshipsResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return CountRelationshipsResult{}, e
@@ -59,8 +58,8 @@ func (c *Client) CountRelationships(ctx context.Context, request CountRelationsh
 	if request.Name == "" {
 		return CountRelationshipsResult{}, invalid("counter name required")
 	}
-	resp, e := retry(ctx, "count relationships", func() (*v1.ExperimentalCountRelationshipsResponse, error) {
-		return c.esc.ExperimentalCountRelationships(ctx, &v1.ExperimentalCountRelationshipsRequest{Name: request.Name})
+	resp, e := retry(ctx, c.retrySettings(o), "count relationships", func() (*v1.ExperimentalCountRelationshipsResponse, error) {
+		return c.esc.ExperimentalCountRelationships(ctx, &v1.ExperimentalCountRelationshipsRequest{Name: request.Name}, o.callOptions...)
 	})
 	if e != nil {
 		return CountRelationshipsResult{}, e
@@ -74,8 +73,9 @@ func (c *Client) CountRelationships(ctx context.Context, request CountRelationsh
 // Experimental: UnregisterRelationshipCounter removes an asynchronous counter.
 func (c *Client) UnregisterRelationshipCounter(ctx context.Context, request UnregisterRelationshipCounterRequest, opts ...UnregisterRelationshipCounterOption) (UnregisterRelationshipCounterResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
+	applyOptions(c, &o, opts)
+	if _, e := mutationRetry(o, false, "unregister relationship counter"); e != nil {
+		return UnregisterRelationshipCounterResult{}, e
 	}
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
@@ -85,7 +85,7 @@ func (c *Client) UnregisterRelationshipCounter(ctx context.Context, request Unre
 	if request.Name == "" {
 		return UnregisterRelationshipCounterResult{}, invalid("counter name required")
 	}
-	_, e = c.esc.ExperimentalUnregisterRelationshipCounter(ctx, &v1.ExperimentalUnregisterRelationshipCounterRequest{Name: request.Name})
+	_, e = c.esc.ExperimentalUnregisterRelationshipCounter(ctx, &v1.ExperimentalUnregisterRelationshipCounterRequest{Name: request.Name}, o.callOptions...)
 	return UnregisterRelationshipCounterResult{}, mapGRPCError("unregister relationship counter", e)
 }
 
@@ -103,9 +103,7 @@ type RoaringLookupResourcesResult struct {
 // Experimental: RoaringLookupResources calls materialize on the same authenticated connection.
 func (c *Client) RoaringLookupResources(ctx context.Context, request RoaringLookupResourcesRequest, opts ...RoaringLookupResourcesOption) (RoaringLookupResourcesResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return RoaringLookupResourcesResult{}, e
@@ -122,8 +120,8 @@ func (c *Client) RoaringLookupResources(ctx context.Context, request RoaringLook
 		return RoaringLookupResourcesResult{}, invalid("client has no connection")
 	}
 	stub := materialize.NewRoaringLookupResourcesServiceClient(c.proto.Connection())
-	resp, e := retry(ctx, "roaring lookup resources", func() (*materialize.ExperimentalRoaringLookupResourcesResponse, error) {
-		return stub.ExperimentalRoaringLookupResources(ctx, &materialize.ExperimentalRoaringLookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject)})
+	resp, e := retry(ctx, c.retrySettings(o), "roaring lookup resources", func() (*materialize.ExperimentalRoaringLookupResourcesResponse, error) {
+		return stub.ExperimentalRoaringLookupResources(ctx, &materialize.ExperimentalRoaringLookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject)}, o.callOptions...)
 	})
 	if e != nil {
 		return RoaringLookupResourcesResult{}, e

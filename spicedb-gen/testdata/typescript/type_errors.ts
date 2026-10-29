@@ -1,5 +1,5 @@
 import { full, atLeast, TransportSecurity } from "@spicedb/client";
-import { TypedClient, Document, User, Team } from "./permissions";
+import { TypedClient, TypedTransaction, Document, User, Team, Organization, Invitation, UserWildcard, Permission } from "./permissions";
 
 declare const tc: TypedClient;
 
@@ -44,3 +44,39 @@ atLeast(written);
 tc.deleteRelationships({ resourceType: "document" }, {});
 // @ts-expect-error Watch filters use native typed filter fields.
 tc.watch({ relationshipFilters: [{ resourceType: 42 }] });
+
+// --- Adoption cases. Each line must fail on its own. ---
+// creator admits only user:*, never a concrete user
+// @ts-expect-error a wildcard-only relation rejects a concrete subject
+Organization("x").creator(User("alice"));
+// @ts-expect-error a concrete-only relation rejects the wildcard
+Organization("x").admin(UserWildcard());
+// grant admits only organization#can_admin, a permission userset
+// @ts-expect-error grant rejects a user
+Invitation("x").grant(User("alice"));
+// @ts-expect-error grant rejects the organization itself
+Invitation("x").grant(Organization("acme"));
+// @ts-expect-error canAdmin stays the permission accessor; the subject accessor is canAdminSubject()
+Invitation("x").grant(Organization("acme").canAdmin);
+// @ts-expect-error timed_grant admits only the expiring userset
+Invitation("x").timedGrant(Organization("acme").canAdminSubject());
+// inviter admits only expiring users; its key admits only the base user
+// @ts-expect-error inviter requires an expiration
+Invitation("x").inviter(User("alice"));
+// @ts-expect-error a key is identity-only and rejects an expiring subject
+Invitation("x").inviterKey(User("alice").withExpiration(new Date()));
+// @ts-expect-error a relation admitting only plain subjects has no key builder; its writer identifies the tuple
+Organization("x").adminKey(User("alice"));
+// @ts-expect-error writes cannot touch a key, only a full typed relationship
+new TypedTransaction().touch(Invitation("x").inviterKey(User("alice")));
+// @ts-expect-error the typed transaction does not shadow the native write
+tc.write(new TypedTransaction());
+// a relation check accepts only the relation's subjects
+// @ts-expect-error organization#member checks a user, not a team member
+tc.check(full(), Organization("x").memberRelation, Team("eng").member());
+// @ts-expect-error a relation check accessor is not a writer
+Organization("x").memberRelation(User("alice"));
+// @ts-expect-error a permission of one resource type is not another's
+const wrongType: Permission<"document", "view"> = Organization("x").view;
+// @ts-expect-error relation and permission names are constants
+const wrongName: "viewer" = Document("x").view.name;

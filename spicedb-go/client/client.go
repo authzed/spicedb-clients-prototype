@@ -4,6 +4,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	proto "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto"
@@ -21,8 +22,12 @@ type Client struct {
 	wsc v1.WatchServiceClient
 	esc v1.ExperimentalServiceClient
 
-	proto          *proto.Client
-	defaultTimeout time.Duration
+	proto             *proto.Client
+	defaultTimeout    time.Duration
+	noDefaultDeadline bool
+	retries           *RetryPolicy // nil means DefaultRetryPolicy
+	noStreamRetries   bool
+	opRetry           map[reflect.Type]*RetryPolicy
 }
 
 // Option configures the client when using NewWithOpts.
@@ -34,11 +39,45 @@ type options struct {
 	dialOptions         []grpc.DialOption
 	defaultTimeout      time.Duration
 	err                 error
+
+	// transportOptionSet records options that only apply when this client
+	// dials, so NewFromConn can reject them.
+	transportOptionSet bool
+
+	noDefaultDeadline     bool
+	retryPolicy           *RetryPolicy
+	retriesDisabled       bool
+	streamRetriesDisabled bool
+	opRetry               map[reflect.Type]*RetryPolicy
+}
+
+// build applies options and returns the client-wide behavior they select.
+func buildOptions(opts []Option) (*options, error) {
+	o := &options{defaultTimeout: 30 * time.Second}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o, o.err
+}
+
+func (o *options) apply(c *Client) {
+	c.defaultTimeout = o.defaultTimeout
+	c.noDefaultDeadline = o.noDefaultDeadline
+	c.noStreamRetries = o.streamRetriesDisabled
+	c.opRetry = o.opRetry
+	switch {
+	case o.retriesDisabled:
+		c.retries = &RetryPolicy{}
+	case o.retryPolicy != nil:
+		c.retries = o.retryPolicy
+	}
 }
 
 // WithInsecure selects plaintext transport. Remote credentials also require
 // WithRemotePlaintextCredentials(RemotePlaintextAllowed).
-func WithInsecure() Option { return func(o *options) { o.insecure = true } }
+func WithInsecure() Option {
+	return func(o *options) { o.insecure, o.transportOptionSet = true, true }
+}
 
 // RemotePlaintextCredentials controls sending credentials to remote plaintext endpoints.
 type RemotePlaintextCredentials uint8
@@ -57,6 +96,7 @@ func WithRemotePlaintextCredentials(policy RemotePlaintextCredentials) Option {
 			return
 		}
 		o.allowInsecureRemote = policy == RemotePlaintextAllowed
+		o.transportOptionSet = true
 	}
 }
 
@@ -79,7 +119,10 @@ func WithRemotePlaintextCredentials(policy RemotePlaintextCredentials) Option {
 // option does to the connection is nonetheless the caller's responsibility.
 func WithDialOptions(opts ...grpc.DialOption) Option {
 	opts = append([]grpc.DialOption(nil), opts...)
-	return func(o *options) { o.dialOptions = append(o.dialOptions, opts...) }
+	return func(o *options) {
+		o.dialOptions = append(o.dialOptions, opts...)
+		o.transportOptionSet = true
+	}
 }
 
 // NewPlaintext creates a plaintext client. Remote endpoints require
@@ -96,13 +139,9 @@ func NewSystemTLS(endpoint, presharedKey string, opts ...Option) (*Client, error
 
 // NewWithOpts creates a client with functional options.
 func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error) {
-	o := &options{defaultTimeout: 30 * time.Second}
-	for _, opt := range opts {
-		opt(o)
-	}
-
-	if o.err != nil {
-		return nil, o.err
+	o, err := buildOptions(opts)
+	if err != nil {
+		return nil, err
 	}
 	var protoOpts []proto.Option
 	if o.insecure {
@@ -128,14 +167,43 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 		return nil, fmt.Errorf("spicedb: failed to create client: %w", err)
 	}
 
-	return &Client{
-		psc:            pc.PermissionsServiceClient,
-		ssc:            pc.SchemaServiceClient,
-		wsc:            pc.WatchServiceClient,
-		esc:            pc.ExperimentalServiceClient,
-		proto:          pc,
-		defaultTimeout: o.defaultTimeout,
-	}, nil
+	return newClient(pc, o), nil
+}
+
+func newClient(pc *proto.Client, o *options) *Client {
+	c := &Client{
+		psc:   pc.PermissionsServiceClient,
+		ssc:   pc.SchemaServiceClient,
+		wsc:   pc.WatchServiceClient,
+		esc:   pc.ExperimentalServiceClient,
+		proto: pc,
+	}
+	o.apply(c)
+	return c
+}
+
+// NewFromConn creates a client over an existing connection, such as an
+// in-memory or buffered-listener connection, or one from SpiceDB's test
+// server. The connection stays caller-owned: Close does not close it.
+//
+// The connection must already carry its credentials and transport security,
+// so WithInsecure, WithRemotePlaintextCredentials and WithDialOptions are
+// rejected. Operation behavior (WithDefaultTimeout, WithDefaultDeadline,
+// WithRetries, WithRetryPolicy, WithStreamRetries) applies as usual. gRPC's
+// own retries are not disabled on a supplied connection; configure the
+// connection without them so mutations are never replayed.
+func NewFromConn(conn grpc.ClientConnInterface, opts ...Option) (*Client, error) {
+	if conn == nil {
+		return nil, invalid("connection is required")
+	}
+	o, err := buildOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	if o.transportOptionSet {
+		return nil, invalid("transport and credential options do not apply to a supplied connection")
+	}
+	return newClient(proto.NewClientFromConn(conn), o), nil
 }
 
 // RawProto is the explicitly secondary accessor for the existing authenticated connection.

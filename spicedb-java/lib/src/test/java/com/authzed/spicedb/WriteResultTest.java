@@ -2,9 +2,9 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.WriteRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.WriteRelationshipsResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.WriteRelationshipsRequest;
+import com.authzed.api.v1.WriteRelationshipsResponse;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
@@ -23,8 +23,7 @@ class WriteResultTest {
               WriteRelationshipsRequest request, StreamObserver<WriteRelationshipsResponse> out) {
             var response = WriteRelationshipsResponse.newBuilder();
             if (revision != null)
-              response.setWrittenAt(
-                  build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(revision));
+              response.setWrittenAt(com.authzed.api.v1.ZedToken.newBuilder().setToken(revision));
             out.onNext(response.build());
             out.onCompleted();
           }

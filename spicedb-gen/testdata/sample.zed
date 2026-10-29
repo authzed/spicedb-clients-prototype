@@ -1,3 +1,5 @@
+use expiration
+
 caveat ip_range(allowed_cidr string) {
     allowed_cidr == "0.0.0.0/0"
 }
@@ -19,4 +21,21 @@ definition document {
     permission view = viewer + editor + owner
     permission edit = editor + owner
     permission delete = owner
+}
+
+definition organization {
+    relation admin: user
+    relation member: user
+    relation creator: user:*
+    relation guest: user | user:*
+    permission can_admin = admin
+    permission view = admin + member + guest
+}
+
+definition invitation {
+    relation org: organization
+    relation grant: organization#can_admin
+    relation timed_grant: organization#can_admin with expiration
+    relation inviter: user with expiration
+    permission accept = grant + timed_grant
 }

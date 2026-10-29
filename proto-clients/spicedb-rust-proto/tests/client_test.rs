@@ -201,6 +201,42 @@ mod insecure_host_guard {
         (addr, rx)
     }
 
+    /// `from_channel` wraps a caller-owned channel: the token (when given) is
+    /// sent, no token sends no authorization header, and the caller's channel
+    /// keeps working after a client built on it is dropped.
+    #[tokio::test]
+    async fn from_channel_uses_the_callers_channel_and_optional_token() {
+        let (addr, mut rx) = start_capturing_server().await;
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+            .unwrap()
+            .connect_lazy();
+
+        let client = SpiceDBProtoClient::from_channel(channel.clone(), Some("tok")).unwrap();
+        let _ = client
+            .schema
+            .clone()
+            .read_schema(ReadSchemaRequest {})
+            .await;
+        drop(client);
+        assert_eq!(rx.recv().await.unwrap().as_deref(), Some("Bearer tok"));
+
+        let anonymous = SpiceDBProtoClient::from_channel(channel, None).unwrap();
+        let _ = anonymous
+            .schema
+            .clone()
+            .read_schema(ReadSchemaRequest {})
+            .await;
+        assert_eq!(rx.recv().await.unwrap(), None);
+
+        assert!(matches!(
+            SpiceDBProtoClient::from_channel(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy(),
+                Some("bad\ntoken"),
+            ),
+            Err(SpiceDBProtoClientError::InvalidToken(_))
+        ));
+    }
+
     /// The regression test: constructing insecurely against a non-loopback
     /// endpoint, with no opt-in, must be refused before any transport work
     /// happens at all -- not merely fail eventually.
@@ -218,9 +254,13 @@ mod insecure_host_guard {
     /// remote host was ever constructed.
     #[tokio::test]
     async fn refuses_insecure_non_loopback_without_opt_in() {
-        let result =
-            SpiceDBProtoClient::new_with_options("evil example.com:1234", "super-secret-token", true, false)
-                .await;
+        let result = SpiceDBProtoClient::new_with_options(
+            "evil example.com:1234",
+            "super-secret-token",
+            true,
+            false,
+        )
+        .await;
 
         match result {
             Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)) => {
@@ -238,7 +278,9 @@ mod insecure_host_guard {
                  URI/transport work), but got a Transport error instead -- meaning control reached \
                  Endpoint::from_shared before the guard did: {e}"
             ),
-            Ok(_) => panic!("expected construction to be refused for a non-loopback endpoint with no opt-in"),
+            Ok(_) => panic!(
+                "expected construction to be refused for a non-loopback endpoint with no opt-in"
+            ),
         }
     }
 
@@ -270,13 +312,9 @@ mod insecure_host_guard {
     /// between the loopback and opt-in cases.
     #[tokio::test]
     async fn allow_insecure_remote_credentials_permits_non_loopback_construction() {
-        let client = SpiceDBProtoClient::new_with_options(
-            "192.0.2.1:1234",
-            "remote-token",
-            true,
-            true,
-        )
-        .await;
+        let client =
+            SpiceDBProtoClient::new_with_options("192.0.2.1:1234", "remote-token", true, true)
+                .await;
 
         assert!(
             client.is_ok(),
@@ -313,7 +351,8 @@ mod insecure_host_guard {
         let endpoint = format!("[::1]:0@{addr}");
 
         let result =
-            SpiceDBProtoClient::new_with_options(&endpoint, "super-secret-token", true, false).await;
+            SpiceDBProtoClient::new_with_options(&endpoint, "super-secret-token", true, false)
+                .await;
 
         match result {
             Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)) => {
@@ -374,9 +413,13 @@ mod insecure_host_guard {
             // Nor does TLS.
             ("unix:/var/run/spicedb.sock", false, false),
         ] {
-            let result =
-                SpiceDBProtoClient::new_with_options(endpoint, "super-secret-token", insecure, allow_remote)
-                    .await;
+            let result = SpiceDBProtoClient::new_with_options(
+                endpoint,
+                "super-secret-token",
+                insecure,
+                allow_remote,
+            )
+            .await;
 
             match result {
                 Err(SpiceDBProtoClientError::UnixSocketNotSupported(msg)) => {
@@ -491,7 +534,8 @@ mod insecure_host_guard {
     /// refused outright.
     #[tokio::test]
     async fn refuses_non_loopback_test_net_address_without_opt_in() {
-        let result = SpiceDBProtoClient::new_with_options("192.0.2.1:1234", "token", true, false).await;
+        let result =
+            SpiceDBProtoClient::new_with_options("192.0.2.1:1234", "token", true, false).await;
         assert!(matches!(
             result,
             Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_))

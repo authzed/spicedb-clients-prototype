@@ -186,7 +186,9 @@ pub fn is_loopback_endpoint(endpoint: &str) -> bool {
 /// gRPC request.
 #[derive(Clone)]
 pub struct BearerTokenInterceptor {
-    token: MetadataValue<tonic::metadata::Ascii>,
+    /// `None` for a client built over a caller-supplied channel without a
+    /// token (for example an embedded or test server with no preshared key).
+    token: Option<MetadataValue<tonic::metadata::Ascii>>,
 }
 
 impl Interceptor for BearerTokenInterceptor {
@@ -194,9 +196,11 @@ impl Interceptor for BearerTokenInterceptor {
         &mut self,
         mut request: tonic::Request<()>,
     ) -> Result<tonic::Request<()>, tonic::Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.token.clone());
+        if let Some(token) = &self.token {
+            request
+                .metadata_mut()
+                .insert("authorization", token.clone());
+        }
         Ok(request)
     }
 }
@@ -320,12 +324,14 @@ impl SpiceDBProtoClient {
         // token from reaching an arbitrary insecure host. Refuse before any
         // Endpoint, TLS config, or channel is created.
         if insecure && !allow_insecure_remote_credentials && !is_loopback_endpoint(endpoint) {
-            return Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(format!(
+            return Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(
+                format!(
                 "spicedb: refusing to send credentials over an insecure (plaintext) connection to \
                  non-loopback endpoint \"{endpoint}\": use TLS (insecure: false), or pass \
                  allow_insecure_remote_credentials: true if you intend to send a bearer token in \
                  cleartext to a remote host"
-            )));
+            ),
+            ));
         }
 
         // transport_authority, not the raw endpoint: a bare IPv6 literal must
@@ -359,27 +365,29 @@ impl SpiceDBProtoClient {
             ep.connect().await?
         };
 
-        // Not .expect(): a gRPC metadata value is an ASCII header value, so a
-        // token holding a control character has no valid encoding -- and the
-        // overwhelmingly common way to get one is a trailing newline on a
-        // secret read from a file or a mounted k8s secret. Panicking there
-        // unwinds out of a Result-returning async fn, aborting the Tokio task
-        // carrying it, or the process under panic = "abort". Note that
-        // non-ASCII text such as "tokén" is NOT affected, and neither is a
-        // horizontal tab: bytes >= 0x80 are legal obs-text header octets and
-        // HTAB is legal field-value whitespace, which is what makes the
-        // surviving control-character case easy to miss.
-        let bearer = format!("Bearer {}", token)
-            .parse::<MetadataValue<tonic::metadata::Ascii>>()
-            .map_err(|_| {
-                SpiceDBProtoClientError::InvalidToken(
-                    "spicedb: token is not a valid gRPC metadata value: it contains a character \
-                     that cannot appear in an HTTP header (most often a trailing newline on a \
-                     token read from a file). Strip surrounding whitespace before passing it."
-                        .to_string(),
-                )
-            })?;
+        let bearer = bearer_token(token)?;
+        Ok(Self::from_parts(channel, Some(bearer)))
+    }
 
+    /// Wraps an existing tonic [`Channel`] without dialing anything.
+    ///
+    /// The channel stays caller-owned: `Channel` is a cheap handle onto a
+    /// shared connection, this client keeps its own clone, and dropping the
+    /// client never closes the connection the caller still holds. Use it for
+    /// in-memory channels (`Endpoint::connect_with_connector` over a
+    /// `tokio::io::duplex`), buffered listeners, or a connection the caller
+    /// configured itself. No TLS or endpoint guard applies: the caller chose
+    /// the transport. `token`, when given, is sent as `Bearer <token>` on
+    /// every call; `None` sends no `authorization` header.
+    pub fn from_channel(
+        channel: Channel,
+        token: Option<&str>,
+    ) -> Result<Self, SpiceDBProtoClientError> {
+        let bearer = token.map(bearer_token).transpose()?;
+        Ok(Self::from_parts(channel, bearer))
+    }
+
+    fn from_parts(channel: Channel, bearer: Option<MetadataValue<tonic::metadata::Ascii>>) -> Self {
         let interceptor = BearerTokenInterceptor { token: bearer };
 
         let svc = tonic::service::interceptor::InterceptedService::new(
@@ -392,14 +400,20 @@ impl SpiceDBProtoClient {
         let watch = v1::watch_service_client::WatchServiceClient::new(svc.clone());
         let experimental =
             v1::experimental_service_client::ExperimentalServiceClient::new(svc.clone());
-        let materialize_relationships = materialize_v0::relationships_service_client::RelationshipsServiceClient::new(svc.clone());
-        let watch_permissions = materialize_v0::watch_permissions_service_client::WatchPermissionsServiceClient::new(svc.clone());
+        let materialize_relationships =
+            materialize_v0::relationships_service_client::RelationshipsServiceClient::new(
+                svc.clone(),
+            );
+        let watch_permissions =
+            materialize_v0::watch_permissions_service_client::WatchPermissionsServiceClient::new(
+                svc.clone(),
+            );
         let permission_sets = materialize_v0::watch_permission_sets_service_client::WatchPermissionSetsServiceClient::new(svc.clone());
         let materialize =
             materialize_v0::roaring_lookup_resources_service_client::RoaringLookupResourcesServiceClient::new(svc);
 
         #[allow(deprecated)]
-        let client = Self {
+        Self {
             permissions,
             schema,
             watch,
@@ -408,7 +422,33 @@ impl SpiceDBProtoClient {
             materialize_relationships,
             permission_sets,
             watch_permissions,
-        };
-        Ok(client)
+        }
     }
+}
+
+/// Formats `token` as a bearer metadata value, rejecting values that cannot
+/// appear in an HTTP header.
+fn bearer_token(
+    token: &str,
+) -> Result<MetadataValue<tonic::metadata::Ascii>, SpiceDBProtoClientError> {
+    // Not .expect(): a gRPC metadata value is an ASCII header value, so a
+    // token holding a control character has no valid encoding -- and the
+    // overwhelmingly common way to get one is a trailing newline on a
+    // secret read from a file or a mounted k8s secret. Panicking there
+    // unwinds out of a Result-returning async fn, aborting the Tokio task
+    // carrying it, or the process under panic = "abort". Note that
+    // non-ASCII text such as "tokén" is NOT affected, and neither is a
+    // horizontal tab: bytes >= 0x80 are legal obs-text header octets and
+    // HTAB is legal field-value whitespace, which is what makes the
+    // surviving control-character case easy to miss.
+    format!("Bearer {}", token)
+        .parse::<MetadataValue<tonic::metadata::Ascii>>()
+        .map_err(|_| {
+            SpiceDBProtoClientError::InvalidToken(
+                "spicedb: token is not a valid gRPC metadata value: it contains a character \
+                 that cannot appear in an HTTP header (most often a trailing newline on a \
+                 token read from a file). Strip surrounding whitespace before passing it."
+                    .to_string(),
+            )
+        })
 }

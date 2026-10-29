@@ -103,6 +103,21 @@ public class LookupSubjectsTest
         Assert.True(sawWildcard, "expected a wildcard (*) subject in the results");
         Assert.Contains("eve", excludedIDs);
 
+        // ProtoConvert reproduces the server's wire response exactly, including the deprecated
+        // top-level fields SpiceDB still fills, so tools can persist or relay native results.
+        var raw = client.RawProto().Permissions.LookupSubjects(new Authzed.Api.V1.LookupSubjectsRequest
+        {
+            Consistency = SpiceDB.Client.Protocol.ProtoConvert.ToProto(Full()),
+            Resource = SpiceDB.Client.Protocol.ProtoConvert.ToProto(new ObjectRef("document", "publicdoc")),
+            Permission = "view",
+            SubjectObjectType = "user",
+        });
+        while (await raw.ResponseStream.MoveNext(default))
+        {
+            var wire = raw.ResponseStream.Current;
+            Assert.Equal(wire, SpiceDB.Client.Protocol.ProtoConvert.ToProto(SpiceDB.Client.Protocol.ProtoConvert.FromProto(wire)));
+        }
+
         // Leave the shared state as the other examples expect it.
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
     }

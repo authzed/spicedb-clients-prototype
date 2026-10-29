@@ -166,4 +166,26 @@ async fn main() {
         !delete_revision.revision.as_ref().is_empty(),
         "expected non-empty revision"
     );
+
+    // An empty transaction is sent like any other: SpiceDB evaluates its
+    // preconditions and returns the current revision, so it doubles as a
+    // guarded revision read.
+    let mut probe = Transaction::new();
+    probe.must_match(Filter::new("document").with_resource_id("firstdoc"));
+    let current = client
+        .write(spicedb::WriteRequest::new(probe))
+        .await
+        .expect("empty write failed");
+    assert!(!current.revision.as_ref().is_empty(), "expected a revision");
+    let mut failing = Transaction::new();
+    failing.must_match(Filter::new("document").with_resource_id("no-such-doc"));
+    let err = client
+        .write(spicedb::WriteRequest::new(failing))
+        .await
+        .expect_err("an unmet precondition fails an empty write too");
+    assert!(
+        matches!(err, spicedb::SpiceDBError::FailedPrecondition(_)),
+        "{err:?}"
+    );
+    println!("empty write returned revision {}", current.revision);
 }

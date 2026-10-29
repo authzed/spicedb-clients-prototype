@@ -74,6 +74,7 @@ to fail".
 | `error_mapping` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
 | `insecure_opt_in` | Why `.plaintext()` is loopback-only, and the named opt-in a remote plaintext host requires |
 | `retry_policy` | Which calls are retried for you and which are not, counted server-side |
+| `tooling_escape_hatches` | Tooling features without `raw_proto()`: `from_channel` over a caller-owned channel, retry policy and disabled default deadline, response metadata capture, import batch size and the server's abort status, paged reads resumed from a cursor, per-item bulk errors, delete-all progress, full tuple syntax and `protoconv` output |
 | `unrepresentable_values` | A filter the wire cannot express fails loudly; unknown server enums degrade safely |
 
 ## Canonical requests
@@ -88,4 +89,4 @@ with `has_permission()` and reject empty aggregates where appropriate.
 Writes and schema writes return a result with a native `ZedToken` revision.
 Deletion distinguishes bounded `DeleteRequest` from explicit `DeleteAllRequest`.
 All stream values own their transport handles and release them on drop. The
-18 example names remain reconciled by `mage checkExamples`; none is skipped.
+19 example names remain reconciled by `mage checkExamples`; none is skipped.

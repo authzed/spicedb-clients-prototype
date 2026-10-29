@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
@@ -23,7 +25,8 @@ func main() {
 	filteredArgs, langOpts := extractLangOptions(os.Args[1:])
 	os.Args = append([]string{os.Args[0]}, filteredArgs...)
 
-	schemaPath := flag.String("schema", "", "path to .zed schema file (required)")
+	flag.Usage = usage
+	schemaPath := flag.String("schema", "", "path to .zed schema file, or - to read the schema from stdin (required)")
 	lang := flag.String("lang", "", "target language, e.g. \"typescript\" (required)")
 	outPath := flag.String("out", "", "output file path (required)")
 	flag.Parse()
@@ -34,7 +37,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	s, err := schema.ParseFile(*schemaPath)
+	var s *schema.Schema
+	var err error
+	if *schemaPath == "-" {
+		var text []byte
+		text, err = io.ReadAll(os.Stdin)
+		if err == nil {
+			s, err = schema.ParseString(string(text))
+		}
+	} else {
+		s, err = schema.ParseFile(*schemaPath)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "schema parse error: %v\n", err)
 		os.Exit(1)
@@ -73,6 +86,30 @@ func main() {
 			os.Exit(2)
 		}
 		fmt.Printf("wrote %s\n", dest)
+	}
+}
+
+// usage prints the standard flags followed by each language's options.
+func usage() {
+	out := flag.CommandLine.Output()
+	_, _ = fmt.Fprintf(out, "Usage: %s --schema <file|-> --lang <language> --out <path> [--<language>.<option>=<value> ...]\n\n", filepath.Base(os.Args[0]))
+	flag.PrintDefaults()
+	langs := make([]string, 0, len(generator.Registry))
+	for name := range generator.Registry {
+		langs = append(langs, name)
+	}
+	sort.Strings(langs)
+	_, _ = fmt.Fprintln(out, "\nLanguage options:")
+	for _, name := range langs {
+		_, _ = fmt.Fprintf(out, "\n  %s\n", name)
+		d, ok := generator.Registry[name].(generator.OptionDescriber)
+		if !ok || len(d.Options()) == 0 {
+			_, _ = fmt.Fprintln(out, "    (none)")
+			continue
+		}
+		for _, o := range d.Options() {
+			_, _ = fmt.Fprintf(out, "    --%s.%s=%s\n        %s\n", name, o.Name, o.Value, o.Description)
+		}
 	}
 }
 

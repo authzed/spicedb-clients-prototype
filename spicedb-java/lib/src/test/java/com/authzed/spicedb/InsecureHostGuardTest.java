@@ -2,7 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.PermissionsServiceGrpc;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import io.grpc.Metadata;
 import io.grpc.Server;

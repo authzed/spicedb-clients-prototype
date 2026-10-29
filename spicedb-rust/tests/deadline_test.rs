@@ -215,6 +215,7 @@ async fn streaming_call_does_not_inherit_the_unary_default() {
         .into_iter()
         .map(|r| {
             r.expect("stream must not fail")
+                .relationship
                 .resource()
                 .object_id()
                 .to_owned()

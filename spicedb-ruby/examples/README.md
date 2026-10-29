@@ -81,13 +81,14 @@ example must be executed by CI and must be able to fail".
 | `call_deadlines/` | Constructing a client with `default_timeout:`, a per-call `timeout:` override, and confirming bulk import isn't bounded by the unary default |
 | `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
 | `insecure_opt_in/` | Why `new_plaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
-| `retry_policy/` | Which calls are retried for you and which are not, counted server-side |
+| `retry_policy/` | Which calls are retried for you and which are not, counted server-side; replacing the policy (`retry_policy:`) and disabling retries (`retries: Retries::DISABLED`) |
 | `unrepresentable_values/` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
 | `schema_reflection/` | Schema reflection, computable permissions, diffs |
 | `relationship_counters/` | Registering and reading relationship counters |
 | `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |
 | `raw_escape_hatch/` | The `#proto_client` escape hatch: driving the generated stub on this client's own connection to send `optional_transaction_metadata` (a proto field this gem does not wrap) and to call the single-check `CheckPermission` RPC |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `new_custom_tls(ca_cert:)`, and mutual TLS with `client_cert:`/`client_key:`. Brings up its own TLS-terminated endpoint — the only example tagged `:no_spicedb`, since a plaintext server has nothing to demonstrate about trust material |
+| `tooling_escape_hatches/` | What tools need without `proto_client`: multi-page reads with cursors and resume, full tuple syntax with caveats and expiration, the server status of an aborted import, all-or-nothing and progress-reporting deletes, response trailers, a client over a caller-owned channel, watch schema events, and errors rescued as `GRPC::BadStatus` |
 
 Revision values are `SpiceDB::ZedToken`: use `ZedToken.new(stored_string)` when loading a revision and `token.to_s` when persisting it. Token absence is `nil`.
 Check diagnostics use `tracing: SpiceDB::Tracing::ENABLED`. Watch content uses an array of `SpiceDB::WatchContent` cases. To intentionally send credentials over remote plaintext, use `Client.new_plaintext(endpoint, key, remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT)`; local-only credentials remain the default.

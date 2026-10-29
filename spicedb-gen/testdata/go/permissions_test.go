@@ -14,29 +14,14 @@ import (
 	. "github.com/authzed/spicedb-clients/spicedb-gen/testdata/go"
 )
 
-const schema = `
-caveat ip_range(allowed_cidr string) {
-    allowed_cidr == "0.0.0.0/0"
-}
-
-caveat time_window(start string, end string) {
-    start != "" && end != ""
-}
-
-definition user {}
-
-definition team {
-    relation member: user | team#member
-}
-
-definition document {
-    relation viewer: user | user with ip_range | user with time_window | team#member
-    relation editor: user
-    relation owner: user
-    permission view = viewer + editor + owner
-    permission edit = editor + owner
-    permission delete = owner
-}`
+// schema is the shared fixture schema every target language generates from.
+var schema = func() string {
+	b, err := os.ReadFile("../sample.zed")
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}()
 
 func newTestClient(t *testing.T) *TypedClient {
 	t.Helper()

@@ -227,7 +227,7 @@ def test_one_budget_across_retries_and_chunks(monkeypatch):
 
     client = SpiceDBClient("localhost:1", token="x", transport_security=TransportSecurity.PLAINTEXT)
     client._ensure_channel = Mock()
-    client._backoff_seconds = lambda _: 0.1
+    client._backoff_seconds = lambda *_: 0.1
     timeouts = []
 
     def attempt(request, **kwargs):
@@ -327,7 +327,7 @@ async def test_native_cancellation_interrupts_backoff():
 
     client = AsyncClient("localhost:1", token="x", transport_security=TransportSecurity.PLAINTEXT)
     client._ensure_channel = Mock()
-    client._backoff_seconds = lambda _: 10
+    client._backoff_seconds = lambda *_: 10
     rpc = AsyncMock(side_effect=Retry())
     client._permissions = SimpleNamespace(CheckPermission=rpc)
     pending = asyncio.create_task(client.check(CHECK, consistency=full()))

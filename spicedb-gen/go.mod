@@ -15,6 +15,7 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/authzed/authzed-go v1.11.0 // indirect
 	github.com/authzed/cel-go v0.32.0 // indirect
+	github.com/authzed/spicedb-clients/spicedb-go v0.0.0
 	github.com/ccoveille/go-safecast/v2 v2.0.0 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
@@ -36,3 +37,7 @@ require (
 	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
+
+replace github.com/authzed/spicedb-clients/spicedb-go => ../spicedb-go
+
+replace github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto => ../proto-clients/spicedb-go-proto

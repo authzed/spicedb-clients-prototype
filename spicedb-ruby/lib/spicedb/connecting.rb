@@ -43,11 +43,9 @@ module SpiceDB
     # @return [Client]
     # @raise [ArgumentError] if endpoint is not loopback and
     #   remote_credentials is LOOPBACK_ONLY.
-    def new_plaintext(endpoint, token, default_timeout: Client::DEFAULT_TIMEOUT_SECONDS,
-                      remote_credentials: RemoteCredentials::LOOPBACK_ONLY, max_retries: 3, &)
+    def new_plaintext(endpoint, token, remote_credentials: RemoteCredentials::LOOPBACK_ONLY, **, &)
       yield_or_return(
-        new(endpoint: endpoint, token: token, transport: TransportSecurity::PLAINTEXT, default_timeout: default_timeout,
-            remote_credentials: remote_credentials, max_retries: max_retries),
+        new(endpoint: endpoint, token: token, transport: TransportSecurity::PLAINTEXT, remote_credentials: remote_credentials, **),
         &
       )
     end
@@ -71,9 +69,9 @@ module SpiceDB
     #   applied to streaming calls.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
-    def new_system_tls(endpoint, token, default_timeout: Client::DEFAULT_TIMEOUT_SECONDS, max_retries: 3, &)
+    def new_system_tls(endpoint, token, **, &)
       yield_or_return(
-        new(endpoint: endpoint, token: token, transport: TransportSecurity::TLS, default_timeout: default_timeout, max_retries: max_retries),
+        new(endpoint: endpoint, token: token, transport: TransportSecurity::TLS, **),
         &
       )
     end
@@ -111,8 +109,7 @@ module SpiceDB
     #   for custom trust material that silently used the default set instead would
     #   be a quiet way to believe a private CA was configured when it was not. Also
     #   if exactly one of +client_cert+/+client_key+ is supplied.
-    def new_custom_tls(endpoint, token, ca_cert: nil, client_cert: nil, client_key: nil,
-                       default_timeout: Client::DEFAULT_TIMEOUT_SECONDS, max_retries: 3, &)
+    def new_custom_tls(endpoint, token, ca_cert: nil, client_cert: nil, client_key: nil, **, &)
       if ca_cert.nil? && client_cert.nil? && client_key.nil?
         raise InvalidArgumentError,
               'spicedb: new_custom_tls needs at least one of ca_cert:, client_cert: or ' \
@@ -122,8 +119,8 @@ module SpiceDB
       end
 
       yield_or_return(
-        new(endpoint: endpoint, token: token, transport: TransportSecurity::TLS, default_timeout: default_timeout,
-            ca_cert: ca_cert, client_cert: client_cert, client_key: client_key, max_retries: max_retries),
+        new(endpoint: endpoint, token: token, transport: TransportSecurity::TLS, ca_cert: ca_cert, client_cert: client_cert,
+            client_key: client_key, **),
         &
       )
     end

@@ -52,6 +52,7 @@ def check_results(
     resp: permission_service_pb2.CheckBulkPermissionsResponse,
     expected_items: Sequence[permission_service_pb2.CheckBulkPermissionsRequestItem],
     offset: int = 0,
+    return_item_errors: bool = False,
 ) -> list[CheckResult]:
     """Map a bulk-check response to CheckResults, raising on any per-item
     error.
@@ -98,7 +99,17 @@ def check_results(
         if pair.HasField("error"):
             error = error_from_status_proto(pair.error)
             error.input_index = offset + i
-            raise error
+            if not return_item_errors:
+                raise error
+            results.append(
+                CheckResult(
+                    permissionship=Permissionship.UNSPECIFIED,
+                    missing_context=(),
+                    checked_at=checked_at,
+                    error=error,
+                )
+            )
+            continue
         if not pair.HasField("item"):
             # The proto's `response` is a oneof -- a well-behaved server
             # always sets it to `item` or `error`, so this should be
@@ -134,6 +145,9 @@ def lookup_resource(
         permissionship=_permissionship_from_proto(resp.permissionship),
         partial_caveat=_partial_caveat_from_proto(resp),
         looked_up_at=ZedToken(resp.looked_up_at.token),
+        after_result_cursor=resp.after_result_cursor.token or None
+        if resp.HasField("after_result_cursor")
+        else None,
     )
 
 

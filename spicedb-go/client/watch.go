@@ -13,6 +13,9 @@ type WatchEvent struct {
 	Updates        []rel.Update
 	ChangesThrough consistency.ZedToken
 	IsCheckpoint   bool
+	// SchemaUpdated reports a schema change at ChangesThrough. Sent only when
+	// requested with WithUpdatesSchemaChanges(SchemaChangesIncluded).
+	SchemaUpdated bool
 }
 type UpdatesRequest struct {
 	// ObjectTypes cannot be combined with Filters.
@@ -21,11 +24,14 @@ type UpdatesRequest struct {
 	Filters []rel.Filter
 }
 
+// Updates streams relationship changes. The client-wide retry policy never
+// reopens a watch: a reopened watch with no start revision begins at a later
+// revision and silently skips the changes in between. A WithCallRetryPolicy or
+// WithOperationRetryPolicy for watch opts in to reopening before the first
+// event (pin WithUpdatesStart to make that lossless).
 func (c *Client) Updates(ctx context.Context, request UpdatesRequest, opts ...UpdatesOption) iter.Seq2[WatchEvent, error] {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	types := append([]string(nil), request.ObjectTypes...)
 	var filters []*v1.RelationshipFilter
 	var validationErr error
@@ -57,15 +63,23 @@ func (c *Client) Updates(ctx context.Context, request UpdatesRequest, opts ...Up
 		if o.start.String() != "" {
 			req.OptionalStartCursor = &v1.ZedToken{Token: o.start.String()}
 		}
-		if o.checkpoints {
-			req.OptionalUpdateKinds = []v1.WatchKind{v1.WatchKind_WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES, v1.WatchKind_WATCH_KIND_INCLUDE_CHECKPOINTS}
+		if o.checkpoints || o.schemaChanges {
+			req.OptionalUpdateKinds = []v1.WatchKind{v1.WatchKind_WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES}
+			if o.checkpoints {
+				req.OptionalUpdateKinds = append(req.OptionalUpdateKinds, v1.WatchKind_WATCH_KIND_INCLUDE_CHECKPOINTS)
+			}
+			if o.schemaChanges {
+				req.OptionalUpdateKinds = append(req.OptionalUpdateKinds, v1.WatchKind_WATCH_KIND_INCLUDE_SCHEMA_UPDATES)
+			}
 		}
-		for resp, e := range receive(ctx, "watch", true, func(ctx context.Context) (receiver[*v1.WatchResponse], error) { return c.wsc.Watch(ctx, req) }) {
+		for resp, e := range receive(ctx, c.retrySettings(o), "watch", o.callRetryPolicy != nil || o.opRetryPolicy != nil, func(ctx context.Context) (receiver[*v1.WatchResponse], error) {
+			return c.wsc.Watch(ctx, req, o.callOptions...)
+		}) {
 			if e != nil {
 				yield(WatchEvent{}, e)
 				return
 			}
-			event := WatchEvent{ChangesThrough: consistency.NewZedToken(resp.GetChangesThrough().GetToken()), IsCheckpoint: resp.GetIsCheckpoint()}
+			event := WatchEvent{ChangesThrough: consistency.NewZedToken(resp.GetChangesThrough().GetToken()), IsCheckpoint: resp.GetIsCheckpoint(), SchemaUpdated: resp.GetSchemaUpdated()}
 			for _, p := range resp.GetUpdates() {
 				u, e := nativeUpdate(p)
 				if e != nil {

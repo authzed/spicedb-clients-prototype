@@ -93,7 +93,7 @@ func pagingClient(t *testing.T, s *pagingServer) *Client {
 	t.Cleanup(srv.Stop)
 	return newTestClient(t, func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })
 }
-func TestPagedStreamsRespectPageSizeTotalLimitAndPinnedRevision(t *testing.T) {
+func TestPagedStreamsRespectPageSizeTotalLimitAndRepeatCursorArguments(t *testing.T) {
 	s := &pagingServer{t: t}
 	c := pagingClient(t, s)
 	count := 0
@@ -103,9 +103,12 @@ func TestPagedStreamsRespectPageSizeTotalLimitAndPinnedRevision(t *testing.T) {
 	}
 	require.Equal(t, 3, count)
 	require.Len(t, s.reads, 2)
+	// SpiceDB rejects a cursor whose call arguments (consistency and limit
+	// included) differ from the call that issued it, so every page repeats
+	// them; the cursor pins the revision.
 	require.Equal(t, uint32(2), s.reads[0].OptionalLimit)
-	require.Equal(t, uint32(1), s.reads[1].OptionalLimit)
-	require.Equal(t, "pinned", s.reads[1].Consistency.GetAtExactSnapshot().GetToken())
+	require.Equal(t, uint32(2), s.reads[1].OptionalLimit)
+	require.True(t, s.reads[1].Consistency.GetFullyConsistent())
 	require.Equal(t, "1", s.reads[1].OptionalCursor.Token)
 	count = 0
 	for _, e := range c.LookupResources(context.Background(), LookupResourcesRequest{ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", ""), Consistency: consistency.Full()}, WithLookupResourcesPageSize(2), WithLookupResourcesLimit(3)) {
@@ -114,8 +117,8 @@ func TestPagedStreamsRespectPageSizeTotalLimitAndPinnedRevision(t *testing.T) {
 	}
 	require.Equal(t, 3, count)
 	require.Len(t, s.lookups, 2)
-	require.Equal(t, uint32(1), s.lookups[1].OptionalLimit)
-	require.Equal(t, "pinned", s.lookups[1].Consistency.GetAtExactSnapshot().Token)
+	require.Equal(t, uint32(2), s.lookups[1].OptionalLimit)
+	require.True(t, s.lookups[1].Consistency.GetFullyConsistent())
 	count = 0
 	for _, e := range c.ExportRelationships(context.Background(), ExportRelationshipsRequest{Consistency: consistency.Full()}, WithExportRelationshipsPageSize(2), WithExportRelationshipsLimit(3)) {
 		require.NoError(t, e)
@@ -168,7 +171,7 @@ func TestStreamsRetryOnlyBeforeExposure(t *testing.T) {
 			calls := 0
 			items := 0
 			errors := 0
-			for _, e := range receive(context.Background(), "test", true, func(context.Context) (receiver[int], error) {
+			for _, e := range receive(context.Background(), retrySettings{policy: DefaultRetryPolicy(), streams: true}, "test", true, func(context.Context) (receiver[int], error) {
 				calls++
 				if partial {
 					return &scriptedReceiver{values: []int{1}, err: status.Error(codes.Unavailable, "after item")}, nil

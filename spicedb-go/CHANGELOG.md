@@ -2,6 +2,125 @@
 
 ## Unreleased
 
+- Paged reads and lookups send the page size as every request's limit,
+  whatever the total limit, so a cursor from a limited call resumes an
+  unlimited one with the same page size.
+- The client-wide retry policy no longer reopens a watch that fails before its
+  first event (a reopened watch with no start revision skips changes); a
+  per-call or per-operation policy for watch opts in.
+- Retry backoff bounds no longer overflow for large attempt counts.
+- `client.Interface` mirrors `*client.Client`'s method set; `clienttest.Store`
+  implements all of it (unsupported operations are recorded and fail with
+  `CodeUnimplemented`; `CheckIter`, `DeleteAllRelationshipsNonAtomic` and
+  `Close` work in memory). `Fault.Batch` carries import batch contents,
+  `clienttest.CursorAfter(n)` builds resume cursors, and
+  `SetReadSchemaRevision(RevisionOmitted)` emulates schema reads without a
+  revision.
+
+- `WithOperationRetryPolicy[O]` sets a client-wide retry policy for one
+  operation (e.g. never reopen `Updates`), between per-call and client-wide
+  policies in precedence. `OperationOption` is exported for generic helpers.
+  `rel.Txn.IsIdempotent()` exposes the retry-eligibility rule.
+- `clienttest.Store` records calls (`Calls`, `CallsOf`) and injects faults
+  (`SetFaultHook`, `FailNext`) before calls, import batches, import commits and
+  stream items; `ServerError` builds client-shaped errors.
+- spicedb-gen: `--help` lists each language's options; `--schema -` reads stdin.
+
+- `WithCallRetryPolicy[O]` overrides the retry policy for one call, including
+  stream establishment (exempt one Watch while retrying everything else).
+  Touch-only writes without preconditions and `WriteSchema` may opt in to
+  retries per call; other mutations reject the opt-in before any request.
+- `Write` now sends empty transactions instead of rejecting them, matching
+  SpiceDB, which evaluates their preconditions and returns the current revision.
+- `WithReadRelationshipsPaging` / `WithLookupResourcesPaging(PagingSingleRequest)`
+  send exactly one request, as the raw API does.
+- `ResolveOptions[O]` resolves an operation's options into `ResolvedOptions`
+  for test doubles and wrappers.
+- `clienttest.Store` adds `ImportRelationships`, `ExportRelationships`,
+  `ReadSchema`, `WriteSchema` and `ReflectSchema`, honors cursors, limits,
+  export filters and response-metadata targets, and returns errors shaped like
+  the real client's (`spicedb: <op>: <server message>`).
+- `BulkCheckError` and `DeleteProgressError` implement `GRPCStatus`, so
+  `status.Convert` reports the server's message once.
+- `protoconv.CheckBulkToProto` and `CheckRequestToProto`; `LookupSubjectToProto`
+  fills the deprecated fields SpiceDB still sends.
+- Generated typed clients: `--go.rename=<definition>=<GoName>`, caveats calling
+  custom CEL functions generate (expressions are opaque), typed `Txn.Updates()`,
+  `Preconditions()` and `Err()`, `WithSubjectAnyRelation`, keys only where a
+  relation needs them, and article fixes in comments.
+
+- **Fix:** paged `ReadRelationships` and `LookupResources` failed on their
+  second page ("the cursor provided does not have the same arguments as the
+  original API call"): the pager switched later pages to an exact snapshot and
+  shrank the last page's limit, and SpiceDB hashes both into the cursor. Every
+  page now repeats the caller's consistency and page size; the cursor pins the
+  revision, and total limits are enforced client-side.
+- **BREAKING:** `ReadRelationships` yields `client.ReadRelationship` and
+  `ExportRelationships` yields `client.ExportedRelationship`. Both embed
+  `rel.Relationship` (methods still apply; pass `r.Relationship` where a
+  `rel.Relationship` is required) and add `AfterResultCursor`, plus `ReadAt`
+  for reads. `LookupResource` gains `AfterResultCursor`. Resume with
+  `WithReadRelationshipsCursor`, `WithExportRelationshipsCursor` or
+  `WithLookupResourcesCursor`, repeating the request and page size.
+- `NewFromConn` builds a client over a caller-owned connection (in-memory,
+  buffered listener, SpiceDB's test server); `Close` leaves it open.
+- `ImportRelationships` reports the server's status when it aborts the stream
+  (for example `ErrAlreadyExists`) instead of `io.EOF`.
+  `WithImportRelationshipsBatchSize` sets relationships per message.
+- Retries are configurable: `WithRetryPolicy(RetryPolicy{...})` (max retries,
+  codes, backoff, `OnRetry` callback), `WithRetries(RetriesDisabled)`, and
+  `WithStreamRetries(StreamRetriesDisabled)`. Mutations are never retried.
+- `WithDefaultDeadline(DefaultDeadlineDisabled)` turns off the 30s default.
+- `client/protoconv` exports native↔proto conversions for relationships,
+  filters, preconditions, updates, consistency and tokens, plus result→proto
+  conversions for checks (with traces), lookups, expand, reads and writes.
+- `WithBulkItemErrors(ItemErrorsReturned)` returns per-item errors on
+  `CheckResult.Err` instead of failing the whole bulk check.
+- `WithCallOptions[O]` and `WithResponseMetadata[O]` pass gRPC call options
+  and capture headers/trailers on any operation.
+- `WithUpdatesSchemaChanges(SchemaChangesIncluded)` and
+  `WatchEvent.SchemaUpdated`.
+- `WithDeletePartial(PartialDisallowed)` for all-or-nothing deletes (a zero
+  limit uses the server default) and `WithDeleteAllProgress(func(DeleteResult))`.
+- `rel.FromTuple` and `Relationship.String` cover SpiceDB's full tuple syntax,
+  including `[caveat:{...}]` and `[expiration:...]`, verified against SpiceDB's
+  parser. New copy helpers `WithResource`, `WithRelation` and `WithSubject`.
+
+- The proto tier is now the canonical Go binding for `authzed.api.v1` and
+  `authzed.api.materialize.v0`. It no longer depends on authzed-go, and it
+  generates vtproto, protoc-gen-validate and grpc-gateway output plus
+  authzed-go's `HandwrittenValidate` helpers, so authzed-go can alias it via
+  `cmd/authzed-go-bridge` and both can be linked into one binary.
+- `*client.Error` implements `GRPCStatus`, so `status.Code`,
+  `status.FromError` and `status.Convert` report the matching gRPC code for
+  server errors, local cancellation and validation errors, and errors built by
+  callers. New `client.CodeOf(err)` classifies any error, including raw gRPC
+  status errors. New `client.NewError(code, message)` builds errors for test
+  doubles. New `Error.ServerMessage` holds the server's message verbatim.
+- New `client/clienttest.Store`: an in-memory double for `Write`,
+  `ReadRelationships`, `DeleteRelationships`, `Check` and `CheckBulk` with
+  SpiceDB filter, precondition and CREATE semantics.
+- `rel`: `Filter.Matches` (client-side matching with server semantics),
+  `rel.ErrFilter` (a filter that carries a deferred construction error),
+  `MustNewObject`, `MustNewSubject`, `MustNewRelationship`, `MustNewFilter`,
+  `MustFromTuple`, `Txn.Len`, short `Relationship` accessors
+  (`ResourceType`, `ResourceID`, `SubjectType`, `SubjectID`,
+  `SubjectRelation`), `String` on `ObjectRef`, `SubjectRef`, `Filter`,
+  `Update`, `Precondition`, `Txn` and both operation enums, and
+  `MarshalJSON`/`slog.LogValuer` on `Relationship`, `Update`, `Filter` and
+  `Precondition`.
+- The module no longer requires the repository root module or mage (the
+  magefile moved to `magefiles/`), and its gRPC/protobuf/gateway requirements
+  are lowered to the versions authzed-go v1.11.0 already requires.
+- Generated typed clients (spicedb-gen): permission-userset subjects
+  (`org.CanAdminSubject()`), wildcard refs (`UserWildcard()`), identity-only
+  relationship keys (`invitation.InviterKey(user)`), relation checks
+  (`org.MemberRelation()`), a typed `Txn` with `TypedClient.WriteTxn`, typed
+  `CheckBulk`, native round trips (`TypedRelationship.Relationship`,
+  `FromRelationship`, `ErrRelationship`), typed filters and relation/permission
+  name constants, validated by-name lookups, `Permission` accessors and
+  `String`, `--go.package`, and gofmt-clean output. See MIGRATION.md.
+
 - Generated `TypedClient` now directly exposes all native methods through client embedding, including bounded/non-atomic filter deletion, watch, import/export, schema, and Materialize operations. Native options and lifecycle ownership are preserved; existing schema-aware helpers and the `Client` accessor remain available.
 
 - Watch supports native relationship filters through `UpdatesRequest.Filters`, with OR semantics and local rejection of simultaneous object types. Examples use type-only relationship filters.

@@ -30,6 +30,17 @@ cd spicedb-gen && go build -o spicedb-gen ./cmd/spicedb-gen   # or: go install .
 ./spicedb-gen --schema schema.zed --lang <go|typescript|java|python> --out <output-path>
 ```
 
+For a shared API package that needs the schema's names but must not depend on
+the client library, `--go.names-only`, `--typescript.names-only` or
+`--java.names-only` emits only the definition, relation and permission name
+constants and the schema text, importing nothing beyond the standard library:
+
+```bash
+./spicedb-gen --schema schema.zed --lang go --go.package=apinames --go.names-only --out api/names.gen.go
+```
+
+`./spicedb-gen --help` lists every language's options.
+
 Tracing is optional and disabled by default; the examples enable it to make
 `CheckResult` debug information available. The snippets assume the schema below
 has already been written to the server:

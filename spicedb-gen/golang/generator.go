@@ -190,11 +190,21 @@ func parseRenames(v string) (map[string]string, error) {
 // (--go.rename=def=GoName,...) sets the Go identifier stem for definitions
 // whose names would otherwise collide with generated identifiers. Renames
 // change Go identifiers only; the schema names sent to SpiceDB never change.
+// "names-only" (--go.names-only) emits only the name constants and SchemaText
+// into names.gen.go, which imports nothing, so a shared API package can use
+// the names without depending on the client library.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	pkg := DefaultPackage
 	renames := map[string]string{}
+	namesOnly := false
 	for k, v := range opts {
 		switch k {
+		case generator.NamesOnlyOption:
+			b, err := generator.BoolOption("go", k, v)
+			if err != nil {
+				return nil, err
+			}
+			namesOnly = b
 		case "package":
 			if !token.IsIdentifier(v) || token.IsKeyword(v) {
 				return nil, fmt.Errorf("--go.package=%q is not a valid Go package name", v)
@@ -241,8 +251,12 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 
+	name, path := "typed_client.go.tmpl", "permissions.gen.go"
+	if namesOnly {
+		name, path = "names_only.go.tmpl", "names.gen.go"
+	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
 		return nil, err
 	}
 	formatted, err := format.Source(buf.Bytes())
@@ -252,7 +266,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 
 	return []generator.GeneratedFile{
 		{
-			Path:    "permissions.gen.go",
+			Path:    path,
 			Content: formatted,
 		},
 	}, nil
@@ -811,5 +825,6 @@ func (g *Generator) Options() []generator.Option {
 	return []generator.Option{
 		{Name: "package", Value: "<name>", Description: `Go package name of the generated file (default "permissions").`},
 		{Name: "rename", Value: "<definition>=<GoName>[,...]", Description: `Go identifier stem for a definition whose generated names collide; schema names on the wire are unchanged.`},
+		generator.NamesOnlyOptionDescription,
 	}
 }

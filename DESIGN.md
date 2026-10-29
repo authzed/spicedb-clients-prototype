@@ -471,6 +471,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Generated code exposes definition-name constants and the schema text it
     was generated from, so callers need neither a hand-kept name list nor a
     copy of the schema file to write it at startup.
+  - A names-only mode emits the name constants and schema text with no client
+    dependency, so a shared API package can use the names alone.
 
 - **Make generated values composable with the native layer in both directions.**
   - Typed permissions, permission refs and relationships expose their resource

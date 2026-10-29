@@ -73,6 +73,9 @@ func parseRenames(v string) (map[string]string, error) {
 //     formatted source to stdout, e.g. "google-java-format -". The template already emits
 //     google-java-format output for ordinary schema names; the formatter is the escape hatch for
 //     names long enough to push a line past google-java-format's 100-column limit.
+//   - "names-only" (optional): emit a Permissions class holding only the relation, permission and
+//     definition name constants and SCHEMA, importing only java.util.List, so a shared API package
+//     can use the names without spicedb-java on its classpath.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	pkg, ok := opts["package"]
 	if !ok || pkg == "" {
@@ -80,8 +83,15 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	}
 
 	renames := map[string]string{}
+	namesOnly := false
 	for k, v := range opts {
 		switch k {
+		case generator.NamesOnlyOption:
+			b, err := generator.BoolOption("java", k, v)
+			if err != nil {
+				return nil, err
+			}
+			namesOnly = b
 		case "package", "formatter":
 		case "rename":
 			r, err := parseRenames(v)
@@ -108,9 +118,20 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	defRenames = renames
 	defer func() { defRenames = nil }()
 
+	// Names-only output is validated like the full client, so switching modes never changes an
+	// identifier.
 	data, err := buildTemplateData(s, pkg)
 	if err != nil {
 		return nil, err
+	}
+	name := "typed_client.java.tmpl"
+	if namesOnly {
+		blocks, err := renderNamesOnly(s)
+		if err != nil {
+			return nil, err
+		}
+		data = TemplateData{Package: pkg, SchemaBlocks: blocks}
+		name = "names_only.java.tmpl"
 	}
 
 	tmpl, err := template.New("typed_client.java.tmpl").ParseFS(templateFS, "templates/*.tmpl")
@@ -119,7 +140,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	}
 
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
 		return nil, err
 	}
 	content := buf.Bytes()
@@ -1303,37 +1324,11 @@ func (b *builder) renderDefinition(d schema.Definition, rels []relInfo, perms []
 		{"Relations", relNames(rels)},
 		{"Permissions", permNames(perms)},
 	} {
-		class := dp + c.suffix
-		if err := b.reg.claim("type", class, src("(name constants)")); err != nil {
+		block, err := renderNameClass(b.reg, d.Name, c.suffix, c.names)
+		if err != nil {
 			return "", nil, dd, err
 		}
-		consts := newRegistry()
-		_ = consts.claim("member", "names", "the generated names() method")
-		sw := newWriter(2)
-		sw.line("public static final class " + class + " {")
-		sw.indent()
-		sw.line("private " + class + "() {}")
-		for _, n := range c.names {
-			cn := toUpperSnake(n)
-			if err := consts.claim("field", cn, src(fmt.Sprintf("%s name %q", strings.ToLower(strings.TrimSuffix(c.suffix, "s")), n))); err != nil {
-				return "", nil, dd, err
-			}
-			sw.blank()
-			sw.line("public static final String " + cn + " = " + javaString(n) + ";")
-		}
-		sw.blank()
-		sw.line("public static List<String> names() {")
-		sw.indent()
-		quoted := make([]string, len(c.names))
-		for i, n := range c.names {
-			quoted[i] = javaString(n)
-		}
-		sw.call("return List.of(", quoted, ");")
-		sw.dedent()
-		sw.line("}")
-		sw.dedent()
-		sw.line("}")
-		statics = append(statics, sw.String())
+		statics = append(statics, block)
 	}
 	for _, p := range perms {
 		name := dp + "_" + toPascalCase(p.name)
@@ -1346,6 +1341,80 @@ func (b *builder) renderDefinition(d schema.Definition, rels []relInfo, perms []
 		statics = append(statics, sw.String())
 	}
 	return w.String(), statics, dd, nil
+}
+
+// renderNameClass renders the DRelations or DPermissions (suffix) name-constant class of definition
+// def: an UPPER_SNAKE constant per name plus names(), in schema order.
+func renderNameClass(reg *registry, def, suffix string, names []string) (string, error) {
+	src := func(what string) string { return fmt.Sprintf("definition %q %s", def, what) }
+	class := defIdent(def) + suffix
+	if err := reg.claim("type", class, src("(name constants)")); err != nil {
+		return "", err
+	}
+	consts := newRegistry()
+	_ = consts.claim("member", "names", "the generated names() method")
+	sw := newWriter(2)
+	sw.line("public static final class " + class + " {")
+	sw.indent()
+	sw.line("private " + class + "() {}")
+	for _, n := range names {
+		cn := toUpperSnake(n)
+		if err := consts.claim("field", cn, src(fmt.Sprintf("%s name %q", strings.ToLower(strings.TrimSuffix(suffix, "s")), n))); err != nil {
+			return "", err
+		}
+		sw.blank()
+		sw.line("public static final String " + cn + " = " + javaString(n) + ";")
+	}
+	sw.blank()
+	sw.line("public static List<String> names() {")
+	sw.indent()
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = javaString(n)
+	}
+	sw.call("return List.of(", quoted, ");")
+	sw.dedent()
+	sw.line("}")
+	sw.dedent()
+	sw.line("}")
+	return sw.String(), nil
+}
+
+// renderNamesOnly renders the members of the --java.names-only Permissions class: each
+// definition's relation and permission name constants, the SCHEMA text and the Definitions name
+// constants. None of them references the client library.
+func renderNamesOnly(s *schema.Schema) ([]string, error) {
+	reg := newRegistry()
+	for _, t := range []string{"Definitions", "Permissions"} {
+		_ = reg.claim("type", t, "the generated "+t+" class")
+	}
+	var blocks []string
+	for _, d := range s.Definitions {
+		var rels, perms []string
+		for _, r := range d.Relations {
+			rels = append(rels, r.Name)
+		}
+		for _, p := range d.Permissions {
+			perms = append(perms, p.Name)
+		}
+		for _, c := range []struct {
+			suffix string
+			names  []string
+		}{{"Relations", rels}, {"Permissions", perms}} {
+			block, err := renderNameClass(reg, d.Name, c.suffix, c.names)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		}
+	}
+	schemaBlocks, err := renderSchemaBlocks(s)
+	if err != nil {
+		return nil, err
+	}
+	// The SCHEMA text and the Definitions constants; the remaining schema blocks resolve names to
+	// typed refs and need the client.
+	return append(blocks, schemaBlocks[:2]...), nil
 }
 
 func relNames(rels []relInfo) []string {
@@ -1580,5 +1649,6 @@ func (g *Generator) Options() []generator.Option {
 		{Name: "package", Value: "<java.package>", Description: "Java package of the generated classes (required)."},
 		{Name: "formatter", Value: "<command>", Description: "Command that reads Java source on stdin and writes formatted source on stdout."},
 		{Name: "rename", Value: "<definition>=<JavaName>[,...]", Description: "Identifier stem for a definition whose generated names collide; schema names on the wire are unchanged."},
+		generator.NamesOnlyOptionDescription,
 	}
 }

@@ -41,7 +41,7 @@ public class LookupResourcesTest
         {
             Assert.Equal(Permissionship.HasPermission, result.Permissionship);
             if (result.Permissionship == Permissionship.HasPermission)
-                resourceIDs.Add(result.ResourceID); // Also safe with the default All mode.
+                resourceIDs.Add(result.ResourceId); // Also safe with the default All mode.
         }
 
         Assert.Contains("firstdoc", resourceIDs);
@@ -63,7 +63,7 @@ public class LookupResourcesTest
 
         var all = new List<LookupResource>();
         await foreach (var r in client.LookupResourcesAsync(AtLeast(written.Revision), "document", "view", pager, new LookupOptions { PageSize = 2 }, default)) all.Add(r);
-        Assert.Equal(7, all.Select(r => r.ResourceID).Distinct().Count());
+        Assert.Equal(7, all.Select(r => r.ResourceId).Distinct().Count());
 
         var first = new List<LookupResource>();
         await foreach (var r in client.LookupResourcesAsync(Full(), "document", "view", pager, new LookupOptions { PageSize = 2, Limit = 3 }, default)) first.Add(r);
@@ -71,13 +71,13 @@ public class LookupResourcesTest
         Assert.NotNull(first[2].AfterResultCursor);
         var rest = new List<LookupResource>();
         await foreach (var r in client.LookupResourcesAsync(Full(), "document", "view", pager, new LookupOptions { PageSize = 2, ResumeCursor = first[2].AfterResultCursor }, default)) rest.Add(r);
-        Assert.Equal(7, first.Concat(rest).Select(r => r.ResourceID).Distinct().Count());
+        Assert.Equal(7, first.Concat(rest).Select(r => r.ResourceId).Distinct().Count());
 
         // Single-request mode sends one request like the raw API: the page size is ignored,
         // the limit (or none) goes on the request, and no follow-up page is fetched.
         var single = new List<LookupResource>();
         await foreach (var r in client.LookupResourcesAsync(AtLeast(written.Revision), "document", "view", pager, new LookupOptions { Paging = Paging.SingleRequest, PageSize = 2 }, default)) single.Add(r);
-        Assert.Equal(7, single.Select(r => r.ResourceID).Distinct().Count());
+        Assert.Equal(7, single.Select(r => r.ResourceId).Distinct().Count());
         var limited = new List<LookupResource>();
         await foreach (var r in client.LookupResourcesAsync(AtLeast(written.Revision), "document", "view", pager, new LookupOptions { Paging = Paging.SingleRequest, Limit = 3 }, default)) limited.Add(r);
         Assert.Equal(3, limited.Count);

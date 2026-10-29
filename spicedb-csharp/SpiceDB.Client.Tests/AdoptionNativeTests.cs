@@ -60,7 +60,8 @@ public class AdoptionNativeTests
     public void LocallyRaisedAndCallerConstructedErrorsReportTheirCategoryCode()
     {
         new InvalidArgumentException("bad").StatusCode.Should().Be(StatusCode.InvalidArgument);
-        new InvalidArgumentException("bad").ServerMessage.Should().BeNull();
+        new InvalidArgumentException("bad").ServerMessage.Should().Be("bad");
+        new SpiceDBException().ServerMessage.Should().NotBeNull().And.Be(new SpiceDBException().Message);
         new DeadlineExceededException("late").Status.StatusCode.Should().Be(StatusCode.DeadlineExceeded);
         new NotFoundException("gone").ToRpcException().Status.Detail.Should().Be("gone");
         new SpiceDBException("plain").StatusCode.Should().Be(StatusCode.Unknown);

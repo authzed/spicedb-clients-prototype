@@ -153,7 +153,7 @@ public static class ProtoConvert
     private static Google.Rpc.Status ToRpcStatus(SpiceDBException error) =>
         error.InnerException is Grpc.Core.RpcException rpc && rpc.StatusCode == error.StatusCode && Grpc.Core.RpcExceptionExtensions.GetRpcStatus(rpc) is { } full
             ? full
-            : new Google.Rpc.Status { Code = (int)error.StatusCode, Message = error.ServerMessage ?? error.Message };
+            : new Google.Rpc.Status { Code = (int)error.StatusCode, Message = error.ServerMessage };
     public static V1.DebugInformation ToProto(DebugInformation value) => new()
     {
         SchemaUsed = Native.Required(value, nameof(value)).SchemaUsed,
@@ -189,7 +189,7 @@ public static class ProtoConvert
         Native.Required(value, nameof(value));
         return new()
         {
-            ResourceObjectId = value.ResourceID,
+            ResourceObjectId = value.ResourceId,
             LookedUpAt = ToProto(value.LookedUpAt),
             Permissionship = ToLookupPermissionship(value.Permissionship),
             PartialCaveatInfo = value.PartialCaveat is { } p ? new() { MissingRequiredContext = { p.MissingRequiredContext } } : null,
@@ -211,14 +211,14 @@ public static class ProtoConvert
         response.SubjectObjectId = subject.SubjectObjectId;
         response.Permissionship = subject.Permissionship;
         response.PartialCaveatInfo = subject.PartialCaveatInfo?.Clone();
-        response.ExcludedSubjectIds.AddRange(value.ExcludedSubjects.Select(e => e.SubjectID));
+        response.ExcludedSubjectIds.AddRange(value.ExcludedSubjects.Select(e => e.SubjectId));
 #pragma warning restore CS0612
         return response;
     }
     public static LookupSubject FromProto(V1.LookupSubjectsResponse value) => SpiceDBClient.ToLookupSubject(Native.Required(value, nameof(value)));
     private static V1.ResolvedSubject ToProto(ResolvedSubject value) => new()
     {
-        SubjectObjectId = value.SubjectID,
+        SubjectObjectId = value.SubjectId,
         Permissionship = ToLookupPermissionship(value.Permissionship),
         PartialCaveatInfo = value.PartialCaveat is { } p ? new() { MissingRequiredContext = { p.MissingRequiredContext } } : null,
     };

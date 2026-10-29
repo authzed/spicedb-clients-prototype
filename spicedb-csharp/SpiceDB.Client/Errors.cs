@@ -50,11 +50,13 @@ public class SpiceDBException : Exception
     public StatusCode StatusCode { get; }
 
     /// <summary>
-    /// The server's status message exactly as sent. Null for errors raised locally by this
-    /// client. Forward this, not <see cref="Exception.Message"/>, when relaying a server error
-    /// to another party. <see cref="Create"/> sets it so test doubles look like the server.
+    /// The server's status message exactly as sent. Never null: for errors raised locally by
+    /// this client (or constructed by caller code) it is the error's
+    /// <see cref="Exception.Message"/>, so callers can always relay it without a fallback.
+    /// Forward this, not <see cref="Exception.Message"/>, when relaying a server error to
+    /// another party. <see cref="Create"/> sets it so test doubles look like the server.
     /// </summary>
-    public string? ServerMessage { get; internal set; }
+    public string ServerMessage { get; internal set; }
 
     public SpiceDBException() : this(null, null) { }
     public SpiceDBException(string message) : this(message, null) { }
@@ -66,6 +68,7 @@ public class SpiceDBException : Exception
     protected SpiceDBException(StatusCode statusCode, string? message, Exception? innerException) : base(message, innerException)
     {
         StatusCode = statusCode;
+        ServerMessage = Message;
         var info = ErrorInfoOf(innerException);
         Reason = info?.Reason ?? string.Empty;
         ReasonDomain = info?.Domain ?? string.Empty;
@@ -77,11 +80,11 @@ public class SpiceDBException : Exception
     /// <summary>
     /// This error as a gRPC <see cref="Grpc.Core.Status"/>. A server error returns the
     /// server's own status; any other error returns a status built from
-    /// <see cref="StatusCode"/> and <see cref="ServerMessage"/> (or the message).
+    /// <see cref="StatusCode"/> and <see cref="ServerMessage"/>.
     /// </summary>
     public Grpc.Core.Status Status => InnerException is RpcException rpc && rpc.StatusCode == StatusCode
         ? rpc.Status
-        : new Grpc.Core.Status(StatusCode, ServerMessage ?? Message);
+        : new Grpc.Core.Status(StatusCode, ServerMessage);
 
     /// <summary>
     /// The response trailers of the server error, including <c>grpc-status-details-bin</c>, or
@@ -297,7 +300,7 @@ internal static class ErrorMapper
             StatusCode.OutOfRange => new OutOfRangeException(message, rpcException),
             _ => new SpiceDBException(message, rpcException),
         };
-        mapped.ServerMessage = rpcException.Status.Detail;
+        mapped.ServerMessage = rpcException.Status.Detail ?? "";
         return mapped;
     }
 

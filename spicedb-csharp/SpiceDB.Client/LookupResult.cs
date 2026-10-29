@@ -4,6 +4,8 @@
 // subjects for wildcard "*" matches, mirroring spicedb-go's
 // client/lookup_types.go.
 
+using System.Text.Json.Serialization;
+
 namespace SpiceDB.Client;
 
 /// <summary>
@@ -22,6 +24,7 @@ namespace SpiceDB.Client;
 /// question about one specific pair and "no" is itself an answer.
 /// </para>
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter<Permissionship>))]
 public enum Permissionship
 {
     Unspecified,
@@ -50,7 +53,13 @@ public sealed record PartialCaveatInfo
 /// <summary>One result from <see cref="SpiceDBClient.LookupResourcesAsync"/>.</summary>
 public sealed record LookupResource
 {
-    public string ResourceID { get; init; } = "";
+    /// <summary>The ID of the resource the subject has the permission on.</summary>
+    public string ResourceId { get; init; } = "";
+
+    /// <summary>The former name of <see cref="ResourceId"/>.</summary>
+    [Obsolete("Use ResourceId instead.")]
+    [JsonIgnore]
+    public string ResourceID { get => ResourceId; init => ResourceId = value; }
     public Permissionship Permissionship { get; init; }
 
     /// <summary>
@@ -92,14 +101,20 @@ public sealed record ExportedRelationship(Relationship Relationship, string? Aft
 /// </summary>
 public sealed record ResolvedSubject
 {
-    public string SubjectID { get; init; } = "";
+    /// <summary>The subject's object ID, or <c>*</c> for a wildcard match.</summary>
+    public string SubjectId { get; init; } = "";
+
+    /// <summary>The former name of <see cref="SubjectId"/>.</summary>
+    [Obsolete("Use SubjectId instead.")]
+    [JsonIgnore]
+    public string SubjectID { get => SubjectId; init => SubjectId = value; }
     public Permissionship Permissionship { get; init; }
     public PartialCaveatInfo? PartialCaveat { get; init; }
 }
 
 /// <summary>
 /// One result from <see cref="SpiceDBClient.LookupSubjectsAsync"/>. When
-/// <see cref="Subject"/>'s <see cref="ResolvedSubject.SubjectID"/> is the
+/// <see cref="Subject"/>'s <see cref="ResolvedSubject.SubjectId"/> is the
 /// wildcard "*", <see cref="ExcludedSubjects"/> lists subjects excluded from
 /// that wildcard grant — callers MUST check <see cref="ExcludedSubjects"/>
 /// before treating a wildcard match as a blanket grant, or they risk

@@ -1,6 +1,8 @@
+using System.Text.Json.Serialization;
 namespace SpiceDB.Client;
 
 /// <summary>Client-side LookupResources filtering. Conditional permission is not a grant.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<LookupPermissionshipFilter>))]
 public enum LookupPermissionshipFilter { All, HasPermissionOnly }
 
 public sealed class LookupOptions

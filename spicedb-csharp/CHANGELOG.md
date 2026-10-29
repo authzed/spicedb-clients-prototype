@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Adoption fixes from migrating real applications
+
+- Generated protocol messages initialise again: `ToString()`, `JsonFormatter.Default.Format`
+  and `.Descriptor` threw `TypeInitializationException` for every SpiceDB message, directly
+  and through the `Authzed.Net` bridge, because the stub descriptors for the transitive
+  validation and OpenAPI protos all had an empty file name and collided. Each stub now
+  carries its real file name; tests format every generated message in-process and in a
+  fresh process.
+- `SpiceDB.Client`, `SpiceDB.Proto` and the `Authzed.Net` bridge target `net8.0`, `net9.0`
+  and `net10.0` (previously `net10.0` only, which a net8.0 or net9.0 host could not
+  reference), and build with warnings as errors. The CS8604 nullability warning in
+  `PermissionCheck.Builder.Build` that surfaced in consumer builds is fixed.
+- `System.Text.Json` writes every public enum as its name (`"Permissionship":"HasPermission"`
+  instead of `1`) and `ZedToken` as its string (instead of `{"Value":"..."}`), and reads them
+  back the same way.
+- `LookupResource.ResourceId` and `ResolvedSubject.SubjectId` replace `ResourceID` and
+  `SubjectID`, matching `Id` everywhere else; the old names remain as `[Obsolete]` aliases
+  and are no longer serialized.
+- `ObjectRef` converts implicitly to its direct `SubjectRef`. `SubjectRef.Named(obj, "...")`,
+  `new SubjectRef(obj, "...")` and `SubjectRelationFilter.Named("...")` now mean a direct
+  subject instead of throwing, as tuple and proto parsing already did.
+- `SpiceDBException.ServerMessage` is never null: for local and caller-built errors it is the
+  error's `Message` (it was null). MIGRATION.md explains why `SpiceDBException` is not an
+  `RpcException` and maps legacy `catch (RpcException)` handlers to the native members.
+- `InMemorySpiceDBClient` resolves checks in a fixed order: a registered result or error,
+  then a check resolver (`SetCheckResolver(Func<PermissionCheck, CheckResult?>)`, which sees
+  the call's context merged into the check's and returns null to decline;
+  `InMemorySpiceDBClient.GrantAll` / `GrantAllChecks()` grant everything), then the stored
+  relationships (relation named like the permission, exact or wildcard subject, conditional
+  when caveated, expired ones ignored), then `NoPermission`. Unregistered checks used to be
+  `NoPermission` regardless of stored relationships.
+- `InMemorySpiceDBClient.LookupResourcesAsync` and `LookupSubjectsAsync` work in memory
+  (they failed with `Unimplemented`): they yield the known objects of the type that check
+  resolution grants, with conditional results and their missing context, the permissionship
+  filter, limits, resource-lookup cursors (`CursorAfter(n)`) and per-item fault hooks.
+- New `README.md` (installation from source or a local feed, a first call, links), a
+  Requirements section at the top of MIGRATION.md, and a legacy-to-new table of renamed
+  response members (for example `ReadSchemaResponse.SchemaText` to `SchemaResult.Schema`).
+
 ### Paging and watch fixes
 
 - Paged reads, lookups and exports fail with an Internal-status `SpiceDBException` ("...

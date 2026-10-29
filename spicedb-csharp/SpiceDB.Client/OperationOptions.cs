@@ -1,4 +1,5 @@
 using Grpc.Core;
+using System.Text.Json.Serialization;
 
 namespace SpiceDB.Client;
 
@@ -125,6 +126,7 @@ public sealed class ClientOptions
 /// <see cref="SpiceDBClient.CheckAnyAsync"/> and <see cref="SpiceDBClient.CheckAllAsync"/> are
 /// <see cref="CheckBulk"/> calls.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter<SpiceDBOperation>))]
 public enum SpiceDBOperation
 {
     Check,
@@ -156,10 +158,13 @@ public enum SpiceDBOperation
 }
 
 /// <summary>Whether unary operations get the client's default deadline.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<DefaultDeadline>))]
 public enum DefaultDeadline { Enabled, Disabled }
 /// <summary>Whether idempotent reads are retried at all.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<Retries>))]
 public enum Retries { Enabled, Disabled }
 /// <summary>Whether opening a server stream is retried before any item is exposed. A partially consumed stream is never restarted.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<StreamRetries>))]
 public enum StreamRetries { Enabled, Disabled }
 
 /// <summary>Describes a retry about to happen, for <see cref="RetryPolicy.OnRetry"/>.</summary>
@@ -200,6 +205,7 @@ public sealed class RetryPolicy
 }
 
 /// <summary>How a paged read fetches results.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<Paging>))]
 public enum Paging
 {
     /// <summary>Fetches page after page of <c>PageSize</c> until results or <c>Limit</c> run out. The default.</summary>
@@ -297,6 +303,7 @@ public sealed class WriteOptions
 }
 
 /// <summary>Whether a bounded delete may delete only part of the matching relationships.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<PartialDeletion>))]
 public enum PartialDeletion
 {
     /// <summary>Deletes up to the limit and reports completion. The default; the limit is required.</summary>

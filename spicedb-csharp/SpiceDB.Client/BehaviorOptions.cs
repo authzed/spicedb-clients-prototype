@@ -1,9 +1,14 @@
+using System.Text.Json.Serialization;
 namespace SpiceDB.Client;
 
+[JsonConverter(typeof(JsonStringEnumConverter<CheckTracing>))]
 public enum CheckTracing { Disabled, Enabled }
+[JsonConverter(typeof(JsonStringEnumConverter<LookupDebug>))]
 public enum LookupDebug { Disabled, Enabled }
+[JsonConverter(typeof(JsonStringEnumConverter<RemotePlaintextCredentials>))]
 public enum RemotePlaintextCredentials { Reject, Allow }
 [Flags]
+[JsonConverter(typeof(JsonStringEnumConverter<WatchContent>))]
 public enum WatchContent { Relationships = 1, Checkpoints = 2, SchemaUpdates = 4 }
 
 internal static class BehaviorOptions

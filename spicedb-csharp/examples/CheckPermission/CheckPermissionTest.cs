@@ -50,6 +50,17 @@ public class CheckPermissionTest
         // a condition. A ConditionalPermission result would resolve to false
         // once evaluated, so only HasPermission is a safe boolean answer.
         Assert.True(result.HasPermission, "expected alice to have view permission");
+
+        // An object is a direct subject, and "..." spells the same direct subject.
+        var direct = await client.CheckAsync(new PermissionCheck(new ObjectRef("document", "firstdoc"), "view", new ObjectRef("user", "alice"), Full()));
+        var ellipsis = await client.CheckAsync(new PermissionCheck(new ObjectRef("document", "firstdoc"), "view", SubjectRef.Named(new ObjectRef("user", "alice"), "..."), Full()));
+        Assert.True(direct.HasPermission && ellipsis.HasPermission);
+
+        // Results serialize with System.Text.Json as names and token strings.
+        var json = System.Text.Json.JsonSerializer.Serialize(direct);
+        Assert.Contains("\"Permissionship\":\"HasPermission\"", json);
+        using var parsed = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal(direct.CheckedAt.Value, parsed.RootElement.GetProperty("CheckedAt").GetString());
     }
 
     [Fact]

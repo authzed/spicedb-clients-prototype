@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Paging and watch fixes
+
+- Paged reads, lookups and exports fail with an Internal-status `SpiceDBException` ("...
+  cursor did not advance") when a full page arrives with a missing or empty cursor, or the
+  same cursor that was sent. Previously a repeated cursor re-requested the same page forever
+  and a missing one silently ended the results early.
+- The client-wide retry policy (including the default, whatever `StreamRetries` says) no
+  longer reopens `UpdatesAsync` or `ExperimentalWatchPermissionSetsAsync` when they fail
+  before their first event, since a watch reopened without a start revision begins later and
+  skips the changes in between. A per-call `RetryPolicy` or an `OperationRetryPolicies` entry
+  for the watch still opts in to reopening before the first event.
+
 ### Full-surface client interface for the test double
 
 - `ISpiceDBClient` is the client's full public method set (it extends

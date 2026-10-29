@@ -73,10 +73,10 @@ public sealed class ClientOptions
     private Retries _retries;
     /// <summary><see cref="Client.Retries.Disabled"/> makes every operation a single attempt, for callers that apply their own policy.</summary>
     public Retries Retries { get => _retries; init => _retries = BehaviorOptions.Defined(value, nameof(Retries)); }
-    /// <summary>The retry policy for idempotent reads. Null uses <see cref="Client.RetryPolicy.Default"/>. Mutations never retry under the client-wide policy; <see cref="OperationRetryPolicies"/> overrides it for one operation and each options type's <c>RetryPolicy</c> for one call.</summary>
+    /// <summary>The retry policy for idempotent reads. Null uses <see cref="Client.RetryPolicy.Default"/>. Watches (<see cref="SpiceDBClient.UpdatesAsync"/> and the permission-set watch) are never reopened under it. Mutations never retry under the client-wide policy; <see cref="OperationRetryPolicies"/> overrides it for one operation and each options type's <c>RetryPolicy</c> for one call.</summary>
     public RetryPolicy? RetryPolicy { get; init; }
     private StreamRetries _streamRetries;
-    /// <summary><see cref="Client.StreamRetries.Disabled"/> opens each server stream (reads, lookups, exports, watch) exactly once.</summary>
+    /// <summary><see cref="Client.StreamRetries.Disabled"/> opens each server stream (reads, lookups, exports) exactly once. Watches are opened once whatever this says, unless a per-call or per-operation policy opts in.</summary>
     public StreamRetries StreamRetries { get => _streamRetries; init => _streamRetries = BehaviorOptions.Defined(value, nameof(StreamRetries)); }
     private IReadOnlyDictionary<SpiceDBOperation, RetryPolicy> _operationRetryPolicies = new Dictionary<SpiceDBOperation, RetryPolicy>();
     /// <summary>
@@ -268,11 +268,12 @@ public sealed class WatchOptions
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
     /// <summary>
-    /// Overrides the client's retry policy for this call only, including reopening a stream
-    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
-    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
-    /// unless they opt in here, which only touch-only writes without preconditions and schema
-    /// writes may; other mutations reject a policy with retries before any request.
+    /// The only way, with a <see cref="ClientOptions.OperationRetryPolicies"/> entry for
+    /// <see cref="SpiceDBOperation.Updates"/>, to let a watch be reopened, and only before its
+    /// first event (whatever <see cref="ClientOptions.StreamRetries"/> says). The client-wide
+    /// <see cref="ClientOptions.RetryPolicy"/>, including the default, never reopens a watch: a
+    /// watch reopened without a start revision begins at a later revision and silently skips the
+    /// changes in between. A watch is never reopened after it has delivered an event.
     /// </summary>
     public RetryPolicy? RetryPolicy { get; init; }
     private WatchContent _content = WatchContent.Relationships;

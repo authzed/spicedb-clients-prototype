@@ -167,8 +167,10 @@ await using var tool = SpiceDBClient.CreateSystemTls(endpoint, token, new Client
     DefaultDeadline = DefaultDeadline.Disabled, // the caller's token and per-call Timeout still apply
     StreamRetries = StreamRetries.Disabled,     // never reopen any stream
 });
-// Or keep client-wide retries and exempt one supervised watch:
-await foreach (var e in tool.UpdatesAsync([], null, new WatchOptions { RetryPolicy = RetryPolicy.None }, ct)) { /* ... */ }
+// Watches are never reopened by the client-wide policy (a reopened watch would skip changes);
+// resume from the last event's revision yourself, or opt one watch in to reopening before its
+// first event:
+await foreach (var e in tool.UpdatesAsync([], null, new WatchOptions { RetryPolicy = RetryPolicy.Default }, ct)) { /* ... */ }
 // Or set one operation's policy for every call (per call > per operation > client-wide);
 // a Write policy retries only idempotent writes, and deletes/imports reject a retrying one:
 //   new ClientOptions { OperationRetryPolicies = new Dictionary<SpiceDBOperation, RetryPolicy> { [SpiceDBOperation.Updates] = RetryPolicy.None } }

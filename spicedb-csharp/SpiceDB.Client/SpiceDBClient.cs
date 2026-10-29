@@ -104,15 +104,19 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     private static TimeSpan ValidTimeout(TimeSpan value) => value <= TimeSpan.Zero || value.TotalMilliseconds > uint.MaxValue - 1 ? throw new InvalidArgumentException("Timeout must be positive and supported by the runtime timer.") : value;
     /// <summary>
     /// Starts an operation's budget. A per-call <paramref name="retry"/> policy replaces the
-    /// client's for this call, including stream establishment.
+    /// client's for this call, including stream establishment. A <paramref name="watch"/> never
+    /// inherits the client-wide policy: reopening a watch without a start revision resumes at a
+    /// later revision and silently skips the changes in between, so only a per-call or
+    /// per-operation policy may reopen one.
     /// </summary>
-    private Budget Begin(TimeSpan? timeout, CancellationToken token, bool unary = true, TransportOptions? transport = null, RetryPolicy? retry = null, [CallerMemberName] string operation = "")
+    private Budget Begin(TimeSpan? timeout, CancellationToken token, bool unary = true, TransportOptions? transport = null, RetryPolicy? retry = null, bool watch = false, [CallerMemberName] string operation = "")
     {
         token.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
         // The most specific policy wins: per call, then per operation, then client-wide. A
         // per-call or per-operation policy also governs stream establishment.
         var specific = retry?.Validated() ?? OperationPolicy(operation);
+        if (watch && specific is null) return new(timeout is { } w ? ValidTimeout(w) : null, token, _lifetime.Token, transport, null, false, operation);
         return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, specific ?? _retryPolicy, specific is not null || _streamRetries, operation);
     }
     /// <summary>The client's <see cref="ClientOptions.OperationRetryPolicies"/> entry for the calling operation, if any.</summary>
@@ -416,6 +420,18 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     // The OptionalLimit every request of a paged read sends: the fixed page size, or in
     // single-request mode the total limit alone (0, unbounded, without one).
     private static uint PageRequestLimit(bool singleRequest, int pageSize, int? limit) => singleRequest ? (uint)(limit ?? 0) : (uint)pageSize;
+    // After a full page, the next request must carry a new cursor. A missing, empty or
+    // unchanged cursor would re-request the same page forever, so it fails as an internal error.
+    private static string Advanced(string? sent, Cursor? next, string operation)
+    {
+        var token = next?.Token;
+        if (string.IsNullOrEmpty(token) || token == sent)
+        {
+            var message = $"{operation} cursor did not advance.";
+            throw new SpiceDBException(message, new RpcException(new Grpc.Core.Status(StatusCode.Internal, message)));
+        }
+        return token;
+    }
 
     public async IAsyncEnumerable<ReadRelationship> ReadRelationshipsAsync(Consistency consistency, Filter filter, ReadOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -423,6 +439,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var single = options?.Paging == Paging.SingleRequest;
         var request = new ReadRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), RelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(), OptionalLimit = PageRequestLimit(single, size, options?.Limit), OptionalCursor = StartCursor(options?.ResumeCursor) };
+        var sent = options?.ResumeCursor;
         while (true)
         {
             int count = 0;
@@ -432,7 +449,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                 yield return new(Relationship.FromProto(response.Relationship), response.AfterResultCursor?.Token, new(response.ReadAt?.Token ?? ""));
                 if (remaining == 0) yield break;
             }
-            if (single || count < size || request.OptionalCursor is null) yield break;
+            if (single || count < size) yield break;
+            sent = Advanced(sent, request.OptionalCursor, "Read");
         }
     }
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -442,6 +460,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var single = options?.Paging == Paging.SingleRequest;
         var request = new LookupResourcesRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), ResourceObjectType = Native.Required(resourceType, nameof(resourceType)), Permission = Native.Required(permission, nameof(permission)), Subject = Native.Required(subject, nameof(subject)).ToProto(), Context = Native.Struct(options?.Context), WithDebug = options?.Debug == LookupDebug.Enabled, OptionalLimit = PageRequestLimit(single, size, options?.Limit), OptionalCursor = StartCursor(options?.ResumeCursor) };
+        var sent = options?.ResumeCursor;
         while (true)
         {
             int count = 0;
@@ -453,7 +472,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                 yield return new() { ResourceID = response.ResourceObjectId, Permissionship = ToPermissionship(response.Permissionship), PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
                 if (remaining == 0) yield break;
             }
-            if (single || count < size || request.OptionalCursor is null) yield break;
+            if (single || count < size) yield break;
+            sent = Advanced(sent, request.OptionalCursor, "Lookup");
         }
     }
     public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(Consistency consistency, ObjectRef resource, string permission, string subjectType, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -529,6 +549,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var request = new ExportBulkRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), OptionalRelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(), OptionalLimit = (uint)size, OptionalCursor = StartCursor(options?.ResumeCursor) };
+        var sent = options?.ResumeCursor;
         while (true)
         {
             int count = 0;
@@ -541,12 +562,22 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                     if (remaining == 0) yield break;
                 }
             }
-            if (count < size || request.OptionalCursor is null) yield break;
+            if (count < size) yield break;
+            sent = Advanced(sent, request.OptionalCursor, "Export");
         }
     }
+    /// <summary>
+    /// Watches relationship (and optionally schema and checkpoint) changes from
+    /// <paramref name="startRevision"/>, or from now when it is null. The client-wide retry
+    /// policy never reopens the watch, since a watch reopened without a start revision begins at
+    /// a later revision and silently skips the changes in between; a failure surfaces to the
+    /// caller, who resumes from the last event's revision. Only a per-call
+    /// <see cref="WatchOptions.RetryPolicy"/> or a <see cref="ClientOptions.OperationRetryPolicies"/>
+    /// entry for <see cref="SpiceDBOperation.Updates"/> reopens it, and only before its first event.
+    /// </summary>
     public async IAsyncEnumerable<WatchEvent> UpdatesAsync(IReadOnlyList<string> objectTypes, ZedToken? startRevision, WatchOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, watch: true);
         var request = new WatchRequest { OptionalStartCursor = startRevision is { } token ? new() { Token = token.Value } : null };
         request.OptionalObjectTypes.AddRange(Native.Required(objectTypes, nameof(objectTypes)).ToArray());
         if (request.OptionalObjectTypes.Count > 0 && (options?.RelationshipFilters.Count ?? 0) > 0)

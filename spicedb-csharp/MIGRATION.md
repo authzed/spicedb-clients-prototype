@@ -58,8 +58,13 @@ await using var client = SpiceDBClient.CreateSystemTls("spicedb.example.com:443"
   port (`localhost` alone is rejected; write `localhost:50051`); a port-less TLS endpoint
   uses 443. A URL's scheme must match the
   factory: `CreatePlaintext` rejects `https://` and `CreateSystemTls` rejects `http://`.
-  Paths, `user@` and other schemes are rejected at construction. The preshared key is a
+  `dns:///host:port` (client-side round-robin across the resolved addresses) and
+  `unix:/path/to/socket` (plaintext) gRPC targets are accepted too. Paths, `user@` and other
+  schemes are rejected at construction. The preshared key is a
   positional argument; the client adds the bearer header.
+- Channels connect lazily, as `GrpcChannel` does. To fail at startup on a wrong or
+  unreachable endpoint, call `await client.ConnectAsync(new ConnectOptions { Timeout =
+  TimeSpan.FromSeconds(5) }, ct)`.
 - Plaintext with credentials to a non-loopback host is refused unless you opt in:
 
   ```csharp
@@ -156,6 +161,9 @@ Authzed.Net applied no deadline and no retries.
   Restore the old behavior with
   `new ClientOptions { DefaultDeadline = DefaultDeadline.Disabled }`, or set
   `ClientOptions.DefaultTimeout` / a per-operation `Timeout`.
+- Relationship reads, lookups and exports have no total default, but each page request gets
+  the default deadline, so a stalled server fails the read rather than hanging it. Watch has
+  no default. `DefaultDeadline.Disabled` removes both defaults.
 - Idempotent reads, and stream establishment before any item, retry Unavailable/Aborted
   up to three times with jittered backoff. Writes, deletes and imports never retry.
   If you already retry, avoid stacking policies:
@@ -223,7 +231,15 @@ constructor that takes an inner exception: a subclass could not keep the server'
 - Caller cancellation is an `OperationCanceledException` carrying your token, not an
   `RpcException(Cancelled)`. `SpiceDBException.CodeOf(ex)` classifies native, raw
   `RpcException` and cancellation exceptions alike.
-- Local validation failures are `InvalidArgumentException` before any RPC.
+- Local validation failures are `InvalidArgumentException` before any RPC, including
+  `Relationship.FromTuple` parse errors. It is a `SpiceDBException` (code `InvalidArgument`,
+  `ServerMessage` equal to `Message`, no inner `RpcException`), not an `ArgumentException` or
+  `FormatException`, because a .NET exception has one base class and native errors keep one
+  shape. Code that caught `ArgumentException` or `FormatException` around parsing catches
+  `InvalidArgumentException` instead. A server `INVALID_ARGUMENT` is also an
+  `InvalidArgumentException`; a local one has no `InnerException`.
+- A response the client cannot interpret (for example a relationship without a subject)
+  fails with an `Internal`-status `SpiceDBException` rather than yielding empty fields.
 - Test doubles: `SpiceDBException.Create(StatusCode.NotFound, "...")`, or use
   `SpiceDB.Client.Testing.InMemorySpiceDBClient` behind `ISpiceDBClient` (or
   `ISpiceDBRelationshipClient` and `ISpiceDBSchemaClient`). It answers checks from

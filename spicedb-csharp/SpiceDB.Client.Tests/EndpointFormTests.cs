@@ -16,7 +16,7 @@ namespace SpiceDB.Client.Tests;
 /// </summary>
 public class EndpointFormTests
 {
-    private const string Forms = "expected host:port, http://host:port (plaintext) or https://host[:port] (TLS)";
+    private const string Forms = "expected host:port, http://host:port (plaintext), https://host[:port] (TLS), dns:///host:port or unix:/path/to/socket (plaintext)";
 
     [Theory]
     [InlineData("127.0.0.1:50101")]
@@ -27,6 +27,36 @@ public class EndpointFormTests
     {
         await using var client = SpiceDBClient.CreatePlaintext(endpoint, "k");
         client.Should().NotBeNull();
+    }
+
+    /// <summary>gRPC target syntax the transport supports: dns:/// (loopback check on its host) and plaintext unix sockets. examples/EndpointForms makes a real call over each.</summary>
+    [Theory]
+    [InlineData("dns:///localhost:50101")]
+    [InlineData("unix:/tmp/spicedb.sock")]
+    [InlineData("unix:///tmp/spicedb.sock")]
+    public async Task CreatePlaintext_AcceptsDnsAndUnixTargets(string endpoint)
+    {
+        await using var client = SpiceDBClient.CreatePlaintext(endpoint, "k");
+        client.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData("xds:///spicedb", true, "unsupported scheme \"xds\"")]
+    [InlineData("ipv4:127.0.0.1:50051", true, "unsupported scheme \"ipv4\"")]
+    [InlineData("dns://8.8.8.8/localhost:50051", true, "a DNS server authority is not supported")]
+    [InlineData("unix:/tmp/spicedb.sock", false, "a unix socket is plaintext")]
+    public void UnsupportedTargetSchemesFailAtConstruction(string endpoint, bool plaintext, string reason)
+    {
+        var ex = FluentActions.Invoking(() => plaintext ? SpiceDBClient.CreatePlaintext(endpoint, "k") : SpiceDBClient.CreateSystemTls(endpoint, "k"))
+            .Should().Throw<InvalidArgumentException>().Which;
+        ex.Message.Should().Contain(reason).And.Contain(Forms);
+    }
+
+    [Fact]
+    public void CreatePlaintext_RemoteDnsTargetNeedsOptIn()
+    {
+        FluentActions.Invoking(() => SpiceDBClient.CreatePlaintext("dns:///example.com:50051", "k"))
+            .Should().Throw<InvalidArgumentException>().Which.Message.Should().Contain("RemotePlaintextCredentials");
     }
 
     [Theory]

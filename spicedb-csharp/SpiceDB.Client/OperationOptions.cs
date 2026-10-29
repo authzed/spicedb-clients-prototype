@@ -3,6 +3,17 @@ using System.Text.Json.Serialization;
 
 namespace SpiceDB.Client;
 
+/// <summary>Options for <see cref="SpiceDBClient.ConnectAsync"/>.</summary>
+public sealed class ConnectOptions
+{
+    /// <summary>
+    /// How long to wait for the endpoint to become ready. Null uses the client default
+    /// deadline (<see cref="ClientOptions.DefaultTimeout"/>), or waits for the caller's token
+    /// alone under <see cref="DefaultDeadline.Disabled"/>.
+    /// </summary>
+    public TimeSpan? Timeout { get; init; }
+}
+
 public sealed class CallOptions
 {
     public TimeSpan? Timeout { get; init; }

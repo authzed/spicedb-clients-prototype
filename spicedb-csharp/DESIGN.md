@@ -83,6 +83,15 @@
     budget; per-operation `Timeout` and the caller's token still apply. Zero or
     negative durations stay invalid rather than meaning "disabled".
     Streams/imports have no default timeout but accept an explicit total timeout.
+    Finite paged reads (reads, lookups, permission-set lookup, exports) apply the client
+    default to each page request, from opening it to its last item; a per-call `Timeout`
+    still bounds the whole read and wins when earlier. Watches keep no default.
+  - A response the client cannot interpret (a missing relationship, resource, subject,
+    object or id, an incomplete tree, a non-advancing cursor) fails with an
+    `Internal`-status `SpiceDBException`, never skipped and never filled with empty values.
+    Client-detected faults never report `Unknown`. Local validation, `FromTuple` included,
+    stays `InvalidArgumentException`, which cannot also be an `ArgumentException` or
+    `FormatException` (single inheritance), so the native shape wins and MIGRATION.md says so.
   - Caller cancellation preserves its native token; remote cancellation and
     deadline expiry retain separate typed categories and original diagnostics.
   - By default, idempotent reads retry Unavailable/Aborted up to three times with
@@ -164,6 +173,15 @@
     caller transport configuration can supersede endpoint security assumptions.
   - `RawProto()` exposes authenticated services on the existing connection and
     bypasses native mapping/retry/deadlines. Deprecated RPCs remain raw-only.
+  - Endpoints also accept gRPC targets the transport supports: `dns:///host:port` (DNS
+    resolver, round-robin balancing, loopback check on the host) and plaintext
+    `unix:/path`, `unix:///path` or `unix:relative/path` (dialed through a socket
+    `ConnectCallback`, never as a host named `unix`). Other schemes fail at construction.
+  - Channels connect lazily. `ConnectAsync(ConnectOptions?, CancellationToken)` is the
+    startup readiness check: a wait-for-ready schema read (NotFound counts as ready) within
+    `ConnectOptions.Timeout` or the client default, failing with
+    `DeadlineExceededException` naming the endpoint, `UnavailableException` or
+    `UnauthenticatedException`. It is on `ISpiceDBClient`; the in-memory double no-ops.
 
 - **Verify observable contracts and keep examples executable.**
   - Unit and real local gRPC transport tests cover enum mapping/validation,

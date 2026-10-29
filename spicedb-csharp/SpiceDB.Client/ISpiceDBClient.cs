@@ -16,6 +16,9 @@ public interface ISpiceDBClient : ISpiceDBRelationshipClient, ISpiceDBSchemaClie
     /// <summary>The authenticated protocol-level client. A client without a raw transport throws <see cref="InvalidOperationException"/>.</summary>
     SpiceDBProtoClient RawProto();
 
+    /// <summary>Startup readiness check: fails when the endpoint is not ready within the timeout. The in-memory double completes immediately.</summary>
+    Task ConnectAsync(ConnectOptions? options = null, CancellationToken cancellationToken = default);
+
     Task<bool> CheckAnyAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default);
     Task<bool> CheckAllAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default);
     IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, CancellationToken cancellationToken = default);

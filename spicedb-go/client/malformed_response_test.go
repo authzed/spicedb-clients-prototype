@@ -58,7 +58,7 @@ func (s *malformedServer) LookupResources(_ *v1.LookupResourcesRequest, stream g
 
 func (s *malformedServer) LookupSubjects(_ *v1.LookupSubjectsRequest, stream grpc.ServerStreamingServer[v1.LookupSubjectsResponse]) error {
 	s.calls.Add(1)
-	if e := stream.Send(&v1.LookupSubjectsResponse{Subject: &v1.ResolvedSubject{SubjectObjectId: "ok"}}); e != nil {
+	if e := stream.Send(&v1.LookupSubjectsResponse{Subject: &v1.ResolvedSubject{SubjectObjectId: "ok", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION}}); e != nil {
 		return e
 	}
 	return stream.Send(s.subject)
@@ -97,6 +97,9 @@ func requireMalformed(t *testing.T, err error, field string) {
 	require.Equal(t, CodeInternal, CodeOf(err), "%v", err)
 	require.ErrorIs(t, err, ErrInternal)
 	require.ErrorContains(t, err, "malformed response")
+	// The message says the client detected it, so it is not mistaken for a
+	// status the server sent.
+	require.ErrorContains(t, err, "client detected malformed response from server")
 	require.ErrorContains(t, err, field)
 	require.False(t, DefaultRetryPolicy().retryable(err))
 }

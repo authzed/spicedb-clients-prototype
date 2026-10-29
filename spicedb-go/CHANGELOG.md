@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- A response the client cannot interpret now says so: its `ErrInternal`
+  message reads `spicedb: <operation>: client detected malformed response from
+  server: <detail>`, so it is not mistaken for a status the server sent. Bulk
+  check pair mismatches, a page cursor that does not advance, an unknown
+  delete progress and a counter response with no state use the same wording.
+- A check, bulk-check item, `LookupResources` result or `LookupSubjects`
+  subject whose permissionship is unspecified (or unknown) fails with
+  `ErrInternal` as a client-detected malformed response instead of yielding
+  `PermissionshipUnspecified`; `LookupHasPermissionOnly` no longer silently
+  drops such a row. The `clienttest.Store` never produces an unspecified
+  permissionship: a registered or resolved result left unspecified (such as a
+  zero `CheckResult`) without an `Err` reports `PermissionshipNoPermission`.
+- The AI integration guide notes that projects whose permissions are all
+  computed (unions, arrows) get little from stored-relation grants on the
+  double, and should model them with the resolver or test against SpiceDB.
 - The per-page default deadline on paged reads counts only time spent waiting
   on the server, never the time the caller spends on an item: its clock
   pauses while the caller's loop body runs. Previously a deadline on the page

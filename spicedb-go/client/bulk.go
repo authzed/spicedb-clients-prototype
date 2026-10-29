@@ -175,7 +175,7 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 				return
 			}
 			if cur.GetToken() == "" || cur.GetToken() == prev {
-				yield(ExportedRelationship{}, &Error{Code: CodeInternal, Message: "spicedb: export page did not advance cursor"})
+				yield(ExportedRelationship{}, malformed("export relationships", "page did not advance cursor"))
 				return
 			}
 		}

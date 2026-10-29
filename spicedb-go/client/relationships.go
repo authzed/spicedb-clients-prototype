@@ -162,7 +162,7 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 				return
 			}
 			if cur.GetToken() == "" || cur.GetToken() == previous {
-				yield(ReadRelationship{}, &Error{Code: CodeInternal, Message: "spicedb: read page did not advance cursor"})
+				yield(ReadRelationship{}, malformed("read relationships", "page did not advance cursor"))
 				return
 			}
 		}
@@ -214,7 +214,7 @@ func (c *Client) deletePage(ctx context.Context, f *v1.RelationshipFilter, limit
 	}
 	result := deleteResult(resp)
 	if resp.GetDeletionProgress() != v1.DeleteRelationshipsResponse_DELETION_PROGRESS_COMPLETE && resp.GetDeletionProgress() != v1.DeleteRelationshipsResponse_DELETION_PROGRESS_PARTIAL {
-		return result, true, &Error{Code: CodeInternal, Message: "spicedb: unknown delete progress; refusing another mutation"}
+		return result, true, malformed("delete relationships", "unknown delete progress; refusing another mutation")
 	}
 	return result, true, nil
 }

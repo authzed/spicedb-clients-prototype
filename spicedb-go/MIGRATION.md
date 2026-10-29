@@ -96,8 +96,12 @@ jittered backoff, and writes are never retried. Watches and imports have no
 default deadline.
 
 A response the client cannot interpret (for example a relationship without a
-subject) fails with `ErrInternal`; authzed-go handed you the empty message
-fields.
+subject, or a check or lookup result whose permissionship is unspecified)
+fails with `ErrInternal`, and its message says
+`client detected malformed response from server` so it is not mistaken for a
+status the server sent; authzed-go handed you the empty message fields, and
+an unspecified permissionship as a result. `PermissionshipUnspecified` never
+appears on a successful result.
 
 Tools with their own policy should not stack it on the client's:
 

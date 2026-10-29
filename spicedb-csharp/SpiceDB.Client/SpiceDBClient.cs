@@ -379,7 +379,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             WithTracing = options?.Tracing == CheckTracing.Enabled
         };
         var response = await Unary(budget, o => _permissions.CheckPermissionAsync(wire, o.Headers, o.Deadline, o.CancellationToken));
-        return new(ToCheckPermissionship(response.Permissionship), response.PartialCaveatInfo?.MissingRequiredContext ?? Enumerable.Empty<string>(), new(response.CheckedAt?.Token ?? ""), DebugInformation.FromProto(response.DebugTrace), response.OptionalExpiresAt?.ToDateTimeOffset());
+        return new(Response.CheckPermissionship(response.Permissionship, "CheckPermission"), response.PartialCaveatInfo?.MissingRequiredContext ?? Enumerable.Empty<string>(), new(response.CheckedAt?.Token ?? ""), DebugInformation.FromProto(response.DebugTrace), response.OptionalExpiresAt?.ToDateTimeOffset());
     }
     public async Task<IReadOnlyList<CheckResult>> CheckBulkAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default)
     {
@@ -401,7 +401,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             foreach (var pair in response.Pairs)
             {
                 if (!wire.Items[results.Count - offset].Equals(pair.Request))
-                { var malformed = SpiceDBException.InternalError($"check item {results.Count}: bulk response echoed request does not match its input."); malformed.InputIndex = results.Count; throw malformed; }
+                { var malformed = Response.Malformed($"check item {results.Count}", "bulk response echoed request does not match its input"); malformed.InputIndex = results.Count; throw malformed; }
                 if (pair.Error is { } error)
                 {
                     var exception = ErrorMapper.ToSpiceDBException(new RpcException(new Grpc.Core.Status((StatusCode)error.Code, error.Message), new Metadata { { "grpc-status-details-bin", error.ToByteArray() } }));
@@ -410,7 +410,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                     results.Add(new CheckResult(exception, new(response.CheckedAt?.Token ?? "")));
                     continue;
                 }
-                if (pair.Item is null) { var malformed = SpiceDBException.InternalError($"check item {results.Count}: bulk response is missing its result."); malformed.InputIndex = results.Count; throw malformed; }
+                if (pair.Item is null) { var malformed = Response.Malformed($"check item {results.Count}", "bulk response is missing its result"); malformed.InputIndex = results.Count; throw malformed; }
+                if (pair.Item.Permissionship == CheckPermissionResponse.Types.Permissionship.Unspecified) { var malformed = Response.Malformed($"check item {results.Count}", "bulk response permissionship is unspecified"); malformed.InputIndex = results.Count; throw malformed; }
                 results.Add(ToCheckResult(pair.Item, response.CheckedAt?.Token ?? ""));
             }
         }
@@ -572,9 +573,10 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             await foreach (var response in Stream(budget, o => _permissions.LookupResources(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: single))
             {
                 request.OptionalCursor = response.AfterResultCursor; count++;
+                var permissionship = Response.LookupPermissionship(response.Permissionship, "LookupResources");
                 if (options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly && response.Permissionship != LookupPermissionship.HasPermission) continue;
                 remaining--;
-                yield return new() { ResourceId = Response.Id(response.ResourceObjectId, "LookupResources", "resource object id"), Permissionship = ToPermissionship(response.Permissionship), PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
+                yield return new() { ResourceId = Response.Id(response.ResourceObjectId, "LookupResources", "resource object id"), Permissionship = permissionship, PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
                 if (remaining == 0) yield break;
             }
             if (single || count < size) yield break;
@@ -1083,12 +1085,17 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     /// <summary>
     /// <see cref="ToLookupSubject"/> for the client's own call path: a response with no subject
     /// id (in either the current or the deprecated field), or an excluded subject without one,
-    /// is malformed rather than an empty-id subject.
+    /// is malformed rather than an empty-id subject, and so is a subject whose permissionship is
+    /// unspecified.
     /// </summary>
     internal static LookupSubject ValidLookupSubject(LookupSubjectsResponse response)
     {
         var mapped = ToLookupSubject(response);
         Response.Id(mapped.Subject.SubjectId, "LookupSubjects", "subject object id");
+#pragma warning disable CS0612 // deprecated proto field — the same fallback ToLookupSubject takes
+        var permissionship = string.IsNullOrEmpty(response.Subject?.SubjectObjectId) ? response.Permissionship : response.Subject.Permissionship;
+#pragma warning restore CS0612
+        Response.LookupPermissionship(permissionship, "LookupSubjects");
         foreach (var excluded in mapped.ExcludedSubjects) Response.Id(excluded.SubjectId, "LookupSubjects", "excluded subject object id");
         return mapped;
     }

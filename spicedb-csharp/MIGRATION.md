@@ -239,13 +239,20 @@ constructor that takes an inner exception: a subclass could not keep the server'
   shape. Code that caught `ArgumentException` or `FormatException` around parsing catches
   `InvalidArgumentException` instead. A server `INVALID_ARGUMENT` is also an
   `InvalidArgumentException`; a local one has no `InnerException`.
-- A response the client cannot interpret (for example a relationship without a subject)
-  fails with an `Internal`-status `SpiceDBException` rather than yielding empty fields.
+- A response the client cannot interpret (for example a relationship without a subject, or
+  a check, bulk-check item or lookup result whose permissionship is unspecified) fails with
+  an `Internal`-status `SpiceDBException` rather than yielding empty fields or
+  `Permissionship.Unspecified`. Its message reads `<operation>: client detected malformed
+  response from server: <detail>.`, so logs do not mistake it for an `Internal` status the
+  server sent. Code that branched on `Permissionship.Unspecified` from a check or lookup
+  only sees it now for a permissionship value newer than the client.
 - Test doubles: `SpiceDBException.Create(StatusCode.NotFound, "...")`, or use
   `SpiceDB.Client.Testing.InMemorySpiceDBClient` behind `ISpiceDBClient` (or
   `ISpiceDBRelationshipClient` and `ISpiceDBSchemaClient`). It answers checks from
   registrations, a resolver (`SetCheckResolver`, `GrantAllChecks()`) and its stored
-  relationships, and serves `LookupResourcesAsync` and `LookupSubjectsAsync`.
+  relationships, and serves `LookupResourcesAsync` and `LookupSubjectsAsync`. It never
+  answers `Permissionship.Unspecified`: registering it, or returning it from a resolver,
+  fails with `InvalidArgumentException`.
 
 ## Relationships and reads
 

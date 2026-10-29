@@ -425,7 +425,14 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     `http://` and `https://` URLs (the scheme selects plaintext or TLS and must
     agree with the constructor). Any other form fails at construction with an
     error naming the expected format: an endpoint never builds a client whose
-    every call fails. The loopback check runs on the parsed host.
+    every call fails. The loopback check runs on the parsed host. An
+    `http://` URL needs an explicit port (no client silently dials port 80);
+    an `https://` URL without one uses 443. Malformed forms (path, query,
+    userinfo, non-numeric port) fail with an error naming that problem,
+    checked before the remote-plaintext policy, whose message appears only
+    for a well-formed remote host.
+  - Connection errors display the endpoint and the root cause (refused, DNS,
+    TLS), not only a generic transport category.
   - Clients that connect lazily offer a startup readiness check (an
     eager-connect option or an awaitable connect/ready call), so a wrong or
     unreachable endpoint can still fail at startup.

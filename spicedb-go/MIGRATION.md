@@ -87,7 +87,9 @@ Every unary call (including bulk checks) gets a 30-second budget unless the
 context already has an earlier deadline, or you pass a per-call
 `With<Operation>Timeout` or a client-wide `WithDefaultTimeout`. Paged reads
 (relationship reads, lookups, exports) apply that default to each page
-request instead, so a long read is not cut off but a stalled page fails; a
+request's server time instead (time your loop body spends on an item does
+not count), so a long or slowly consumed read is not cut off but a stalled
+page fails; a
 context deadline or `With<Operation>Timeout` still bounds the whole read.
 Idempotent reads retry `Unavailable` and `Aborted` up to three times with
 jittered backoff, and writes are never retried. Watches and imports have no

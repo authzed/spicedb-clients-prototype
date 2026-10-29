@@ -51,13 +51,16 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 		size := o.pageRequestLimit()
 		for {
 			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug}
-			pageCtx, pageCancel := c.pageContext(ctx)
+			// The page's clock pauses while the caller holds an item.
+			pageCtx, clock, pageCancel := c.serverClock(ctx, true)
 			count := uint32(0)
 			prev := cur.GetToken()
 			for resp, e := range receive(pageCtx, c.retrySettings(o), "lookup resources", !exposed, func(ctx context.Context) (receiver[*v1.LookupResourcesResponse], error) {
 				return c.psc.LookupResources(ctx, req, o.callOptions...)
 			}) {
+				clock.hold()
 				if e != nil {
+					e = clock.err(pageCtx, "lookup resources", e)
 					pageCancel()
 					yield(LookupResource{}, e)
 					return
@@ -79,6 +82,7 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 					pageCancel()
 					return
 				}
+				clock.wait()
 				if o.limit > 0 && total >= o.limit {
 					pageCancel()
 					return
@@ -132,16 +136,18 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 		if o.limit > 0 && o.limit <= uint64(^uint32(0)) {
 			req.OptionalConcreteLimit = uint32(o.limit)
 		}
-		// LookupSubjects is one finite stream: its single page carries the
-		// client default deadline like every page of a paged read.
-		ctx, pageCancel := c.pageContext(ctx)
-		defer pageCancel()
+		// LookupSubjects is one stream with no pages: the client default
+		// deadline bounds each wait for the next message, never the time the
+		// caller holds an item.
+		ctx, clock, release := c.serverClock(ctx, false)
+		defer release()
 		var count uint64
 		for resp, e := range receive(ctx, c.retrySettings(o), "lookup subjects", true, func(ctx context.Context) (receiver[*v1.LookupSubjectsResponse], error) {
 			return c.psc.LookupSubjects(ctx, req, o.callOptions...)
 		}) {
+			clock.hold()
 			if e != nil {
-				yield(LookupSubject{}, e)
+				yield(LookupSubject{}, clock.err(ctx, "lookup subjects", e))
 				return
 			}
 			s := resolvedSubjectFromProto(resp.GetSubject())
@@ -174,6 +180,7 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 			if !yield(LookupSubject{Subject: s, ExcludedSubjects: excluded, LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken())}, nil) {
 				return
 			}
+			clock.wait()
 			if o.limit > 0 && count >= o.limit {
 				return
 			}

@@ -2,11 +2,20 @@
 
 ## Unreleased
 
+- The per-page default deadline on paged reads counts only time spent waiting
+  on the server, never the time the caller spends on an item: its clock
+  pauses while the caller's loop body runs. Previously a deadline on the page
+  stream kept running through the loop body, so a caller doing slow work per
+  item could fail a healthy read with `CodeDeadlineExceeded` once a page
+  outgrew gRPC's flow-control window. `LookupSubjects`, which has no pages,
+  bounds each wait for the next message instead of the whole stream.
 - Finite paged reads (`ReadRelationships`, `LookupResources`,
   `ExportRelationships`, and the single streams of `LookupSubjects` and
   `LookupPermissionSets`) apply the client default deadline (30 seconds, or
   `WithDefaultTimeout`) to each page request, from opening it to receiving its
-  last item, so a server that stalls mid-read fails the read with
+  last item (not counting time the caller holds an item; `LookupSubjects`
+  bounds each wait for the next message), so a server that stalls mid-read
+  fails the read with
   `CodeDeadlineExceeded` instead of hanging it. Previously they had no default
   deadline. A caller's total deadline (context or `With<Operation>Timeout`)
   still bounds the whole read and wins when earlier;

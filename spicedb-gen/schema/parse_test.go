@@ -294,3 +294,10 @@ definition document {
 	_, err = schema.ParseString("caveat c(a int) {\n\tfoo(a)\n}\n\ndefinition user {\n\tpermission view = +\n}")
 	require.ErrorContains(t, err, "line 6")
 }
+
+func TestParseKeepsSourceText(t *testing.T) {
+	src := "caveat c(x int) {\n  x > 1\n}\n\ndefinition user {}\n"
+	s, err := schema.ParseString(src)
+	require.NoError(t, err)
+	assert.Equal(t, src, s.Text, "Text is the source as given, before caveat bodies are made opaque")
+}

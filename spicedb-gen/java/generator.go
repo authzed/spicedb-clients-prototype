@@ -320,7 +320,7 @@ sealed permits non-sealed when`) {
 var fixedTypes = []string{
 	"Subject", "Permission", "PermissionRef", "TypedCheck", "TypedRelationship", "RelationshipKey",
 	"Deletable", "Txn", "TypedClient", "NotInSchemaException", "SubjectNotAllowedException",
-	"Definition", "Definitions", "DefinitionRef",
+	"Definition", "Definitions", "DefinitionRef", "NamedCheck",
 	// Native types referenced by simple name.
 	"CallOptions", "CheckOptions", "CheckResult", "ClientOptions", "Consistency", "DeleteAllOptions",
 	"DeleteOptions", "ExportOptions", "Filter", "ImportOptions", "LookupOptions", "LookupResult",
@@ -332,7 +332,9 @@ var fixedTypes = []string{
 	"Objects", "Optional", "Stream", "Collection", "ArrayList", "HashMap", "String", "Object",
 }
 
-var fixedStaticMethods = []string{"withSubject", "withSubjectAnyRelation", "checksFor", "subjectRef", "subjectString", "resourceFilter", "notAllowed", "definitionByName", "permissionRefByName"}
+var fixedStaticMethods = []string{"withSubject", "withSubjectAnyRelation", "checksFor", "subjectRef", "subjectString", "resourceFilter", "notAllowed", "definitionByName", "permissionRefByName",
+	"subjectSetByName", "reaches", "resolveByName", "subjectPosition", "notASubjectSet", "reachable", "checkTarget",
+	"objectByName", "parseObject", "objectText", "relationshipFromTriple", "admitsShape"}
 
 // fixedStaticFields are the always-generated static fields of Permissions.
 var fixedStaticFields = []string{"SCHEMA"}
@@ -679,7 +681,10 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 	}
 	if len(defRefTypes) > 0 {
 		w := newWriter(2)
-		w.line("/** A definition's resource ref, as {@link Definition#ref} returns it for a runtime name. */")
+		w.line("/**")
+		w.line(" * Any definition's resource ref: the one type for code that handles an object of any definition,")
+		w.line(" * as {@link Definition#ref} returns it for a runtime name. Every one is also a {@link Subject}.")
+		w.line(" */")
 		w.header("public sealed interface DefinitionRef extends Subject", "permits", dedupSorted(defRefTypes), " {")
 		w.indent()
 		for _, m := range []string{
@@ -752,7 +757,7 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 	if err != nil {
 		return TemplateData{}, err
 	}
-	data.SchemaBlocks = blocks
+	data.SchemaBlocks = append(blocks, b.renderRuntimeNameBlocks()...)
 
 	_ = ifaceSources
 	return data, nil
@@ -889,6 +894,128 @@ func renderSchemaBlocks(s *schema.Schema) ([]string, error) {
 		blocks = append(blocks, w.String())
 	}
 	return blocks, nil
+}
+
+// renderRuntimeNameBlocks renders subjectSetByName and the reachability table the by-name
+// lookups use to answer an unreachable subject type without a call.
+func (b *builder) renderRuntimeNameBlocks() []string {
+	var blocks []string
+	{
+		w := newWriter(2)
+		w.line("/**")
+		w.line(" * Builds the subject set {@code definition:id#relation} (such as {@code team:eng#member}) from")
+		w.line(" * names received at run time.")
+		w.line(" *")
+		w.line(" * @throws NotInSchemaException if the schema has no such definition or relation, or no relation")
+		w.line(" *     admits it as a subject")
+		w.line(" */")
+		w.line("public static Subject subjectSetByName(String definition, String id, String relation) {")
+		w.indent()
+		w.line("var d = definitionByName(definition);")
+		var cases [][2]string
+		for _, p := range b.s.SubjectSetPositions() {
+			def, rel, _ := strings.Cut(p, "#")
+			k := variantKey{Def: def, Rel: rel}
+			if _, ok := b.variants[k]; ok {
+				cases = append(cases, [2]string{p, typeNameOf(k)})
+			}
+		}
+		if len(cases) > 0 {
+			w.line(`switch (definition + "#" + Objects.requireNonNull(relation, "relation")) {`)
+			w.indent()
+			for _, c := range cases {
+				w.line("case " + javaString(c[0]) + ":")
+				w.indent()
+				w.line("return new " + c[1] + "(new ObjectRef(definition, id).objectId());")
+				w.dedent()
+			}
+			w.line("default:")
+			w.indent()
+			w.line("throw notASubjectSet(d, relation);")
+			w.dedent()
+			w.dedent()
+			w.line("}")
+		} else {
+			w.line("throw notASubjectSet(d, relation);")
+		}
+		w.dedent()
+		w.line("}")
+		blocks = append(blocks, w.String())
+	}
+	{
+		w := newWriter(2)
+		w.line("/** Whether {@code rule}, \"definition#relation@shape\", is a subject shape the schema admits. */")
+		w.line("private static boolean admitsShape(String rule) {")
+		w.indent()
+		rules := b.s.SubjectRules()
+		if len(rules) > 0 {
+			w.line("switch (rule) {")
+			w.indent()
+			for _, r := range rules {
+				w.line("case " + javaString(r) + ":")
+			}
+			w.indent()
+			w.line("return true;")
+			w.dedent()
+			w.line("default:")
+			w.indent()
+			w.line("return false;")
+			w.dedent()
+			w.dedent()
+			w.line("}")
+		} else {
+			w.line("return false;")
+		}
+		w.dedent()
+		w.line("}")
+		blocks = append(blocks, w.String())
+	}
+	{
+		positions := b.s.ReachingSubjectPositions()
+		var keys []string
+		for _, d := range b.s.Definitions {
+			for _, r := range d.Relations {
+				keys = append(keys, schema.SubjectPosition(d.Name, r.Name))
+			}
+			for _, p := range d.Permissions {
+				keys = append(keys, schema.SubjectPosition(d.Name, p.Name))
+			}
+		}
+		w := newWriter(2)
+		w.line("/** Whether subjects at {@code subject}, a type or type#relation, reach {@code position}. */")
+		w.line("private static boolean reaches(String position, String subject) {")
+		w.indent()
+		if len(keys) > 0 {
+			w.line("switch (position) {")
+			w.indent()
+			for _, k := range keys {
+				w.line("case " + javaString(k) + ":")
+				w.indent()
+				var quoted []string
+				for _, s := range positions[k] {
+					quoted = append(quoted, javaString(s))
+				}
+				if len(quoted) == 0 {
+					w.line("return false;")
+				} else {
+					w.call("return Set.of(", quoted, ").contains(subject);")
+				}
+				w.dedent()
+			}
+			w.line("default:")
+			w.indent()
+			w.line("return false;")
+			w.dedent()
+			w.dedent()
+			w.line("}")
+		} else {
+			w.line("return false;")
+		}
+		w.dedent()
+		w.line("}")
+		blocks = append(blocks, w.String())
+	}
+	return blocks
 }
 
 func describeVariant(k variantKey) string {

@@ -261,25 +261,34 @@ func GoIntegrationTest() error {
 		return err
 	}
 
-	// 5. Start SpiceDB via docker-compose
-	fmt.Println("==> Starting SpiceDB...")
-	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
-		return fmt.Errorf("docker compose up failed: %w", err)
+	// 5. Start SpiceDB via docker-compose, unless SPICEDB_ENDPOINT names one.
+	endpoint := os.Getenv("SPICEDB_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:50051"
+		fmt.Println("==> Starting SpiceDB...")
+		if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+			return fmt.Errorf("docker compose up failed: %w", err)
+		}
+		defer func() {
+			fmt.Println("==> Stopping SpiceDB...")
+			_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+		}()
 	}
-	defer func() {
-		fmt.Println("==> Stopping SpiceDB...")
-		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
-	}()
 
 	// Wait for SpiceDB to be ready
-	fmt.Println("==> Waiting for SpiceDB to be ready...")
-	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+	fmt.Println("==> Waiting for SpiceDB to be ready at " + endpoint + "...")
+	if err := waitForReady(endpoint, 30*time.Second); err != nil {
 		return err
 	}
 
-	// 6. Run go test
+	// 6. Run go test (the tests read SPICEDB_ENDPOINT).
 	fmt.Println("==> Running Go integration tests...")
-	if err := runInDir("testdata/go", "go", "test", "-v", "."); err != nil {
+	goTest := exec.Command("go", "test", "-v", ".")
+	goTest.Dir = "testdata/go"
+	goTest.Env = append(os.Environ(), "SPICEDB_ENDPOINT="+endpoint)
+	goTest.Stdout = os.Stdout
+	goTest.Stderr = os.Stderr
+	if err := goTest.Run(); err != nil {
 		return fmt.Errorf("go test failed: %w", err)
 	}
 
@@ -707,7 +716,40 @@ func GoTypeErrors() error {
 	if err := verifyGoTypeErrors("testdata/go", "type_errors_test.go"); err != nil {
 		return err
 	}
-	return verifyGoNamesOnly()
+	if err := verifyGoNamesOnly(); err != nil {
+		return err
+	}
+	return verifyGoStrict()
+}
+
+// staticcheckVersion pins the staticcheck release used on generated Go.
+const staticcheckVersion = "honnef.co/go/tools/cmd/staticcheck@v0.7.0"
+
+// verifyGoStrict holds the generated Go (full and names-only) to the strictest
+// standard checks: go vet, then staticcheck with every check enabled
+// (including the style checks). Generated code must pass both unmodified.
+func verifyGoStrict() error {
+	fmt.Println("==> Vetting and linting the generated Go (go vet, staticcheck -checks all)...")
+	for _, dir := range []string{"testdata/go", "testdata/go-names"} {
+		env := []string{}
+		if dir == "testdata/go-names" {
+			env = []string{"GOWORK=off", "GOFLAGS=-mod=readonly"}
+		}
+		for _, args := range [][]string{
+			{"vet", "./..."},
+			{"run", staticcheckVersion, "-checks", "all", "./..."},
+		} {
+			cmd := exec.Command("go", args...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), env...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("generated Go in %s fails go %s: %w", dir, args[0], err)
+			}
+		}
+	}
+	return nil
 }
 
 // verifyGoNamesOnly builds and tests the --go.names-only fixture

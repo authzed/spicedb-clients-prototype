@@ -150,10 +150,15 @@ class RuntimeNamesTest {
       assertThrows(
           NotInSchemaException.class,
           () -> typed.lookupResources(Consistency.full(), "document", "share", User("alice")));
-      // document#delete admits users only, not team members.
+      // A wildcard of a type that reaches the permission is not a lookup subject.
       assertThrows(
           SubjectNotAllowedException.class,
-          () -> typed.lookupResources(Consistency.full(), "document", "delete", Team("eng").member()));
+          () -> typed.lookupResources(Consistency.full(), "organization", "view", UserWildcard()));
+      // document#delete is reached by users only, so team members find nothing, without a call.
+      try (var none =
+          typed.lookupResources(Consistency.full(), "document", "delete", Team("eng").member())) {
+        assertEquals(0, none.count());
+      }
       assertThrows(
           NullPointerException.class,
           () -> typed.lookupResources(Consistency.full(), "document", "view", null));
@@ -183,9 +188,11 @@ class RuntimeNamesTest {
       drain(() -> policy.accessibleResourceIds("organization", "view", "alice").stream());
       assertThrows(
           NotInSchemaException.class,
-          () -> policy.accessibleResourceIds("organization", "admin", "alice"));
+          () -> policy.accessibleResourceIds("organization", "owner", "alice"));
+      // Relations are looked up as well as permissions, as SpiceDB allows.
+      drain(() -> policy.accessibleResourceIds("organization", "admin", "alice").stream());
     }
-    assertEquals(1, db.callsOf(ClientOperation.LOOKUP_RESOURCES).size());
+    assertEquals(2, db.callsOf(ClientOperation.LOOKUP_RESOURCES).size());
   }
 
   private record RuntimeNamePolicy(TypedClient spiceDb) {

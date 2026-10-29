@@ -52,7 +52,7 @@ describe("typed values without a server", () => {
         expect(ok.length).toBe(2);
         expect(ok.error).toBeUndefined();
         expect(ok.updates.map(u => u.operation)).toEqual(["delete", "touch"]);
-        expect(ok.updates[1].relationship).toEqual(relationship("organization:acme", "admin", "user:alice"));
+        expect(ok.updates[1]!.relationship).toEqual(relationship("organization:acme", "admin", "user:alice"));
         expect(ok.preconditions).toEqual([{ operation: "mustNotMatch", filter: Organization("acme").adminFilter() }]);
         expect(bad.error).toBeInstanceOf(InvalidArgumentError);
         expect(bad.updates).toEqual([]);

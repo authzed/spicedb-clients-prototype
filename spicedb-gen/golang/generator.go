@@ -42,8 +42,28 @@ type TemplateData struct {
 	Definitions        []DefinitionData
 	SealedInterfaces   []SealedInterfaceData
 	PermissionVars     []PermissionVarData
+	// Reaching lists, per relation and permission, the subject positions
+	// ("type" or "type#relation") that can reach it, for by-name lookups.
+	Reaching []ReachingData
+	// SubjectSets lists every subject set a caller can build by name.
+	SubjectSets []SubjectSetData
+	// SubjectRules lists "definition#relation@shape" for every admitted subject shape.
+	SubjectRules []string
 	// SchemaLiteral is the source schema as a Go string literal.
 	SchemaLiteral string
+}
+
+// ReachingData pairs a "definition#name" position with the subject positions
+// that reach it.
+type ReachingData struct {
+	Position string
+	Subjects []string
+}
+
+// SubjectSetData is one "definition#relation" subject set and its ref type.
+type SubjectSetData struct {
+	Position string
+	RefType  string
 }
 
 // CaveatContextData holds data for generating a caveat context struct.
@@ -546,7 +566,7 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 			dd.WildcardType = rn.refType(subjectBase{definition: def.Name, wildcard: true})
 			n.claim("", pascal+"Wildcard", "wildcard constructor for definition "+def.Name)
 		}
-		for _, m := range []string{"Filter", "PermissionByName", "RelationByName", "RelationshipByName", "String", "ID"} {
+		for _, m := range []string{"Filter", "PermissionByName", "RelationByName", "RelationshipByName", "String", "ID", "DefinitionName", "isDefinitionRef"} {
 			n.claim(refType, m, "built-in method "+m)
 		}
 
@@ -673,14 +693,39 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 		"Deletable", "TypedClient", "NewTypedClient", "Txn", "TypedCheck", "ChecksFor", "Check", "CheckBulk",
 		"LookupResources", "LookupSubjects", "FromRelationship", "ErrRelationship", "WithSubject", "WithSubjectAnyRelation",
 		"ErrNotInSchema", "ErrSubjectNotAllowed", "SchemaText", "Definitions", "DefinitionNames", "Definition",
-		"DefinitionByName", "PermissionRefByName", "LookupResourcesByName", "definitionsByName"} {
+		"DefinitionByName", "PermissionRefByName", "LookupResourcesByName", "definitionsByName",
+		"DefinitionRef", "SubjectSetByName", "LookupSubjectsByName", "reachingSubjects", "reaches",
+		"resolveByName", "schemaPosition", "emptyStream", "failedStream", "ObjectByName", "ParseObject",
+		"subjectRules", "TripleOption", "TripleCaveat", "TripleExpiration", "RelationshipFromTriple", "target",
+		"checkTarget", "CheckByName", "NamedCheck", "CheckBulkByName"} {
 		n.claim("", fixed, "generated support code")
 	}
 	if n.err != nil {
 		return TemplateData{}, n.err
 	}
 
+	var reaching []ReachingData
+	positions := s.ReachingSubjectPositions()
+	for _, def := range s.Definitions {
+		for _, r := range def.Relations {
+			p := schema.SubjectPosition(def.Name, r.Name)
+			reaching = append(reaching, ReachingData{Position: p, Subjects: positions[p]})
+		}
+		for _, perm := range def.Permissions {
+			p := schema.SubjectPosition(def.Name, perm.Name)
+			reaching = append(reaching, ReachingData{Position: p, Subjects: positions[p]})
+		}
+	}
+	var subjectSets []SubjectSetData
+	for _, p := range s.SubjectSetPositions() {
+		d, r, _ := strings.Cut(p, "#")
+		subjectSets = append(subjectSets, SubjectSetData{Position: p, RefType: rn.refType(subjectBase{definition: d, relation: r})})
+	}
+
 	return TemplateData{
+		Reaching:           reaching,
+		SubjectRules:       s.SubjectRules(),
+		SubjectSets:        subjectSets,
 		CaveatContextTypes: caveatContextTypes,
 		SubjectRefTypes:    subjectRefTypes,
 		TypeSentinels:      typeSentinels,

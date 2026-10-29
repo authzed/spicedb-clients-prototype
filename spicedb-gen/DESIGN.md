@@ -62,6 +62,24 @@ current native APIs.
     deletes and exact filters, and a check accessor.
   - Validated by-name lookups for permissions, relations and relationships
     (checking the subject is admitted), plus generated name lists.
+  - String-keyed entry points (root DESIGN.md, "String-keyed code reaches
+    every typed value"), in every target: an object from a definition name and
+    ID and from `type:id` text; a subject set from definition, ID and a
+    relation or permission that some relation admits as a subject; a
+    relationship from tuple text whose subject shape (type, wildcard,
+    relation, caveat, expiration) is one the relation admits; checks and bulk
+    checks by name; resource and subject lookups by name; and one type naming
+    every generated object (and, where the language has unions, every subject
+    set). Unknown names fail with the not-in-schema error before any call.
+  - By-name checks and lookups accept relations as well as permissions. Each
+    target embeds, per relation and permission, the subject positions
+    (`type` or `type#relation`) that reach it, following subject sets
+    transitively (`schema.ReachingSubjectPositions`). A by-name lookup whose
+    subject type and relation cannot reach the target returns an empty result
+    without a call, which is SpiceDB's answer; a by-name check raises the
+    subject-not-allowed error instead. A wildcard subject of a reachable type
+    is never a check or lookup subject and raises subject-not-allowed.
+    Statically typed checks and lookups are unchanged.
   - Each language documents one collision rule below. Any remaining collision
     fails generation with both sources named.
 
@@ -100,7 +118,15 @@ current native APIs.
 ## Verification
 
 Generate all four target fixtures from testdata/sample.zed, build/type-check,
-run negative type fixtures, and run live integration examples. sample.zed
+run negative type fixtures, and run live integration examples. Generated
+output must pass each language's strictest common checks unmodified, since
+applications commonly run them over their whole tree: Go `go vet` and
+`staticcheck -checks all` (`mage goTypeErrors`); TypeScript `tsc` with
+`strict`, `noImplicitAny`, `exactOptionalPropertyTypes` and
+`noUncheckedIndexedAccess` (the fixture tsconfigs, guarded by a unit test);
+Java `javac -Xlint:all -Werror` (the fixture's `compileJava`); Python pyright
+and `mypy --strict`. String-keyed entry points have offline tests against
+each client's in-memory double and live tests against SpiceDB. sample.zed
 includes the adoption cases (`organization`/`invitation`: a permission
 userset, wildcard-only and mixed wildcard relations, an expiring userset, and an
 expiration-only relation); every target's fixtures exercise them. Negative type
@@ -130,9 +156,24 @@ and options forwarding rather than just generated text fragments.
   `DefinitionNames()`, the `SchemaText` constant (a raw string literal unless
   the schema holds a backquote or carriage return), `DefinitionByName(name)
   (Definition, error)` (with `PermissionRef(p)`, `Permission(id, p)` and
-  `Relation(id, r)`), `PermissionRefByName(d, p)` and `LookupResourcesByName`.
-  These names are reserved: a definition whose identifier collides with one
-  fails generation and needs `--go.rename`.
+  `Relation(id, r)` and `Ref(id)`), `PermissionRefByName(d, p)` and
+  `LookupResourcesByName`. These names are reserved: a definition whose
+  identifier collides with one fails generation and needs `--go.rename`.
+- String-keyed entry points: `DefinitionRef`, a sealed interface every `DRef`
+  implements (`DefinitionName()`, `ID()`, `Filter()`, the by-name methods; it
+  embeds `Subject`, so every object is a dynamic subject); `ObjectByName(d,
+  id)` and `ParseObject("type:id")` → `DefinitionRef`; `SubjectSetByName(d,
+  id, r)` → `Subject` (the generated userset ref); `RelationshipFromTriple(
+  resource, relation, subject, ...TripleOption)` with `TripleCaveat(name,
+  ctx)` and `TripleExpiration(t)`, validated against the generated
+  `subjectRules` table; `CheckByName`, `CheckBulkByName([]NamedCheck)`
+  (failures are `*client.BulkCheckError` with the index); `LookupResourcesByName`
+  and `LookupSubjectsByName(ctx, tc, cs, d, id, p, subjectType,
+  subjectRelation, opts...)` (`""` or `"..."` for direct). Unknown names wrap
+  `ErrNotInSchema`, inadmissible subjects `ErrSubjectNotAllowed`, malformed
+  text and empty IDs `rel.ErrInvalidResource`/`rel.ErrInvalidSubject`.
+  `TypedClient` embeds `client.Interface`, so native methods such as `Ready`
+  are promoted without a forwarder; the capability parity test checks it.
 - `TypedClient` embeds `client.Interface`; `NewTypedClient` accepts any
   implementation, including `clienttest.Store`.
 - On `DRef`: permission `p` → `P() Permission`; relation `r` → writer
@@ -210,6 +251,17 @@ and options forwarding rather than just generated text fragments.
   options?)`, which also requires the subject's type to be a definition. Each
   throws `NotInSchemaError` for a name the schema lacks. These names are
   reserved: a definition producing one fails generation.
+- String-keyed entry points: `AnyResourceRef` is the union of every generated
+  object ref (each is also an `AnySubject`) and `AnySubjectSet` the union of
+  userset refs; `objectByName(d, id)` and `parseObject("type:id")` →
+  `AnyResourceRef`; `subjectSetByName(d, id, r)` → `AnySubjectSet`;
+  `relationshipFromTriple(resource, relation, subject, { caveat?, expiration?
+  })` (`TripleOptions`); `TypedClient.checkByName(c, d, id, p, s, options?)`,
+  `checkBulkByName(c, NamedCheck[], options?)` and `lookupSubjectsByName(c, d,
+  id, p, subjectType, subjectRelation?, options?)`. A by-name `Permission`
+  also checks through `checkBulkTyped`; the overloaded `check` deliberately
+  rejects it, so typed checks keep their static subject constraints.
+  Malformed text and empty IDs throw the native `InvalidArgumentError`.
 - `TypedClient` takes the native `SpiceDBClientInterface`, so it wraps a
   `SpiceDBClient` or an `InMemorySpiceDB`; its forwarders are typed from the
   interface.
@@ -283,7 +335,21 @@ and options forwarding rather than just generated text fragments.
   generated `Subject`, never a native `SubjectRef`, and does not overload the
   `PermissionRef<S>` form, so a statically wrong subject still fails to compile.
   Unknown names throw `NotInSchemaException`; an inadmissible subject throws
-  `SubjectNotAllowedException`. Lookups by name cover permissions, not relations.
+  `SubjectNotAllowedException`. Lookups by name cover relations as well as
+  permissions; see the cross-language rule above for unreachable subjects.
+- String-keyed entry points: `DefinitionRef` is the sealed interface naming
+  every generated object; `objectByName(d, id)` and `parseObject("type:id")` →
+  `DefinitionRef`; `subjectSetByName(d, id, r)` → `Subject` (the userset
+  record); `relationshipFromTriple(resource, relation, subject)` and the
+  overload adding `caveatName`, `caveatContext` and `expiration` (each
+  nullable), checked by the generated `admitsShape` table;
+  `TypedClient.checkByName(c, d, id, p, subject[, CheckOptions])`,
+  `checkBulkByName(c, List<NamedCheck>[, CheckOptions])` and
+  `lookupSubjects(c, d, id, p, subjectType[, subjectRelation[,
+  LookupOptions]])`. A `Permission<?>` from `permissionByName` also checks
+  through `forDynamicSubject` and `check(c, TypedCheck)`. Malformed text and
+  empty IDs throw the native `InvalidArgumentException`. `TypedClient`
+  forwards `awaitReady(Duration)`.
 - Constants: `Definitions` holds an `UPPER_SNAKE` constant per definition plus
   `names()` (schema order), and `SCHEMA` holds the schema text exactly as given to
   the generator (caveat bodies included), written as `String.join("\n", lines...)`

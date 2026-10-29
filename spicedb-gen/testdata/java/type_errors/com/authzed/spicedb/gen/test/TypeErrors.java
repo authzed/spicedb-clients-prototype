@@ -72,6 +72,20 @@ class TypeErrors {
     new Definition("document", DocumentRef::new, List.of(), List.of()); // should not compile
   }
 
+  void runtimeEntryPoints(TypedClient tc) {
+    // By-name results are the shared types, not a specific generated record.
+    DocumentRef doc = parseObject("document:readme"); // should not compile
+    TeamMemberRef set = subjectSetByName("team", "eng", "member"); // should not compile
+    // A subject set is a Subject, never an object of a definition.
+    DefinitionRef notAnObject = Team("eng").member(); // should not compile
+    // relationshipFromTriple takes tuple text, not typed refs.
+    relationshipFromTriple(Document("x"), "viewer", User("alice")); // should not compile
+    // checkByName takes a generated subject, not tuple text.
+    tc.checkByName(full(), "document", "x", "view", "user:alice"); // should not compile
+    // NamedCheck needs every name and a generated subject.
+    new NamedCheck("document", "x", "view", "user:alice"); // should not compile
+  }
+
   void txns(TypedClient tc) {
     // writeTxn never shadows the native write.
     tc.write(new Txn()); // should not compile

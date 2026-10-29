@@ -66,10 +66,10 @@ it("preserves every lookup/read option with schema-aware selectors", () => {
     const read = vi.spyOn(native, "readRelationships").mockReturnValue(iterator);
     try {
         typed.lookupResources(full(), Document.view, User("alice"), { context: { region: "us" }, limit: 3, pageSize: 2, cursor: "next", debug: LookupDebug.Enabled, permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly });
-        expect(resources.mock.calls[0][0]).toMatchObject({ limit: 3, pageSize: 2, cursor: "next", debug: LookupDebug.Enabled, context: { region: "us" } });
+        expect(resources.mock.calls[0]![0]).toMatchObject({ limit: 3, pageSize: 2, cursor: "next", debug: LookupDebug.Enabled, context: { region: "us" } });
         typed.lookupSubjects(full(), Document("one").view, Team, { wildcards: Wildcards.Exclude, limit: 3, cursor: "next", subjectRelation: "member", context: { region: "us" } });
-        expect(subjects.mock.calls[0][0]).toMatchObject({ wildcards: Wildcards.Exclude, limit: 3, cursor: "next", subjectRelation: "member", context: { region: "us" } });
+        expect(subjects.mock.calls[0]![0]).toMatchObject({ wildcards: Wildcards.Exclude, limit: 3, cursor: "next", subjectRelation: "member", context: { region: "us" } });
         typed.readRelationships(full(), { resourceType: "document", resourceIdPrefix: "team/", relation: "viewer" }, { pageSize: 2, cursor: "next" });
-        expect(read.mock.calls[0][0]).toMatchObject({ filter: { resourceType: "document", resourceIdPrefix: "team/", relation: "viewer" }, pageSize: 2, cursor: "next" });
+        expect(read.mock.calls[0]![0]).toMatchObject({ filter: { resourceType: "document", resourceIdPrefix: "team/", relation: "viewer" }, pageSize: 2, cursor: "next" });
     } finally { typed.close(); }
 });

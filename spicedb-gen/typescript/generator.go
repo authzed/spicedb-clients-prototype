@@ -45,6 +45,27 @@ type TemplateData struct {
 	CheckOverloads []OverloadData
 	Lookups        []OverloadData
 	UsersetTypes   []UsersetTypeData
+	// Reaching lists, per relation and permission, the subject positions
+	// ("type" or "type#relation") that can reach it, for by-name operations.
+	Reaching []ReachingData
+	// SubjectSets lists every subject set a caller can build by name.
+	SubjectSets []SubjectSetData
+	// SubjectRules lists "definition#relation@shape" for every admitted subject shape.
+	SubjectRules []string
+}
+
+// ReachingData pairs a "definition#name" position with the subject positions
+// that reach it.
+type ReachingData struct {
+	Position string
+	Subjects []string
+}
+
+// SubjectSetData is one "definition#relation" subject set, its ref type and maker.
+type SubjectSetData struct {
+	Position string
+	RefType  string
+	Maker    string
 }
 
 // CaveatContextData represents a caveat context interface.
@@ -455,7 +476,9 @@ var reservedModuleNames = []string{
 	"LookupSubject", "ReadRelationship", "CheckOptions", "CallOptions", "LookupResourcesRequest", "LookupSubjectsRequest",
 	"ReadRelationshipsRequest", "SpiceDBClientOptions", "JSONObject", "JSONValue", "WriteResult", "RelationshipUpdate", "Precondition",
 	"Consistency", "SpiceDBClientInterface", "SchemaText", "Definitions", "DefinitionNames", "DefinitionName", "DefinitionInfo",
-	"AnyResourceRef", "definitionByName", "permissionRefByName", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
+	"AnyResourceRef", "definitionByName", "permissionRefByName", "subjectSetByName", "reachingSubjects", "reaches",
+	"resolveByName", "subjectPosition", "subjectSetMakers", "noResults", "objectByName", "parseObject", "AnySubjectSet",
+	"subjectRules", "TripleOptions", "relationshipFromTriple", "NamedCheck", "checkTarget", "objectText", "requireId", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
 	"Promise", "Function", "RegExp", "BigInt", "Math", "Reflect", "Proxy", "Intl", "Record", "Readonly", "Partial",
 }
 
@@ -810,7 +833,32 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		return TemplateData{}, n.err
 	}
 
+	var reaching []ReachingData
+	positions := s.ReachingSubjectPositions()
+	for _, def := range s.Definitions {
+		for _, r := range def.Relations {
+			p := schema.SubjectPosition(def.Name, r.Name)
+			reaching = append(reaching, ReachingData{Position: p, Subjects: positions[p]})
+		}
+		for _, perm := range def.Permissions {
+			p := schema.SubjectPosition(def.Name, perm.Name)
+			reaching = append(reaching, ReachingData{Position: p, Subjects: positions[p]})
+		}
+	}
+	var subjectSets []SubjectSetData
+	for _, p := range s.SubjectSetPositions() {
+		for _, rt := range refTypes {
+			if !rt.Wildcard && rt.Caveat == "" && !rt.Expiration && schema.SubjectPosition(rt.Definition, rt.Relation) == p {
+				subjectSets = append(subjectSets, SubjectSetData{Position: p, RefType: rt.TypeName, Maker: rt.Maker})
+				break
+			}
+		}
+	}
+
 	return TemplateData{
+		Reaching:       reaching,
+		SubjectSets:    subjectSets,
+		SubjectRules:   s.SubjectRules(),
 		CaveatContexts: caveatContexts,
 		RefTypes:       refTypes,
 		Definitions:    definitions,

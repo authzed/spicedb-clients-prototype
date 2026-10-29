@@ -242,10 +242,12 @@ impl SpiceDBClientBuilder {
     exec_settings_methods!();
 
     /// Validates the settings and endpoint and creates the channel. The
-    /// endpoint is `host:port`, `http://host:port` or `https://host[:port]`
-    /// (see [`SpiceDBClient::builder`] for ports). A malformed endpoint (a
-    /// path, query, fragment, userinfo, bad or missing port, other scheme, or
-    /// a scheme that disagrees with the chosen transport) fails here with
+    /// endpoint is `host:port`, `http://host:port`, `https://host[:port]` or
+    /// (on Unix platforms) `unix:/path/to/socket` (see
+    /// [`SpiceDBClient::builder`] for ports). A malformed endpoint (a path,
+    /// query, fragment, userinfo, bad or missing port, other scheme such as
+    /// `dns:///`, or a scheme that disagrees with the chosen transport) fails
+    /// here with
     /// `InvalidArgument` naming the problem, before the remote credentials
     /// policy is applied. A connection failure is `Transport`, whose message
     /// names the endpoint and the cause (refused, DNS, TLS).
@@ -254,10 +256,10 @@ impl SpiceDBClientBuilder {
         let plaintext = match self.transport {
             TransportChoice::Plaintext => true,
             TransportChoice::SystemTls => false,
-            TransportChoice::FromEndpoint => {
-                spicedb_proto::client::endpoint_scheme(&self.endpoint)
-                    == Some(spicedb_proto::EndpointScheme::Http)
-            }
+            TransportChoice::FromEndpoint => matches!(
+                spicedb_proto::client::endpoint_scheme(&self.endpoint),
+                Some(spicedb_proto::EndpointScheme::Http | spicedb_proto::EndpointScheme::Unix)
+            ),
         };
         let connect = match self.connect {
             None => spicedb_proto::ConnectMode::TransportDefault,
@@ -381,10 +383,14 @@ impl SpiceDBClient {
     }
 
     /// A builder for a client that dials `endpoint`: `host:port`,
-    /// `http://host:port` or `https://host[:port]`. A URL's scheme selects
-    /// the transport (`http://` is plaintext, subject to the remote
-    /// credentials policy); a `host:port` endpoint uses TLS unless
-    /// [`plaintext`](SpiceDBClientBuilder::plaintext) is set.
+    /// `http://host:port`, `https://host[:port]`, or on Unix platforms a
+    /// Unix domain socket (`unix:/path/to/socket` or `unix:///path`). A URL's
+    /// scheme selects the transport (`http://` is plaintext, subject to the
+    /// remote credentials policy; `unix:` is plaintext to a local socket,
+    /// which needs no opt-in); a `host:port` endpoint uses TLS unless
+    /// [`plaintext`](SpiceDBClientBuilder::plaintext) is set. gRPC resolver
+    /// targets such as `dns:///host:port` are refused at `build`: this
+    /// transport dials one address and does no client-side load balancing.
     ///
     /// Ports: a plaintext endpoint must name its port, whether an `http://`
     /// URL (`http://spicedb:50051`) or a bare host with
@@ -721,7 +727,12 @@ impl SpiceDBClient {
 
         let inner = resp.into_inner();
         let revision = inner.expanded_at.map(|z| z.token).unwrap_or_default();
-        let tree = permission_tree_from_proto(inner.tree_root.as_ref());
+        let tree = permission_tree_from_proto(
+            inner
+                .tree_root
+                .as_ref()
+                .ok_or_else(|| missing_in_response("expanded tree root"))?,
+        )?;
 
         Ok(ExpandPermissionTreeResult {
             tree,

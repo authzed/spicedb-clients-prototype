@@ -86,7 +86,10 @@ let client = SpiceDBClient::builder(std::env::var("SPICEDB_URL")?, token)
 - `http://host:port` is plaintext, `https://host[:port]` is TLS, and
   `host:port` is TLS unless you call `.plaintext()`. Any other scheme fails at
   construction with `InvalidArgument`. `new_plaintext` and `new_system_tls`
-  require the scheme, if any, to agree with them.
+  require the scheme, if any, to agree with them. On Unix,
+  `unix:/path/to/spicedb.sock` dials a local socket (plaintext, no opt-in);
+  `dns:///host:port` is refused, as this client does no client-side load
+  balancing: use `host:port`.
 - Ports: a plaintext endpoint must name its port, as a URL or a bare host
   (`http://spicedb:50051`, `spicedb:50051` with `.plaintext()`,
   `[::1]:50051`). `http://spicedb`, `localhost` or `::1` in plaintext fails at
@@ -158,6 +161,11 @@ generated copies are distinct Rust types.
   `DefaultDeadline::Disabled`), and reads retry `Unavailable` and `Aborted`
   three times with backoff. Mutations are never replayed.
 - Lookups and reads page for you, repeating your consistency on every page.
+  Each page must finish within the client default deadline (30 s) or the
+  stream fails with `DeadlineExceeded`; raw tonic streams had no limit.
+  `DefaultDeadline::Disabled` removes it; watches have none.
+- A response missing a relationship, resource, subject or object fails with
+  `Internal`. Raw tonic gave you `None` fields to handle yourself.
 - `lookup_resources` keeps conditional results by default. Add
   `LookupResourcesOptions::new().with_permissionship_filter(LookupPermissionshipFilter::HasPermissionOnly)`
   to list only unconditional grants. A hand-written mock that set

@@ -55,7 +55,10 @@ Endpoints are `host:port`, `http://host:port` or `https://host[:port]`. With
 or TLS, so a deployment's `SPICEDB_URL=http://spicedb:50051` setting can be
 passed as is (a remote `http://` host still needs
 `.remote_credentials_policy(RemoteCredentialsPolicy::AllowInsecureRemote)`).
-Any other form fails at construction with `InvalidArgument`.
+On Unix, `unix:/path/to/spicedb.sock` (or `unix:///path`) dials a local
+socket in plaintext with no opt-in. Any other form, including
+`dns:///host:port` (this client does no client-side DNS load balancing),
+fails at construction with `InvalidArgument`.
 `SpiceDBClient::new_plaintext(endpoint, token, RemoteCredentialsPolicy::LoopbackOnly)`
 is for local development; a non-loopback plaintext target needs
 `RemoteCredentialsPolicy::AllowInsecureRemote`. Plaintext connects on the first
@@ -192,6 +195,13 @@ To resume, repeat the **same request and page size** with
 resource lookups page automatically; `with_paging(Paging::SingleRequest)` sends
 exactly one request like the raw API (limit = `with_limit` or unbounded).
 
+Each page of a read, lookup or export must arrive within the client default
+deadline (30 s, `default_timeout`), from requesting it to its last item, so a
+stalled server fails the stream with `SpiceDBError::DeadlineExceeded` instead
+of hanging it. A slow consumer counts against the page, so don't hold a page
+open for long work per item. `with_timeout` on the options bounds the whole
+stream; watches have no default.
+
 ## Schema-agnostic code (native tier)
 
 ```rust
@@ -271,7 +281,10 @@ validation and deadlines; `tonic::Status::from(err)` converts it, and
 `tonic::Status`. Forward `err.server_message()`, not `err.to_string()`, when
 relaying an error to another party; `err.reason()` is SpiceDB's
 `ERROR_REASON_*`. Bulk-item and delete-progress errors convert to their inner
-server status, so the server's message appears once.
+server status, so the server's message appears once. A response the client
+cannot interpret (a relationship, resource, subject or object missing) fails
+with code `Internal` ("malformed response: missing ..."), which is not
+retried; such items are never skipped or filled with empty values.
 
 ## Test
 

@@ -23,7 +23,7 @@ public class LookupResultTests
     [InlineData(LookupPermissionshipFilter.HasPermissionOnly, 2)]
     public async Task LookupResources_FilterCountsYieldedGrantsAcrossPages(LookupPermissionshipFilter filter, int expected)
     {
-        int[] values = [2, 0, 99, 1, 2, 1, 1];
+        int[] values = [2, 98, 99, 1, 2, 1, 1];
         var requests = new List<LookupResourcesRequest>();
         var mock = new Mock<PermissionsService.PermissionsServiceClient>();
         mock.Setup(c => c.LookupResources(It.IsAny<LookupResourcesRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))

@@ -147,9 +147,15 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     /// <summary>The revision of the last write or delete, or of the empty store.</summary>
     public ZedToken Revision { get { lock (_lock) return Token(); } }
 
-    /// <summary>Registers the permissionship a check of exactly this resource, permission and subject returns.</summary>
+    /// <summary>
+    /// Registers the permissionship a check of exactly this resource, permission and subject
+    /// returns. <see cref="Permissionship.Unspecified"/> is rejected with
+    /// <see cref="InvalidArgumentException"/>: SpiceDB never sends it, and the real client fails
+    /// such a response as malformed, so the double never produces it.
+    /// </summary>
     public void SetCheckResult(ObjectRef resource, string permission, SubjectRef subject, Permissionship permissionship)
     {
+        Specified(permissionship, nameof(SetCheckResult));
         lock (_lock) _checks[Key(resource, permission, subject)] = (new CheckResult(permissionship, [], Token()), null);
     }
 
@@ -172,7 +178,9 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     /// caveat the caller did not satisfy. Null declines and falls through to the stored
     /// relationships. The resolver answers and never fails: inject failures with
     /// <see cref="SetFaultHook"/>, <see cref="FailNext"/> or <see cref="SetCheckError"/>. It runs
-    /// with the double locked and must not call it. Pass null to remove it.
+    /// with the double locked and must not call it. A result whose permissionship is
+    /// <see cref="Permissionship.Unspecified"/> (which SpiceDB never sends) fails the check with
+    /// <see cref="InvalidArgumentException"/>. Pass null to remove it.
     /// </summary>
     public void SetCheckResolver(Func<PermissionCheck, CheckResult?>? resolver)
     {
@@ -700,8 +708,21 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     {
         if (_checks.TryGetValue(Key(request.Resource, request.Permission, request.Subject), out var registered)) return registered;
         if (_resolver?.Invoke(request) is { } answer)
+        {
+            Specified(answer.Permissionship, "The check resolver");
             return (new CheckResult(answer.Permissionship, answer.MissingContext, Token(), answer.DebugTrace, answer.Expiration), null);
+        }
         return (new CheckResult(Stored(request), [], Token()), null);
+    }
+
+    /// <summary>
+    /// Refuses <see cref="Permissionship.Unspecified"/> (or an undefined value) as a check
+    /// answer: SpiceDB never sends it and the real client fails it as a malformed response.
+    /// </summary>
+    private static void Specified(Permissionship permissionship, string source)
+    {
+        if (permissionship is Permissionship.HasPermission or Permissionship.NoPermission or Permissionship.ConditionalPermission) return;
+        throw new InvalidArgumentException($"{source} returned permissionship {permissionship}; answer HasPermission, NoPermission or ConditionalPermission (a resolver may return null to decline, and SetCheckError injects a failure).");
     }
 
     /// <summary>The check with the call's context merged into its own; the check's keys win.</summary>

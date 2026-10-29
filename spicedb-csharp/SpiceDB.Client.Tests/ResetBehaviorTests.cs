@@ -120,7 +120,7 @@ public class ResetBehaviorTests
             {
                 Assert.True(r.WithTracing); calls++;
                 var response = new CheckBulkPermissionsResponse { CheckedAt = new() { Token = calls.ToString() } };
-                response.Pairs.AddRange(r.Items.Select((item, index) => new CheckBulkPermissionsPair { Request = item.Clone(), Item = new() { DebugTrace = new() { SchemaUsed = $"{calls}:{index}" } } }));
+                response.Pairs.AddRange(r.Items.Select((item, index) => new CheckBulkPermissionsPair { Request = item.Clone(), Item = new() { Permissionship = CheckPermissionResponse.Types.Permissionship.NoPermission, DebugTrace = new() { SchemaUsed = $"{calls}:{index}" } } }));
                 return Call(response);
             });
         await using var client = Client(mock);
@@ -201,8 +201,11 @@ public class ResetBehaviorTests
                 calls++; deadlines.Add(deadline!.Value);
                 async Task<CheckBulkPermissionsResponse> Respond()
                 {
-                    await Task.Delay(600, token);
-                    var response = new CheckBulkPermissionsResponse(); response.Pairs.AddRange(r.Items.Select(item => new CheckBulkPermissionsPair { Request = item.Clone(), Item = new() })); return response;
+                    // The second chunk never answers: the unrestarted budget must end it. A
+                    // finite reply could race the deadline timer when the timer thread is
+                    // starved, and a restarted budget still shows in the wire deadlines below.
+                    await Task.Delay(calls == 1 ? 600 : Timeout.Infinite, token);
+                    var response = new CheckBulkPermissionsResponse(); response.Pairs.AddRange(r.Items.Select(item => new CheckBulkPermissionsPair { Request = item.Clone(), Item = new() { Permissionship = CheckPermissionResponse.Types.Permissionship.NoPermission } })); return response;
                 }
                 return Call(Respond());
             });
@@ -275,7 +278,7 @@ public class ResetBehaviorTests
             {
                 calls++; deadlines.Add(deadline!.Value);
                 if (calls < 3) throw new RpcException(new Grpc.Core.Status(StatusCode.Aborted, "retry"));
-                return Call(new CheckPermissionResponse());
+                return Call(new CheckPermissionResponse { Permissionship = CheckPermissionResponse.Types.Permissionship.NoPermission });
             });
         await using var client = Client(mock); await client.CheckAsync(Request());
         Assert.Equal(3, calls); Assert.All(deadlines, d => Assert.True((d - deadlines[0]).Duration() < TimeSpan.FromMilliseconds(15)));

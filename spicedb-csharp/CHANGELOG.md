@@ -23,6 +23,27 @@
   Client-detected faults that reported `Unknown` (bulk check pair count or echo mismatch, a
   missing bulk item, unknown deletion progress, an empty counter response) now report
   `Internal`; a non-advancing cursor already did.
+- A check, bulk-check item, LookupResources result or LookupSubjects subject whose
+  permissionship is unspecified (`PERMISSIONSHIP_UNSPECIFIED`, which SpiceDB never sends)
+  now fails with an `Internal`-status `SpiceDBException` instead of returning
+  `Permissionship.Unspecified`; a bulk item's error carries its `InputIndex`, and
+  `PermissionshipFilter.HasPermissionOnly` no longer skips such a result silently. A
+  permissionship value newer than this client still maps to `Permissionship.Unspecified`.
+  `InMemorySpiceDBClient` never produces it: `SetCheckResult` with
+  `Permissionship.Unspecified`, or a check resolver returning it, fails with
+  `InvalidArgumentException`.
+- Every malformed-response error the client detects says so: its message reads
+  `<operation>: client detected malformed response from server: <detail>.`, so it is not
+  mistaken for an `Internal` status the server sent. The bulk-check echo and missing-item
+  errors use the same wording after their `check item N:` prefix.
+- The AI integration guide notes that projects whose permissions are all computed (unions,
+  arrows) get little from stored-relation grants on the double, and should model them with
+  the check resolver or test against SpiceDB.
+- Tests: the slow-consumer per-page deadline tests use a 1 s allowance against 5 × 500 ms of
+  caller work (was 200 ms against 5 × 100 ms), so CPU contention in parallel runs no longer
+  eats the allowance; the caller's time still exceeds it, so a deadline that counted the
+  caller's processing still fails them. The bulk-check total-deadline test's second chunk
+  no longer answers at all, so a starved timer thread cannot let its reply beat the deadline.
 - `ConnectAsync(ConnectOptions?, CancellationToken)`, on `SpiceDBClient` and
   `ISpiceDBClient`: a startup readiness check for these lazily connecting clients. It
   waits for the endpoint to answer an authenticated request within `ConnectOptions.Timeout`

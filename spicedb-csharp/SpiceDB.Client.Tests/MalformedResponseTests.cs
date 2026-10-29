@@ -116,6 +116,7 @@ public class MalformedResponseTests
         error.Status.StatusCode.Should().Be(StatusCode.Internal);
         SpiceDBException.CodeOf(error).Should().Be(StatusCode.Internal);
         error.Message.Should().Contain(detail);
+        error.Message.Should().Contain("client detected malformed response from server", "the message must not read as a status the server sent");
         error.ServerMessage.Should().Be(error.Message);
     }
 

@@ -12,9 +12,31 @@ namespace SpiceDB.Client;
 /// </summary>
 internal static class Response
 {
-    /// <summary>The error for a response the client cannot interpret.</summary>
+    /// <summary>
+    /// The error for a response the client cannot interpret. Its message says the client
+    /// detected it, so it is not mistaken for an <see cref="StatusCode.Internal"/> the server sent.
+    /// </summary>
     internal static SpiceDBException Malformed(string operation, string detail) =>
-        SpiceDBException.InternalError($"{operation} response is malformed: {detail}.");
+        SpiceDBException.InternalError($"{operation}: {ClientDetected}: {detail}.");
+
+    /// <summary>The words every client-detected malformed-response message carries.</summary>
+    internal const string ClientDetected = "client detected malformed response from server";
+
+    /// <summary>
+    /// A check permissionship the server always sets: <c>PERMISSIONSHIP_UNSPECIFIED</c> is
+    /// malformed, never <see cref="Client.Permissionship.Unspecified"/>. An unrecognised newer
+    /// value still maps to the safe <see cref="Client.Permissionship.Unspecified"/>.
+    /// </summary>
+    internal static Permissionship CheckPermissionship(V1.CheckPermissionResponse.Types.Permissionship value, string operation) =>
+        value == V1.CheckPermissionResponse.Types.Permissionship.Unspecified
+            ? throw Malformed(operation, "permissionship is unspecified")
+            : SpiceDBClient.ToCheckPermissionship(value);
+
+    /// <summary>A lookup permissionship the server always sets; see <see cref="CheckPermissionship"/>.</summary>
+    internal static Permissionship LookupPermissionship(V1.LookupPermissionship value, string operation) =>
+        value == V1.LookupPermissionship.Unspecified
+            ? throw Malformed(operation, "permissionship is unspecified")
+            : SpiceDBClient.ToPermissionship(value);
 
     internal static ObjectRef Object(V1.ObjectReference? value, string operation, string field)
     {

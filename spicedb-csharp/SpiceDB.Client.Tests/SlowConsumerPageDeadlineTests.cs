@@ -19,14 +19,17 @@ namespace SpiceDB.Client.Tests;
 /// <summary>
 /// The per-page default deadline bounds waiting on the server, never the caller's processing
 /// (root DESIGN.md, "Treat a deadline as a budget"). Each paged read runs against a healthy
-/// server that answers immediately, with a 200ms per-page default while the caller spends
-/// 100ms on each of five items (500ms in all). Every read must succeed.
+/// server that answers immediately, with a 1s per-page default while the caller spends
+/// 500ms on each of five items (2.5s in all). Every read must succeed.
+/// The caller's time is well over the allowance, so a deadline that counted it would fail
+/// every read; the allowance itself only has to cover the open and five in-process round
+/// trips, and 1s leaves that ample room when the machine is busy (parallel test runs).
 /// </summary>
 public class SlowConsumerPageDeadlineTests
 {
     private const int Items = 5;
-    private static readonly TimeSpan PerItem = TimeSpan.FromMilliseconds(100);
-    private static readonly ClientOptions Options = new() { DefaultTimeout = TimeSpan.FromMilliseconds(200) };
+    private static readonly TimeSpan PerItem = TimeSpan.FromMilliseconds(500);
+    private static readonly ClientOptions Options = new() { DefaultTimeout = TimeSpan.FromSeconds(1) };
 
     private static Authzed.Api.V1.Relationship Rel(int i) => new()
     {
@@ -133,6 +136,12 @@ public class SlowConsumerPageDeadlineTests
         }
         finally { await client.DisposeAsync(); await app.DisposeAsync(); }
     }
+
+    // Guards the timing above: if the caller's work fit inside the allowance, these tests
+    // would pass even against a deadline that counted it.
+    [Fact]
+    public void CallerTimeExceedsThePageAllowance() =>
+        (PerItem * Items).Should().BeGreaterThan(Options.DefaultTimeout * 2);
 
     [Fact]
     public async Task ReadRelationships() =>

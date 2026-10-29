@@ -136,9 +136,9 @@ RSpec.describe "SpiceDBProto::Client TLS material" do
       expect do
         SpiceDBProto::Client.validate_connection!("spicedb.example.com:443", client_cert: "pem")
       end.to raise_error(ArgumentError, /client_key/)
-      expect(SpiceDBProto::Client.validate_connection!("localhost:50051", insecure: true)).to be_nil
+      expect(SpiceDBProto::Client.validate_connection!("localhost:50051", insecure: true)).to eq("localhost:50051")
       expect(SpiceDBProto::Client.validate_connection!("evil.example.com:1234", insecure: true,
-                                                                                 allow_insecure_remote_credentials: true)).to be_nil
+                                                                                 allow_insecure_remote_credentials: true)).to eq("evil.example.com:1234")
     end
   end
 end

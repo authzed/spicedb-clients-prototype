@@ -37,6 +37,41 @@ client.check(check, consistency: SpiceDB::Consistency.min_latency).has_permissio
 Names (types, relations, permissions) may be Strings or Symbols, and object
 IDs Strings or Integers; both are stored as Strings.
 
+### Endpoints
+
+Every constructor takes `host:port`, or a URL whose scheme matches the
+constructor:
+
+| Endpoint | Constructor | Dials |
+|---|---|---|
+| `spicedb.example.com:443` | any | as written |
+| `spicedb.example.com` | `new_system_tls`, `new_custom_tls` | port 443 |
+| `https://spicedb.example.com` | `new_system_tls`, `new_custom_tls` | port 443 |
+| `https://spicedb.example.com:8443` | `new_system_tls`, `new_custom_tls` | port 8443 |
+| `http://localhost:50051` | `new_plaintext` | port 50051 (an `http://` URL needs a port) |
+| `unix:///var/run/spicedb.sock` | `new_plaintext` | the socket |
+
+Anything else raises `SpiceDB::InvalidArgumentError` at construction, naming
+the problem: another scheme (`ftp://`, `dns:///`), a path, query, fragment or
+userinfo, a non-numeric port, a plaintext endpoint without a port
+(`localhost` or `http://localhost`; write `localhost:50051`), or a scheme that
+disagrees with the constructor (`new_plaintext('https://...')`). Plaintext to a
+host other than localhost, a loopback address or a socket also needs
+`remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT`; the error
+names both options. For example, from another Docker Compose service, where
+SpiceDB is reachable as `spicedb` without TLS:
+
+```ruby
+client = SpiceDB::Client.new_plaintext(
+  'spicedb:50051', ENV.fetch('SPICEDB_TOKEN'),
+  remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT # token is sent unencrypted
+)
+```
+
+Connection failures raise `SpiceDB::UnavailableError` with the address and
+cause, e.g.
+`ipv4:127.0.0.1:50051: Failed to connect to remote host: Connection refused`.
+
 ## Concurrency and forking
 
 **Threads.** One `SpiceDB::Client` is safe for concurrent use from any number

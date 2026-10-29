@@ -55,7 +55,9 @@ and its generated schema facade.
 - **Make security and ownership explicit at construction.**
   - `new SpiceDBClient({ endpoint, token, transportSecurity?, remoteCredentials?,
     tls?, headers?, retryPolicy?, retries?, streamRetries?, defaultTimeoutMs?,
-    defaultDeadline? })` defaults to TLS.
+    defaultDeadline? })` defaults to TLS. The endpoint is `host:port`,
+    `http://host:port` or `https://host[:port]`; without `transportSecurity`
+    a URL's scheme selects it, and an explicit choice must agree.
   - `SpiceDBClient.fromTransport(transport, behaviorOptions?)` wraps a
     caller-owned Connect `Transport` (an in-memory `createRouterTransport`, an
     HTTP/2 transport the caller configured, a test server's). Connection options

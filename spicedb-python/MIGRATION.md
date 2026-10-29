@@ -75,6 +75,13 @@ client = SpiceDBClient("spicedb:50051", token="key",
 - `InsecureClient` sent the token in plaintext to any host. Now plaintext to a
   non-loopback host (anything but `localhost`, `127.0.0.0/8`, `::1` or a unix
   socket) is refused unless you pass `remote_credentials=RemoteCredentials.ALLOW`.
+- The endpoint is `host:port`, `http://host:port` or `https://host[:port]`,
+  plus `unix:` socket targets. A plaintext endpoint must name its port
+  (`localhost:50051`; a bare `localhost` used to dial 443); a TLS endpoint
+  without one uses 443. The scheme must agree with `transport_security`. Other gRPC
+  target URIs (`dns:///host:port`, `ipv4:...`) and URLs with a path, query or
+  userinfo are rejected at construction with `InvalidArgumentError`; authzed-py
+  passed them to grpc unchecked. Use `host:port` instead of `dns:///host:port`.
 - `bearer_token_credentials(token, certChain)` → `ca_cert=certChain`; mTLS uses
   `client_cert=` and `client_key=`.
 - Close the client (`close()`, `with`, `async with`); it owns its channel.

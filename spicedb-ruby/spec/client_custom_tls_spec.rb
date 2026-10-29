@@ -234,7 +234,7 @@ RSpec.describe 'SpiceDB::Client.new_custom_tls argument validation' do
     expect do
       SpiceDB::Client.new(endpoint: 'evil.example.com:443', token: 'testtoken', transport: SpiceDB::TransportSecurity::PLAINTEXT,
                           ca_cert: 'pem')
-    end.to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /RemoteCredentials::ALLOW_PLAINTEXT/)
   end
 
   it 'does not expose the block-form helper as a public class method' do

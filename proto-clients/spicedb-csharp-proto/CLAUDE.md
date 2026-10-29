@@ -22,6 +22,7 @@ generated C# files in `gen/`.
 - `Client.cs` — SpiceDBProtoClient class, constructors, the loopback guard, IDisposable
 - `tests/` — `SpiceDB.Proto.Tests.csproj`: `ClientTest.cs` (construction, disposal, channel
   ownership), `InsecureHostGuardTest.cs` (insecure-transport credentials guard),
+  `EndpointFormTest.cs` (accepted and rejected endpoint forms),
   `AuthzedNetBridgeTest.cs` (legacy bridge, both assemblies in one process),
   `DescriptorInitializationTest.cs` (every generated descriptor initialises, in-process and
   in a fresh process via `tests/DescriptorProbe/`)

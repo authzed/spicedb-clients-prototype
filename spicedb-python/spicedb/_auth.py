@@ -160,7 +160,8 @@ def require_insecure_transport_allowed(
 
         raise InvalidArgumentError(
             f"spicedb: refusing to send credentials over an insecure (plaintext) connection "
-            f"to non-loopback endpoint {endpoint!r}: use TLS (insecure=False), or pass "
-            f"remote_credentials=RemoteCredentials.ALLOW if you intend to send a bearer token in "
-            f"cleartext to a remote host"
+            f"to non-loopback endpoint {endpoint!r}: use TLS (the default), or, to send the "
+            f"bearer token in cleartext to this host (for example a Docker Compose service), "
+            f"pass both transport_security=TransportSecurity.PLAINTEXT and "
+            f"remote_credentials=RemoteCredentials.ALLOW"
         )

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Endpoint forms
+
+- Endpoints may be `http://host:port` or `https://host[:port]` as well as
+  `host:port`. Without `transportSecurity` the scheme selects plaintext or
+  TLS; with it, a disagreeing scheme is refused. `https://` without a port
+  uses 443; a plaintext endpoint, bare or `http://`, requires one: a
+  port-less plaintext `localhost`, `127.0.0.1` or `::1` used to dial port 80
+  and now fails at construction ("a plaintext endpoint needs an explicit port,
+  e.g. localhost:50051"). A port-less TLS host still uses 443. The loopback check runs on the parsed
+  host, so `http://127.0.0.1:50051` is loopback. Paths, queries, fragments,
+  userinfo, non-numeric or out-of-range ports and other schemes now fail at
+  construction with an `InvalidArgumentError` naming the problem and the
+  accepted forms, checked before the remote-plaintext policy (an endpoint with
+  userinfo used to be reported as a remote-plaintext refusal; an
+  `https://` URL used to build a client that dialed a host named `https`).
+  `@spicedb/proto` exports `InvalidEndpointError` and `endpointScheme`.
+- The remote-plaintext refusal (for example a Docker Compose service such as
+  `spicedb:50051`) names both options needed to allow it, as the caller writes
+  them: `transportSecurity: TransportSecurity.Plaintext` and
+  `remoteCredentials: RemoteCredentials.AllowPlaintext`. The README shows the
+  Compose setup.
+
 ### Plain Node loading
 
 - The packages load under plain Node ESM: generated proto modules use `.js`

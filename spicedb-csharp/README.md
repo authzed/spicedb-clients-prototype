@@ -67,6 +67,34 @@ Use `SpiceDBClient.CreateSystemTls("spicedb.example.com:443", token)` for TLS. P
 credentials to a non-loopback host are refused unless
 `ClientOptions.RemotePlaintextCredentials` is `Allow`.
 
+Endpoints take one of three forms:
+
+| Form | `CreatePlaintext` | `CreateSystemTls` |
+| --- | --- | --- |
+| `host:port` | yes | yes |
+| `host` (no port) | rejected | yes (port 443) |
+| `http://host:port` | yes (the port is required) | rejected |
+| `https://host[:port]` | rejected | yes (port defaults to 443) |
+
+A Docker Compose service name such as `spicedb:50051` is a remote host, so plaintext to it
+needs both the plaintext factory and the explicit opt-in:
+
+```csharp
+// From another service in the same docker-compose.yml
+await using var client = SpiceDBClient.CreatePlaintext("spicedb:50051", presharedKey,
+    new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow });
+```
+
+Without the opt-in, construction fails with a message naming both settings:
+`spicedb: refusing to send the preshared key over plaintext to non-loopback endpoint "spicedb:50051". Use SpiceDBClient.CreateSystemTls for TLS, or, to send it in cleartext to a remote host on purpose, call SpiceDBClient.CreatePlaintext(endpoint, presharedKey, new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow })`.
+
+A plaintext endpoint never silently dials port 80: `CreatePlaintext("localhost", key)` fails
+with "a plaintext endpoint needs an explicit port, e.g. localhost:50051". Anything else (another scheme, a path, query, fragment, `user@`, a non-numeric port, or a
+scheme that disagrees with the factory) throws `InvalidArgumentException` at construction,
+naming the problem and these forms. The remote-plaintext check runs on the parsed host.
+A failed connection reports the endpoint and the socket error, for example
+`Error connecting to subchannel. (endpoint "127.0.0.1:50051"; SocketException: Connection refused)`.
+
 ## Testing without a server
 
 `SpiceDB.Client.Testing.InMemorySpiceDBClient` implements `ISpiceDBClient`, the full client

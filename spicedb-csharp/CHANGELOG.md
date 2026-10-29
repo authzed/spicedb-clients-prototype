@@ -4,6 +4,19 @@
 
 ### Adoption fixes from migrating real applications
 
+- Endpoints accept `http://host:port` (plaintext) and `https://host[:port]` (TLS, port 443
+  by default) besides `host:port`. A plaintext endpoint without a port (`localhost`, `::1`,
+  `http://localhost`) is rejected with an error suggesting `host:50051` instead of silently
+  dialing port 80; a port-less TLS endpoint uses 443. A scheme that disagrees with the factory, a path, query, fragment, `user@`, a bad port or another scheme now
+  throws `InvalidArgumentException` at construction naming the problem, checked before the
+  remote-plaintext policy; previously these built a client whose every call failed, or were
+  reported as remote plaintext. Connection failures name the endpoint and socket error
+  instead of only "Error connecting to subchannel."
+- The remote-plaintext refusal (for example a Docker Compose endpoint `spicedb:50051`) names
+  both settings that permit it, as written in C#: `SpiceDBClient.CreatePlaintext(...)` with
+  `new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow }`, or
+  `CreateSystemTls` for TLS. `CreateFromChannel`'s refusal names its opt-in the same way.
+
 - Generated protocol messages initialise again: `ToString()`, `JsonFormatter.Default.Format`
   and `.Descriptor` threw `TypeInitializationException` for every SpiceDB message, directly
   and through the `Authzed.Net` bridge, because the stub descriptors for the transitive

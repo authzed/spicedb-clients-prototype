@@ -125,19 +125,28 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 	}
 }
 
-// NewPlaintext creates a plaintext client. Remote endpoints require
+// NewPlaintext creates a plaintext client. The endpoint is host:port or
+// http://host:port; the port is required (a bare "localhost" is refused). Remote endpoints require
 // WithRemotePlaintextCredentials(RemotePlaintextAllowed) to send credentials.
 func NewPlaintext(endpoint, presharedKey string, opts ...Option) (*Client, error) {
 	return NewWithOpts(endpoint, presharedKey, append([]Option{WithInsecure()}, opts...)...)
 }
 
 // NewSystemTLS creates a client using the system's TLS certificate pool.
-// Use this for production connections.
+// Use this for production connections. The endpoint is host[:port] or
+// https://host[:port] (443 when the port is omitted).
 func NewSystemTLS(endpoint, presharedKey string, opts ...Option) (*Client, error) {
 	return NewWithOpts(endpoint, presharedKey, opts...)
 }
 
 // NewWithOpts creates a client with functional options.
+//
+// The endpoint is host:port, a gRPC resolver target such as
+// unix:///path/to.sock, http://host:port (plaintext, with WithInsecure) or
+// https://host[:port] (TLS; 443 when the port is omitted). A URL whose
+// scheme disagrees with the transport, a plaintext endpoint without a port, an
+// unsupported scheme, or an endpoint with a path, query, fragment, userinfo
+// or non-numeric port fails here with ErrInvalidArgument naming the problem.
 func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error) {
 	o, err := buildOptions(opts)
 	if err != nil {
@@ -161,7 +170,16 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 		// detail a caller of this package should never have to know. See root
 		// DESIGN.md, "RULE: Credentials over insecure transport require an
 		// explicit opt-in", clause 4.
+		// An endpoint in a form this client cannot dial is likewise refused
+		// at construction rather than producing a client whose every call
+		// fails.
 		if errors.Is(err, proto.ErrInsecureRemoteHost) {
+			// Name this package's opt-in, not the proto tier's option.
+			return nil, fmt.Errorf(
+				"spicedb: failed to create client: refusing to send credentials over plaintext to non-loopback endpoint %q: use TLS (NewSystemTLS), or allow remote plaintext explicitly with NewPlaintext(endpoint, key, WithRemotePlaintextCredentials(RemotePlaintextAllowed)) (with NewWithOpts: WithInsecure() and WithRemotePlaintextCredentials(RemotePlaintextAllowed)): %w: %w",
+				endpoint, proto.ErrInsecureRemoteHost, ErrInvalidArgument)
+		}
+		if errors.Is(err, proto.ErrInvalidEndpoint) {
 			return nil, fmt.Errorf("spicedb: failed to create client: %w: %w", err, ErrInvalidArgument)
 		}
 		return nil, fmt.Errorf("spicedb: failed to create client: %w", err)

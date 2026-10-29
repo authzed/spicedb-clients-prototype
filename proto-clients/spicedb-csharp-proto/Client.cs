@@ -76,7 +76,7 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// Creates a new SpiceDB proto client connected to the given endpoint,
     /// authenticated with the given bearer token.
     /// </summary>
-    /// <param name="endpoint">The gRPC endpoint (e.g. "grpc.authzed.com:443").</param>
+    /// <param name="endpoint">The gRPC endpoint: "host:port" (e.g. "grpc.authzed.com:443"), "http://host:port" (plaintext only) or "https://host[:port]" (TLS only; port defaults to 443).</param>
     /// <param name="token">Bearer token for authentication.</param>
     /// <param name="insecure">If true, uses plaintext (no TLS). For testing only.</param>
     /// <param name="allowInsecureRemoteCredentials">
@@ -95,6 +95,12 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// loopback, and <paramref name="allowInsecureRemoteCredentials"/> is false -- before
     /// any channel, credential, or connection is created, so the token can never reach the
     /// wire for a rejected combination.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="endpoint"/> is not <c>host:port</c>,
+    /// <c>http://host:port</c> or <c>https://host[:port]</c>, or its scheme disagrees
+    /// with <paramref name="insecure"/>. Checked before the loopback guard, so the
+    /// remote-plaintext refusal only ever names a well-formed remote host.
     /// </exception>
     /// <exception cref="UriFormatException">
     /// Thrown when <paramref name="endpoint"/> is not a parseable URI authority (e.g.
@@ -149,7 +155,13 @@ public sealed class SpiceDBProtoClient : IDisposable
         // Refusing here, before options.HttpHandler/GrpcChannel.ForAddress/CallCredentials
         // are ever created, means a rejected combination never has anything -- channel,
         // credential, or handler -- capable of carrying the token onto the wire.
-        if (insecure && !allowInsecureRemoteCredentials && !IsLoopbackEndpoint(endpoint))
+        // Form errors (path, userinfo, bad port, unknown or mismatched scheme) come
+        // first, so the remote-plaintext refusal below only ever describes a
+        // well-formed remote host. The guard and the channel both use the parsed
+        // authority, so they cannot disagree about where this connection goes.
+        var authority = ParseEndpoint(endpoint, insecure);
+
+        if (insecure && !allowInsecureRemoteCredentials && !IsLoopbackEndpoint(authority))
         {
             throw new InsecureRemoteHostException(
                 $"spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint \"{endpoint}\": " +
@@ -161,7 +173,7 @@ public sealed class SpiceDBProtoClient : IDisposable
         // bracketed to be a legal URI authority, and it is the same function
         // IsLoopbackEndpoint vetted, so the two cannot disagree about where this
         // connection goes.
-        var address = $"{scheme}://{TransportAuthority(endpoint)}";
+        var address = $"{scheme}://{TransportAuthority(authority)}";
 
         var callCredentials = CallCredentials.FromInterceptor((_, metadata) =>
         {
@@ -327,6 +339,91 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// this constructor is documented not to throw.
     /// </para>
     /// </summary>
+    internal const string EndpointForms =
+        "expected host:port, http://host:port (plaintext) or https://host[:port] (TLS)";
+
+    private static ArgumentException InvalidEndpoint(string endpoint, string reason) =>
+        new($"spicedb: invalid endpoint \"{endpoint}\": {reason}; {EndpointForms}");
+
+    /// <summary>
+    /// Validates <paramref name="endpoint"/> and returns the authority (host, optional
+    /// port) the channel dials. Accepts <c>host:port</c> and the <c>http://</c> and
+    /// <c>https://</c> URL forms. A URL's scheme must agree with
+    /// <paramref name="insecure"/>. A plaintext endpoint (bare or <c>http://</c>) needs an
+    /// explicit port; a TLS endpoint (bare or <c>https://</c>) without one uses 443. One trailing <c>/</c> is accepted.
+    /// Anything else (another scheme, a path, query, fragment, userinfo, whitespace,
+    /// an empty host or a non-numeric or out-of-range port) throws
+    /// <see cref="ArgumentException"/> naming the problem and the accepted forms.
+    /// </summary>
+    internal static string ParseEndpoint(string endpoint, bool insecure)
+    {
+        var authority = endpoint;
+        string? scheme = null;
+        var sep = endpoint.IndexOf("://", StringComparison.Ordinal);
+        if (sep >= 0)
+        {
+            scheme = endpoint[..sep].ToLowerInvariant();
+            if (scheme is not ("http" or "https"))
+                throw InvalidEndpoint(endpoint, $"unsupported scheme \"{endpoint[..sep]}\"");
+            authority = endpoint[(sep + 3)..];
+            if (authority.EndsWith('/')) authority = authority[..^1];
+        }
+
+        if (authority.Length == 0) throw InvalidEndpoint(endpoint, "missing host");
+        foreach (var c in authority)
+        {
+            if (c == '@') throw InvalidEndpoint(endpoint, "userinfo (user@) is not allowed");
+            if (c == '/') throw InvalidEndpoint(endpoint, "a path is not allowed");
+            if (c == '?') throw InvalidEndpoint(endpoint, "a query is not allowed");
+            if (c == '#') throw InvalidEndpoint(endpoint, "a fragment is not allowed");
+            if (char.IsWhiteSpace(c)) throw InvalidEndpoint(endpoint, "whitespace is not allowed");
+        }
+
+        string host;
+        string? port;
+        if (authority.StartsWith('['))
+        {
+            var close = authority.IndexOf(']');
+            if (close < 0) throw InvalidEndpoint(endpoint, "unterminated IPv6 literal");
+            host = authority[..(close + 1)];
+            var rest = authority[(close + 1)..];
+            if (rest.Length == 0) port = null;
+            else if (rest[0] == ':') port = rest[1..];
+            else throw InvalidEndpoint(endpoint, $"unexpected \"{rest}\" after the IPv6 literal");
+        }
+        else if (IPAddress.TryParse(authority, out var ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            // A bare IPv6 literal such as "::1" (no port), as the host:port form has always allowed.
+            host = authority;
+            port = null;
+        }
+        else
+        {
+            var colon = authority.LastIndexOf(':');
+            host = colon < 0 ? authority : authority[..colon];
+            port = colon < 0 ? null : authority[(colon + 1)..];
+        }
+
+        if (host.Length == 0 || host == "[]") throw InvalidEndpoint(endpoint, "missing host");
+        if (port is not null && (port.Length == 0 || !port.All(char.IsAsciiDigit) || !int.TryParse(port, out var p) || p is < 1 or > 65535))
+            throw InvalidEndpoint(endpoint, $"invalid port \"{port}\"");
+
+        if (scheme == "http" && !insecure)
+            throw InvalidEndpoint(endpoint, "the http:// scheme selects plaintext, but this client was asked for TLS");
+        if (scheme == "https" && insecure)
+            throw InvalidEndpoint(endpoint, "the https:// scheme selects TLS, but this client was asked for plaintext");
+        if (port is null)
+        {
+            // A bare IPv6 literal gains brackets once a port is appended.
+            var hostForPort = host.StartsWith('[') || !host.Contains(':') ? host : $"[{host}]";
+            // Plaintext (bare host or http://) never silently dials port 80; TLS uses 443.
+            if (insecure)
+                throw InvalidEndpoint(endpoint, $"a plaintext endpoint needs an explicit port, e.g. {hostForPort}:50051");
+            return $"{hostForPort}:443";
+        }
+        return authority;
+    }
+
     private static string TransportAuthority(string endpoint)
     {
         if (!endpoint.StartsWith('[')

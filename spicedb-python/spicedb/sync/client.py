@@ -52,6 +52,7 @@ from authzed.api.materialize.v0 import (
 )
 from spicedb import _mapping, _requests
 from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
+from spicedb._endpoint import parse_endpoint
 from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._budget import Budget
 from spicedb._client_base import ClientConfig, _positive, write_is_idempotent, capture_sync, response_target
@@ -132,8 +133,11 @@ class SpiceDBClient(ClientConfig):
     ) -> None:
         insecure = _option(transport_security, TransportSecurity) == "plaintext"
         allow_insecure_remote_credentials = _option(remote_credentials, RemoteCredentials) == "allow"
+        # Malformed endpoints fail first, so the remote-plaintext refusal
+        # below only ever describes a well-formed remote host.
+        target = parse_endpoint(endpoint, insecure=insecure)
         require_insecure_transport_allowed(
-            endpoint,
+            target,
             insecure=insecure,
             allow_insecure_remote_credentials=allow_insecure_remote_credentials,
         )
@@ -144,7 +148,7 @@ class SpiceDBClient(ClientConfig):
             client_key=client_key,
         )
         self._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
-        self._endpoint = endpoint
+        self._endpoint = target
         self._insecure = insecure
         self._ca_cert = ca_cert
         self._client_cert = client_cert

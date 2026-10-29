@@ -39,6 +39,22 @@ c, err := client.NewPlaintext("spicedb:50051", "key",
     client.WithRemotePlaintextCredentials(client.RemotePlaintextAllowed))
 ```
 
+A Docker Compose service such as `spicedb:50051`, reached from another service
+on the compose network, is a remote host: plaintext to it needs both the
+plaintext constructor and the credentials opt-in, as above. Without the opt-in
+`NewPlaintext` fails with `ErrInvalidArgument`, and the message names both
+`NewPlaintext(endpoint, key, WithRemotePlaintextCredentials(RemotePlaintextAllowed))`
+and, for `NewWithOpts`, `WithInsecure()` with the same opt-in.
+
+Endpoints are `host:port`, a gRPC resolver target such as
+`unix:///path/to.sock`, `http://host:port` (plaintext constructors only; the
+port is required) or `https://host[:port]` (TLS only; 443 when the port is
+omitted). Plaintext always needs an explicit port: a bare `localhost` is
+refused (write `localhost:50051`), while a bare TLS host uses 443. A URL whose scheme disagrees with the constructor, an unsupported
+scheme, or an endpoint with a path, query, fragment, userinfo or non-numeric
+port fails at construction with `ErrInvalidArgument` naming the problem, so a
+wrong endpoint never builds a client whose every call fails.
+
 `NewSystemTLS` uses the system trust store. `NewWithOpts` with
 `WithDialOptions` covers custom trust and mTLS. Remove any
 `grpcutil.WithBearerToken` from your dial options, because the key is already

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { create } from "@bufbuild/protobuf";
-import { CheckPermissionResponseSchema, ZedTokenSchema } from "@spicedb/proto";
+import { CheckPermissionResponseSchema, CheckPermissionResponse_Permissionship, ZedTokenSchema } from "@spicedb/proto";
 import { SpiceDBClient, ZedToken, Tracing, LookupDebug, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, full, atLeast, InvalidArgumentError } from "../index.js";
 
 const local = () => new SpiceDBClient({ endpoint: "localhost:1", token: "secret", transportSecurity: TransportSecurity.Plaintext });
@@ -22,7 +22,7 @@ describe("native tokens and behavioral modes", () => {
     });
     it("returns runtime tokens and maps named tracing choices", async () => {
         const c = local();
-        const rpc = vi.spyOn(c.raw().permissions, "checkPermission").mockResolvedValue(create(CheckPermissionResponseSchema, { checkedAt: { token: "revision" } }));
+        const rpc = vi.spyOn(c.raw().permissions, "checkPermission").mockResolvedValue(create(CheckPermissionResponseSchema, { checkedAt: { token: "revision" }, permissionship: CheckPermissionResponse_Permissionship.NO_PERMISSION }));
         const result = await c.check(request(), { tracing: Tracing.Enabled });
         expect(result.checkedAt).toBeInstanceOf(ZedToken);
         expect(result.checkedAt.toString()).toBe("revision");

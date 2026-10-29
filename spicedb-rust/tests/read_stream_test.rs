@@ -595,7 +595,9 @@ async fn lookup_resources_filters_exact_grants_across_pages() {
             ..Default::default()
         };
         mock.push_lookup_resources_page(vec![row("conditional", 2, "1"), row("unknown", 99, "2")]);
-        mock.push_lookup_resources_page(vec![row("unspecified", 0, "3"), row("grant1", 1, "4")]);
+        // An unspecified (0) permissionship is a malformed response, so the
+        // filtered-out rows here are values the client does not know.
+        mock.push_lookup_resources_page(vec![row("unknown2", 98, "3"), row("grant1", 1, "4")]);
         // Every page is requested with the same page size (2); a short page
         // ends the lookup, so the server fills each page it has rows for.
         mock.push_lookup_resources_page(vec![row("conditional2", 2, "5"), row("grant2", 1, "6")]);

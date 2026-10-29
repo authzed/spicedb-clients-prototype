@@ -149,6 +149,48 @@ def test_registered_check_results():
     assert other.permissionship is Permissionship.NO_PERMISSION
 
 
+@pytest.mark.parametrize("double", [InMemoryClient, AsyncInMemoryClient])
+async def test_double_never_answers_unspecified_permissionship(double):
+    """A real server always sets a check's permissionship and the client fails
+    an unspecified one as malformed, so the double refuses to produce it."""
+    from spicedb import LocalValidationError
+
+    store = double([rel("document:a#viewer@user:alice")])
+    alice = SubjectRef(ObjectRef("user", "alice"))
+    doc = ObjectRef("document", "a")
+    with pytest.raises(LocalValidationError, match="UNSPECIFIED"):
+        store.set_check_result(doc, "view", alice, Permissionship.UNSPECIFIED)
+    with pytest.raises(LocalValidationError, match="UNSPECIFIED"):
+        store.set_check_result(doc, "view", alice, CheckResult(Permissionship.UNSPECIFIED, (), ZedToken("")))
+
+    store.set_check_resolver(lambda check: Permissionship.UNSPECIFIED)
+    for call in (
+        lambda: store.check(PermissionCheck(doc, "view", alice), consistency=full()),
+        lambda: store.check_bulk([PermissionCheck(doc, "view", alice)], consistency=full()),
+        lambda: store.lookup_resources(
+            resource_type="document", permission="view", subject=alice, consistency=full()
+        ),
+        lambda: store.lookup_subjects(
+            resource=doc, permission="view", subject_type="user", consistency=full()
+        ),
+    ):
+        with pytest.raises(LocalValidationError, match="UNSPECIFIED"):
+            result = call()
+            if inspect.isawaitable(result):
+                result = await result
+            if hasattr(result, "__aiter__"):
+                [x async for x in result]
+            elif hasattr(result, "__next__"):
+                list(result)
+
+    # With no registration or resolver answer, an ungranted check is NO_PERMISSION.
+    store.set_check_resolver(None)
+    result = store.check(PermissionCheck(doc, "view", alice), consistency=full())
+    if inspect.isawaitable(result):
+        result = await result
+    assert result.permissionship is Permissionship.NO_PERMISSION
+
+
 async def test_async_double_shares_semantics():
     store = AsyncInMemoryClient()
     await store.write(Transaction().create(rel("document:a#viewer@user:u")))

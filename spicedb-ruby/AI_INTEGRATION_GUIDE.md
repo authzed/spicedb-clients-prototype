@@ -203,8 +203,10 @@ message).
 Bad input raises `SpiceDB::LocalValidationError` (an `InvalidArgumentError`)
 before any request, and `rescue ArgumentError` catches it; a server's
 INVALID_ARGUMENT is a plain `InvalidArgumentError`. A response the client
-cannot interpret raises `SpiceDB::Error` with code INTERNAL, and it is not
-retried. Closing the client while another thread reads one of its streams raises
+cannot interpret (including a check or lookup result with an unspecified
+permissionship) raises `SpiceDB::Error` with code INTERNAL, and it is not
+retried; its message starts `spicedb: client detected malformed response from
+server:`, so it is not a status the server sent. Closing the client while another thread reads one of its streams raises
 `SpiceDB::CancelledError` in that thread.
 
 ## Test
@@ -235,7 +237,9 @@ user `view`); lookups return the stored objects that resolution grants.
 The double does not evaluate the schema: `view = reader + writer +
 parent_folder->read` is granted only by a stored `view` relationship or the
 resolver, never by a stored `reader`. Model permission logic in the resolver,
-or test it against `spicedb serve-testing` (or a container).
+or test it against `spicedb serve-testing` (or a container). Projects whose
+permissions are all computed (unions, arrows) get little from stored-relation
+grants on the double, so model them with the resolver or test against SpiceDB.
 Its errors have the client's classes, codes and messages (the server's message
 for server failures). `set_reflect_schema_result` and `set_response_metadata`
 register what reflection and `call_options:` capture return. `store.calls_of(:write)`

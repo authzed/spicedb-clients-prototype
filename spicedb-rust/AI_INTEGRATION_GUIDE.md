@@ -283,9 +283,11 @@ validation and deadlines; `tonic::Status::from(err)` converts it, and
 relaying an error to another party; `err.reason()` is SpiceDB's
 `ERROR_REASON_*`. Bulk-item and delete-progress errors convert to their inner
 server status, so the server's message appears once. A response the client
-cannot interpret (a relationship, resource, subject or object missing) fails
-with code `Internal` ("malformed response: missing ..."), which is not
-retried; such items are never skipped or filled with empty values.
+cannot interpret (a relationship, resource, subject or object missing, or a
+check or lookup result with an unspecified permissionship) fails with code
+`Internal` and `err.is_client_detected()` true, displayed as "client detected
+malformed response from server: ...". It is not retried; such items are never
+skipped or filled with empty values.
 
 ## Test
 
@@ -295,7 +297,10 @@ stored relationship whose relation is named `view`, or by a check resolver
 you install; the double never derives it from `reader`, `writer` or `parent`.
 Use the double for code that consumes check and lookup results (model the
 permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
-or a container) for tests of the permission logic in the schema.
+or a container) for tests of the permission logic in the schema. Projects
+whose permissions are all computed (unions, arrows) get little from
+stored-relation grants on the double, so model them with the resolver or test
+against SpiceDB.
 
 ```rust
 let fake = InMemorySpiceDB::with_relationships([

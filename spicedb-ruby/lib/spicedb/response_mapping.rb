@@ -64,6 +64,16 @@ module SpiceDB
       CHECK_PERMISSIONSHIP_MAP.fetch(v, :unspecified)
     end
 
+    # SpiceDB always sets a check's, a looked-up resource's and a looked-up
+    # subject's permissionship,
+    # so UNSPECIFIED there is a malformed response, never an :unspecified
+    # result a caller could mistake for a definite answer.
+    def required_permissionship!(value, what)
+      return unless [:PERMISSIONSHIP_UNSPECIFIED, :LOOKUP_PERMISSIONSHIP_UNSPECIFIED, 0, nil].include?(value)
+
+      raise malformed_response("#{what}: permissionship is unspecified")
+    end
+
     def partial_caveat_from_proto(v)
       return nil if v.nil?
 
@@ -86,6 +96,8 @@ module SpiceDB
 
     def lookup_resource_from_proto(resp, cursor = nil)
       raise malformed_response('lookup_resources: resource_object_id is missing') if resp.resource_object_id.empty?
+
+      required_permissionship!(resp.permissionship, 'lookup_resources')
 
       LookupResource.new(
         resource_id: resp.resource_object_id,
@@ -110,7 +122,9 @@ module SpiceDB
 
     def lookup_subject_from_proto(resp)
       subject = resolved_subject_from_proto(resp.subject)
+      raw_permissionship = resp.subject&.permissionship
       if subject.subject_id.nil? || subject.subject_id.empty?
+        raw_permissionship = resp.permissionship
         subject = ResolvedSubject.new(
           subject_id: resp.subject_object_id,
           permissionship: permissionship_from_proto(resp.permissionship),
@@ -118,6 +132,10 @@ module SpiceDB
         )
       end
       raise malformed_response('lookup_subjects: subject is missing') if subject.subject_id.nil? || subject.subject_id.empty?
+
+      # Excluded subjects are left as sent; only the resolved subject's
+      # permissionship is required.
+      required_permissionship!(raw_permissionship, 'lookup_subjects')
 
       LookupSubject.new(
         subject: subject,

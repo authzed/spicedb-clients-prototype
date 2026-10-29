@@ -86,6 +86,7 @@ module SpiceDB
     def initialize(endpoint:, token:, transport: TransportSecurity::TLS, remote_credentials: RemoteCredentials::LOOPBACK_ONLY,
                    ca_cert: nil, client_cert: nil, client_key: nil, **)
       configure(**)
+      validate_credentials(token, ca_cert: ca_cert, client_cert: client_cert, client_key: client_key)
       options = { insecure: TransportSecurity.validate(transport) == TransportSecurity::PLAINTEXT,
                   allow_insecure_remote_credentials: RemoteCredentials.validate(remote_credentials) == RemoteCredentials::ALLOW_PLAINTEXT,
                   ca_cert: ca_cert, client_cert: client_cert, client_key: client_key }
@@ -217,7 +218,7 @@ module SpiceDB
           end
           raise malformed_response("check item #{absolute}: malformed empty pair") unless pair.response == :item
 
-          check_result(pair.item, token)
+          check_result(pair.item, token, "check item #{absolute}")
         end
       end.freeze
     end
@@ -503,6 +504,20 @@ module SpiceDB
       return UnavailableError.new("spicedb: could not connect to #{target} within #{timeout}s (unreachable or refusing connections)") if failed
 
       DeadlineExceededError.new("spicedb: the connection to #{target} was not ready within #{timeout}s")
+    end
+
+    # The token and TLS material are checked here, at construction, like the
+    # endpoint: grpc otherwise sends a nil token as "Bearer " on every call,
+    # and crashes the process on non-String TLS material when the channel
+    # opens.
+    def validate_credentials(token, **material)
+      raise LocalValidationError, "spicedb: token must be a String, got #{Values.received(token)}" unless token.is_a?(String)
+
+      material.each do |name, value|
+        next if value.nil? || value.is_a?(String)
+
+        raise LocalValidationError, "spicedb: #{name} must be a PEM String or nil, got #{Values.received(value)}"
+      end
     end
 
     def adopt_connection(connection)

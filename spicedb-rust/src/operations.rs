@@ -445,6 +445,7 @@ impl SpiceDBClient {
                     })
                     .await?
                     .into_inner();
+                require_permissionship(result.permissionship, "check")?;
                 Ok(CheckResult {
                     permissionship: check_permissionship_from_proto(result.permissionship),
                     missing_context: result
@@ -554,6 +555,10 @@ impl SpiceDBClient {
                         }
                         match &pair.response {
                             Some(proto::check_bulk_permissions_pair::Response::Item(item)) => {
+                                require_permissionship(
+                                    item.permissionship,
+                                    &format!("check item {index}:"),
+                                )?;
                                 results.push(check_result_from_bulk_item(item, &revision)?)
                             }
                             Some(proto::check_bulk_permissions_pair::Response::Error(status)) => {
@@ -1177,6 +1182,7 @@ impl SpiceDBClient {
                         if response.resource_object_id.is_empty() {
                             Err(missing_in_response("resource object ID"))?;
                         }
+                        require_permissionship(response.permissionship, "lookup resources result")?;
                         if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
                             && response.permissionship != proto::LookupPermissionship::HasPermission as i32 {
                             continue;
@@ -1274,6 +1280,12 @@ impl SpiceDBClient {
                     if subject.subject_id.is_empty() {
                         Err(missing_in_response("lookup subject"))?;
                     }
+                    #[allow(deprecated)]
+                    let wire_permissionship = response
+                        .subject
+                        .as_ref()
+                        .map_or(response.permissionship, |s| s.permissionship);
+                    require_permissionship(wire_permissionship, "lookup subjects result")?;
                     let mut excluded_subjects: Vec<_> = response
                         .excluded_subjects
                         .iter()

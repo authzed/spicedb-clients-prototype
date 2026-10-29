@@ -199,7 +199,7 @@ try {
 and `exportRelationships` (after the last fully delivered export batch). It
 is the request's own `cursor` when nothing was delivered, and absent when the
 read should start over. `lookupSubjects` has no cursor (SpiceDB does not page
-it).
+it). Faults injected into `InMemorySpiceDB` carry the same `resumeCursor`.
 
 Each page request of these finite reads gets the client default deadline
 (30 s), so a server that stalls mid-read fails the read with
@@ -255,6 +255,13 @@ try { ... } catch (e) {
 `err.message` keeps Connect's `[code]` prefix; forward `err.serverMessage` to
 reproduce exactly what SpiceDB said. `toConnectError(err)` returns a
 `ConnectError` with the matching code for code written against Connect.
+
+A response the client cannot interpret is a `SpiceDBError` coded
+`Code.Internal` whose message starts `client detected malformed response from
+server:` and which has no `serverMessage`. That includes a check, bulk-check
+item or lookup result whose permissionship is unspecified: `authzed-node`
+returned it as `PERMISSIONSHIP_UNSPECIFIED`, which a `=== HAS_PERMISSION`
+test read as a denial.
 
 ## Accessors
 

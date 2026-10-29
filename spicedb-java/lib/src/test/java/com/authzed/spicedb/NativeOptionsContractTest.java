@@ -49,7 +49,11 @@ class NativeOptionsContractTest {
               com.authzed.api.v1.CheckPermissionRequest request,
               io.grpc.stub.StreamObserver<com.authzed.api.v1.CheckPermissionResponse> out) {
             seen.add(request);
-            var response = com.authzed.api.v1.CheckPermissionResponse.newBuilder();
+            var response =
+                com.authzed.api.v1.CheckPermissionResponse.newBuilder()
+                    .setPermissionship(
+                        com.authzed.api.v1.CheckPermissionResponse.Permissionship
+                            .PERMISSIONSHIP_NO_PERMISSION);
             if (seen.size() > 1)
               response.setCheckedAt(
                   com.authzed.api.v1.ZedToken.newBuilder().setToken("  opaque/日本語==\n"));

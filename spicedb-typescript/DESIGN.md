@@ -120,9 +120,13 @@ and its generated schema facade.
     `CancelledError` (`Code.Canceled`) named `"AbortError"` whose `cause` is the
     caller's reason, never a `DOMException`.
   - A response the client cannot interpret (a missing relationship, resource,
-    subject or lookup ID, an unset oneof, a cursor that does not advance)
-    fails with a `SpiceDBError` coded `Internal`; responses are never skipped
-    or filled with empty values.
+    subject or lookup ID, an unset oneof, a wire-`UNSPECIFIED` permissionship
+    on a check, bulk-check item, lookup-resources result or lookup-subjects
+    subject, a cursor that does not advance) fails with a `SpiceDBError` coded
+    `Internal` whose message starts `client detected malformed response from
+    server:` and which has no `serverMessage`; responses are never skipped or
+    filled with empty values. A permissionship value newer than the client is
+    not malformed: it maps to `"unspecified"` and never grants.
   - `ready(options?)` makes one schema read so a wrong or unreachable endpoint
     fails at startup (Unavailable, DeadlineExceeded, Unauthenticated); a
     `NotFound` or `PermissionDenied` answer counts as ready.
@@ -341,7 +345,13 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   <operation> is not implemented by InMemorySpiceDB`; streams fail from
   iteration); `raw()` throws Unimplemented. An `ImportBatch` fault fires once
   each batch is full (or the input ends) and carries it as `Fault.batch`;
-  `Item` fires before each read, export and lookup item.
+  `Item` fires before each read, export and lookup item. An error injected
+  into (or raised from iterating) `readRelationships`, `exportRelationships`
+  or `lookupResources` carries `resumeCursor` as the real client's does: the
+  last delivered item's `afterResultCursor`, else the request's cursor, else
+  none. The double never answers with an `"unspecified"` permissionship:
+  `setCheckResult` rejects it and a resolver returning it fails the call with
+  `InvalidArgumentError`.
   `InMemorySpiceDB.cursorAfter(n)` builds the cursor the double puts on the
   n-th matching item (the decimal count `n`, stable for tests), and
   `setReadSchemaRevision(SchemaRevision.Omitted)` makes `readSchema` report an

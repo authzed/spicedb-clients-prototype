@@ -56,11 +56,8 @@ class CheckResultsTest {
         Arguments.of(
             CheckPermissionResponse.Permissionship.PERMISSIONSHIP_CONDITIONAL_PERMISSION,
             Permissionship.CONDITIONAL_PERMISSION,
-            false),
-        Arguments.of(
-            CheckPermissionResponse.Permissionship.PERMISSIONSHIP_UNSPECIFIED,
-            Permissionship.UNSPECIFIED,
             false));
+    // An unspecified permissionship is a malformed response: MalformedResponseTest.
   }
 
   @ParameterizedTest

@@ -4,7 +4,7 @@ import { Code, type Transport } from "@connectrpc/connect";
 import { SpiceDBProtoClient as ProtoClient } from "@spicedb/proto";
 import { DEFAULT_RETRY_POLICY, validRetryPolicy, retryable, backoffMs, mutationRetry, type RetryPolicy } from "./retry.js";
 import { create, clone, equals, type JsonObject } from "@bufbuild/protobuf";
-import { createSpiceDBClient as createProtoClient, endpointScheme, InsecureRemoteHostError, remotePlaintextRefusal, type SpiceDBProtoClient, type TlsOptions, CheckBulkPermissionsRequestItemSchema, CheckBulkPermissionsRequestSchema, CheckPermissionRequestSchema, ReadRelationshipsRequestSchema, WriteRelationshipsRequestSchema, LookupResourcesRequestSchema, LookupSubjectsRequestSchema, ExpandPermissionTreeRequestSchema, ExportBulkRelationshipsRequestSchema, ImportBulkRelationshipsRequestSchema, ReadSchemaRequestSchema, WriteSchemaRequestSchema, ReflectSchemaRequestSchema, ReflectionSchemaFilterSchema, ComputablePermissionsRequestSchema, DependentRelationsRequestSchema, DiffSchemaRequestSchema, ExperimentalRegisterRelationshipCounterRequestSchema, ExperimentalCountRelationshipsRequestSchema, ExperimentalUnregisterRelationshipCounterRequestSchema, WatchRequestSchema, WatchKind, LookupSubjectsRequest_WildcardOption, ZedTokenSchema, CursorSchema, RelationshipUpdate_Operation, DeleteRelationshipsResponse_DeletionProgress, DeleteRelationshipsRequestSchema, } from "@spicedb/proto";
+import { createSpiceDBClient as createProtoClient, endpointScheme, InsecureRemoteHostError, remotePlaintextRefusal, type SpiceDBProtoClient, type TlsOptions, CheckBulkPermissionsRequestItemSchema, CheckBulkPermissionsRequestSchema, CheckPermissionRequestSchema, ReadRelationshipsRequestSchema, WriteRelationshipsRequestSchema, LookupResourcesRequestSchema, LookupSubjectsRequestSchema, ExpandPermissionTreeRequestSchema, ExportBulkRelationshipsRequestSchema, ImportBulkRelationshipsRequestSchema, ReadSchemaRequestSchema, WriteSchemaRequestSchema, ReflectSchemaRequestSchema, ReflectionSchemaFilterSchema, ComputablePermissionsRequestSchema, DependentRelationsRequestSchema, DiffSchemaRequestSchema, ExperimentalRegisterRelationshipCounterRequestSchema, ExperimentalCountRelationshipsRequestSchema, ExperimentalUnregisterRelationshipCounterRequestSchema, WatchRequestSchema, WatchKind, LookupSubjectsRequest_WildcardOption, ZedTokenSchema, CursorSchema, RelationshipUpdate_Operation, DeleteRelationshipsResponse_DeletionProgress, DeleteRelationshipsRequestSchema, CheckPermissionResponse_Permissionship, LookupPermissionship, } from "@spicedb/proto";
 import { ExperimentalCountRelationshipsByFilterRequestSchema, MaterializePermissionSetsProtocol as PermissionSets } from "@spicedb/proto";
 import type { WatchPermissionSetsRequest, PermissionSetEvent, LookupPermissionSetsRequest, LookupPermissionSet, DownloadPermissionSetsRequest, DownloadPermissionSetsResult, PermissionSetCursor, PermissionSetChange, PermissionSetReference } from "./types.js";
 import { Consistency } from "./consistency.js";
@@ -337,7 +337,11 @@ export class SpiceDBClient implements SpiceDBClientInterface {
     }
     async check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult> {
         const wire = create(CheckPermissionRequestSchema, { resource: request.resource, permission: request.permission, subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: mergeCheckContext(options?.context, request.context), withTracing: mode(options?.tracing, Tracing, Tracing.Disabled, "tracing") === Tracing.Enabled });
-        return this.unary("check", options, true, async (op) => checkResultFromProto(await this.proto.permissions.checkPermission(wire, op.callOptions())));
+        return this.unary("check", options, true, async (op) => {
+            const resp = await this.proto.permissions.checkPermission(wire, op.callOptions());
+            requireSpecified(resp.permissionship, "check response");
+            return checkResultFromProto(resp);
+        });
     }
     async checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]> {
         const op = this.operation("checkBulk", options);
@@ -378,6 +382,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
                     }
                     if (pair.response.case !== "item")
                         throw malformedResponse(`check item ${offset + i}: malformed CheckBulkPermissionsPair (neither item nor error set)`);
+                    requireSpecified(pair.response.value.permissionship, `check item ${offset + i}`, offset + i);
                     results.push(checkResultFromBulkItem(pair.response.value, serverToken(resp.checkedAt?.token)));
                 });
             }
@@ -501,6 +506,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
                         throw malformedResponse("lookup resources response has no resource ID");
                     cursor = resp.afterResultCursor?.token;
                     count++;
+                    requireSpecified(resp.permissionship, `lookup resources result ${resp.resourceObjectId}`);
                     const result = fromProtoLookupResource(resp, cursor);
                     if (filter === LookupPermissionshipFilter.HasPermissionOnly && result.permissionship !== "hasPermission") {
                         // Paging advances through skipped results, and so does resumption.
@@ -536,6 +542,8 @@ export class SpiceDBClient implements SpiceDBClientInterface {
                 const result = fromProtoLookupSubject(resp);
                 if (!result.subject.subjectId || result.excludedSubjects.some(excluded => !excluded.subjectId))
                     throw malformedResponse("lookup subjects response has no subject ID");
+                // The same field fromProtoLookupSubject read: the subject's, or the deprecated top-level one.
+                requireSpecified(resp.subject?.subjectObjectId ? resp.subject.permissionship : resp.permissionship, `lookup subjects result ${result.subject.subjectId}`);
                 yield result;
             }
         }, true, { resumable: false });
@@ -735,6 +743,20 @@ export class SpiceDBClient implements SpiceDBClientInterface {
         const wire = { consistency: this.consistency(request.consistency), resourceObjectType: request.resourceType, permission: request.permission, subject: protoSubject(request.subject) };
         return this.unary("experimentalRoaringLookupResources", options, true, async (op) => { const resp = await this.proto.materialize.experimentalRoaringLookupResources(wire, op.callOptions()); return immutableSnapshot({ bitmap: resp.bitmap, cardinality: resp.cardinality, revision: serverToken(resp.atRevision?.token) }); });
     }
+}
+/**
+ * A check or lookup result whose wire permissionship is `UNSPECIFIED` (0 in
+ * both the check and the lookup enum) is malformed: SpiceDB always sets it,
+ * and reading it as "no permission" would hide the defect. A value newer than
+ * this client is not malformed: it maps to `"unspecified"` and never grants.
+ */
+function requireSpecified(permissionship: CheckPermissionResponse_Permissionship | LookupPermissionship, what: string, inputIndex?: number): void {
+    if (permissionship !== CheckPermissionResponse_Permissionship.UNSPECIFIED && permissionship !== LookupPermissionship.UNSPECIFIED)
+        return;
+    const error = malformedResponse(`${what} has unspecified permissionship`);
+    if (inputIndex !== undefined)
+        Object.defineProperty(error, "inputIndex", { value: inputIndex, enumerable: true });
+    throw error;
 }
 /** An expand tree whose root, expanded objects or leaf subjects are missing is malformed. */
 function checkPermissionTree(tree: Parameters<typeof fromProtoPermissionTree>[0]): void {

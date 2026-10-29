@@ -65,7 +65,7 @@ func (c *Client) CountRelationships(ctx context.Context, request CountRelationsh
 		return CountRelationshipsResult{}, e
 	}
 	if resp.GetCounterResult() == nil {
-		return CountRelationshipsResult{}, &Error{Code: CodeInternal, Message: "spicedb: counter response has no state"}
+		return CountRelationshipsResult{}, malformed("count relationships", "counter response has no state")
 	}
 	return CountRelationshipsResult{RelationshipCount: resp.GetReadCounterValue().GetRelationshipCount(), Revision: consistency.NewZedToken(resp.GetReadCounterValue().GetReadAt().GetToken()), StillCalculating: resp.GetCounterStillCalculating()}, nil
 }

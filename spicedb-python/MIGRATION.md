@@ -85,8 +85,9 @@ client = SpiceDBClient("spicedb:50051", token="key",
   443); a TLS endpoint without one uses 443. The scheme must agree with
   `transport_security`. Other gRPC target URIs (`dns://8.8.8.8/host:port`,
   `dns:host:port`, `ipv4:...`) and URLs with a path, query or userinfo are
-  rejected at construction with `InvalidArgumentError`; authzed-py passed
-  them to grpc unchecked.
+  rejected at construction with `LocalValidationError` (an
+  `InvalidArgumentError` and a `ValueError`, like every constructor
+  argument error); authzed-py passed them to grpc unchecked.
 - authzed-py had no readiness check either; a client that should fail at
   startup calls `client.ready(timeout=...)` (`await` it on `aio`).
 - `bearer_token_credentials(token, certChain)` → `ca_cert=certChain`; mTLS uses
@@ -339,9 +340,12 @@ an asyncio task still raises `asyncio.CancelledError`, and `code_of` reports
 both as `CANCELLED`.
 
 A response the client cannot interpret (a missing relationship, object, ID or
-revision, an expand node with neither children nor subjects, a cursor that
-does not advance) raises `InternalError` (code `INTERNAL`, not retried by
-default). authzed-py passed such responses through with empty values; this
+revision, an unspecified check or lookup permissionship, an expand node with
+neither children nor subjects, a cursor that does not advance) raises
+`InternalError` (code `INTERNAL`, not retried by default), with a message
+beginning `spicedb: client detected malformed response from server:` and no
+`server_message`. authzed-py passed such responses through with empty values
+(an unspecified permissionship read as `PERMISSIONSHIP_UNSPECIFIED`); this
 client never skips them or fills them in.
 
 ## Metadata and call options

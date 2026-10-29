@@ -39,6 +39,7 @@ func TestCheckBulkRejectsMalformedPairs(t *testing.T) {
 			var native *Error
 			require.ErrorAs(t, e, &native)
 			require.Equal(t, CodeInternal, native.Code)
+			require.ErrorContains(t, e, "client detected malformed response from server")
 		})
 	}
 }

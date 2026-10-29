@@ -493,8 +493,10 @@ fn check_permissionship_to_proto(p: &Permissionship) -> i32 {
     (match p {
         Permissionship::HasPermission => P::HasPermission,
         Permissionship::ConditionalPermission => P::ConditionalPermission,
-        Permissionship::NoPermission => P::NoPermission,
-        _ => P::Unspecified,
+        // A resolver's `Unspecified` (or any other value) answers "no": the
+        // double never sends the unspecified value a real server never sends,
+        // which the client rejects as a malformed response.
+        _ => P::NoPermission,
     }) as i32
 }
 

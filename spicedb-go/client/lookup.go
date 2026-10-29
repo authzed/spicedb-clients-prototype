@@ -73,6 +73,11 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 					yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
 					return
 				}
+				if permissionshipFromProto(resp.GetPermissionship()) == PermissionshipUnspecified {
+					pageCancel()
+					yield(LookupResource{}, malformed("lookup resources", "permissionship is unspecified"))
+					return
+				}
 				if o.lookupPermissionshipFilter == LookupHasPermissionOnly && resp.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
 					continue
 				}
@@ -93,7 +98,7 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 				return
 			}
 			if cur.GetToken() == "" || cur.GetToken() == prev {
-				yield(LookupResource{}, &Error{Code: CodeInternal, Message: "spicedb: lookup page did not advance cursor"})
+				yield(LookupResource{}, malformed("lookup resources", "page did not advance cursor"))
 				return
 			}
 		}
@@ -175,6 +180,10 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 					}
 					excluded = append(excluded, ResolvedSubject{SubjectID: id})
 				}
+			}
+			if s.Permissionship == PermissionshipUnspecified {
+				yield(LookupSubject{}, malformed("lookup subjects", "permissionship is unspecified"))
+				return
 			}
 			count++
 			if !yield(LookupSubject{Subject: s, ExcludedSubjects: excluded, LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken())}, nil) {

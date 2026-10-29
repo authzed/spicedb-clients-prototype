@@ -261,3 +261,32 @@ func TestLookupsAreRecordedAndInjectable(t *testing.T) {
 	}
 	require.Len(t, s.CallsOf(clienttest.OpLookupSubjects), 1)
 }
+
+// The Store never produces an unspecified permissionship, which the real
+// client reports as a malformed response: a registered or resolved result
+// left unspecified (a zero CheckResult) denies, and lookups skip it.
+func TestStoreNeverProducesUnspecifiedPermissionship(t *testing.T) {
+	ctx := context.Background()
+	alice := subject("user", "alice")
+	s := clienttest.NewStore(rel.MustFromTuple("doc:a#view@user:alice"), rel.MustFromTuple("doc:b#view@user:alice"))
+	s.SetCheckResult(rel.MustNewObject("doc", "a"), "view", alice, client.CheckResult{})
+	s.SetCheckResolver(func(client.PermissionCheck) (client.CheckResult, bool) {
+		return client.CheckResult{Permissionship: 99}, true
+	})
+	for _, id := range []string{"a", "b"} {
+		require.Equal(t, client.PermissionshipNoPermission, permissionship(t, s, checkOf("doc:"+id, "view", alice)))
+	}
+	results, err := s.CheckBulk(ctx, []client.PermissionCheck{checkOf("doc:a", "view", alice), checkOf("doc:b", "view", alice)})
+	require.NoError(t, err)
+	for _, r := range results {
+		require.Equal(t, client.PermissionshipNoPermission, r.Permissionship)
+	}
+	for r, err := range s.CheckIter(ctx, slices.Values([]client.PermissionCheck{checkOf("doc:a", "view", alice)})) {
+		require.NoError(t, err)
+		require.Equal(t, client.PermissionshipNoPermission, r.Permissionship)
+	}
+	for r, err := range s.LookupResources(ctx, client.LookupResourcesRequest{ResourceType: "doc", Permission: "view", Subject: alice}) {
+		require.NoError(t, err)
+		t.Fatalf("unexpected lookup result %v", r)
+	}
+}

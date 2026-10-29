@@ -5,11 +5,15 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.authzed.api.v1.CheckBulkPermissionsPair;
 import com.authzed.api.v1.CheckBulkPermissionsRequest;
 import com.authzed.api.v1.CheckBulkPermissionsResponse;
+import com.authzed.api.v1.CheckBulkPermissionsResponseItem;
+import com.authzed.api.v1.CheckPermissionRequest;
+import com.authzed.api.v1.CheckPermissionResponse;
 import com.authzed.api.v1.ExperimentalCountRelationshipsRequest;
 import com.authzed.api.v1.ExperimentalCountRelationshipsResponse;
 import com.authzed.api.v1.ExperimentalServiceGrpc;
 import com.authzed.api.v1.ExportBulkRelationshipsRequest;
 import com.authzed.api.v1.ExportBulkRelationshipsResponse;
+import com.authzed.api.v1.LookupPermissionship;
 import com.authzed.api.v1.LookupResourcesRequest;
 import com.authzed.api.v1.LookupResourcesResponse;
 import com.authzed.api.v1.LookupSubjectsRequest;
@@ -43,7 +47,9 @@ class MalformedResponseTest {
   private static void assertInternal(Executable call) {
     var thrown = assertThrows(RuntimeException.class, call);
     assertEquals(Status.Code.INTERNAL, ErrorMapper.codeOf(thrown), "got: " + thrown);
-    assertTrue(thrown.getMessage().contains("malformed response"), thrown.getMessage());
+    assertTrue(
+        thrown.getMessage().contains("client detected malformed response from server"),
+        thrown.getMessage());
   }
 
   private static com.authzed.api.v1.Relationship.Builder relationship() {
@@ -221,5 +227,93 @@ class MalformedResponseTest {
     assertInternal(() -> ProtoConv.fromProto(ObjectReference.getDefaultInstance()));
     assertInternal(() -> ProtoConv.fromProto(SubjectReference.getDefaultInstance()));
     assertInternal(() -> ProtoConv.fromProto(relationship().setRelation("").build()));
+  }
+
+  /**
+   * The server always sets a check's or looked-up resource's permissionship, so an unspecified one
+   * is a malformed response the client detects, never an UNSPECIFIED result the caller must handle.
+   */
+  @Test
+  void unspecifiedPermissionshipFailsAsInternal() throws Exception {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkPermission(
+              CheckPermissionRequest r, StreamObserver<CheckPermissionResponse> out) {
+            out.onNext(CheckPermissionResponse.getDefaultInstance());
+            out.onCompleted();
+          }
+
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest r, StreamObserver<CheckBulkPermissionsResponse> out) {
+            out.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .addPairs(
+                        CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(r.getItems(0))
+                            .setItem(CheckBulkPermissionsResponseItem.getDefaultInstance()))
+                    .build());
+            out.onCompleted();
+          }
+
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest r, StreamObserver<LookupResourcesResponse> out) {
+            out.onNext(LookupResourcesResponse.newBuilder().setResourceObjectId("a").build());
+            out.onCompleted();
+          }
+
+          @Override
+          public void lookupSubjects(
+              LookupSubjectsRequest r, StreamObserver<LookupSubjectsResponse> out) {
+            out.onNext(
+                LookupSubjectsResponse.newBuilder()
+                    .setSubject(
+                        com.authzed.api.v1.ResolvedSubject.newBuilder().setSubjectObjectId("j"))
+                    .build());
+            out.onCompleted();
+          }
+        };
+    try (var servers = TestServers.start(service)) {
+      var rel = Relationship.of(new ObjectRef("document", "a"), "view", JIMMY);
+      var check = TestRequests.check(rel, "view", Consistency.full());
+      assertInternal(() -> servers.client().check(check));
+      assertInternal(() -> servers.client().checkBulk(List.of(check)));
+      assertInternal(
+          () ->
+              servers
+                  .client()
+                  .lookupResources(Consistency.full(), "document", "view", JIMMY)
+                  .toList());
+      // The HAS_PERMISSION-only filter does not hide it as "not granted".
+      assertInternal(
+          () ->
+              servers
+                  .client()
+                  .lookupResources(
+                      Consistency.full(),
+                      "document",
+                      "view",
+                      JIMMY,
+                      LookupOptions.builder()
+                          .permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+                          .build())
+                  .toList());
+      assertInternal(
+          () ->
+              servers
+                  .client()
+                  .lookupSubjects(
+                      Consistency.full(), new ObjectRef("document", "a"), "view", "user")
+                  .toList());
+    }
+    assertInternal(
+        () ->
+            ProtoConv.fromProto(
+                LookupResourcesResponse.newBuilder()
+                    .setResourceObjectId("a")
+                    .setPermissionship(LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
+                    .build()));
   }
 }

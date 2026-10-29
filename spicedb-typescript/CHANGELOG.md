@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Client-detected malformed responses and the double's resume cursor
+
+- **Behavior change:** a check, bulk-check item, lookup-resources result or
+  lookup-subjects subject whose permissionship is unspecified on the wire now
+  fails with a `SpiceDBError` coded `Code.Internal` (the item's `inputIndex`
+  set for a bulk check, even with `BulkItemErrors.Returned`) instead of being
+  returned as `"unspecified"`. A permissionship value newer than the client
+  still maps to `"unspecified"` and never grants.
+- **Behavior change:** every malformed-response error's message now starts
+  `client detected malformed response from server:`, so it is not mistaken
+  for a status SpiceDB sent. Code is still `Code.Internal`; `serverMessage` is
+  still absent.
+- `InMemorySpiceDB`: an error from iterating `readRelationships`,
+  `exportRelationships` or `lookupResources` (a fault hook's injected error,
+  or an invalid cursor) carries `resumeCursor` exactly as the real client's
+  does, so resume logic can be tested on the double.
+- **Behavior change:** `InMemorySpiceDB` never answers with an
+  `"unspecified"` permissionship: `setCheckResult(..., "unspecified")` throws
+  `InvalidArgumentError`, and a check resolver returning `"unspecified"` fails
+  the check or lookup with `InvalidArgumentError`.
+- The AI integration guide notes that projects whose permissions are all
+  computed get little from stored-relation grants on the double.
+
 ### Paged reads, malformed responses, cancellation and readiness
 
 - **Behavior change:** finite paged reads (`readRelationships`,

@@ -321,6 +321,9 @@ public final class SpiceDBClient implements SpiceDBApi {
     // notes on create(...) and ClientOption#apply above (not just this comment) for what this
     // does and does not catch: a fully custom ClientOption lambda that calls
     // builder.usePlaintext() directly is invisible to this check.
+    if (options == null) throw new LocalValidationException("options must not be null");
+    for (ClientOption option : options)
+      if (option == null) throw new LocalValidationException("options must not contain null");
     boolean insecureRequested = false;
     boolean allowInsecureRemoteCredentials = false;
     for (ClientOption option : options) {
@@ -522,7 +525,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                     .withDeadline(deadline)
                     .checkPermission(builder.build()));
     return new CheckResult(
-        checkPermissionshipFromProto(response.getPermissionship()),
+        checkPermissionshipFromProto(response.getPermissionship(), "check response"),
         response.getPartialCaveatInfo().getMissingRequiredContextList(),
         (response.hasCheckedAt() ? new ZedToken(response.getCheckedAt().getToken()) : null),
         response.hasDebugTrace() ? DebugInformation.fromProto(response.getDebugTrace()) : null,
@@ -604,6 +607,7 @@ public final class SpiceDBClient implements SpiceDBApi {
         results.add(
             checkResultFromBulkItem(
                 pair.getItem(),
+                offset + i,
                 response.hasCheckedAt() ? new ZedToken(response.getCheckedAt().getToken()) : null));
       }
     }
@@ -687,7 +691,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       Consistency consistency, Filter filter, ReadOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
     var proto = toRelationshipFilter(filter);
-    Objects.requireNonNull(consistency, "consistency");
+    if (consistency == null) throw new LocalValidationException("consistency must not be null");
     boolean single = options.paging() == Paging.SINGLE_REQUEST;
     int requestLimit = pageRequestLimit(single, options.pageSize(), options.limit());
     return pagedStream(
@@ -861,8 +865,7 @@ public final class SpiceDBClient implements SpiceDBApi {
         // forever. (A partial page without a cursor is valid: the next page re-evaluates the
         // filter against what remains.)
         if (cursor != null && !cursor.isEmpty() && cursor.equals(sent)) {
-          var error =
-              ErrorMapper.newError(Status.Code.INTERNAL, "delete page did not advance cursor");
+          var error = malformed("delete page did not advance cursor");
           error.attachDeleteProgress(new DeleteProgress(0, token, cursor, 0, false));
           throw error;
         }
@@ -902,7 +905,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       SubjectRef subject,
       LookupOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
-    Objects.requireNonNull(consistency, "consistency");
+    if (consistency == null) throw new LocalValidationException("consistency must not be null");
     if (options.subjectRelation() != null)
       throw new LocalValidationException(
           "lookupResources uses the required SubjectRef relation, not subjectRelation options");
@@ -927,10 +930,15 @@ public final class SpiceDBClient implements SpiceDBApi {
         ProtoConv::fromProto,
         "lookup",
         options.cursor(),
-        response ->
-            options.permissionshipFilter() == LookupPermissionshipFilter.ALL
-                || response.getPermissionship()
-                    == LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+        response -> {
+          // Checked before the filter, so an unspecified result fails the read rather than being
+          // skipped as "not HAS_PERMISSION".
+          if (ProtoConv.fromProto(response.getPermissionship()) == Permissionship.UNSPECIFIED)
+            throw malformed("looked-up resource has no permissionship");
+          return options.permissionshipFilter() == LookupPermissionshipFilter.ALL
+              || response.getPermissionship()
+                  == LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION;
+        },
         requestLimit,
         single,
         options.limit(),
@@ -1989,6 +1997,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   private static Metadata bearerMetadata(String presharedKey) {
+    if (presharedKey == null) throw new LocalValidationException("presharedKey must not be null");
     Metadata metadata = new Metadata();
     metadata.put(
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER),
@@ -2140,10 +2149,12 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   /**
    * A response this client cannot interpret: {@code INTERNAL}, which no retry policy retries by
-   * default. Root DESIGN.md: never skip such a response or fill its fields with empty values.
+   * default. Root DESIGN.md: never skip such a response or fill its fields with empty values. The
+   * message says the client detected it, so it is not mistaken for a status the server sent.
    */
   static SpiceDBException malformed(String detail) {
-    return ErrorMapper.newError(Status.Code.INTERNAL, "malformed response: " + detail);
+    return ErrorMapper.newError(
+        Status.Code.INTERNAL, "client detected malformed response from server: " + detail);
   }
 
   /**
@@ -2376,8 +2387,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                   }
                   if (opened && (lastToken.isEmpty() || lastToken.equals(sentToken))) {
                     done = true;
-                    throw ErrorMapper.newError(
-                        Status.Code.INTERNAL, what + " page did not advance cursor");
+                    throw malformed(what + " page did not advance cursor");
                   }
                   sentToken = cursor == null ? "" : cursor.getToken();
                   var sent = cursor;
@@ -2488,9 +2498,9 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   private static CheckResult checkResultFromBulkItem(
-      CheckBulkPermissionsResponseItem item, ZedToken responseCheckedAt) {
+      CheckBulkPermissionsResponseItem item, int index, ZedToken responseCheckedAt) {
     return new CheckResult(
-        checkPermissionshipFromProto(item.getPermissionship()),
+        checkPermissionshipFromProto(item.getPermissionship(), "check item " + index),
         item.hasPartialCaveatInfo()
             ? item.getPartialCaveatInfo().getMissingRequiredContextList()
             : List.of(),
@@ -2632,9 +2642,15 @@ public final class SpiceDBClient implements SpiceDBApi {
     return ProtoConv.fromProto(pr);
   }
 
+  /**
+   * The server always sets a check's permissionship, so an unspecified (or unknown) one is a
+   * malformed response, never a result the caller has to handle.
+   */
   private static Permissionship checkPermissionshipFromProto(
-      CheckPermissionResponse.Permissionship v) {
-    return ProtoConv.fromProto(v);
+      CheckPermissionResponse.Permissionship v, String where) {
+    var p = ProtoConv.fromProto(v);
+    if (p == Permissionship.UNSPECIFIED) throw malformed(where + " has no permissionship");
+    return p;
   }
 
   private static LookupResult.LookupSubject lookupSubjectFromProto(LookupSubjectsResponse resp) {

@@ -3,6 +3,7 @@ package com.authzed.spicedb;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import com.authzed.spicedb.errors.UnavailableException;
 import io.grpc.Status;
 import java.time.Duration;
@@ -70,7 +71,7 @@ class EndpointTest {
             // not change the error.
             () -> SpiceDBClient.createPlaintext(endpoint, "k", ALLOW_REMOTE),
             () -> SpiceDBClient.createSystemTls(endpoint, "k"))) {
-      var ex = assertThrows(InvalidArgumentException.class, ctor);
+      var ex = assertThrows(LocalValidationException.class, ctor);
       assertTrue(ex.getMessage().contains(problem), ex.getMessage());
       assertTrue(ex.getMessage().contains("\"" + endpoint + "\""), ex.getMessage());
       assertTrue(ex.getMessage().contains("expected host:port"), ex.getMessage());
@@ -93,7 +94,7 @@ class EndpointTest {
             () -> SpiceDBClient.createPlaintext(endpoint, "k"),
             () -> SpiceDBClient.createPlaintext(endpoint, "k", ALLOW_REMOTE),
             () -> SpiceDBClient.create(endpoint, "k", SpiceDBClient.withInsecure()))) {
-      var ex = assertThrows(InvalidArgumentException.class, ctor);
+      var ex = assertThrows(LocalValidationException.class, ctor);
       assertTrue(
           ex.getMessage().contains("a plaintext endpoint needs an explicit port, e.g. " + example),
           ex.getMessage());
@@ -125,7 +126,7 @@ class EndpointTest {
         Endpoint.parse("dns:///example.com").forTransport(false, "tls", "plaintext").target());
     var noPort =
         assertThrows(
-            com.authzed.spicedb.errors.InvalidArgumentException.class,
+            LocalValidationException.class,
             () -> SpiceDBClient.createPlaintext("dns:///localhost", "k"));
     assertTrue(noPort.getMessage().contains("explicit port"), noPort.getMessage());
     try (var client = SpiceDBClient.createPlaintext("dns:///localhost:50051", "k")) {
@@ -133,7 +134,7 @@ class EndpointTest {
     }
     var remote =
         assertThrows(
-            com.authzed.spicedb.errors.InvalidArgumentException.class,
+            LocalValidationException.class,
             () -> SpiceDBClient.createPlaintext("dns:///example.com:50051", "k"));
     assertTrue(remote.getMessage().contains("non-loopback"), remote.getMessage());
   }
@@ -280,5 +281,35 @@ class EndpointTest {
     var described = Endpoint.describeConnectionFailure("h:1", local).getDescription();
     assertEquals(
         "connecting to SpiceDB at \"h:1\" failed: io exception: SSLException: bad cert", described);
+  }
+
+  /**
+   * Every endpoint and constructor check is client-detected: it throws {@link
+   * LocalValidationException}, never a plain {@code InvalidArgumentException}, a {@code
+   * NullPointerException} or a silently accepted value.
+   */
+  @Test
+  void constructorAndArgumentValidationIsLocalValidation() {
+    for (var call :
+        java.util.List.<org.junit.jupiter.api.function.Executable>of(
+            () -> SpiceDBClient.createPlaintext("localhost", "k"),
+            () -> SpiceDBClient.createPlaintext("localhost:50111", null),
+            () -> SpiceDBClient.createSystemTls("localhost:50111", null),
+            () -> SpiceDBClient.create("localhost:50111", null, SpiceDBClient.withInsecure()),
+            () -> SpiceDBClient.create("localhost:50111", "k", (SpiceDBClient.ClientOption[]) null),
+            () ->
+                SpiceDBClient.create("localhost:50111", "k", SpiceDBClient.withInsecure(), null))) {
+      assertThrows(LocalValidationException.class, call);
+    }
+    try (var client = SpiceDBClient.createPlaintext("localhost:50111", "k")) {
+      assertThrows(
+          LocalValidationException.class,
+          () -> client.readRelationships(null, Filter.of("document")));
+      assertThrows(
+          LocalValidationException.class,
+          () ->
+              client.lookupResources(
+                  null, "document", "view", SubjectRef.direct(new ObjectRef("user", "a"))));
+    }
   }
 }

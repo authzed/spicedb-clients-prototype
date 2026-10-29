@@ -22,7 +22,7 @@ import * as http2 from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
-import { PermissionsService } from "@spicedb/proto";
+import { CheckPermissionResponse_Permissionship, PermissionsService } from "@spicedb/proto";
 import { SpiceDBClient } from "../client.js";
 import { full } from "../consistency.js";
 const TOKEN = "test-token";
@@ -84,7 +84,7 @@ async function serve(): Promise<{
                 checkBulkPermissions: (req) => ({
                     pairs: req.items.map(item => ({
                         request: item,
-                        response: { case: "item" as const, value: {} }
+                        response: { case: "item" as const, value: { permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION } }
                     }))
                 })
             });

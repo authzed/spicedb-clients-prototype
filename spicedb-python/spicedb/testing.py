@@ -268,12 +268,25 @@ def _resolved(value: Any) -> CheckResult | None:
     if isinstance(value, bool):
         value = Permissionship.HAS_PERMISSION if value else Permissionship.NO_PERMISSION
     if isinstance(value, Permissionship):
-        return CheckResult(value, (), ZedToken(""))
+        value = CheckResult(value, (), ZedToken(""))
     if isinstance(value, CheckResult):
-        return value
+        return _answer(value, "check resolver")
     raise LocalValidationError(
         f"check resolver: expected CheckResult, Permissionship, bool or None, got {value!r}"
     )
+
+
+def _answer(result: CheckResult, what: str) -> CheckResult:
+    """``result``, refused when it has no answer. A real server always sets a
+    check's permissionship (the client fails an unspecified one as a
+    malformed response), so the double never returns UNSPECIFIED except on a
+    per-item error result."""
+    if result.error is None and result.permissionship is Permissionship.UNSPECIFIED:
+        raise LocalValidationError(
+            f"{what}: Permissionship.UNSPECIFIED is not an answer a server gives; "
+            "use HAS_PERMISSION, NO_PERMISSION or CONDITIONAL_PERMISSION, or set error"
+        )
+    return result
 
 
 def _key(relationship: Relationship):
@@ -580,6 +593,7 @@ class InMemoryClient:
             result = CheckResult(result, (), ZedToken(""))
         if not isinstance(result, CheckResult):
             raise LocalValidationError("result: expected CheckResult or Permissionship")
+        result = _answer(result, "result")
         with self._store.lock:
             self._store.checks[_check_key(resource, permission, subject)] = result
 

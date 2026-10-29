@@ -306,9 +306,15 @@ Local errors match by their code as well: local validation is
 INVALID_ARGUMENT, so `rescue GRPC::InvalidArgument` also catches a
 `SpiceDB::LocalValidationError` (an `InvalidArgumentError`) raised before any
 request. `rescue ArgumentError` catches it too, as Ruby code expects around bad
-input; a server's INVALID_ARGUMENT is not an `ArgumentError`. A response the
-client cannot interpret raises `SpiceDB::Error` with code INTERNAL (grpc's
-`GRPC::Internal` matches it). Closing a client while another thread reads one
+input; a server's INVALID_ARGUMENT is not an `ArgumentError`. Every endpoint
+and constructor refusal is one, including a non-String token or TLS material. A
+response the client cannot interpret raises `SpiceDB::Error` with code INTERNAL
+(grpc's `GRPC::Internal` matches it), and its message says the client detected
+it (`spicedb: client detected malformed response from server: ...`). That
+includes a check, bulk-check item, `lookup_resources` result or `lookup_subjects`
+subject (not its excluded subjects) whose permissionship is UNSPECIFIED: code that branched on `:unspecified` there now
+gets this error instead (an errored bulk item under
+`BulkItemErrors::RETURNED` still has `:unspecified`). Closing a client while another thread reads one
 of its streams raises `SpiceDB::CancelledError` in that reader, never grpc's
 own `GRPC::Cancelled`.
 

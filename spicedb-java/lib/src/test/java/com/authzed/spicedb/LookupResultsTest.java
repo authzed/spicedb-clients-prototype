@@ -32,7 +32,7 @@ class LookupResultsTest {
   @Test
   void filteredLookupCountsGrantsAcrossSkippedPages() throws IOException {
     var requests = new ArrayList<LookupResourcesRequest>();
-    int[] values = {2, 0, 99, 1, 2, 1, 1};
+    int[] values = {2, 2, 2, 1, 2, 1, 1};
     var service =
         new PermissionsServiceGrpc.PermissionsServiceImplBase() {
           @Override
@@ -98,8 +98,8 @@ class LookupResultsTest {
         assertEquals(
             List.of(
                 Permissionship.CONDITIONAL_PERMISSION,
-                Permissionship.UNSPECIFIED,
-                Permissionship.UNSPECIFIED,
+                Permissionship.CONDITIONAL_PERMISSION,
+                Permissionship.CONDITIONAL_PERMISSION,
                 Permissionship.HAS_PERMISSION,
                 Permissionship.CONDITIONAL_PERMISSION,
                 Permissionship.HAS_PERMISSION,

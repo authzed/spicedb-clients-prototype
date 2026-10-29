@@ -19,7 +19,15 @@ from spicedb.token import ZedToken
 
 
 def malformed(what: str) -> InternalError:
-    return InternalError(f"spicedb: malformed response: {what}")
+    """The INTERNAL error for a response the client cannot interpret.
+
+    The client raised it, not the server: the message says so, since an
+    INTERNAL from the server and one from this check would otherwise read
+    alike. ``server_message`` stays None.
+    """
+    return InternalError(
+        f"spicedb: client detected malformed response from server: {what}"
+    )
 
 
 def need(message: Any, field: str, what: str) -> Any:

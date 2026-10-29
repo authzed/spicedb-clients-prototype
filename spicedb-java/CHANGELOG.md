@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Client-detected errors, unspecified permissionship and validation
+
+- A malformed response's `INTERNAL` message now reads `client detected
+  malformed response from server: ...`, so it is not mistaken for a status the
+  server sent. A page whose cursor does not advance uses the same wording.
+- A check, bulk-check item, looked-up resource or looked-up subject whose permissionship is
+  unspecified (or unknown) fails with that `INTERNAL` error, even under the
+  `HAS_PERMISSION_ONLY` filter, instead of
+  returning `UNSPECIFIED`. The double never produces one: `setCheckResult`
+  rejects `UNSPECIFIED` or null with `LocalValidationException`, and a
+  `CheckResolver` result carrying one throws `IllegalStateException`.
+- The grpc-java floor error names Maven's `<grpc.version>`, Spring Boot's
+  `<grpc-java.version>` (the property its dependency management uses) and
+  `io.grpc:grpc-bom`; it named only `<grpc.version>`, which Spring Boot ignores.
+- A null pre-shared key, a null `ClientOption` (or array) passed to `create`,
+  and a null consistency on `readRelationships` or `lookupResources` throw
+  `LocalValidationException` instead of `NullPointerException` (or, for the
+  key, sending `Bearer null`).
+- AI guide: projects whose permissions are all computed get little from
+  stored-relation grants on the double; model them with the resolver or test
+  against SpiceDB.
+
 ### Per-page deadlines, malformed responses and startup readiness
 
 - Relationship reads, lookups and exports apply the client default deadline

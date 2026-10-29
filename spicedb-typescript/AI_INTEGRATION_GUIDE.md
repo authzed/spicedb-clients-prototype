@@ -236,8 +236,11 @@ try { /* ... */ } catch (err) {
 A caller abort (`signal`, iterator `return()`, `close()`) rejects with
 `CancelledError` (`Code.Canceled`, `name` `"AbortError"`, `cause` the signal's
 reason), never a `DOMException`. A response the client cannot interpret (a
-missing required field, a cursor that does not advance) fails with
-`Code.Internal`: treat it as a bug report, not a retry.
+missing required field, an unspecified permissionship on a check, bulk-check
+item or lookup result, a cursor that does not advance) fails with
+`Code.Internal` and a message starting `client detected malformed response from
+server:`, so it is not mistaken for a status SpiceDB sent: treat it as a bug
+report, not a retry.
 
 Every native error has `code` (Connect's `Code`); `errorCode(err)` classifies
 any error, including raw `ConnectError`s, and `toConnectError(err)` converts for
@@ -252,7 +255,9 @@ stored relationship whose relation is named `view`, or by a check resolver
 you install; the double never derives it from `reader`, `writer` or `parent`.
 Use the double for code that consumes check and lookup results (model the
 permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
-or a container) for tests of the permission logic in the schema.
+or a container) for tests of the permission logic in the schema. Projects whose
+permissions are all computed (unions, arrows) get little from stored-relation
+grants on the double, so model them with the resolver or test against SpiceDB.
 
 ```ts
 const db = new InMemorySpiceDB([relationshipFromTuple("organization:acme#view@user:alice")]);
@@ -298,6 +303,12 @@ index, request, options) and injects faults: `db.failNext("check", err)` fails
 one call; `db.setFaultHook(f => ...)` is consulted at `FaultStage.Call`,
 `ImportBatch` (`f.item` is the batch index, `f.batch` its relationships), `ImportCommit` and `Item` (each
 read, export or lookup item), and a failed write or import applies nothing.
+A fault injected into `readRelationships`, `exportRelationships` or
+`lookupResources` carries `resumeCursor` exactly as the real client's error
+does (the last delivered item's cursor, else the request's), so resume logic
+can be tested on the double. The double never answers with an `"unspecified"`
+permissionship: `setCheckResult` rejects it, and a resolver returning it fails
+the call with `InvalidArgumentError`.
 
 ```ts
 db.setFaultHook(f => f.call.operation === "importRelationships" && f.stage === FaultStage.ImportBatch && f.item === 2

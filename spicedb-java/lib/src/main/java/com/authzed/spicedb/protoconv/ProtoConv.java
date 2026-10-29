@@ -73,10 +73,12 @@ public final class ProtoConv {
   /**
    * A protocol message this class cannot interpret: a required field (relationship, resource,
    * subject, object, ID) is missing. It fails with {@code INTERNAL}, which no retry policy retries
-   * by default; conversions never skip such a message or fill its fields with empty values.
+   * by default; conversions never skip such a message or fill its fields with empty values. The
+   * message says the client detected it, so it is not mistaken for a status the server sent.
    */
   private static SpiceDBException malformed(String detail) {
-    return ErrorMapper.newError(io.grpc.Status.Code.INTERNAL, "malformed response: " + detail);
+    return ErrorMapper.newError(
+        io.grpc.Status.Code.INTERNAL, "client detected malformed response from server: " + detail);
   }
 
   // ---------------------------------------------------------------- tokens, cursors, timestamps
@@ -459,9 +461,12 @@ public final class ProtoConv {
 
   public static LookupResult.LookupResource fromProto(LookupResourcesResponse resp) {
     if (resp.getResourceObjectId().isEmpty()) throw malformed("looked-up resource has no ID");
+    var permissionship = fromProto(resp.getPermissionship());
+    if (permissionship == Permissionship.UNSPECIFIED)
+      throw malformed("looked-up resource has no permissionship");
     return new LookupResult.LookupResource(
         resp.getResourceObjectId(),
-        fromProto(resp.getPermissionship()),
+        permissionship,
         resp.hasPartialCaveatInfo() ? partialFromProto(resp.getPartialCaveatInfo()) : null,
         tokenOrNull(resp.hasLookedUpAt(), resp.getLookedUpAt()),
         resp.hasAfterResultCursor() ? resp.getAfterResultCursor().getToken() : null);
@@ -510,6 +515,8 @@ public final class ProtoConv {
               fromProto(resp.getPermissionship()),
               resp.hasPartialCaveatInfo() ? partialFromProto(resp.getPartialCaveatInfo()) : null);
     }
+    if (subject.permissionship() == Permissionship.UNSPECIFIED)
+      throw malformed("looked-up subject has no permissionship");
     List<LookupResult.ResolvedSubject> excluded;
     if (!resp.getExcludedSubjectsList().isEmpty()) {
       excluded = resp.getExcludedSubjectsList().stream().map(ProtoConv::fromProto).toList();

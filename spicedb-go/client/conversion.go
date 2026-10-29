@@ -34,11 +34,13 @@ func relationship(r rel.Relationship) (*v1.Relationship, error) {
 }
 
 // malformed reports a response the client cannot interpret: a missing
-// required field or a value no valid server response carries. It is INTERNAL,
-// which no retry policy retries by default, and the response is never skipped
-// or filled with empty values.
+// required field, an unspecified enum the server always sets, or a value no
+// valid server response carries. It is INTERNAL, which no retry policy retries
+// by default, and the response is never skipped or filled with empty values.
+// The message says the client detected it, so it is not mistaken for a status
+// the server sent.
 func malformed(op, format string, args ...any) error {
-	return &Error{Code: CodeInternal, Message: fmt.Sprintf("spicedb: %s: malformed response: ", op) + fmt.Sprintf(format, args...)}
+	return &Error{Code: CodeInternal, Message: fmt.Sprintf("spicedb: %s: client detected malformed response from server: ", op) + fmt.Sprintf(format, args...)}
 }
 
 // malformedErr classifies a response conversion failure as malformed.

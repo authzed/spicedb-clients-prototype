@@ -62,7 +62,8 @@ module SpiceDB
         context: check_context_to_struct(merge_check_context(Values.context(context), check.context)) }
     end
 
-    def check_result(response, token)
+    def check_result(response, token, what = 'check')
+      required_permissionship!(response.permissionship, what)
       CheckResult.new(permissionship: check_permissionship_from_proto(response.permissionship),
                       missing_context: missing_context_from_proto(response.partial_caveat_info), checked_at: token,
                       debug_trace: debug_information(response.debug_trace),

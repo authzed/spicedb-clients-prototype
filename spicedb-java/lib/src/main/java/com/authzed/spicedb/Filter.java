@@ -41,7 +41,7 @@ public record Filter(
   /**
    * Creates a filter that matches relationships of the given resource type.
    *
-   * @throws IllegalArgumentException if resourceType is null or empty
+   * @throws com.authzed.spicedb.errors.LocalValidationException if resourceType is null or empty
    */
   public static Filter of(String resourceType) {
     JsonContext.required(resourceType, "resourceType");

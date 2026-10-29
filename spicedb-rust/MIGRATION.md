@@ -164,8 +164,13 @@ generated copies are distinct Rust types.
   Each page must finish within the client default deadline (30 s) or the
   stream fails with `DeadlineExceeded`; raw tonic streams had no limit.
   `DefaultDeadline::Disabled` removes it; watches have none.
-- A response missing a relationship, resource, subject or object fails with
-  `Internal`. Raw tonic gave you `None` fields to handle yourself.
+- A response missing a relationship, resource, subject or object, or a
+  check or lookup result with an unspecified permissionship, fails with
+  `Internal`. Raw tonic gave you `None` fields and `UNSPECIFIED` values to
+  handle yourself. The error's `is_client_detected()` is `true` and it
+  displays as `client detected malformed response from server: ...`, so it
+  is not mistaken for an `INTERNAL` status the server sent; match on
+  `is_client_detected()` rather than on the text.
 - `lookup_resources` keeps conditional results by default. Add
   `LookupResourcesOptions::new().with_permissionship_filter(LookupPermissionshipFilter::HasPermissionOnly)`
   to list only unconditional grants. A hand-written mock that set

@@ -264,7 +264,8 @@ authzed-java stubs have no deadline and no retries. spicedb-java:
 - applies that default to each page of a finite paged read (relationship
   reads, lookups, exports), so a server that stalls mid-read fails the read
   with `DeadlineExceededException` instead of hanging it. A legacy blocking
-  iterator over a stalled stream waited forever. An operation `timeout` still
+  iterator over a stalled stream waited forever. Only waiting on the server
+  counts, never the time your code spends on items. An operation `timeout` still
   bounds the whole read and wins when earlier; `DefaultDeadline.DISABLED`
   removes the per-page budget too.
 - retries idempotent reads on `UNAVAILABLE`/`ABORTED` up to three times with
@@ -335,16 +336,18 @@ try {
   object missing; a cursor that does not advance) fails with `INTERNAL`, which
   is not retried by default. It is never skipped or filled with empty values.
 - Local validation (`Relationship.fromTuple`, `ObjectRef`, option builders,
-  endpoint parsing) throws `InvalidArgumentException`, not
-  `IllegalArgumentException`. Java has single class inheritance and `catch`
+  endpoint parsing) throws `LocalValidationException`, a subclass of
+  `InvalidArgumentException`, not `IllegalArgumentException`. Java has single class inheritance and `catch`
   needs a class, so one exception cannot be both a `SpiceDBException` (with
   `code()`, the status accessors and `catch (SpiceDBException e)`) and an
   `IllegalArgumentException`. Code that wrapped legacy parsing in
   `catch (IllegalArgumentException e)` should catch
-  `InvalidArgumentException`, or both:
-  `catch (IllegalArgumentException | InvalidArgumentException e)`. Both local
-  and server invalid-argument errors report `INVALID_ARGUMENT`; a local one's
-  `serverMessage()` is `null`, which tells the two apart.
+  `LocalValidationException` (local validation only) or
+  `InvalidArgumentException` (local or server), for example
+  `catch (IllegalArgumentException | LocalValidationException e)`. Both report
+  `INVALID_ARGUMENT`; the server's rejection is a plain
+  `InvalidArgumentException`, never a `LocalValidationException`.
+  `serverMessage()` is never `null`: for a local error it is the message.
 
 ## Transport-level data
 

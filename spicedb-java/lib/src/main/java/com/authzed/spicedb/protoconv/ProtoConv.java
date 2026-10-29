@@ -45,6 +45,7 @@ import com.authzed.spicedb.WriteResult;
 import com.authzed.spicedb.ZedToken;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import com.authzed.spicedb.errors.SpiceDBException;
 import com.google.protobuf.ListValue;
 import com.google.protobuf.NullValue;
@@ -127,7 +128,7 @@ public final class ProtoConv {
       case MINIMIZE_LATENCY -> Consistency.minLatency();
       case AT_LEAST_AS_FRESH -> Consistency.atLeast(fromProto(consistency.getAtLeastAsFresh()));
       case AT_EXACT_SNAPSHOT -> Consistency.snapshot(fromProto(consistency.getAtExactSnapshot()));
-      default -> throw new InvalidArgumentException("consistency requirement is not set");
+      default -> throw new LocalValidationException("consistency requirement is not set");
     };
   }
 
@@ -207,7 +208,7 @@ public final class ProtoConv {
     }
     // A value this conversion cannot represent came from the caller, who can see this error and
     // fix their input -- stringifying it would silently produce a context SpiceDB never intended.
-    throw new InvalidArgumentException(
+    throw new LocalValidationException(
         "unsupported caveat context value type: " + value.getClass().getName());
   }
 
@@ -215,7 +216,7 @@ public final class ProtoConv {
     try {
       return toValue(value);
     } catch (InvalidArgumentException e) {
-      throw new InvalidArgumentException("caveat context key \"" + key + "\": " + e.getMessage());
+      throw new LocalValidationException("caveat context key \"" + key + "\": " + e.getMessage());
     }
   }
 
@@ -300,7 +301,7 @@ public final class ProtoConv {
       builder.setOptionalSubjectFilter(subjectBuilder.build());
     } else if (hasSubjectID || hasSubjectRelation) {
       String missing = hasSubjectID ? "subjectID" : "subjectRelation";
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "Filter has "
               + missing
               + " set without subjectType. The wire format requires subjectType whenever a"
@@ -314,7 +315,7 @@ public final class ProtoConv {
 
   public static Filter fromProto(RelationshipFilter f) {
     if (f.getResourceType().isEmpty())
-      throw new InvalidArgumentException("native filters require a resource type");
+      throw new LocalValidationException("native filters require a resource type");
     var filter =
         Filter.of(f.getResourceType())
             .withResourceId(f.getOptionalResourceId())
@@ -352,7 +353,7 @@ public final class ProtoConv {
         switch (p.getOperation()) {
           case OPERATION_MUST_MATCH -> Transaction.PreconditionOperation.MUST_MATCH;
           case OPERATION_MUST_NOT_MATCH -> Transaction.PreconditionOperation.MUST_NOT_MATCH;
-          default -> throw new InvalidArgumentException("precondition operation is not set");
+          default -> throw new LocalValidationException("precondition operation is not set");
         };
     return new Transaction.Precondition(op, fromProto(p.getFilter()));
   }
@@ -598,7 +599,7 @@ public final class ProtoConv {
    */
   public static CheckBulkPermissionsRequestItem toProto(
       PermissionCheck check, Map<String, Object> callContext) {
-    if (check == null) throw new InvalidArgumentException("check must not be null");
+    if (check == null) throw new LocalValidationException("check must not be null");
     var builder =
         CheckBulkPermissionsRequestItem.newBuilder()
             .setResource(toProto(check.resource()))
@@ -633,9 +634,9 @@ public final class ProtoConv {
   public static CheckBulkPermissionsResponse checkBulkToProto(
       List<PermissionCheck> requests, List<CheckResult> results, Map<String, Object> callContext) {
     if (requests == null || results == null)
-      throw new InvalidArgumentException("requests and results must not be null");
+      throw new LocalValidationException("requests and results must not be null");
     if (requests.size() != results.size())
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "check bulk: " + requests.size() + " requests but " + results.size() + " results");
     var b = CheckBulkPermissionsResponse.newBuilder();
     for (int i = 0; i < requests.size(); i++) {

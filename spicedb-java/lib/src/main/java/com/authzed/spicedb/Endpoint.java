@@ -1,6 +1,7 @@
 package com.authzed.spicedb;
 
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -57,13 +58,13 @@ record Endpoint(String raw, String target, Scheme scheme, boolean portless) {
   private static final String DNS_PREFIX = "dns:///";
 
   static InvalidArgumentException invalid(String endpoint, String reason) {
-    return new InvalidArgumentException(
+    return new LocalValidationException(
         "spicedb: invalid endpoint \"" + endpoint + "\": " + reason + "; " + FORMS);
   }
 
   static Endpoint parse(String endpoint) {
     if (endpoint == null || endpoint.isEmpty())
-      throw new InvalidArgumentException("spicedb: endpoint must not be empty; " + FORMS);
+      throw new LocalValidationException("spicedb: endpoint must not be empty; " + FORMS);
     if (endpoint.startsWith("unix:")) {
       if (endpoint.length() == "unix:".length()) throw invalid(endpoint, "missing socket path");
       return new Endpoint(endpoint, endpoint, Scheme.UNIX, false);

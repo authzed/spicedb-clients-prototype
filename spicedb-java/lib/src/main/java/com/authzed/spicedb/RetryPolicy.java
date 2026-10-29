@@ -1,6 +1,6 @@
 package com.authzed.spicedb;
 
-import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import io.grpc.Status;
 import java.time.Duration;
 import java.util.EnumSet;
@@ -42,13 +42,13 @@ public final class RetryPolicy {
   private final Consumer<RetryAttempt> onRetry;
 
   private RetryPolicy(Builder b) {
-    if (b.maxRetries < 0) throw new InvalidArgumentException("maxRetries must not be negative");
+    if (b.maxRetries < 0) throw new LocalValidationException("maxRetries must not be negative");
     if (b.retryableCodes == null)
-      throw new InvalidArgumentException("retryableCodes must not be null");
+      throw new LocalValidationException("retryableCodes must not be null");
     if (b.initialBackoff == null || b.initialBackoff.isNegative() || b.initialBackoff.isZero())
-      throw new InvalidArgumentException("initialBackoff must be positive");
+      throw new LocalValidationException("initialBackoff must be positive");
     if (b.maxBackoff == null || b.maxBackoff.compareTo(b.initialBackoff) < 0)
-      throw new InvalidArgumentException("maxBackoff must be at least initialBackoff");
+      throw new LocalValidationException("maxBackoff must be at least initialBackoff");
     maxRetries = b.maxRetries;
     retryableCodes =
         b.retryableCodes.isEmpty()
@@ -107,7 +107,7 @@ public final class RetryPolicy {
     /** Status codes that make a read retryable. Snapshotted. */
     public Builder retryableCodes(Set<Status.Code> value) {
       if (value != null && value.stream().anyMatch(java.util.Objects::isNull))
-        throw new InvalidArgumentException("retryableCodes must not contain null");
+        throw new LocalValidationException("retryableCodes must not contain null");
       retryableCodes = value == null ? null : Set.copyOf(value);
       return this;
     }

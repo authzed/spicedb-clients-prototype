@@ -352,11 +352,13 @@ class InMemorySpiceDBTest {
     assertTrue(e.getMessage().startsWith("unable to satisfy write precondition `"));
     assertEquals(e.getMessage(), e.serverMessage(), "server errors keep SpiceDB's message");
 
-    // Local validation looks like the client's local validation: no server message.
+    // Local validation looks like the client's: a LocalValidationException whose verbatim
+    // message is its own.
     var local =
         assertThrows(
-            InvalidArgumentException.class, () -> db.deleteRelationships(Filter.of("d"), 0));
-    assertNull(local.serverMessage());
+            com.authzed.spicedb.errors.LocalValidationException.class,
+            () -> db.deleteRelationships(Filter.of("d"), 0));
+    assertEquals(local.getMessage(), local.serverMessage());
 
     // A per-call retry opt-in on a non-idempotent mutation is refused, as the client does.
     var retry =

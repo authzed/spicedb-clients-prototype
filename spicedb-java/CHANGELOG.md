@@ -6,11 +6,17 @@
 
 - Relationship reads, lookups and exports apply the client default deadline
   (30 s unless changed) to each page, so a server that stalls mid-read fails
-  the read with `DeadlineExceededException` instead of hanging it. Reads and
-  resource lookups put it on every page request, a subject lookup on its one
-  request, and an export on each wait for the server's next page. An operation
-  `timeout` still bounds the whole read and wins when earlier;
+  the read with `DeadlineExceededException` instead of hanging it. It bounds
+  only waiting on the server, never the caller's processing time: paged reads
+  and resource lookups receive each page whole under the deadline before
+  yielding it, and single streams (exports, subject and permission-set lookups,
+  single-request reads) bound each wait for the server's next message. An
+  operation `timeout` still bounds the whole read and wins when earlier;
   `DefaultDeadline.DISABLED` removes it. Watches keep no default.
+- Fixed: the per-page deadline on relationship reads and resource and subject
+  lookups first counted the caller's time between items, so a caller spending
+  50 ms per item on a 1,000-item page failed at the 30 s default against a
+  healthy server.
 - A response the client cannot interpret fails with `INTERNAL`
   (`malformed response: ...`), which no retry policy retries by default,
   instead of `UNKNOWN`, `INVALID_ARGUMENT` or empty values: a relationship
@@ -31,9 +37,13 @@
   when building the channel. Where epoll is unavailable (macOS, Windows) a
   `unix:` endpoint fails at construction with `InvalidArgumentException`
   naming the accepted forms; an empty `unix:` path is rejected.
-- Local validation stays `InvalidArgumentException`, which cannot also be an
-  `IllegalArgumentException` in Java; MIGRATION.md documents catching it around
-  parsing.
+- Local validation throws the new `LocalValidationException`, a subclass of
+  `InvalidArgumentException` (existing `catch` blocks still match), so callers
+  can tell it from the server's `INVALID_ARGUMENT`, which stays a plain
+  `InvalidArgumentException`. It cannot also be an `IllegalArgumentException`
+  in Java; MIGRATION.md documents catching it around parsing.
+- `SpiceDBException.serverMessage()` is never `null`: for local and
+  caller-built errors it is the error's message (it was `null`).
 
 ### Endpoint forms
 

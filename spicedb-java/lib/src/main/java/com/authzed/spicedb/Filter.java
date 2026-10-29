@@ -1,5 +1,7 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
+
 /**
  * An immutable filter for matching SpiceDB relationships.
  *
@@ -28,14 +30,12 @@ public record Filter(
         && !resourceID.isEmpty()
         && resourceIDPrefix != null
         && !resourceIDPrefix.isEmpty())
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "resource ID and prefix are mutually exclusive");
+      throw new LocalValidationException("resource ID and prefix are mutually exclusive");
     if (subjectRelation == null) subjectRelation = SubjectRelationFilter.any();
     if ((subjectID != null && !subjectID.isEmpty()
             || !(subjectRelation instanceof SubjectRelationFilter.Any))
         && (subjectType == null || subjectType.isEmpty()))
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "subject constraint requires subjectType");
+      throw new LocalValidationException("subject constraint requires subjectType");
   }
 
   /**
@@ -46,8 +46,7 @@ public record Filter(
   public static Filter of(String resourceType) {
     JsonContext.required(resourceType, "resourceType");
     if (resourceType.isEmpty()) {
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "resourceType must not be empty");
+      throw new LocalValidationException("resourceType must not be empty");
     }
     return new Filter(resourceType, "", "", "", "", "", SubjectRelationFilter.any());
   }

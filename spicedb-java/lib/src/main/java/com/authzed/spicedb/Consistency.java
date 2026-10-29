@@ -1,5 +1,7 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
+
 /**
  * Consistency strategies for SpiceDB read operations.
  *
@@ -89,8 +91,7 @@ public final class Consistency {
    */
   public static Consistency atLeast(ZedToken revision) {
     if (revision == null || revision.value().isEmpty()) {
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "revision must not be null or empty");
+      throw new LocalValidationException("revision must not be null or empty");
     }
     return new Consistency(
         com.authzed.api.v1.Consistency.newBuilder()
@@ -107,8 +108,7 @@ public final class Consistency {
    */
   public static Consistency snapshot(ZedToken revision) {
     if (revision == null || revision.value().isEmpty()) {
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "revision must not be null or empty");
+      throw new LocalValidationException("revision must not be null or empty");
     }
     return new Consistency(
         com.authzed.api.v1.Consistency.newBuilder()

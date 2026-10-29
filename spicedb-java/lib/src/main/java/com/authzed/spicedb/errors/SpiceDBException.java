@@ -70,7 +70,9 @@ public class SpiceDBException extends RuntimeException {
     super(message, withStatus(code, message, cause));
     Status status = statusIn(getCause());
     this.code = status.getCode();
-    this.serverMessage = statusIn(cause) == null ? null : status.getDescription();
+    String received = statusIn(cause) == null ? null : status.getDescription();
+    // Never null (root DESIGN.md): a local or caller-built error's verbatim message is its own.
+    this.serverMessage = received != null ? received : message == null ? "" : message;
     ErrorInfo info = errorInfoOf(getCause());
     this.reason = info == null ? "" : info.getReason();
     this.reasonDomain = info == null ? "" : info.getDomain();
@@ -112,7 +114,9 @@ public class SpiceDBException extends RuntimeException {
   /**
    * The status message exactly as received, without any operation or item context this client adds
    * to {@link #getMessage()}. For a server error this is verbatim what SpiceDB said, so a proxy can
-   * forward it unchanged. {@code null} for errors raised locally or built by callers.
+   * forward it unchanged. Never {@code null}: for errors raised locally or built by callers it is
+   * the error's message. To tell local validation from the server's {@code INVALID_ARGUMENT}, catch
+   * {@link LocalValidationException}.
    */
   public String serverMessage() {
     return serverMessage;

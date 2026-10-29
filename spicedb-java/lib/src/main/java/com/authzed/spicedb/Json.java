@@ -1,6 +1,7 @@
 package com.authzed.spicedb;
 
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -128,7 +129,7 @@ final class Json {
     }
 
     InvalidArgumentException error(String what) {
-      return new InvalidArgumentException("invalid JSON at offset " + pos + ": " + what);
+      return new LocalValidationException("invalid JSON at offset " + pos + ": " + what);
     }
 
     void ws() {

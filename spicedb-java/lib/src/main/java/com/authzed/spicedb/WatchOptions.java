@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Duration;
 import java.util.*;
 
@@ -13,20 +14,16 @@ public final class WatchOptions {
 
   private WatchOptions(Builder b) {
     this.schemaChanges = b.schemaChanges;
-    if (schemaChanges == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "schemaChanges must not be null");
+    if (schemaChanges == null) throw new LocalValidationException("schemaChanges must not be null");
     this.transport = b.transport;
     this.retryPolicy = b.retryPolicy;
-    if (transport == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
+    if (transport == null) throw new LocalValidationException("transport must not be null");
     this.relationshipFilters = b.relationshipFilters;
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
+      throw new LocalValidationException("timeout must be positive");
     this.content = b.content;
-    if (content == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("content must not be null");
+    if (content == null) throw new LocalValidationException("content must not be null");
   }
 
   public static Builder builder() {
@@ -104,8 +101,7 @@ public final class WatchOptions {
 
     public Builder relationshipFilters(List<Filter> value) {
       if (value == null || value.stream().anyMatch(Objects::isNull))
-        throw new com.authzed.spicedb.errors.InvalidArgumentException(
-            "relationshipFilters must contain nonnull filters");
+        throw new LocalValidationException("relationshipFilters must contain nonnull filters");
       this.relationshipFilters = List.copyOf(value);
       return this;
     }

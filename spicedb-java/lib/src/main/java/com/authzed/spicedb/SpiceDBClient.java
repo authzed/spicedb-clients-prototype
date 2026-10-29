@@ -3,6 +3,7 @@ package com.authzed.spicedb;
 import com.authzed.api.v1.*;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import com.authzed.spicedb.errors.SpiceDBException;
 import com.authzed.spicedb.protoconv.ProtoConv;
 import io.grpc.Channel;
@@ -88,7 +89,7 @@ public final class SpiceDBClient implements SpiceDBApi {
     this.endpointLabel = endpointLabel;
     Duration defaultTimeout = options.defaultTimeout();
     if (defaultTimeout == null || defaultTimeout.isZero() || defaultTimeout.isNegative())
-      throw new InvalidArgumentException("default timeout must be positive");
+      throw new LocalValidationException("default timeout must be positive");
     this.defaultTimeout = defaultTimeout;
     this.defaultDeadline = options.defaultDeadline();
     this.retryPolicy = options.retryPolicy();
@@ -125,13 +126,13 @@ public final class SpiceDBClient implements SpiceDBApi {
   public static SpiceDBClient fromChannel(Channel channel, ClientOptions options) {
     ProtobufRuntime.requireSupported();
     GrpcRuntime.requireSupported();
-    if (channel == null) throw new InvalidArgumentException("channel must not be null");
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (channel == null) throw new LocalValidationException("channel must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     if (options.caCertificate() != null
         || options.clientCertificate() != null
         || options.clientKey() != null
         || options.remotePlaintextCredentials() != RemotePlaintextCredentials.REJECT)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "fromChannel: the supplied channel already carries its transport and credentials;"
               + " TLS and remotePlaintextCredentials options do not apply");
     return new SpiceDBClient(channel, null, new Metadata(), options);
@@ -175,13 +176,13 @@ public final class SpiceDBClient implements SpiceDBApi {
       Consumer<ManagedChannelBuilder<?>> channelCustomizer) {
     ProtobufRuntime.requireSupported();
     GrpcRuntime.requireSupported();
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     if (channelCustomizer == null)
-      throw new InvalidArgumentException("channelCustomizer must not be null");
+      throw new LocalValidationException("channelCustomizer must not be null");
     if (options.caCertificate() != null
         || options.clientCertificate() != null
         || options.clientKey() != null)
-      throw new InvalidArgumentException("TLS certificates cannot be used with plaintext");
+      throw new LocalValidationException("TLS certificates cannot be used with plaintext");
     var parsed = Endpoint.parse(endpoint).forTransport(true, "createSystemTls", "createPlaintext");
     requireInsecureTransportAllowed(
         parsed, true, options.remotePlaintextCredentials() == RemotePlaintextCredentials.ALLOW);
@@ -227,9 +228,9 @@ public final class SpiceDBClient implements SpiceDBApi {
       Consumer<ManagedChannelBuilder<?>> channelCustomizer) {
     ProtobufRuntime.requireSupported();
     GrpcRuntime.requireSupported();
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     if (channelCustomizer == null)
-      throw new InvalidArgumentException("channelCustomizer must not be null");
+      throw new LocalValidationException("channelCustomizer must not be null");
     var parsed = Endpoint.parse(endpoint).forTransport(false, "createSystemTls", "createPlaintext");
     var builder = nettyBuilder(parsed);
     try {
@@ -239,7 +240,7 @@ public final class SpiceDBClient implements SpiceDBApi {
         tls.keyManager(options.clientCertificate().toFile(), options.clientKey().toFile());
       builder.sslContext(tls.build());
     } catch (java.io.IOException | IllegalArgumentException e) {
-      throw new InvalidArgumentException("invalid TLS configuration", e);
+      throw new LocalValidationException("invalid TLS configuration", e);
     }
     channelCustomizer.accept(builder);
     return ownedClient(parsed, builder.build(), bearerMetadata(presharedKey), options);
@@ -266,7 +267,7 @@ public final class SpiceDBClient implements SpiceDBApi {
         io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(endpoint.target());
     if (endpoint.scheme() != Endpoint.Scheme.UNIX) return builder;
     if (!io.grpc.netty.shaded.io.netty.channel.epoll.Epoll.isAvailable())
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           Endpoint.invalid(
                   endpoint.raw(),
                   "Unix domain sockets are not supported by the gRPC transport on this platform"
@@ -471,7 +472,7 @@ public final class SpiceDBClient implements SpiceDBApi {
     if (insecure
         && !allowInsecureRemoteCredentials
         && !isLoopbackEndpoint(endpoint.loopbackTarget())) {
-      throw new InvalidArgumentException(remotePlaintextRefusal(endpoint.raw()));
+      throw new LocalValidationException(remotePlaintextRefusal(endpoint.raw()));
     }
   }
 
@@ -500,8 +501,8 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public CheckResult check(PermissionCheck request, CheckOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
-    if (request == null) throw new InvalidArgumentException("request must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
+    if (request == null) throw new LocalValidationException("request must not be null");
     var deadline = deadlineFor(options.timeout());
     var item = checkItem(request, options.context());
     var builder =
@@ -537,17 +538,17 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public List<CheckResult> checkBulk(Collection<PermissionCheck> requests, CheckOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var deadline = deadlineFor(options.timeout());
-    if (requests == null) throw new InvalidArgumentException("requests must not be null");
+    if (requests == null) throw new LocalValidationException("requests must not be null");
     var snapshot = new ArrayList<>(requests);
     if (snapshot.contains(null))
-      throw new InvalidArgumentException("requests must not contain null");
+      throw new LocalValidationException("requests must not contain null");
     if (snapshot.isEmpty()) return List.of();
     var consistency = snapshot.get(0).consistency();
     for (var request : snapshot)
       if (!consistency.equals(request.consistency()))
-        throw new InvalidArgumentException("bulk requests must have equal consistency");
+        throw new LocalValidationException("bulk requests must have equal consistency");
     var results = new ArrayList<CheckResult>();
     for (int offset = 0; offset < snapshot.size(); offset += DEFAULT_CHECK_BATCH_SIZE) {
       var items =
@@ -635,7 +636,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public WriteResult write(Transaction txn, WriteOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     var reqBuilder = WriteRelationshipsRequest.newBuilder();
@@ -684,7 +685,7 @@ public final class SpiceDBClient implements SpiceDBApi {
    */
   public Stream<ReadRelationship> readRelationships(
       Consistency consistency, Filter filter, ReadOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var proto = toRelationshipFilter(filter);
     Objects.requireNonNull(consistency, "consistency");
     boolean single = options.paging() == Paging.SINGLE_REQUEST;
@@ -697,9 +698,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                   .setRelationshipFilter(proto)
                   .setOptionalLimit(requestLimit);
           if (cursor != null) b.setOptionalCursor(cursor);
-          return stub(permissionsStub, options.transport())
-              .withDeadline(pageDeadline())
-              .readRelationships(b.build());
+          return stub(permissionsStub, options.transport()).readRelationships(b.build());
         },
         ReadRelationshipsResponse::getAfterResultCursor,
         ProtoConv::fromProto,
@@ -736,10 +735,10 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public DeleteResult deleteRelationships(Filter filter, int limit, DeleteOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     mutationRetry(
         ClientOperation.DELETE_RELATIONSHIPS, options.retryPolicy(), false, "delete relationships");
-    if (limit <= 0) throw new InvalidArgumentException("limit must be positive");
+    if (limit <= 0) throw new LocalValidationException("limit must be positive");
     return deleteBounded(filter, limit, options);
   }
 
@@ -750,11 +749,11 @@ public final class SpiceDBClient implements SpiceDBApi {
    * limit is required, so use {@link #deleteRelationships(Filter, int, DeleteOptions)}.
    */
   public DeleteResult deleteRelationships(Filter filter, DeleteOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     mutationRetry(
         ClientOperation.DELETE_RELATIONSHIPS, options.retryPolicy(), false, "delete relationships");
     if (options.partialDeletion() != PartialDeletion.DISALLOWED)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "deleteRelationships without a limit requires PartialDeletion.DISALLOWED");
     return deleteBounded(filter, 0, options);
   }
@@ -826,7 +825,7 @@ public final class SpiceDBClient implements SpiceDBApi {
    * or cancellation; the overall operation is non-atomic.
    */
   public DeleteResult deleteAllRelationshipsNonAtomic(Filter filter, DeleteAllOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     mutationRetry(
         ClientOperation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC,
         options.retryPolicy(),
@@ -902,10 +901,10 @@ public final class SpiceDBClient implements SpiceDBApi {
       String permission,
       SubjectRef subject,
       LookupOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Objects.requireNonNull(consistency, "consistency");
     if (options.subjectRelation() != null)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "lookupResources uses the required SubjectRef relation, not subjectRelation options");
     var protoSubject = subjectProto(subject);
     boolean single = options.paging() == Paging.SINGLE_REQUEST;
@@ -922,9 +921,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                   .setWithDebug(options.debug() == LookupDebug.ENABLED);
           if (cursor != null) b.setOptionalCursor(cursor);
           if (options.context() != null) b.setContext(toProtoStruct(options.context()));
-          return stub(permissionsStub, options.transport())
-              .withDeadline(pageDeadline())
-              .lookupResources(b.build());
+          return stub(permissionsStub, options.transport()).lookupResources(b.build());
         },
         LookupResourcesResponse::getAfterResultCursor,
         ProtoConv::fromProto,
@@ -953,13 +950,13 @@ public final class SpiceDBClient implements SpiceDBApi {
       String permission,
       String subjectType,
       LookupOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     if (options.permissionshipFilter() != LookupPermissionshipFilter.ALL)
-      throw new InvalidArgumentException("lookupSubjects does not support permissionshipFilter");
+      throw new LocalValidationException("lookupSubjects does not support permissionshipFilter");
     if (options.debug() == LookupDebug.ENABLED
         || options.pageSize() != 512
         || options.paging() != Paging.AUTOMATIC)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "lookupSubjects does not support debug, pageSize or paging");
     var builder =
         LookupSubjectsRequest.newBuilder()
@@ -971,11 +968,9 @@ public final class SpiceDBClient implements SpiceDBApi {
       builder.setOptionalSubjectRelation(options.subjectRelation());
     if (options.context() != null) builder.setContext(toProtoStruct(options.context()));
     return lazyStream(
-        () ->
-            stub(permissionsStub, options.transport())
-                .withDeadline(pageDeadline())
-                .lookupSubjects(builder.build()),
+        () -> stub(permissionsStub, options.transport()).lookupSubjects(builder.build()),
         SpiceDBClient::lookupSubjectFromProto,
+        "lookup subjects",
         options.timeout(),
         options.limit(),
         retryFor(ClientOperation.LOOKUP_SUBJECTS, options.retryPolicy()));
@@ -992,7 +987,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public SchemaResult readSchema(CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     ReadSchemaResponse resp =
@@ -1013,7 +1008,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public ZedToken writeSchema(String schema, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     var rs =
@@ -1066,7 +1061,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public ReflectSchemaResult reflectSchema(Consistency consistency, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     ReflectSchemaResponse resp =
@@ -1136,7 +1131,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public ComputablePermissionsResult computablePermissions(
       Consistency consistency, String definitionName, String relationName, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     ComputablePermissionsResponse resp =
@@ -1177,7 +1172,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public DependentRelationsResult dependentRelations(
       Consistency consistency, String definitionName, String permissionName, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     DependentRelationsResponse resp =
@@ -1223,7 +1218,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public DiffSchemaResult diffSchema(
       Consistency consistency, String comparisonSchema, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     DiffSchemaResponse resp =
@@ -1260,7 +1255,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public ExpandResult expandPermissionTree(
       Consistency consistency, ObjectRef resource, String permission, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     ExpandPermissionTreeResponse resp =
@@ -1291,7 +1286,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public long importRelationships(Iterable<Relationship> relationships, ImportOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     mutationRetry(
         ClientOperation.IMPORT_RELATIONSHIPS, options.retryPolicy(), false, "import relationships");
     var scope = new StreamScope(options.timeout());
@@ -1425,7 +1420,7 @@ public final class SpiceDBClient implements SpiceDBApi {
    */
   public Stream<ExportedRelationship> exportRelationships(
       Consistency consistency, Filter filter, ExportOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var b =
         ExportBulkRelationshipsRequest.newBuilder()
             .setConsistency(consistency.toProto())
@@ -1513,9 +1508,9 @@ public final class SpiceDBClient implements SpiceDBApi {
   /** Watches relationship changes with options; see {@link #updates(List, ZedToken)}. */
   public Stream<WatchEvent> updates(
       List<String> objectTypes, ZedToken startRevision, WatchOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     if (objectTypes != null && !objectTypes.isEmpty() && !options.relationshipFilters().isEmpty())
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "objectTypes and relationshipFilters are mutually exclusive");
     var b = WatchRequest.newBuilder();
     for (var filter : options.relationshipFilters())
@@ -1539,6 +1534,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                 (r.hasChangesThrough() ? new ZedToken(r.getChangesThrough().getToken()) : null),
                 r.getIsCheckpoint(),
                 r.getSchemaUpdated()),
+        null,
         options.timeout(),
         0,
         watchRetry(ClientOperation.WATCH, options.retryPolicy()));
@@ -1555,7 +1551,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public void experimentalRegisterRelationshipCounter(
       String name, Filter filter, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     mutationRetry(
         ClientOperation.REGISTER_RELATIONSHIP_COUNTER,
         options.retryPolicy(),
@@ -1581,7 +1577,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public CountResult experimentalCountRelationships(String name, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     ExperimentalCountRelationshipsResponse resp =
@@ -1611,7 +1607,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public void experimentalUnregisterRelationshipCounter(String name, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     mutationRetry(
         ClientOperation.UNREGISTER_RELATIONSHIP_COUNTER,
         options.retryPolicy(),
@@ -1646,14 +1642,14 @@ public final class SpiceDBClient implements SpiceDBApi {
       String permission,
       SubjectRef subject,
       LookupOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     if (options.subjectRelation() != null
         || options.context() != null
         || options.debug() == LookupDebug.ENABLED
         || options.limit() != 0
         || options.pageSize() != 512
         || options.paging() != Paging.AUTOMATIC)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "roaring lookup does not support context, debug, limit, pageSize or paging");
     var deadline = deadlineFor(options.timeout());
     var request =
@@ -1686,7 +1682,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   public CountResult experimentalCountRelationshipsByFilter(Filter filter, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var deadline = deadlineFor(options.timeout());
     var request =
         com.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest.newBuilder()
@@ -1721,7 +1717,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
       ZedToken startRevision, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var b = com.authzed.api.materialize.v0.WatchPermissionSetsRequest.newBuilder();
     if (startRevision != null)
       b.setOptionalStartingAfter(
@@ -1734,6 +1730,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                     options.transport())
                 .watchPermissionSets(b.build()),
         Materialize::event,
+        null,
         options.timeout(),
         0,
         watchRetry(ClientOperation.WATCH_PERMISSION_SETS, options.retryPolicy()));
@@ -1747,7 +1744,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(
       ZedToken atRevision, PermissionSetOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var b =
         com.authzed.api.materialize.v0.LookupPermissionSetsRequest.newBuilder()
             .setLimit(options.limit());
@@ -1760,7 +1757,7 @@ public final class SpiceDBClient implements SpiceDBApi {
             com.authzed.api.materialize.v0.Cursor.parseFrom(
                 Base64.getDecoder().decode(options.resumeCursor())));
       } catch (Exception e) {
-        throw new InvalidArgumentException("invalid permission-set cursor", e);
+        throw new LocalValidationException("invalid permission-set cursor", e);
       }
     return lazyStream(
         () ->
@@ -1777,6 +1774,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                   ? Base64.getEncoder().encodeToString(r.getCursor().toByteArray())
                   : null);
         },
+        "permission-set lookup",
         options.timeout(),
         options.limit(),
         retryFor(ClientOperation.LOOKUP_PERMISSION_SETS, options.retryPolicy()));
@@ -1792,7 +1790,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
       ZedToken atRevision, CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var deadline = deadlineFor(options.timeout());
     var b = com.authzed.api.materialize.v0.DownloadPermissionSetsRequest.newBuilder();
     if (atRevision != null)
@@ -1837,7 +1835,7 @@ public final class SpiceDBClient implements SpiceDBApi {
    */
   public void awaitReady(Duration timeout) {
     if (timeout == null || timeout.isZero() || timeout.isNegative())
-      throw new InvalidArgumentException("timeout must be positive");
+      throw new LocalValidationException("timeout must be positive");
     if (closed) throw cancelled("client closed");
     long until = System.nanoTime() + timeout.toNanos();
     var managed = readinessChannel;
@@ -1940,21 +1938,12 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
-   * The budget of one page request of a finite paged read (relationship reads, lookups): the client
-   * default, from opening the page to receiving its last item, unless {@link
-   * DefaultDeadline#DISABLED}. The read's total budget (its {@code timeout}, or the caller's gRPC
-   * {@code Context} deadline) still bounds the whole read and wins when earlier.
-   */
-  private io.grpc.Deadline pageDeadline() {
-    if (defaultDeadline == DefaultDeadline.DISABLED) return null;
-    return io.grpc.Deadline.after(defaultTimeout.toNanos(), TimeUnit.NANOSECONDS);
-  }
-
-  /**
-   * The per-page budget of a read served as one server stream whose responses are its pages
-   * (export): each wait for the server, opening included, is bounded by the client default unless
-   * {@link DefaultDeadline#DISABLED}. Expiry cancels the call with {@code DEADLINE_EXCEEDED}. The
-   * read's total budget, inherited from the stream's context, still applies.
+   * The per-page budget of a finite read served as one server stream (an export, whose responses
+   * are the server's pages; a subject or permission-set lookup; a single-request read or lookup):
+   * each wait for the server's next message, opening included, is bounded by the client default
+   * unless {@link DefaultDeadline#DISABLED}. Time the caller spends between items never counts.
+   * Expiry cancels the call with {@code DEADLINE_EXCEEDED}. The read's total budget, inherited from
+   * the stream's context, still applies.
    */
   private final class PageTimer {
     final String what;
@@ -2081,7 +2070,7 @@ public final class SpiceDBClient implements SpiceDBApi {
     if (perCall != null) {
       if (perCall.maxRetries() == 0) return NO_RETRIES;
       if (!idempotent)
-        throw new InvalidArgumentException(
+        throw new LocalValidationException(
             operation
                 + " cannot be retried: only touch-only writes without preconditions and schema"
                 + " writes are idempotent on replay");
@@ -2307,18 +2296,27 @@ public final class SpiceDBClient implements SpiceDBApi {
         .onClose(scope::close);
   }
 
+  /**
+   * A single server stream. {@code timed} names a finite read whose waits for the server get the
+   * per-page default ({@link PageTimer}); {@code null} for a long-lived stream (watch).
+   */
   private <P, T> Stream<T> lazyStream(
       RetryableCall<Iterator<P>> open,
       java.util.function.Function<P, T> convert,
+      String timed,
       Duration timeout,
       long limit,
       RetryPolicy perCall) {
     return managedStream(
         () -> {
-          var source = openStreamWithRetry(perCall, open);
+          var timer = timed == null ? null : new PageTimer(timed);
+          var source =
+              timer == null
+                  ? openStreamWithRetry(perCall, open)
+                  : timer.open(() -> openStreamWithRetry(perCall, open));
           return new Iterator<T>() {
             public boolean hasNext() {
-              return source.hasNext();
+              return timer == null ? source.hasNext() : timer.await(source::hasNext);
             }
 
             public T next() {
@@ -2382,7 +2380,11 @@ public final class SpiceDBClient implements SpiceDBApi {
                         Status.Code.INTERNAL, what + " page did not advance cursor");
                   }
                   sentToken = cursor == null ? "" : cursor.getToken();
-                  page = openStreamWithRetry(perCall, () -> open.apply(cursor));
+                  var sent = cursor;
+                  page =
+                      singleRequest
+                          ? timedPage(what, perCall, () -> open.apply(sent))
+                          : bufferedPage(perCall, () -> open.apply(sent));
                   opened = true;
                   count = 0;
                 }
@@ -2398,6 +2400,68 @@ public final class SpiceDBClient implements SpiceDBApi {
             },
         timeout,
         limit);
+  }
+
+  /**
+   * One page of an automatically paged read, received whole under the client default deadline
+   * (unless {@link DefaultDeadline#DISABLED}) before any of it is yielded, so the deadline bounds
+   * waiting on the server and never the time the caller spends on items. A page holds at most the
+   * page size. A failure partway through yields the items received first, then the failure.
+   */
+  private <P> Iterator<P> bufferedPage(RetryPolicy perCall, RetryableCall<Iterator<P>> open) {
+    var page =
+        defaultDeadline == DefaultDeadline.DISABLED
+            ? Context.current().withCancellation()
+            : Context.current()
+                .withDeadlineAfter(defaultTimeout.toNanos(), TimeUnit.NANOSECONDS, DEADLINES);
+    var items = new ArrayList<P>();
+    StatusRuntimeException failure = null;
+    var previous = page.attach();
+    try {
+      var source = openStreamWithRetry(perCall, open);
+      try {
+        while (source.hasNext()) items.add(source.next());
+      } catch (StatusRuntimeException e) {
+        failure = e;
+      }
+    } finally {
+      page.detach(previous);
+      page.cancel(null);
+    }
+    if (failure == null) return items.iterator();
+    var rest = items.iterator();
+    var error = failure;
+    return new Iterator<P>() {
+      public boolean hasNext() {
+        if (rest.hasNext()) return true;
+        throw error;
+      }
+
+      public P next() {
+        if (!hasNext()) throw new NoSuchElementException();
+        return rest.next();
+      }
+    };
+  }
+
+  /**
+   * The one request of a single-request read or lookup, whose size the caller's limit alone bounds:
+   * each wait for the server gets the per-page default ({@link PageTimer}) instead of buffering it.
+   */
+  private <P> Iterator<P> timedPage(
+      String what, RetryPolicy perCall, RetryableCall<Iterator<P>> open) {
+    var timer = new PageTimer(what);
+    var source = timer.open(() -> openStreamWithRetry(perCall, open));
+    return new Iterator<P>() {
+      public boolean hasNext() {
+        return timer.await(source::hasNext);
+      }
+
+      public P next() {
+        if (!hasNext()) throw new NoSuchElementException();
+        return source.next();
+      }
+    };
   }
 
   /**

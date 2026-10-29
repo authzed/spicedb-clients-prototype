@@ -39,7 +39,7 @@ import com.authzed.spicedb.WriteOptions;
 import com.authzed.spicedb.WriteResult;
 import com.authzed.spicedb.ZedToken;
 import com.authzed.spicedb.errors.ErrorMapper;
-import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import com.authzed.spicedb.errors.SpiceDBException;
 import io.grpc.Channel;
 import io.grpc.Metadata;
@@ -120,11 +120,11 @@ import java.util.stream.StreamSupport;
  *
  * <p>Errors have the real client's codes and message shape: server-side failures are built with
  * {@link ErrorMapper#newError} (so {@code serverMessage()} is SpiceDB's message), and local
- * validation raises {@code InvalidArgumentException} without a server message, as the client does.
- * Options are plain values: those that change results (cursors, limits, partial deletion,
- * preconditions, metadata capture, a per-call retry opt-in on a non-idempotent mutation) are
- * honored, and the rest are accepted and ignored. Consistency arguments are accepted and ignored:
- * the double is always fully consistent. Thread-safe.
+ * validation raises {@code LocalValidationException}, as the client does. Options are plain values:
+ * those that change results (cursors, limits, partial deletion, preconditions, metadata capture, a
+ * per-call retry opt-in on a non-idempotent mutation) are honored, and the rest are accepted and
+ * ignored. Consistency arguments are accepted and ignored: the double is always fully consistent.
+ * Thread-safe.
  */
 public final class InMemorySpiceDB implements SpiceDBApi {
   /** SpiceDB's default limit for {@code DeleteRelationships} without one. */
@@ -245,7 +245,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
 
   /** Selects whether {@link #readSchema} reports a revision. */
   public synchronized void setReadSchemaRevision(SchemaRevision mode) {
-    if (mode == null) throw new InvalidArgumentException("mode must not be null");
+    if (mode == null) throw new LocalValidationException("mode must not be null");
     schemaRevision = mode;
   }
 
@@ -257,7 +257,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
    * "inmemory-cursor-"} followed by the decimal {@code n}, is stable for tests.
    */
   public static String cursorAfter(int n) {
-    if (n < 0) throw new InvalidArgumentException("n must not be negative");
+    if (n < 0) throw new LocalValidationException("n must not be negative");
     return CURSOR_PREFIX + n;
   }
 
@@ -285,7 +285,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
    */
   public void failNext(ClientOperation operation, RuntimeException error) {
     if (operation == null || error == null)
-      throw new InvalidArgumentException("operation and error must not be null");
+      throw new LocalValidationException("operation and error must not be null");
     var failed = new java.util.concurrent.atomic.AtomicBoolean();
     setFaultHook(
         f ->
@@ -417,7 +417,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   /** Rejects a per-call retry opt-in on a mutation that is not idempotent, as the client does. */
   private static void rejectRetry(RetryPolicy policy, String operation) {
     if (policy != null && policy.maxRetries() > 0)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           operation
               + " cannot be retried: only touch-only writes without preconditions and schema"
               + " writes are idempotent on replay");
@@ -504,7 +504,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public synchronized WriteResult write(Transaction txn, WriteOptions options) {
     if (txn == null || options == null)
-      throw new InvalidArgumentException("transaction and options must not be null");
+      throw new LocalValidationException("transaction and options must not be null");
     begin(ClientOperation.WRITE, options, txn);
     if (!txn.isIdempotent()) rejectRetry(options.retryPolicy(), "write");
     respond(options.transport());
@@ -546,7 +546,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized Stream<ReadRelationship> readRelationships(
       Consistency consistency, Filter filter, ReadOptions options) {
     if (consistency == null || filter == null || options == null)
-      throw new InvalidArgumentException("consistency, filter and options must not be null");
+      throw new LocalValidationException("consistency, filter and options must not be null");
     var call = record(ClientOperation.READ_RELATIONSHIPS, options, consistency, filter);
     var matches = matching(filter);
     int start = cursorStart(options.cursor());
@@ -577,20 +577,20 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public SpiceDBClient.DeleteResult deleteRelationships(
       Filter filter, int limit, DeleteOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(ClientOperation.DELETE_RELATIONSHIPS, options, filter, limit);
     rejectRetry(options.retryPolicy(), "delete relationships");
-    if (limit <= 0) throw new InvalidArgumentException("limit must be positive");
+    if (limit <= 0) throw new LocalValidationException("limit must be positive");
     return delete(filter, limit, options);
   }
 
   @Override
   public SpiceDBClient.DeleteResult deleteRelationships(Filter filter, DeleteOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(ClientOperation.DELETE_RELATIONSHIPS, options, filter);
     rejectRetry(options.retryPolicy(), "delete relationships");
     if (options.partialDeletion() != PartialDeletion.DISALLOWED)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "deleteRelationships without a limit requires PartialDeletion.DISALLOWED");
     return delete(filter, DEFAULT_DELETE_LIMIT, options);
   }
@@ -598,7 +598,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   private synchronized SpiceDBClient.DeleteResult delete(
       Filter filter, int limit, DeleteOptions options) {
     if (filter == null || options == null)
-      throw new InvalidArgumentException("filter and options must not be null");
+      throw new LocalValidationException("filter and options must not be null");
     respond(options.transport());
     var preconditions = new ArrayList<Transaction.Precondition>();
     for (var f : options.mustMatch())
@@ -629,7 +629,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public synchronized CheckResult check(PermissionCheck request, CheckOptions options) {
     if (request == null || options == null)
-      throw new InvalidArgumentException("request and options must not be null");
+      throw new LocalValidationException("request and options must not be null");
     begin(ClientOperation.CHECK, options, request);
     respond(options.transport());
     var r = lookup(withDefaults(request, options.context()));
@@ -705,7 +705,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized List<CheckResult> checkBulk(
       Collection<PermissionCheck> requests, CheckOptions options) {
     if (requests == null || options == null)
-      throw new InvalidArgumentException("requests and options must not be null");
+      throw new LocalValidationException("requests and options must not be null");
     begin(ClientOperation.CHECK_BULK, options, new ArrayList<>(requests));
     respond(options.transport());
     var out = new ArrayList<CheckResult>();
@@ -731,13 +731,13 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized long importRelationships(
       Iterable<Relationship> input, ImportOptions options) {
     if (input == null || options == null)
-      throw new InvalidArgumentException("relationships and options must not be null");
+      throw new LocalValidationException("relationships and options must not be null");
     var call = begin(ClientOperation.IMPORT_RELATIONSHIPS, options, input);
     rejectRetry(options.retryPolicy(), "import relationships");
     int batchSize = Math.max(options.batchSize(), 1);
     var batch = new ArrayList<Relationship>();
     for (var r : input) {
-      if (r == null) throw new InvalidArgumentException("relationships must not contain null");
+      if (r == null) throw new LocalValidationException("relationships must not contain null");
       batch.add(r);
     }
     for (int start = 0; start < batch.size(); start += batchSize)
@@ -773,7 +773,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized Stream<ExportedRelationship> exportRelationships(
       Consistency consistency, Filter filter, ExportOptions options) {
     if (consistency == null || options == null)
-      throw new InvalidArgumentException("consistency and options must not be null");
+      throw new LocalValidationException("consistency and options must not be null");
     var call = record(ClientOperation.EXPORT_RELATIONSHIPS, options, consistency, filter);
     Predicate<Relationship> match = filter == null ? r -> true : filter::matches;
     var matches = new ArrayList<Relationship>();
@@ -796,7 +796,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   /** The schema last written, or {@code NOT_FOUND}, as SpiceDB does. */
   @Override
   public synchronized SpiceDBClient.SchemaResult readSchema(CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(ClientOperation.READ_SCHEMA, options);
     respond(options.transport());
     if (schema == null)
@@ -815,7 +815,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public synchronized ZedToken writeSchema(String schema, CallOptions options) {
     if (schema == null || options == null)
-      throw new InvalidArgumentException("schema and options must not be null");
+      throw new LocalValidationException("schema and options must not be null");
     begin(ClientOperation.WRITE_SCHEMA, options, schema);
     respond(options.transport());
     this.schema = schema;
@@ -836,7 +836,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized SpiceDBClient.ReflectSchemaResult reflectSchema(
       Consistency consistency, CallOptions options) {
     if (consistency == null || options == null)
-      throw new InvalidArgumentException("consistency and options must not be null");
+      throw new LocalValidationException("consistency and options must not be null");
     begin(ClientOperation.REFLECT_SCHEMA, options, consistency);
     respond(options.transport());
     if (reflectResult == null)
@@ -881,10 +881,10 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public synchronized SpiceDBClient.DeleteResult deleteAllRelationshipsNonAtomic(
       Filter filter, DeleteAllOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(ClientOperation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC, options, filter);
     rejectRetry(options.retryPolicy(), "delete relationships");
-    if (filter == null) throw new InvalidArgumentException("filter must not be null");
+    if (filter == null) throw new LocalValidationException("filter must not be null");
     respond(options.transport());
     var preconditions = new ArrayList<Transaction.Precondition>();
     for (var f : options.mustMatch())
@@ -913,7 +913,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public void awaitReady(java.time.Duration timeout) {
     if (timeout == null || timeout.isZero() || timeout.isNegative())
-      throw new InvalidArgumentException("timeout must be positive");
+      throw new LocalValidationException("timeout must be positive");
   }
 
   /** {@code null}: the double has no transport. */
@@ -941,7 +941,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
 
   private <T> T unimplementedWithRetry(
       ClientOperation operation, Object options, RetryPolicy retry, Object... arguments) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(operation, options, arguments);
     if (operation.isNeverIdempotent())
       rejectRetry(retry, operation.name().toLowerCase(java.util.Locale.ROOT).replace('_', ' '));
@@ -955,7 +955,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
    */
   private <T> Stream<T> unimplementedStream(
       ClientOperation operation, Object options, Object... arguments) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var call = record(operation, options, arguments);
     Iterator<T> it =
         new Iterator<>() {
@@ -995,7 +995,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
       String permission,
       SubjectRef subject,
       LookupOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var call =
         record(
             ClientOperation.LOOKUP_RESOURCES,
@@ -1005,9 +1005,9 @@ public final class InMemorySpiceDB implements SpiceDBApi {
             permission,
             subject);
     if (consistency == null || subject == null)
-      throw new InvalidArgumentException("consistency and subject must not be null");
+      throw new LocalValidationException("consistency and subject must not be null");
     if (options.subjectRelation() != null)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "lookupResources uses the required SubjectRef relation, not subjectRelation options");
     var candidates = objectsOfType(resourceType);
     int start = cursorStart(options.cursor());
@@ -1068,7 +1068,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
       String permission,
       String subjectType,
       LookupOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var call =
         record(
             ClientOperation.LOOKUP_SUBJECTS,
@@ -1078,13 +1078,13 @@ public final class InMemorySpiceDB implements SpiceDBApi {
             permission,
             subjectType);
     if (consistency == null || resource == null)
-      throw new InvalidArgumentException("consistency and resource must not be null");
+      throw new LocalValidationException("consistency and resource must not be null");
     if (options.permissionshipFilter() != LookupPermissionshipFilter.ALL)
-      throw new InvalidArgumentException("lookupSubjects does not support permissionshipFilter");
+      throw new LocalValidationException("lookupSubjects does not support permissionshipFilter");
     if (options.debug() == LookupDebug.ENABLED
         || options.pageSize() != 512
         || options.paging() != Paging.AUTOMATIC)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "lookupSubjects does not support debug, pageSize or paging");
     respond(options.transport());
     var out = new ArrayList<LookupResult.LookupSubject>();

@@ -1,14 +1,14 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
+
 public record SubjectRef(ObjectRef object, String relation) {
   public SubjectRef {
-    if (object == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("subject object is required");
+    if (object == null) throw new LocalValidationException("subject object is required");
     if (relation != null) {
       JsonContext.required(relation, "subject relation");
       if (relation.equals("..."))
-        throw new com.authzed.spicedb.errors.InvalidArgumentException(
-            "use direct() for direct subjects");
+        throw new LocalValidationException("use direct() for direct subjects");
     }
   }
 

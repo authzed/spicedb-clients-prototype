@@ -1,6 +1,7 @@
 package com.authzed.spicedb;
 
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -25,14 +26,12 @@ public record Relationship(
     implements Json.JsonValue {
   public Relationship {
     if (resource == null || subject == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "resource and subject are required");
+      throw new LocalValidationException("resource and subject are required");
     JsonContext.required(relation, "relation");
     caveatContext = JsonContext.snapshot(caveatContext);
     if (caveatName != null) JsonContext.required(caveatName, "caveatName");
     if (caveatContext != null && caveatName == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "caveat context requires a caveat name");
+      throw new LocalValidationException("caveat context requires a caveat name");
   }
 
   public static Relationship of(ObjectRef resource, String relation, SubjectRef subject) {
@@ -96,7 +95,7 @@ public record Relationship(
    * @throws InvalidArgumentException for anything SpiceDB's parser would reject
    */
   public static Relationship fromTuple(String tuple) {
-    if (tuple == null) throw new InvalidArgumentException("tuple must not be null");
+    if (tuple == null) throw new LocalValidationException("tuple must not be null");
     try {
       int bracket = tuple.indexOf('[');
       String main = bracket < 0 ? tuple : tuple.substring(0, bracket);
@@ -116,9 +115,9 @@ public record Relationship(
               : SubjectRef.direct(subjectObject);
       return parseSuffix(of(new ObjectRef(ro[0], ro[1]), r[1], subject), suffix);
     } catch (InvalidArgumentException e) {
-      throw new InvalidArgumentException("invalid relationship tuple: " + e.getMessage(), e);
+      throw new LocalValidationException("invalid relationship tuple: " + e.getMessage(), e);
     } catch (RuntimeException e) {
-      throw new InvalidArgumentException("invalid relationship tuple", e);
+      throw new LocalValidationException("invalid relationship tuple", e);
     }
   }
 

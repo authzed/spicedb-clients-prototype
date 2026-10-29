@@ -183,6 +183,20 @@ and options forwarding rather than just generated text fragments.
   `preconditions` (native values; empty after an error) and `error`.
   `withSubject` always constrains the subject relation (direct for a subject
   or factory without one); `withSubjectAnyRelation` leaves it unconstrained.
+- Schema-level names, for code that receives type and permission names at
+  runtime: `SchemaText` (the schema source the module was generated from, from
+  `schema.Schema.Text`), `Definitions` (camelCase key → raw name),
+  `DefinitionNames`, the `DefinitionName` literal union, `AnyResourceRef` (every
+  definition ref), `definitionByName(name): DefinitionInfo` (name, relation and
+  permission names, `ref(id)` and `permissionRef(permission)`),
+  `permissionRefByName(definition, permission)` and
+  `TypedClient.lookupResourcesByName(c, definition, permission, subject,
+  options?)`, which also requires the subject's type to be a definition. Each
+  throws `NotInSchemaError` for a name the schema lacks. These names are
+  reserved: a definition producing one fails generation.
+- `TypedClient` takes the native `SpiceDBClientInterface`, so it wraps a
+  `SpiceDBClient` or an `InMemorySpiceDB`; its forwarders are typed from the
+  interface.
 - Any collision between generated identifiers fails generation with both sources
   named, including schema names that would shadow a global or support name
   (`Date`, `Permission`), a built-in ref member (`filter`, `toString`), or a

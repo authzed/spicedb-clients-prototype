@@ -3,6 +3,7 @@ package typescript
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -37,6 +38,7 @@ const DefaultClientModule = "@spicedb/client"
 // TemplateData holds all pre-computed data needed by the template.
 type TemplateData struct {
 	ClientModule   string
+	SchemaText     string // the schema source as a JavaScript string literal
 	CaveatContexts []CaveatContextData
 	RefTypes       []RefTypeData // standalone subject refs (usersets, wildcards, variants)
 	Definitions    []DefinitionData
@@ -94,6 +96,7 @@ type WithMethodData struct {
 type DefinitionData struct {
 	Name            string // original name, e.g. "document"
 	PascalName      string // e.g. "Document"
+	Camel           string // key in the generated Definitions constant, e.g. "document"
 	RefType         string // e.g. "DocumentRef"
 	Maker           string // e.g. "makeDocumentRef"
 	WithMethods     []WithMethodData
@@ -256,6 +259,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 	data.ClientModule = module
+	data.SchemaText = jsString(s.Source)
 
 	tmpl, err := template.New("typed_client.ts.tmpl").Funcs(template.FuncMap{
 		"quoteList": quoteList,
@@ -282,6 +286,17 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 			Content: content,
 		},
 	}, nil
+}
+
+// jsString renders s as a JavaScript string literal. JSON string syntax is a
+// subset of it; encoding/json also escapes U+2028 and U+2029, which older
+// engines reject inside string literals.
+func jsString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err) // a Go string always marshals
+	}
+	return string(b)
 }
 
 // runPrettier formats TypeScript source with the project's own Prettier, so
@@ -422,7 +437,8 @@ var reservedModuleNames = []string{
 	"relationshipToString", "CheckResult", "CheckRequest", "Relationship", "RelationshipFilter", "SubjectRef", "LookupResource",
 	"LookupSubject", "ReadRelationship", "CheckOptions", "CallOptions", "LookupResourcesRequest", "LookupSubjectsRequest",
 	"ReadRelationshipsRequest", "SpiceDBClientOptions", "JSONObject", "JSONValue", "WriteResult", "RelationshipUpdate", "Precondition",
-	"Consistency", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
+	"Consistency", "SpiceDBClientInterface", "SchemaText", "Definitions", "DefinitionNames", "DefinitionName", "DefinitionInfo",
+	"AnyResourceRef", "definitionByName", "permissionRefByName", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
 	"Promise", "Function", "RegExp", "BigInt", "Math", "Reflect", "Proxy", "Intl", "Record", "Readonly", "Partial",
 }
 
@@ -657,6 +673,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		dd := DefinitionData{
 			Name:        def.Name,
 			PascalName:  pascal,
+			Camel:       toCamelCase(pascal),
 			RefType:     refType,
 			Maker:       "make" + refType,
 			WithMethods: definitionWiths[def.Name],

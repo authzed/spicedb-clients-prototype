@@ -1,5 +1,21 @@
 # Migrating from `@authzed/authzed-node`
 
+## Requirements
+
+| Requirement | Floor | Notes |
+|---|---|---|
+| Node.js | 20.19 | The package is ESM; 20.19 is the first Node 20 release where CommonJS code can `require()` ESM without a flag. While unreleased, run it through a TypeScript-aware loader or bundler (see [README.md](README.md#installation)). |
+| SpiceDB | 1.30 | Older servers' trailer-only data is reachable through `onTrailer`. |
+| `@bufbuild/protobuf` | ^2.11.0 | Protobuf runtime, matching the code generator the protocol stubs were built with. Installed as a dependency. |
+| `@connectrpc/connect` | ^2.0.0 | RPC runtime. Installed as a dependency. |
+| `@connectrpc/connect-node` | ^2.0.0 | Node HTTP/2 transport, through `@spicedb/proto`. |
+| `@grpc/grpc-js` | not used | authzed-node's transport. Remove it once nothing else imports it; it can stay installed during the migration. |
+| `@types/node` | >=20.19.0 | Optional peer, for TypeScript projects. |
+| TypeScript | built and tested with 7.x | The package is ESM with `.d.ts` types; resolve it with `moduleResolution: "bundler"`, as this repository does. |
+
+Before the package is published, install it from tarballs built from this
+repository; see [README.md](README.md#before-publication).
+
 `@spicedb/client` replaces `@authzed/authzed-node` for Node.js applications.
 Both can be installed in the same process (and the same bundle) while you move
 call sites over: their protobuf runtimes keep no global registry, so there is
@@ -204,6 +220,61 @@ Responses are native, immutable data:
 | `resp.checkedAt?.token` | `result.checkedAt` (`ZedToken`) |
 | `resp.resourceObjectId` | `item.resourceId` |
 | `v1.PbStruct.fromJson(ctx)` | plain JSON objects (`context: { key: "value" }`) |
+
+## Renamed members
+
+Request and response members that changed name or shape. Members not listed
+keep their protobuf name (`resource`, `permission`, `subject`, `consistency`,
+`context`, `permissionship`, `afterResultCursor`, `lookedUpAt`).
+
+| authzed-node (protobuf) | @spicedb/client |
+|---|---|
+| `client.promises.checkPermission(req)` | `client.check(req)` |
+| `client.promises.checkBulkPermissions({ items })` | `client.checkBulk(requests)`; results in input order, not `pairs` |
+| `CheckPermissionRequest.withTracing` | `CheckOptions.tracing: Tracing.Enabled` |
+| `CheckPermissionResponse.partialCaveatInfo.missingRequiredContext` | `CheckResult.missingContext` |
+| `CheckPermissionResponse.debugTrace` | `CheckResult.debugTrace` (native trace) |
+| `CheckPermissionResponse.optionalExpiresAt` | `CheckResult.expiration` (`Date`) |
+| `CheckBulkPermissionsPair.error` | thrown, or `CheckResult.error` with `itemErrors: BulkItemErrors.Returned` |
+| `LookupResourcesRequest.resourceObjectType` | `resourceType` |
+| `LookupResourcesRequest.optionalLimit` | `limit` (total) and `pageSize` (per request) |
+| `LookupResourcesRequest.optionalCursor.token` | `cursor` (string) |
+| `LookupResourcesResponse.resourceObjectId` | `LookupResource.resourceId` |
+| `LookupSubjectsRequest.subjectObjectType` | `subjectType` |
+| `LookupSubjectsRequest.optionalSubjectRelation` | `subjectRelation` |
+| `LookupSubjectsRequest.optionalConcreteLimit` | `limit` |
+| `LookupSubjectsRequest.wildcardOption` | `wildcards: Wildcards.Include / Exclude` |
+| `LookupSubjectsResponse.subject.subjectObjectId` | `LookupSubject.subject.subjectId` |
+| `ReadRelationshipsRequest.relationshipFilter` | `filter` |
+| `ReadRelationshipsRequest.optionalLimit` | `limit` (total) and `pageSize` (per request) |
+| `ReadRelationshipsResponse.relationship.*` | the relationship's fields directly on `ReadRelationship` |
+| `ReadRelationshipsResponse.readAt` | `ReadRelationship.readAt` (`ZedToken`) |
+| `RelationshipFilter.optionalResourceId` | `resourceId` |
+| `RelationshipFilter.optionalResourceIdPrefix` | `resourceIdPrefix` |
+| `RelationshipFilter.optionalRelation` | `relation` |
+| `RelationshipFilter.optionalSubjectFilter` | `subject` |
+| `SubjectFilter.optionalSubjectId` | `subjectId` |
+| `SubjectFilter.optionalRelation.relation` | `relation: { kind: SubjectRelationKind.Named, relation }` (`Direct`, `Any`) |
+| `SubjectReference.optionalRelation` | `SubjectRef.relation` |
+| `Relationship.optionalCaveat.caveatName` / `.context` | `Relationship.caveat.name` / `.context` |
+| `Relationship.optionalExpiresAt` | `Relationship.expiration` (`Date`) |
+| `WriteRelationshipsRequest.updates` / `optionalPreconditions` | `Transaction.touch/create/delete` and `mustMatch/mustNotMatch` |
+| `WriteRelationshipsRequest.optionalTransactionMetadata` | `Transaction.withMetadata(json)` |
+| `WriteRelationshipsResponse.writtenAt` | `WriteResult.revision` |
+| `DeleteRelationshipsRequest.relationshipFilter` | the `filter` argument |
+| `DeleteRelationshipsRequest.optionalLimit` / `optionalAllowPartialDeletions` | `DeleteOptions.limit` / `partial: DeletePartial.Allowed or Disallowed` |
+| `DeleteRelationshipsRequest.optionalPreconditions` | `DeleteOptions.mustMatch` / `mustNotMatch` |
+| `DeleteRelationshipsResponse.deletedAt` | `DeleteResult.revision` |
+| `DeleteRelationshipsResponse.relationshipsDeletedCount` | `DeleteResult.deletedCount` (`bigint`) |
+| `DeleteRelationshipsResponse.deletionProgress` | `DeleteResult.progress` (`"complete"` / `"partial"`) |
+| `ReadSchemaResponse.schemaText` / `readAt` | `SchemaResult.schema` / `revision` |
+| `WriteSchemaResponse.writtenAt` | the `ZedToken` `writeSchema` returns |
+| `WatchRequest.optionalObjectTypes` | `objectTypes` |
+| `WatchRequest.optionalStartCursor` | `startRevision` (`ZedToken`) |
+| `WatchRequest.optionalRelationshipFilters` | `relationshipFilters` |
+| `WatchRequest.optionalUpdateKinds` | `content: [WatchContent.Relationships, ...]` |
+| `WatchResponse.changesThrough` | `WatchEvent.changesThrough` (`ZedToken`) |
+| `ExpandPermissionTreeResponse.expandedAt` | `ExpandResult.revision` |
 
 ## Raw protocol access
 

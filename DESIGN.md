@@ -171,12 +171,22 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     registration, and grant-all is one line); then the stored relationships,
     where a relationship on the resource whose relation is the permission's
     name and whose subject matches exactly or by wildcard grants it; anything
-    else is no permission. The double does not evaluate a schema.
+    else is no permission. The double does not evaluate a schema. The resolver
+    sees the check with the call's default context merged in (the check's own
+    keys win), returns a result or declines (falling through), and never
+    fails: failures come from the fault hooks. A wildcard matches only direct
+    subjects of its type. The double does not evaluate caveats, so a caveated
+    stored relationship grants conditionally, an uncaveated match wins over a
+    caveated one, and an expired relationship never grants.
   - The double serves LookupResources and LookupSubjects: it enumerates the
     objects of the requested type that appear in its stored relationships (as
     resource or subject) and returns those its check resolution grants,
     reporting conditional results as conditional and honoring the
     permissionship filter, limit and cursor with the double's cursor format.
+    Objects are enumerated in first-appearance order, and a cursor counts
+    granted results, including ones the permissionship filter drops (as the
+    real client's cursor advances past them). A stored wildcard subject is
+    returned by LookupSubjects as the `*` subject.
   - Each client exports an interface (or protocol) with the full client's
     method set, kept in sync with the client by a test, and the double
     implements all of it: operations without in-memory semantics are recorded,

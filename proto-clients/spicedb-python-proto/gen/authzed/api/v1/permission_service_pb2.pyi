@@ -1,5 +1,3 @@
-import datetime
-
 from authzed.api.v1 import core_pb2 as _core_pb2
 from authzed.api.v1 import debug_pb2 as _debug_pb2
 from buf.validate import validate_pb2 as _validate_pb2
@@ -13,8 +11,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Iterable as _Iterable, Mapping as _Mapping
-from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -37,7 +34,7 @@ class Consistency(_message.Message):
     at_least_as_fresh: _core_pb2.ZedToken
     at_exact_snapshot: _core_pb2.ZedToken
     fully_consistent: bool
-    def __init__(self, minimize_latency: _Optional[bool] = ..., at_least_as_fresh: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., at_exact_snapshot: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., fully_consistent: _Optional[bool] = ...) -> None: ...
+    def __init__(self, minimize_latency: bool = ..., at_least_as_fresh: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., at_exact_snapshot: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., fully_consistent: bool = ...) -> None: ...
 
 class RelationshipFilter(_message.Message):
     __slots__ = ("resource_type", "optional_resource_id", "optional_resource_id_prefix", "optional_relation", "optional_subject_filter")
@@ -136,7 +133,7 @@ class DeleteRelationshipsRequest(_message.Message):
     optional_allow_partial_deletions: bool
     optional_transaction_metadata: _struct_pb2.Struct
     optional_cursor: _core_pb2.Cursor
-    def __init__(self, relationship_filter: _Optional[_Union[RelationshipFilter, _Mapping]] = ..., optional_preconditions: _Optional[_Iterable[_Union[Precondition, _Mapping]]] = ..., optional_limit: _Optional[int] = ..., optional_allow_partial_deletions: _Optional[bool] = ..., optional_transaction_metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., optional_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ...) -> None: ...
+    def __init__(self, relationship_filter: _Optional[_Union[RelationshipFilter, _Mapping]] = ..., optional_preconditions: _Optional[_Iterable[_Union[Precondition, _Mapping]]] = ..., optional_limit: _Optional[int] = ..., optional_allow_partial_deletions: bool = ..., optional_transaction_metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., optional_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ...) -> None: ...
 
 class DeleteRelationshipsResponse(_message.Message):
     __slots__ = ("deleted_at", "deletion_progress", "relationships_deleted_count", "after_result_cursor")
@@ -172,7 +169,7 @@ class CheckPermissionRequest(_message.Message):
     subject: _core_pb2.SubjectReference
     context: _struct_pb2.Struct
     with_tracing: bool
-    def __init__(self, consistency: _Optional[_Union[Consistency, _Mapping]] = ..., resource: _Optional[_Union[_core_pb2.ObjectReference, _Mapping]] = ..., permission: _Optional[str] = ..., subject: _Optional[_Union[_core_pb2.SubjectReference, _Mapping]] = ..., context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., with_tracing: _Optional[bool] = ...) -> None: ...
+    def __init__(self, consistency: _Optional[_Union[Consistency, _Mapping]] = ..., resource: _Optional[_Union[_core_pb2.ObjectReference, _Mapping]] = ..., permission: _Optional[str] = ..., subject: _Optional[_Union[_core_pb2.SubjectReference, _Mapping]] = ..., context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., with_tracing: bool = ...) -> None: ...
 
 class CheckPermissionResponse(_message.Message):
     __slots__ = ("checked_at", "permissionship", "partial_caveat_info", "debug_trace", "optional_expires_at")
@@ -196,7 +193,7 @@ class CheckPermissionResponse(_message.Message):
     partial_caveat_info: _core_pb2.PartialCaveatInfo
     debug_trace: _debug_pb2.DebugInformation
     optional_expires_at: _timestamp_pb2.Timestamp
-    def __init__(self, checked_at: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., permissionship: _Optional[_Union[CheckPermissionResponse.Permissionship, str]] = ..., partial_caveat_info: _Optional[_Union[_core_pb2.PartialCaveatInfo, _Mapping]] = ..., debug_trace: _Optional[_Union[_debug_pb2.DebugInformation, _Mapping]] = ..., optional_expires_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    def __init__(self, checked_at: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., permissionship: _Optional[_Union[CheckPermissionResponse.Permissionship, str]] = ..., partial_caveat_info: _Optional[_Union[_core_pb2.PartialCaveatInfo, _Mapping]] = ..., debug_trace: _Optional[_Union[_debug_pb2.DebugInformation, _Mapping]] = ..., optional_expires_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class CheckBulkPermissionsRequest(_message.Message):
     __slots__ = ("consistency", "items", "with_tracing")
@@ -206,7 +203,7 @@ class CheckBulkPermissionsRequest(_message.Message):
     consistency: Consistency
     items: _containers.RepeatedCompositeFieldContainer[CheckBulkPermissionsRequestItem]
     with_tracing: bool
-    def __init__(self, consistency: _Optional[_Union[Consistency, _Mapping]] = ..., items: _Optional[_Iterable[_Union[CheckBulkPermissionsRequestItem, _Mapping]]] = ..., with_tracing: _Optional[bool] = ...) -> None: ...
+    def __init__(self, consistency: _Optional[_Union[Consistency, _Mapping]] = ..., items: _Optional[_Iterable[_Union[CheckBulkPermissionsRequestItem, _Mapping]]] = ..., with_tracing: bool = ...) -> None: ...
 
 class CheckBulkPermissionsRequestItem(_message.Message):
     __slots__ = ("resource", "permission", "subject", "context")
@@ -284,7 +281,7 @@ class LookupResourcesRequest(_message.Message):
     optional_limit: int
     optional_cursor: _core_pb2.Cursor
     with_debug: bool
-    def __init__(self, consistency: _Optional[_Union[Consistency, _Mapping]] = ..., resource_object_type: _Optional[str] = ..., permission: _Optional[str] = ..., subject: _Optional[_Union[_core_pb2.SubjectReference, _Mapping]] = ..., context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., optional_limit: _Optional[int] = ..., optional_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ..., with_debug: _Optional[bool] = ...) -> None: ...
+    def __init__(self, consistency: _Optional[_Union[Consistency, _Mapping]] = ..., resource_object_type: _Optional[str] = ..., permission: _Optional[str] = ..., subject: _Optional[_Union[_core_pb2.SubjectReference, _Mapping]] = ..., context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., optional_limit: _Optional[int] = ..., optional_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ..., with_debug: bool = ...) -> None: ...
 
 class LookupResourcesResponse(_message.Message):
     __slots__ = ("looked_up_at", "resource_object_id", "permissionship", "partial_caveat_info", "after_result_cursor")

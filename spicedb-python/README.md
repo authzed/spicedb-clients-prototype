@@ -68,7 +68,30 @@ with SpiceDBClient("spicedb.example.com:443", token="my-preshared-key") as clien
 ```
 
 For a local `spicedb serve-testing` on `localhost:50051`, pass
-`transport_security=TransportSecurity.PLAINTEXT`. The asyncio client,
+`transport_security=TransportSecurity.PLAINTEXT`. The endpoint is
+`host:port`, `http://host:port` or `https://host:port`. Plaintext endpoints
+must name their port (`localhost:50051`, not `localhost`); TLS endpoints
+without one use 443. A `unix:` socket target is also accepted. A URL's scheme must agree with `transport_security`, and any
+other form fails in the constructor with `InvalidArgumentError` naming the
+problem.
+
+From another Docker Compose service, SpiceDB is a remote host (for example
+`spicedb:50051`), so plaintext there takes two explicit choices:
+
+```python
+import os
+from spicedb import RemoteCredentials, TransportSecurity
+from spicedb.sync import SpiceDBClient
+
+client = SpiceDBClient(
+    "spicedb:50051",  # or "http://spicedb:50051"
+    token=os.environ["SPICEDB_TOKEN"],
+    transport_security=TransportSecurity.PLAINTEXT,
+    remote_credentials=RemoteCredentials.ALLOW,  # bearer token in cleartext
+)
+```
+
+The asyncio client,
 `spicedb.aio.SpiceDBClient`, takes the same arguments; await its calls and
 iterate its streams with `async for`.
 

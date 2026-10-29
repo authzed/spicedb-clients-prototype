@@ -52,13 +52,14 @@ from authzed.api.materialize.v0 import (
 )
 from spicedb import _mapping, _requests
 from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
+from spicedb._endpoint import parse_endpoint
 from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._budget import Budget
 from spicedb._client_base import ClientConfig, _positive, write_is_idempotent, capture_sync, response_target
 from spicedb._streams import Stream
 from spicedb.consistency import Consistency
 from spicedb.errors import (
-    InvalidArgumentError,
+    LocalValidationError,
     SpiceDBError,
     to_spicedb_error,
 )
@@ -104,7 +105,7 @@ def _cursor(value: str | None, field: str):
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise InvalidArgumentError(f"{field}: expected nonempty cursor string")
+        raise LocalValidationError(f"{field}: expected nonempty cursor string")
     return core.Cursor(token=value)
 
 
@@ -132,8 +133,11 @@ class SpiceDBClient(ClientConfig):
     ) -> None:
         insecure = _option(transport_security, TransportSecurity) == "plaintext"
         allow_insecure_remote_credentials = _option(remote_credentials, RemoteCredentials) == "allow"
+        # Malformed endpoints fail first, so the remote-plaintext refusal
+        # below only ever describes a well-formed remote host.
+        target = parse_endpoint(endpoint, insecure=insecure)
         require_insecure_transport_allowed(
-            endpoint,
+            target,
             insecure=insecure,
             allow_insecure_remote_credentials=allow_insecure_remote_credentials,
         )
@@ -144,7 +148,7 @@ class SpiceDBClient(ClientConfig):
             client_key=client_key,
         )
         self._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
-        self._endpoint = endpoint
+        self._endpoint = target
         self._insecure = insecure
         self._ca_cert = ca_cert
         self._client_cert = client_cert
@@ -175,7 +179,7 @@ class SpiceDBClient(ClientConfig):
         still apply. ``close()`` never closes the channel.
         """
         if not isinstance(channel, grpc.Channel):
-            raise InvalidArgumentError("channel: expected grpc.Channel")
+            raise LocalValidationError("channel: expected grpc.Channel")
         client = cls.__new__(cls)
         client._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
         client._endpoint = None
@@ -439,7 +443,7 @@ class SpiceDBClient(ClientConfig):
         metadata = _snapshot(metadata)
         _positive(page_size, "page_size")
         if on_progress is not None and not callable(on_progress):
-            raise InvalidArgumentError("on_progress: expected callable")
+            raise LocalValidationError("on_progress: expected callable")
         self._ensure_channel()
         acknowledged = None
         cursor = None
@@ -1130,7 +1134,7 @@ class SpiceDBClient(ClientConfig):
         budget = Budget(timeout)
         _positive(limit, "limit")
         if limit > 0xFFFFFFFF:
-            raise InvalidArgumentError("limit: exceeds uint32")
+            raise LocalValidationError("limit: exceeds uint32")
         request = permission_sets.LookupPermissionSetsRequest(
             limit=limit,
             optional_at_revision=core.ZedToken(token=_token_string(at_revision))

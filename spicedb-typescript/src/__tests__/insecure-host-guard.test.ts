@@ -27,7 +27,8 @@ describe("createSpiceDBClient insecure host guard (idiomatic layer)", () => {
         "[::1]:0@127.0.0.1:19999",
         "localhost@evil.com",
     ])("refuses %s, whose URI authority is a different host than a host:port split reads", (endpoint) => {
-        expect(() => createSpiceDBClient(endpoint, "test-token", { transportSecurity: TransportSecurity.Plaintext })).toThrowError(/remoteCredentials/);
+        // Refused as malformed (userinfo) before the remote-plaintext policy runs.
+        expect(() => createSpiceDBClient(endpoint, "test-token", { transportSecurity: TransportSecurity.Plaintext })).toThrowError(/userinfo is not supported/);
     });
     /**
      * A unix-socket endpoint is refused, not silently turned into a DNS lookup
@@ -43,8 +44,12 @@ describe("createSpiceDBClient insecure host guard (idiomatic layer)", () => {
      * throw `Invalid URL` from `new URL()`, which is what happened while the
      * guard bracketed the literal and the `baseUrl` did not.
      */
-    it.each(["::1", "[::1]", "0:0:0:0:0:0:0:1", "[::1]:50051"])("constructs a client for bare IPv6 loopback %s", (endpoint) => {
+    it.each(["[::1]:50051", "[0:0:0:0:0:0:0:1]:50051"])("constructs a plaintext client for IPv6 loopback %s", (endpoint) => {
         expect(() => createSpiceDBClient(endpoint, "test-token", { transportSecurity: TransportSecurity.Plaintext })).not.toThrow();
+    });
+    // A plaintext endpoint names its port; a port-less TLS one uses 443.
+    it.each(["::1", "[::1]", "0:0:0:0:0:0:0:1"])("constructs a TLS client for port-less IPv6 literal %s", (endpoint) => {
+        expect(() => createSpiceDBClient(endpoint, "test-token").close()).not.toThrow();
     });
     it("allows a loopback endpoint with no opt-in", () => {
         expect(() => createSpiceDBClient("localhost:50051", "test-token", { transportSecurity: TransportSecurity.Plaintext })).not.toThrow();

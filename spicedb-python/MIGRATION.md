@@ -13,15 +13,19 @@ application owns its schema, also consider the generated typed client
 | --- | --- | --- |
 | Python | 3.11 or later | |
 | `grpcio` | `>=1.73.0` | `~=1.63` |
-| `protobuf` | `>=7.36.2` | `>=5.26` |
+| `protobuf` | `>=5.26.1` (5.x, 6.x and 7.x tested) | `>=5.26` |
 | `googleapis-common-protos` | `>=1.56.1` | |
 | SpiceDB | 1.30 or later | |
 
 - grpcio 1.73 is the first release whose transport rejects an
   authority-bearing `unix:` target, which the plaintext-credential guard
-  relies on; protobuf 7.36.2 is the bindings' generated-code version. Both are
-  inside authzed-py's ranges, so one environment can hold both clients (see
-  below). Test tooling is only in the `dev` extra.
+  relies on. The bindings are generated as protobuf 5.26.1 code, so an
+  application on protobuf 5.x, 6.x or 7.x adopts the client without changing
+  its protobuf version; the suites pass at 5.26.1, 5.29.5, 6.33.2 and 7.36.2.
+  On Python 3.14, protobuf 5.26.1 fails to import (that runtime predates
+  Python 3.14); 5.29.5 and later work there.
+  Both floors are inside authzed-py's ranges, so one environment can hold both
+  clients (see below). Test tooling is only in the `dev` extra.
 - SpiceDB 1.30 and later is supported natively. Data older servers sent only
   in trailers (for example check debug traces) is reachable through
   `call_options=CallOptions(response_metadata=ResponseMetadata())`.
@@ -75,6 +79,13 @@ client = SpiceDBClient("spicedb:50051", token="key",
 - `InsecureClient` sent the token in plaintext to any host. Now plaintext to a
   non-loopback host (anything but `localhost`, `127.0.0.0/8`, `::1` or a unix
   socket) is refused unless you pass `remote_credentials=RemoteCredentials.ALLOW`.
+- The endpoint is `host:port`, `http://host:port` or `https://host[:port]`,
+  plus `unix:` socket targets. A plaintext endpoint must name its port
+  (`localhost:50051`; a bare `localhost` used to dial 443); a TLS endpoint
+  without one uses 443. The scheme must agree with `transport_security`. Other gRPC
+  target URIs (`dns:///host:port`, `ipv4:...`) and URLs with a path, query or
+  userinfo are rejected at construction with `InvalidArgumentError`; authzed-py
+  passed them to grpc unchecked. Use `host:port` instead of `dns:///host:port`.
 - `bearer_token_credentials(token, certChain)` → `ca_cert=certChain`; mTLS uses
   `client_cert=` and `client_key=`.
 - Close the client (`close()`, `with`, `async with`); it owns its channel.
@@ -83,6 +94,14 @@ client = SpiceDBClient("spicedb:50051", token="key",
 ```python
 client = SpiceDBClient.from_channel(channel)   # channel keeps its own credentials; close() leaves it open
 ```
+
+- One `spicedb.aio.SpiceDBClient` per event loop. An asyncio client binds to
+  the loop it is first used on, like the `grpc.aio` channel under it; using it
+  from another loop raises `EventLoopBindingError`. An application whose web
+  server and background worker each run their own loop builds a client in
+  each (for example in each loop's startup or lifespan hook) instead of
+  sharing one built at import time. Genuinely synchronous code uses
+  `spicedb.sync.SpiceDBClient`, which any thread may share.
 
 ## Requests and results are native values
 
@@ -287,7 +306,23 @@ except grpc.RpcError as e:
     if code_of(e) == grpc.StatusCode.UNAVAILABLE: ...
 ```
 
-Local validation raises `InvalidArgumentError` before any RPC. `code_of`
+Local validation raises `LocalValidationError` before any RPC. It is both an
+`InvalidArgumentError` (code `INVALID_ARGUMENT`, a `grpc.RpcError`) and a
+`ValueError`, so input handling written as `except ValueError` keeps working:
+
+```python
+try:
+    rel = Relationship.from_triple(resource, relation, subject)   # e.g. "document", "viewer", "user:1"
+except ValueError:          # also matches `except InvalidArgumentError`
+    raise BadRequest()
+```
+
+An `INVALID_ARGUMENT` from the server stays a plain `InvalidArgumentError`
+(not a `ValueError`) with `server_message` set. `ObjectRef` applies SpiceDB's
+tuple rules (a lowercase type, optionally `prefix/type`, and a nonempty ID of
+`a-z A-Z 0-9 / _ | - = +` or `*`), so `ObjectRef("", "")` raises instead of
+reaching the server. `ObjectRef.parse("document:readme")` and
+`SubjectRef.parse("team:eng#member")` read the string forms. `code_of`
 also classifies raw `grpc.RpcError`, `asyncio.CancelledError` and
 `TimeoutError`. Tests construct errors with
 `SpiceDBError.from_code(grpc.StatusCode.FAILED_PRECONDITION, "...")`.

@@ -30,6 +30,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     private readonly Dictionary<string, RetryPolicy> _operationRetry;
     private readonly CancellationTokenSource _lifetime = new();
     private int _disposed;
+    /// <summary>The endpoint this client dials, shown in connection-failure messages.</summary>
+    private string? _endpoint;
     private SpiceDBClient(SpiceDBProtoClient proto, ClientOptions? options)
         : this(proto.Permissions, proto.Schema, proto.Watch, proto.Experimental, proto.Materialize, options)
     { _protoClient = proto; }
@@ -59,9 +61,18 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         Native.Required(endpoint, nameof(endpoint)); Native.Required(key, "presharedKey");
         ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
         (options?.RetryPolicy ?? RetryPolicy.Default).Validated(); options?.ValidateOperationRetryPolicies();
-        try { return new(new SpiceDBProtoClient(endpoint, key, insecure, options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow), options); }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UriFormatException) { throw new InvalidArgumentException(ex.Message.Replace("allowInsecureRemoteCredentials", "RemotePlaintextCredentials.Allow", StringComparison.Ordinal), ex); }
+        try { return new(new SpiceDBProtoClient(endpoint, key, insecure, options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow), options) { _endpoint = endpoint }; }
+        catch (InsecureRemoteHostException ex) { throw new InvalidArgumentException(RemotePlaintextRefusal(endpoint), ex); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UriFormatException) { throw new InvalidArgumentException(ex.Message, ex); }
     }
+    /// <summary>
+    /// The remote-plaintext refusal, naming both settings a remote plaintext endpoint (a
+    /// Docker Compose service such as <c>spicedb:50051</c>) needs, as the caller writes them.
+    /// </summary>
+    internal static string RemotePlaintextRefusal(string endpoint) =>
+        $"spicedb: refusing to send the preshared key over plaintext to non-loopback endpoint \"{endpoint}\". " +
+        "Use SpiceDBClient.CreateSystemTls for TLS, or, to send it in cleartext to a remote host on purpose, call " +
+        "SpiceDBClient.CreatePlaintext(endpoint, presharedKey, new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow })";
     /// <summary>Borrows the channel. Arbitrary caller transport configuration can supersede endpoint security assumptions.</summary>
     public static SpiceDBClient CreateFromChannel(GrpcChannel channel, string presharedKey, ClientOptions? options = null)
     {
@@ -74,8 +85,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         var address = typeof(GrpcChannel).GetProperty("Address", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(channel) as Uri;
         if (!(options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow) &&
             (address is null || (address.Scheme != "https" && !address.IsLoopback)))
-            throw new InvalidArgumentException("Cannot establish secure or loopback channel transport. Set RemotePlaintextCredentials.Allow only to explicitly permit remote plaintext credentials.");
-        return new(new SpiceDBProtoClient(channel, presharedKey), options);
+            throw new InvalidArgumentException("spicedb: refusing to send the preshared key over a channel that is neither TLS nor loopback. To send it in cleartext to a remote host on purpose, call SpiceDBClient.CreateFromChannel(channel, presharedKey, new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow })");
+        return new(new SpiceDBProtoClient(channel, presharedKey), options) { _endpoint = channel.Target };
     }
     /// <summary>
     /// Wraps an existing, caller-owned <see cref="CallInvoker"/>: an in-memory or test-server
@@ -116,8 +127,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         // The most specific policy wins: per call, then per operation, then client-wide. A
         // per-call or per-operation policy also governs stream establishment.
         var specific = retry?.Validated() ?? OperationPolicy(operation);
-        if (watch && specific is null) return new(timeout is { } w ? ValidTimeout(w) : null, token, _lifetime.Token, transport, null, false, operation);
-        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, specific ?? _retryPolicy, specific is not null || _streamRetries, operation);
+        if (watch && specific is null) return new(timeout is { } w ? ValidTimeout(w) : null, token, _lifetime.Token, transport, null, false, operation, _endpoint);
+        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, specific ?? _retryPolicy, specific is not null || _streamRetries, operation, _endpoint);
     }
     /// <summary>The client's <see cref="ClientOptions.OperationRetryPolicies"/> entry for the calling operation, if any.</summary>
     private RetryPolicy? OperationPolicy([CallerMemberName] string operation = "") => _operationRetry.GetValueOrDefault(operation);
@@ -142,15 +153,16 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         private readonly TransportOptions? _transport;
         private readonly RetryPolicy? _retry;
         private readonly string _operation;
+        private readonly string? _endpoint;
         // Timer rounding can cancel before the monotonic elapsed-time check expires.
         // Keep the deadline source separate from caller and client-lifetime cancellation.
         private readonly CancellationTokenSource _deadline = new();
         public CancellationToken Token => _linked.Token;
         public bool StreamRetries { get; }
-        public Budget(TimeSpan? timeout, CancellationToken caller, CancellationToken lifetime, TransportOptions? transport, RetryPolicy? retry, bool streamRetries, string operation)
+        public Budget(TimeSpan? timeout, CancellationToken caller, CancellationToken lifetime, TransportOptions? transport, RetryPolicy? retry, bool streamRetries, string operation, string? endpoint)
         {
             _timeout = timeout; _caller = caller; _linked = CancellationTokenSource.CreateLinkedTokenSource(caller, lifetime, _deadline.Token);
-            _transport = transport; _retry = retry; StreamRetries = streamRetries; _operation = operation;
+            _transport = transport; _retry = retry; StreamRetries = streamRetries; _operation = operation; _endpoint = endpoint;
             if (timeout is { } t) _deadline.CancelAfter(t);
         }
         public DateTime? Deadline
@@ -186,7 +198,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         {
             if (_caller.IsCancellationRequested) return new OperationCanceledException("Operation cancelled by caller.", ex, _caller);
             if (_deadline.IsCancellationRequested || (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t)) return ex as DeadlineExceededException ?? new DeadlineExceededException("Operation total deadline exceeded.", ex);
-            return ex is RpcException rpc ? ErrorMapper.ToSpiceDBException(rpc) : ex;
+            return ex is RpcException rpc ? ErrorMapper.ToSpiceDBException(rpc, _endpoint) : ex;
         }
         /// <summary>Whether a read attempt that failed with <paramref name="ex"/> may be retried.</summary>
         public bool ShouldRetry(RpcException ex, int attempt) => _retry is { } p && attempt < p.MaxRetries && p.RetryableCodes.Contains(ex.StatusCode);
@@ -197,7 +209,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             var bound = policy.InitialBackoff * Math.Pow(2, Math.Min(attempt, 30));
             if (policy.MaxBackoff is { } max && bound > max) bound = max;
             var delay = JitteredDelay(bound);
-            policy.OnRetry?.Invoke(new RetryEvent(_operation, attempt + 1, ErrorMapper.ToSpiceDBException(cause), delay));
+            policy.OnRetry?.Invoke(new RetryEvent(_operation, attempt + 1, ErrorMapper.ToSpiceDBException(cause, _endpoint), delay));
             try { await Task.Delay(delay, Token); }
             catch (OperationCanceledException ex) { throw Map(ex); }
             Check();

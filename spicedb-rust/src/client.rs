@@ -242,9 +242,13 @@ impl SpiceDBClientBuilder {
     exec_settings_methods!();
 
     /// Validates the settings and endpoint and creates the channel. The
-    /// endpoint is `host:port`, `http://host[:port]` or `https://host[:port]`;
-    /// any other form, or a scheme that disagrees with the chosen transport,
-    /// fails here with `InvalidArgument` naming the expected format.
+    /// endpoint is `host:port`, `http://host:port` or `https://host[:port]`
+    /// (see [`SpiceDBClient::builder`] for ports). A malformed endpoint (a
+    /// path, query, fragment, userinfo, bad or missing port, other scheme, or
+    /// a scheme that disagrees with the chosen transport) fails here with
+    /// `InvalidArgument` naming the problem, before the remote credentials
+    /// policy is applied. A connection failure is `Transport`, whose message
+    /// names the endpoint and the cause (refused, DNS, TLS).
     pub async fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
         self.exec.validate()?;
         let plaintext = match self.transport {
@@ -268,16 +272,29 @@ impl SpiceDBClientBuilder {
             connect,
         )
         .await
-        .map_err(proto_client_error)?;
+        .map_err(|e| proto_client_error(e, Some(&self.endpoint)))?;
         self.exec.into_client(proto)
     }
 }
 
-fn proto_client_error(e: spicedb_proto::SpiceDBProtoClientError) -> SpiceDBError {
+/// `endpoint` names what was being dialed in a transport failure's message
+/// (`None` for a caller-supplied channel, which dials nothing here).
+fn proto_client_error(
+    e: spicedb_proto::SpiceDBProtoClientError,
+    endpoint: Option<&str>,
+) -> SpiceDBError {
     match e {
         spicedb_proto::SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_) => invalid(
             "remote_credentials_policy",
-            "remote plaintext credentials require RemoteCredentialsPolicy::AllowInsecureRemote",
+            &match endpoint {
+                Some(endpoint) => format!(
+                    "remote plaintext credentials to non-loopback host \"{endpoint}\" require \
+                     RemoteCredentialsPolicy::AllowInsecureRemote"
+                ),
+                None => "remote plaintext credentials require \
+                         RemoteCredentialsPolicy::AllowInsecureRemote"
+                    .to_string(),
+            },
         ),
         spicedb_proto::SpiceDBProtoClientError::UnixSocketNotSupported(msg)
         | spicedb_proto::SpiceDBProtoClientError::InvalidEndpoint(msg)
@@ -288,11 +305,19 @@ fn proto_client_error(e: spicedb_proto::SpiceDBProtoClientError) -> SpiceDBError
             // Keep the transport failure itself as the error's source, not
             // just its rendered text, so a caller can walk from
             // `SpiceDBError::Transport` to the underlying connection or TLS
-            // failure.
-            SpiceDBError::Transport(error::ErrorPayload::with_cause(
-                transport.to_string(),
-                transport,
-            ))
+            // failure. The message names the endpoint and the root cause
+            // (refused, DNS, TLS) rather than tonic's bare "transport error".
+            let cause = match &transport {
+                spicedb_proto::SpiceDBProtoClientError::Transport(t) => {
+                    spicedb_proto::client::transport_cause(t)
+                }
+                other => other.to_string(),
+            };
+            let message = match endpoint {
+                Some(endpoint) => format!("connecting to {endpoint}: {cause}"),
+                None => cause,
+            };
+            SpiceDBError::Transport(error::ErrorPayload::with_cause(message, transport))
         }
     }
 }
@@ -320,7 +345,7 @@ impl SpiceDBChannelBuilder {
     /// Builds the client. Nothing is dialed: the channel is used as supplied.
     pub fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
         let proto = SpiceDBProtoClient::from_channel(self.channel, self.token.as_deref())
-            .map_err(proto_client_error)?;
+            .map_err(|e| proto_client_error(e, None))?;
         self.exec.into_client(proto)
     }
 }
@@ -356,10 +381,18 @@ impl SpiceDBClient {
     }
 
     /// A builder for a client that dials `endpoint`: `host:port`,
-    /// `http://host[:port]` or `https://host[:port]`. A URL's scheme selects
+    /// `http://host:port` or `https://host[:port]`. A URL's scheme selects
     /// the transport (`http://` is plaintext, subject to the remote
     /// credentials policy); a `host:port` endpoint uses TLS unless
-    /// [`plaintext`](SpiceDBClientBuilder::plaintext) is set:
+    /// [`plaintext`](SpiceDBClientBuilder::plaintext) is set.
+    ///
+    /// Ports: a plaintext endpoint must name its port, whether an `http://`
+    /// URL (`http://spicedb:50051`) or a bare host with
+    /// [`plaintext`](SpiceDBClientBuilder::plaintext) (`spicedb:50051`,
+    /// `[::1]:50051`); without one, `build` fails naming `host:50051` rather
+    /// than dial port 80. A TLS endpoint without a port (`https://spicedb.example.com`
+    /// or `spicedb.example.com`) uses 443, the standard port for TLS-fronted
+    /// endpoints.
     ///
     /// ```no_run
     /// # async fn demo() -> Result<(), spicedb::SpiceDBError> {

@@ -53,13 +53,18 @@ var permissions = new PermissionsService.PermissionsServiceClient(channel);
 await using var client = SpiceDBClient.CreateSystemTls("spicedb.example.com:443", token);
 ```
 
-- Endpoints are `host:port`, without a scheme. The preshared key is a positional
-  argument; the client adds the bearer header.
+- Endpoints are `host:port`, `http://host:port` (plaintext, port required) or
+  `https://host[:port]` (TLS, port defaults to 443). A plaintext endpoint always needs a
+  port (`localhost` alone is rejected; write `localhost:50051`); a port-less TLS endpoint
+  uses 443. A URL's scheme must match the
+  factory: `CreatePlaintext` rejects `https://` and `CreateSystemTls` rejects `http://`.
+  Paths, `user@` and other schemes are rejected at construction. The preshared key is a
+  positional argument; the client adds the bearer header.
 - Plaintext with credentials to a non-loopback host is refused unless you opt in:
 
   ```csharp
   // Before: any http:// address with an auth interceptor
-  // After
+  // After (also for a Docker Compose service name such as "spicedb:50051")
   SpiceDBClient.CreatePlaintext("spicedb.internal:50051", token,
       new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow });
   ```

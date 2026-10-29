@@ -25,6 +25,149 @@ import (
 // opt-in", clause 4.
 var ErrInsecureRemoteHost = errors.New("spicedb: insecure connection to a non-loopback host requires an explicit opt-in")
 
+// ErrInvalidEndpoint is returned when NewClient is given an endpoint it
+// cannot dial as written: a plaintext endpoint without a port, a malformed
+// host:port, a URL with a path, query,
+// fragment or userinfo, an unsupported scheme, an http:// URL without a port,
+// or a URL whose scheme disagrees with the transport (http:// with TLS,
+// https:// with WithInsecure). See root DESIGN.md, "Accept the endpoint forms
+// deployments use, or reject them at construction".
+var ErrInvalidEndpoint = errors.New("spicedb: invalid endpoint")
+
+// endpointForms names the accepted endpoint forms in every
+// ErrInvalidEndpoint message.
+const endpointForms = "expected host:port (e.g. localhost:50051), http://host:port (plaintext) or https://host[:port] (TLS)"
+
+func invalidEndpoint(endpoint, reason string) error {
+	return fmt.Errorf("%w %q: %s; %s", ErrInvalidEndpoint, endpoint, reason, endpointForms)
+}
+
+// resolveEndpoint returns the gRPC target NewClient dials for endpoint, or
+// an ErrInvalidEndpoint naming what is wrong with it. It runs before the
+// remote-plaintext guard, so that guard only ever judges a well-formed
+// target.
+//
+//   - http://host:port and https://host[:port] URLs become host:port. The
+//     scheme must agree with the transport; http:// needs an explicit port
+//     (no silent dial to port 80); https:// without one uses 443. A path
+//     other than a single "/", a query, a fragment or userinfo is refused.
+//   - Targets naming a registered gRPC resolver (unix:, dns:, passthrough:
+//     and so on) pass through unchanged; grpc-go parses them.
+//   - Any other "scheme://" form is an unsupported scheme.
+//   - Everything else is host[:port]. It must not carry userinfo, a path, a
+//     query, a fragment or whitespace, and a port must be numeric.
+func resolveEndpoint(endpoint string, insecure bool) (string, error) {
+	if scheme, _, ok := strings.Cut(endpoint, "://"); ok {
+		switch strings.ToLower(scheme) {
+		case "http", "https":
+			return resolveURLEndpoint(endpoint, insecure)
+		}
+		if u, err := url.Parse(endpoint); err == nil && resolver.Get(u.Scheme) != nil {
+			return endpoint, nil
+		}
+		return "", invalidEndpoint(endpoint, fmt.Sprintf("unsupported scheme %q", scheme))
+	}
+	if u, err := url.Parse(endpoint); err == nil && resolver.Get(u.Scheme) != nil {
+		return endpoint, nil
+	}
+
+	switch {
+	case strings.Contains(endpoint, "@"):
+		return "", invalidEndpoint(endpoint, "userinfo (\"@\") is not allowed")
+	case strings.Contains(endpoint, "/"):
+		return "", invalidEndpoint(endpoint, "a path is not allowed")
+	case strings.Contains(endpoint, "?"):
+		return "", invalidEndpoint(endpoint, "a query is not allowed")
+	case strings.Contains(endpoint, "#"):
+		return "", invalidEndpoint(endpoint, "a fragment is not allowed")
+	case strings.IndexFunc(endpoint, unicode.IsSpace) >= 0:
+		return "", invalidEndpoint(endpoint, "whitespace is not allowed")
+	case endpoint == "":
+		return "", invalidEndpoint(endpoint, "the endpoint is empty")
+	}
+	hasPort := false
+	if net.ParseIP(endpoint) == nil {
+		if _, port, err := net.SplitHostPort(endpoint); err == nil {
+			if reason := badPort(port); reason != "" {
+				return "", invalidEndpoint(endpoint, reason)
+			}
+			hasPort = true
+		}
+	}
+	// A bare host follows the URL port rule: plaintext needs an explicit
+	// port, TLS defaults to 443 (grpc-go's DNS resolver appends it).
+	if !hasPort && insecure {
+		return "", invalidEndpoint(endpoint, "a plaintext endpoint needs an explicit port, e.g. localhost:50051")
+	}
+	return endpoint, nil
+}
+
+func resolveURLEndpoint(endpoint string, insecure bool) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return "", invalidEndpoint(endpoint, err.Error())
+	}
+	switch {
+	case u.User != nil:
+		return "", invalidEndpoint(endpoint, "userinfo (\"user@\") is not allowed")
+	case u.Path != "" && u.Path != "/":
+		return "", invalidEndpoint(endpoint, fmt.Sprintf("a path (%q) is not allowed", u.Path))
+	case u.RawQuery != "" || u.ForceQuery:
+		return "", invalidEndpoint(endpoint, "a query is not allowed")
+	case u.Fragment != "" || strings.Contains(endpoint, "#"):
+		return "", invalidEndpoint(endpoint, "a fragment is not allowed")
+	case u.Hostname() == "":
+		return "", invalidEndpoint(endpoint, "the host is missing")
+	}
+
+	port := u.Port()
+	if u.Scheme == "http" {
+		if !insecure {
+			return "", invalidEndpoint(endpoint, "http:// selects plaintext, but this client uses TLS; use https:// or a plaintext constructor")
+		}
+		if port == "" {
+			return "", invalidEndpoint(endpoint, "an http:// URL needs an explicit port")
+		}
+	} else {
+		if insecure {
+			return "", invalidEndpoint(endpoint, "https:// selects TLS, but this client is plaintext; use http://host:port or a TLS constructor")
+		}
+		if port == "" {
+			port = "443"
+		}
+	}
+	if reason := badPort(port); reason != "" {
+		return "", invalidEndpoint(endpoint, reason)
+	}
+	return net.JoinHostPort(u.Hostname(), port), nil
+}
+
+// badPort describes what is wrong with a port, or returns "" if it is a
+// number from 1 to 65535.
+func badPort(port string) string {
+	if port == "" {
+		return "the port is empty"
+	}
+	n := 0
+	for _, r := range port {
+		if r < '0' || r > '9' {
+			return fmt.Sprintf("the port %q is not a number", port)
+		}
+		n = n*10 + int(r-'0')
+		if n > 65535 {
+			break
+		}
+	}
+	if n < 1 || n > 65535 {
+		return fmt.Sprintf("the port %q is out of range", port)
+	}
+	return ""
+}
+
 // Client wraps all generated gRPC service clients for SpiceDB.
 type Client struct {
 	PermissionsServiceClient  v1.PermissionsServiceClient
@@ -397,8 +540,14 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 	// require an explicit opt-in". Refuse before any dial option, transport
 	// credential, or connection is created -- so a bearer token can never
 	// reach the wire for a rejected combination, not merely fail loudly
-	// after the fact.
-	if cfg.insecure && !cfg.allowInsecureRemote && !isLoopbackEndpoint(endpoint) {
+	// after the fact. The endpoint's form is checked first, so the guard
+	// judges only a well-formed target and its message never stands in for
+	// a malformed one.
+	target, err := resolveEndpoint(endpoint, cfg.insecure)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.insecure && !cfg.allowInsecureRemote && !isLoopbackEndpoint(target) {
 		return nil, fmt.Errorf(
 			"spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint %q: use TLS (drop WithInsecure), or pass WithInsecureAllowRemoteHost() if you intend to send a bearer token in cleartext to a remote host: %w",
 			endpoint, ErrInsecureRemoteHost,
@@ -474,7 +623,7 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 
 	dialOpts = append(dialOpts, cfg.dialOptions...)
 
-	conn, err := grpc.NewClient(endpoint, dialOpts...)
+	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gRPC client: %w", err)
 	}

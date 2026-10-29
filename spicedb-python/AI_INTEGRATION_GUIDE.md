@@ -69,7 +69,12 @@ from myapp.authz.sync import TypedClient
 tc = TypedClient.connect("spicedb.example.com:443", os.environ["SPICEDB_TOKEN"])  # TLS
 ```
 
-Create one client per process and `close()` it (or use `with`). Plaintext is
+Create one sync client per process and `close()` it (or use `with`). An
+asyncio client binds to the event loop it is first used on: create one
+`aio` client **per event loop** (in each loop's startup or lifespan hook, e.g.
+one for the web server and one for a worker that runs its own loop), never
+one shared at import time; another loop gets `EventLoopBindingError`.
+Plaintext is
 `transport_security=TransportSecurity.PLAINTEXT`, for loopback and unix
 sockets; a non-loopback plaintext host additionally needs
 `remote_credentials=RemoteCredentials.ALLOW`. Custom trust and mTLS:
@@ -137,6 +142,24 @@ with tc.lookup_resources_by_name(min_latency(), type_name, perm_name, User(user_
     ids = [r.resource_id for r in stream]
 ```
 
+  Lookups by name accept relations as well as permissions. A subject type
+  that cannot reach the permission yields nothing without a call (SpiceDB's
+  answer); unknown names raise `NotInSchemaError`. The rest of the typed tier
+  is reachable from strings too, each validated against the schema:
+
+```python
+obj = authz.parse_object("organization:acme")             # Organization("acme"); also object_by_name(t, id)
+admins = authz.subject_set_by_name("organization", "acme", "can_admin")  # the subject organization:acme#can_admin
+rel = authz.relationship_from_triple("organization:acme", "member", "user:alice")  # schema-checked
+tc.touch(rel)
+allowed = tc.check_by_name(min_latency(), "organization", org_id, perm_name, authz.parse_object(subject)).has_permission
+results = tc.check_bulk_by_name(min_latency(), [("organization", org_id, "view", User(user_id))])
+with tc.lookup_subjects_by_name(min_latency(), "organization", org_id, "view", "user") as stream:
+    members = [s.subject.subject_id for s in stream]
+```
+
+  `authz.SchemaObject` is the union of every generated object class and
+  `authz.SubjectSet` of every subject-set class, for annotating such code.
   `authz.DefinitionNames.ORGANIZATION` and `authz.DEFINITION_NAMES` name the
   definitions; `authz.SCHEMA_TEXT` is the schema the module was generated
   from, so `tc.write_schema(authz.SCHEMA_TEXT)` at startup needs no `.zed`
@@ -203,7 +226,7 @@ exactly one request, as the raw API does.
 ## Schema-agnostic code (native tier)
 
 ```python
-r = Relationship.from_tuple("document:readme#viewer@user:alice")  # raises InvalidArgumentError
+r = Relationship.from_tuple("document:readme#viewer@user:alice")  # raises LocalValidationError (a ValueError)
 written = c.write(Transaction().touch(r))
 result = c.check(
     PermissionCheck(
@@ -214,6 +237,12 @@ result = c.check(
     consistency=at_least(written.revision),
 )
 ```
+
+`ObjectRef.parse("document:readme")` and `SubjectRef.parse("team:eng#member")`
+read the string forms; `ObjectRef` refuses what SpiceDB's tuple syntax does
+(`ObjectRef("", "")` raises). Prebuilt `Update` values (from a queue or a
+replayed watch) go in with `Transaction().add(update)` or
+`.extend(updates)`.
 
 `c` is a `spicedb.sync.SpiceDBClient(endpoint, token=...)`. Tuple syntax
 covers `[caveat:{...}]` and `[expiration:...]`; `str(relationship)` formats
@@ -261,12 +290,25 @@ if isinstance(err, SpiceDBError):
     print(err.server_message)  # what the server said, verbatim
 ```
 
+Errors raised by local validation, before any RPC, are `LocalValidationError`:
+an `InvalidArgumentError` and also a `ValueError`, so `except ValueError`
+around parsing input works. A server `INVALID_ARGUMENT` is a plain
+`InvalidArgumentError`.
+
 Native errors are `grpc.RpcError`s: existing `except grpc.RpcError` handlers
 and `err.code()` / `err.details()` keep working, including for local
 validation, local deadlines and errors you construct. Forward
 `err.server_message`, not `str(err)` of a wrapper, when relaying an error.
 
 ## Test
+
+The in-memory double does not evaluate your schema. A permission such as
+`view = reader + writer + parent->read` is granted on the double only by a
+stored relationship whose relation is named `view`, or by a check resolver
+you install; the double never derives it from `reader`, `writer` or `parent`.
+Use the double for code that consumes check and lookup results (model the
+permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
+or a container) for tests of the permission logic in the schema.
 
 ```python
 fake = InMemoryClient([Relationship.from_tuple("organization:acme#admin@user:alice")])

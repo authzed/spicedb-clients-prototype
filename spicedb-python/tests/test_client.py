@@ -928,8 +928,9 @@ def test_reusing_a_client_across_event_loops_raises_a_clear_error():
     with pytest.raises(EventLoopBindingError) as excinfo:
         asyncio.run(_use_again())
     msg = str(excinfo.value)
-    assert "spicedb.sync" in msg, "the error must point at the sync client"
-    assert "event loop" in msg.lower()
+    assert "one client per event loop" in msg, "the primary fix is a client per loop"
+    assert "spicedb.sync" in msg, "synchronous callers are still pointed at the sync client"
+    assert "if the calling code is synchronous" in msg, "the sync client is conditional advice"
     asyncio.run(client.close())
 
 

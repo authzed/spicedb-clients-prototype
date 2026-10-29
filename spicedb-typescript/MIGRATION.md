@@ -68,6 +68,15 @@ const remote = createSpiceDBClient("spicedb.internal:50051", token, {
 });
 ```
 
+The endpoint may also be a URL: `http://host:port` selects plaintext and
+`https://host[:port]` selects TLS (port 443 by default) when
+`transportSecurity` is omitted, and must agree with it when given. A URL with
+a path, query, fragment or userinfo, a plaintext endpoint without a port
+(`localhost` or `http://localhost`; write `localhost:50051`), a
+non-numeric port and any other scheme are refused at construction with an
+`InvalidArgumentError` naming the problem; `@authzed/authzed-node` accepted
+only `host:port`.
+
 `NewClientWithChannelCredentials` has no direct equivalent; build a Connect
 transport yourself and use `SpiceDBClient.fromTransport(transport)`. The client
 never closes a transport you supply. A custom `deadlineInterceptor(ms)` becomes

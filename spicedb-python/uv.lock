@@ -182,7 +182,7 @@ dev = [
 requires-dist = [
     { name = "googleapis-common-protos", specifier = ">=1.56.1" },
     { name = "grpcio", specifier = ">=1.73.0" },
-    { name = "protobuf", specifier = ">=7.36.2" },
+    { name = "protobuf", specifier = ">=5.26.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25.0" },
     { name = "spicedb-python-proto", directory = "../proto-clients/spicedb-python-proto" },
@@ -203,7 +203,7 @@ dependencies = [
 requires-dist = [
     { name = "googleapis-common-protos", specifier = ">=1.56.1" },
     { name = "grpcio", specifier = ">=1.73.0" },
-    { name = "protobuf", specifier = ">=7.36.2" },
+    { name = "protobuf", specifier = ">=5.26.1" },
     { name = "protovalidate", marker = "extra == 'validation'", specifier = ">=1.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },

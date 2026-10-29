@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Endpoint forms
+
+- `createPlaintext`, `createSystemTls` and `create` accept `http://host:port`
+  and `https://host[:port]` besides `host:port` (and `unix:`). The scheme must
+  agree with the constructor; `http://` needs an explicit port and `https://`
+  defaults to 443. Previously a URL fell into the remote-plaintext refusal
+  (even for loopback) or a raw `IllegalArgumentException` from gRPC.
+- Bare hosts follow the same port rule: a plaintext endpoint without a port
+  (`localhost`, `127.0.0.1`, `[::1]`, `::1`) fails at construction naming the
+  `host:50051` form, and a TLS endpoint without one dials 443 explicitly.
+- Any other scheme, path, query, fragment, userinfo or invalid port fails at
+  construction with `InvalidArgumentException` naming the problem and the
+  accepted forms, before the remote-plaintext check, which now judges the
+  parsed host.
+- A connection failure's `UnavailableException` names the endpoint and the root
+  cause (`Connection refused`, `not an SSL/TLS record`) instead of only
+  `io exception` and a Netty pipeline dump.
+- The remote-plaintext refusal names every choice that allowing it takes, as
+  written: `createPlaintext(..., ClientOptions.builder()
+  .remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build())` or
+  `create(..., withInsecure(), allowInsecureRemoteCredentials())`, and TLS
+  otherwise. README shows the Docker Compose (`spicedb:50051`) case.
+
 ### Publishing, dependency floors and Spring Boot hosts
 
 - Both builds apply `maven-publish`: `gradle publishToMavenLocal` installs

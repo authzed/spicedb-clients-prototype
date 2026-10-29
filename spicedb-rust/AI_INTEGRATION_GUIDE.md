@@ -50,7 +50,7 @@ let client = SpiceDBClient::new_system_tls(
 // SpiceDBClient is a cheap Clone + Send + Sync handle; share it, don't reconnect.
 ```
 
-Endpoints are `host:port`, `http://host[:port]` or `https://host[:port]`. With
+Endpoints are `host:port`, `http://host:port` or `https://host[:port]`. With
 `SpiceDBClient::builder(url, token).build()` the URL's scheme selects plaintext
 or TLS, so a deployment's `SPICEDB_URL=http://spicedb:50051` setting can be
 passed as is (a remote `http://` host still needs

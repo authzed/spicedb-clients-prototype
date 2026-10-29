@@ -91,7 +91,9 @@ module SpiceDB
       # Every construction refusal runs now; the channel opens on first use.
       SpiceDBProto::Client.validate_connection!(endpoint, **options)
       @connect = -> { SpiceDBProto::Client.new(endpoint, token, **options) }
-    rescue SpiceDBProto::InsecureRemoteHostError, ArgumentError => e
+    rescue SpiceDBProto::InsecureRemoteHostError
+      raise InvalidArgumentError, remote_plaintext_refusal(endpoint)
+    rescue ArgumentError => e
       raise InvalidArgumentError, e.message
     end
 
@@ -446,6 +448,19 @@ module SpiceDB
     end
 
     private
+
+    # The remote-plaintext refusal in this API's own spelling. Both options it
+    # names are required: the plaintext transport and the separate opt-in to
+    # send credentials over it (root DESIGN.md, "Require an explicit decision
+    # before sending credentials over remote plaintext").
+    def remote_plaintext_refusal(endpoint)
+      "spicedb: refusing to send credentials in plaintext to non-loopback endpoint #{endpoint.inspect}. " \
+        'To allow it, pass both the plaintext transport and the remote-credentials opt-in: ' \
+        "SpiceDB::Client.new_plaintext(#{endpoint.inspect}, token, remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT) " \
+        '(or SpiceDB::Client.new(transport: SpiceDB::TransportSecurity::PLAINTEXT, ' \
+        'remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT, ...)). ' \
+        'Otherwise use TLS: SpiceDB::Client.new_system_tls'
+    end
 
     # Called under @mutex. Opens the connection in this process, or explains
     # why a connection opened before a fork cannot be used here.

@@ -29,11 +29,12 @@ def test_subject_reference_from_relationship():
     assert ref.optional_relation == ""
 
 
-def test_subject_reference_from_tuple_splits_on_first_colon():
-    ref = req.subject_reference(_subject("group:eng:west", "member"))
-    assert ref.object.object_type == "group"
-    assert ref.object.object_id == "eng:west"
-    assert ref.optional_relation == "member"
+def test_subject_id_with_a_colon_is_rejected_as_the_server_would():
+    import pytest
+    from spicedb import LocalValidationError
+
+    with pytest.raises(LocalValidationError):
+        _subject("group:eng:west", "member")
 
 
 def test_check_bulk_request_builds_one_item_per_relationship():

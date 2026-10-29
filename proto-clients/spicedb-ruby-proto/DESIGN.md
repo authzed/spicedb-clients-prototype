@@ -111,11 +111,23 @@ Create a `lib/spicedb_proto/client.rb` file with:
 
 2c. **`.validate_connection!(endpoint, insecure:, allow_insecure_remote_credentials:,
    ca_cert:, client_cert:, client_key:)`** -- every refusal `#initialize` applies
-   (non-loopback plaintext without the opt-in, then `.validate_tls_material!`), in
-   that order, creating no gRPC object. `#initialize` calls it first. It lets a
+   (`.parse_endpoint` and URL-scheme/transport agreement, then non-loopback
+   plaintext without the opt-in judged on the parsed host, then
+   `.validate_tls_material!`), in that order, creating no gRPC object, and
+   returns the target to dial. `#initialize` calls it first. It lets a
    caller that opens its channel later (the idiomatic client connects on first
    use, so a client built before a fork works in forked children) still fail at
    construction.
+
+2d. **`.parse_endpoint(endpoint, insecure:)`** -- root DESIGN.md, "Accept the
+   endpoint forms deployments use, or reject them at construction". Accepts
+   `host[:port]` (`unix:` targets pass unchanged), `http://host:port` and
+   `https://host[:port]`, reducing each to the `host:port` the C-core dials,
+   since the C-core does not understand `http(s)://` targets. Plaintext needs an
+   explicit port, with or without a scheme; TLS defaults to 443. Raises `InvalidEndpointError` (an `ArgumentError`)
+   naming the problem and the accepted forms for any other scheme, userinfo, a
+   path, query or fragment, or a non-numeric port. `insecure: true` with
+   `https://`, or `insecure: false` with `http://`, is refused the same way.
 
 2b. **`.from_channel(channel, interceptors: [])`** -- wraps a caller-owned
    `GRPC::Core::Channel` (root DESIGN.md: every client has a constructor from an

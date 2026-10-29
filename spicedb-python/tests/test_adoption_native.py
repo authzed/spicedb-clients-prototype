@@ -133,7 +133,7 @@ def test_except_grpc_rpc_error_catches_native_errors():
     client = _sync()
     client._permissions.WriteRelationships = Mock(side_effect=_rpc_error(grpc.StatusCode.NOT_FOUND))
     with pytest.raises(grpc.RpcError) as caught:
-        client.write(Transaction().touch(Relationship.from_tuple("d:1#r@u:1")))
+        client.write(Transaction().touch(Relationship.from_tuple("doc:1#reader@user:1")))
     assert caught.value.code() is grpc.StatusCode.NOT_FOUND
 
 

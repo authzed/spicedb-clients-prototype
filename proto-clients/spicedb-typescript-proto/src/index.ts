@@ -1,5 +1,5 @@
 // Client
-export { InsecureRemoteHostError } from "./client.js";
+export { InsecureRemoteHostError, remotePlaintextRefusal, InvalidEndpointError, endpointScheme, type EndpointScheme } from "./client.js";
 export {
   SpiceDBProtoClient,
   createSpiceDBClient,

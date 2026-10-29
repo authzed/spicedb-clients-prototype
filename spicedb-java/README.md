@@ -98,6 +98,38 @@ SpiceDBClient.createSystemTls(endpoint, key, ClientOptions.builder().build(),
     b -> b.keepAliveTime(60, TimeUnit.SECONDS).keepAliveTimeout(10, TimeUnit.SECONDS));
 ```
 
+Endpoints take one of these forms; anything else fails at construction with
+`InvalidArgumentException` naming the problem and the accepted forms:
+
+| Form | Transport | Notes |
+| --- | --- | --- |
+| `host:port` | the constructor's | `[::1]:50051` for IPv6 |
+| `host` (no port) | TLS (`createSystemTls`) only | dials 443; `createPlaintext` rejects it |
+| `http://host:port` | plaintext (`createPlaintext`) | port required: nothing silently dials 80 |
+| `https://host[:port]` | TLS (`createSystemTls`) | port defaults to 443 |
+| `unix:/path/to.sock` | plaintext | Unix domain socket |
+
+A URL's scheme must agree with the constructor (`createPlaintext` rejects
+`https://`, `createSystemTls` rejects `http://`). A path, query, fragment,
+userinfo (`user@`), non-numeric port or other scheme is rejected before the
+remote-plaintext check, which judges the parsed host. A connection failure's
+`UnavailableException` names the endpoint and the root cause, for example
+`connecting to SpiceDB at "127.0.0.1:50051" failed: io exception:
+ConnectException: Connection refused`.
+
+From another Docker Compose service, SpiceDB is a remote host (`spicedb:50051`),
+so plaintext takes both the plaintext constructor and the explicit opt-in to
+send the key in cleartext:
+
+```java
+SpiceDBClient.createPlaintext("spicedb:50051", System.getenv("SPICEDB_TOKEN"),
+    ClientOptions.builder()
+        .remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW)
+        .build());
+```
+
+Without the opt-in, construction fails with a message naming both choices.
+
 ## More
 
 - [DESIGN.md](DESIGN.md): the API's rules and guarantees.

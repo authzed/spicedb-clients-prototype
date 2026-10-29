@@ -152,7 +152,7 @@ func TestRawProto_IsAnAccessorNotASecondConstructionPath(t *testing.T) {
 	// And the guard still refuses what it always did.
 	_, err := NewWithOpts("evil.example.com:50051", "test-token", WithInsecure())
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+	require.Contains(t, err.Error(), "WithRemotePlaintextCredentials(RemotePlaintextAllowed)")
 }
 
 func TestRawProto_OnAZeroValueClientIsNil(t *testing.T) {

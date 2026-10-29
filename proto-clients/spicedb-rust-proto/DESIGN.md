@@ -91,15 +91,23 @@ The `src/client.rs` file provides:
    itself can fail on.
 
    Endpoint forms (root DESIGN.md, "Accept the endpoint forms deployments use,
-   or reject them at construction"): `host:port`, `http://host[:port]` and
+   or reject them at construction"): `host:port`, `http://host:port` and
    `https://host[:port]` (scheme case-insensitive, one trailing `/` allowed).
    A URL's scheme must agree with `insecure` (`http` with `true`, `https` with
-   `false`); the scheme is never prefixed a second time. Any other scheme, a
-   disagreeing one, userinfo, a path, a query, a non-numeric port or an
-   unparseable authority fails with `InvalidEndpoint(String)`, whose message
-   names the accepted forms. The loopback guard runs first on plaintext and
-   judges the URL's authority, so `http://127.0.0.1:50051` is loopback, while
-   authority-shifting endpoints still fail as `InsecureRemoteHostNotAllowed`.
+   `false`); the scheme is never prefixed a second time. The form is checked
+   in full before the loopback/credentials policy: any other scheme, a
+   disagreeing one, a path, query or fragment, userinfo, an empty or
+   non-numeric port, a plaintext endpoint without a port (an `http://` URL or
+   a bare host such as `localhost` or `::1`; it would dial 80), or an
+   unparseable host fails with `InvalidEndpoint(String)`, whose message names
+   the problem (for a missing port, `host:50051`) and the accepted forms. A
+   TLS endpoint without a port, URL or bare host, uses 443.
+   Only a well-formed endpoint reaches the guard, which judges its host, so
+   `http://127.0.0.1:50051` is loopback and `InsecureRemoteHostNotAllowed`
+   means a well-formed remote host. `SpiceDBProtoClientError::Transport`
+   displays `transport error: <cause>`, where `transport_cause(&error)` joins
+   the distinct messages along the source chain (refused, DNS, TLS) instead of
+   tonic's bare "transport error"; `source()` is unchanged.
    `is_loopback_endpoint` accepts URLs too; `endpoint_scheme(endpoint)`
    returns the `EndpointScheme` of a URL endpoint so the idiomatic builder can
    let it select the transport.

@@ -25,6 +25,10 @@ func init() {
 // DefaultModule is the name of the emitted types module (permissions.py).
 const DefaultModule = "permissions"
 
+// DefaultNamesOnlyModule is the module --python.names-only writes (names.py)
+// unless --python.module names another.
+const DefaultNamesOnlyModule = "names"
+
 // Generator implements generator.LanguageGenerator for Python.
 type Generator struct{}
 
@@ -48,6 +52,15 @@ type TemplateData struct {
 	SchemaText string
 	// DefinitionNameList lists every definition's schema name, in order.
 	DefinitionNameList []string
+	// RelationKeys lists every relation as "definition#relation", in schema
+	// order, for relationship_from_triple's relation check.
+	RelationKeys []string
+	// SubjectRules lists every subject shape a relation admits, as
+	// "definition#relation@" + subjectRule(st), for relationship_from_triple.
+	SubjectRules []string
+	// SubjectSets lists the base userset subject classes (no caveat or
+	// expiration), for subject_set_by_name and the SubjectSet alias.
+	SubjectSets []SubjectSetData
 
 	// ClientTypeImports lists the names, sorted and deduplicated, that
 	// sync.py/aio.py reference from the types module.
@@ -143,6 +156,12 @@ type StaticPermRefData struct {
 type SealedUnionData struct {
 	AliasName string
 	Members   []string
+}
+
+// SubjectSetData is one userset subject class, keyed by "definition#relation".
+type SubjectSetData struct {
+	Key       string // e.g. "team#member"
+	ClassName string // e.g. "TeamMember"
 }
 
 type CaveatContextData struct {
@@ -258,11 +277,23 @@ func parseRenames(v string) (map[string]string, error) {
 //     identifiers (e.g. `definition subject` and the Subject protocol).
 //     Renames change Python identifiers only; the schema names sent to
 //     SpiceDB never change.
+//   - names-only (--python.names-only): emit only the name constants, name
+//     tuples and SCHEMA_TEXT into one module (default "names.py", or
+//     --python.module), importing only the standard library, so a shared
+//     package can use the names without depending on the client.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	module := DefaultModule
+	moduleSet := false
+	namesOnly := false
 	renames := map[string]string{}
 	for k, v := range opts {
 		switch k {
+		case generator.NamesOnlyOption:
+			b, err := generator.BoolOption("python", k, v)
+			if err != nil {
+				return nil, err
+			}
+			namesOnly = b
 		case "rename":
 			r, err := parseRenames(v)
 			if err != nil {
@@ -274,6 +305,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 				return nil, fmt.Errorf("--python.module=%q must be a Python identifier other than a keyword, \"sync\" or \"aio\"", v)
 			}
 			module = v
+			moduleSet = true
 		default:
 			return nil, fmt.Errorf("unknown Python option --python.%s", k)
 		}
@@ -302,6 +334,17 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	data.SchemaText = s.Source
 	for _, def := range s.Definitions {
 		data.DefinitionNameList = append(data.DefinitionNameList, def.Name)
+		for _, rel := range def.Relations {
+			key := def.Name + "#" + rel.Name
+			data.RelationKeys = append(data.RelationKeys, key)
+			for _, st := range rel.AllowedSubjects {
+				data.SubjectRules = append(data.SubjectRules, key+"@"+subjectRule(st))
+			}
+		}
+	}
+
+	if namesOnly && !moduleSet {
+		module = DefaultNamesOnlyModule
 	}
 
 	tmpl, err := template.New("permissions.py.tmpl").Funcs(template.FuncMap{
@@ -315,9 +358,19 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		"textConst":  textConst,
 		"typeArgs":   typeArgs,
 		"defClasses": defClasses,
+		"defNames":   defNames,
+		"setNames":   setNames,
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
+	}
+
+	if namesOnly {
+		var names bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&names, "names_only.py.tmpl", data); err != nil {
+			return nil, fmt.Errorf("executing template names_only.py.tmpl: %w", err)
+		}
+		return []generator.GeneratedFile{{Path: module + ".py", Content: tidy(names.Bytes())}}, nil
 	}
 
 	var types bytes.Buffer
@@ -504,6 +557,44 @@ func textConst(lhs, text string) string {
 	return b.String()
 }
 
+// subjectRule is the admission key of one allowed subject shape, matching
+// the generated _subject_rule: "user", "user:*", "team#member", then
+// "[caveat]" and "[expiration]" suffixes when the shape requires them.
+func subjectRule(st schema.SubjectType) string {
+	rule := st.Definition
+	if st.Wildcard {
+		rule += ":*"
+	}
+	if st.Relation != "" {
+		rule += "#" + st.Relation
+	}
+	if st.CaveatName != "" {
+		rule += "[" + st.CaveatName + "]"
+	}
+	if st.Expiration {
+		rule += "[expiration]"
+	}
+	return rule
+}
+
+// defNames lists the definition classes, for the SchemaObject alias.
+func defNames(defs []DefinitionData) []string {
+	out := make([]string, len(defs))
+	for i, d := range defs {
+		out[i] = d.ClassName
+	}
+	return out
+}
+
+// setNames lists the userset subject classes, for the SubjectSet alias.
+func setNames(sets []SubjectSetData) []string {
+	out := make([]string, len(sets))
+	for i, s := range sets {
+		out[i] = s.ClassName
+	}
+	return out
+}
+
 // defClasses lists the definition classes, for the DefinitionClass alias.
 func defClasses(defs []DefinitionData) []string {
 	out := make([]string, len(defs))
@@ -660,7 +751,10 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		"ObjectRef", "PermissionCheck", "Precondition", "Relationship", "SubjectFilter", "SubjectRef",
 		"SubjectRelationFilter", "Transaction", "Update",
 		"DefinitionNames", "DEFINITION_NAMES", "DefinitionClass", "SCHEMA_TEXT", "definition_by_name",
-		"permission_ref_by_name", "_DEFINITIONS", "_PERMISSION_REFS",
+		"permission_ref_by_name", "_DEFINITIONS", "_PERMISSION_REFS", "LocalValidationError",
+		"SchemaObject", "object_by_name", "parse_object", "relationship_from_triple",
+		"_RELATIONS", "_SUBJECT_RULES", "_subject_rule", "SubjectSet", "subject_set_by_name",
+		"_SUBJECT_SETS", "_lookup_target", "_reaches", "get_args",
 	} {
 		n.claim("", fixed, "generated support code")
 	}
@@ -1050,6 +1144,14 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		Checkables:     checkables,
 		StaticPermRefs: staticPermRefs,
 	}
+	for _, sr := range subjectRefs {
+		if sr.SubRelation != "" && !sr.Wildcard && !sr.HasCaveat && !sr.HasExpiration {
+			data.SubjectSets = append(data.SubjectSets, SubjectSetData{
+				Key:       sr.DefinitionName + "#" + sr.SubRelation,
+				ClassName: sr.ClassName,
+			})
+		}
+	}
 	for _, c := range checkables {
 		if c.SubjectUnion != "" {
 			data.CheckOverloads = append(data.CheckOverloads, c)
@@ -1078,7 +1180,11 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 func clientTypeImports(data TemplateData) []string {
 	set := map[string]bool{
 		"Permission":             true,
-		"permission_ref_by_name": true,
+		"_lookup_target":         true,
+		"_object":                true,
+		"_reaches":               true,
+		"definition_by_name":     true,
+		"SubjectNotAllowedError": true,
 		"RelationshipKey":        true,
 		"Subject":                true,
 		"TypedRelationship":      true,
@@ -1182,5 +1288,6 @@ func (g *Generator) Options() []generator.Option {
 	return []generator.Option{
 		{Name: "module", Value: "<name>", Description: "Python package name the generated sync/aio modules import from."},
 		{Name: "rename", Value: "<definition>=<ClassName>[,...]", Description: "Class-name stem for a definition whose generated names collide; schema names on the wire are unchanged."},
+		generator.NamesOnlyOptionDescription,
 	}
 }

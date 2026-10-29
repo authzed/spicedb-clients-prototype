@@ -1,5 +1,7 @@
 # Changelog
 
+- Endpoints accept `host:port`, `http://host:port` (plaintext) and `https://host[:port]` (TLS, port 443 by default). The URL scheme must agree with `transport_security`; an `http://` URL or a plaintext `host` without a port is rejected (no silent dial to 80 or 443), and a TLS endpoint without a port uses 443. Any other form (a path, query, fragment or userinfo, a non-numeric or out-of-range port, an unsupported scheme such as `ftp://` or `dns:///`) now fails at construction with an `InvalidArgumentError` naming the problem, instead of building a client whose every call fails. Malformed endpoints are reported before the remote-plaintext refusal, which now judges the URL's parsed host and names both options a remote plaintext host (such as a Docker Compose service) needs: `transport_security=TransportSecurity.PLAINTEXT` and `remote_credentials=RemoteCredentials.ALLOW`.
+
 - Generated sync/async clients now expose all native capabilities directly, including `delete_relationships`, `delete_all_relationships_non_atomic`, Watch relationship filters, bulk checks, schema operations, imports/exports, counters, and materialize methods. Schema-aware check/lookup overloads remain strict. Lookup/read methods expose native pagination and diagnostic options; typed write helpers accept metadata, and `write` accepts typed or native transactions. Native stream identity and cancellation are preserved.
 
 - Watch supports full native relationship filters, ORing multiple entries and watching all relationship changes when filters are empty. Nonempty `object_types` and `filters` are mutually exclusive and fail locally before RPC. Watch examples now use type-only relationship filters.
@@ -11,6 +13,63 @@
 - Add `LookupPermissionshipFilter.ALL` / `LookupPermissionshipFilter.HAS_PERMISSION_ONLY` to LookupResources. The default preserves conditional matches; opt-in filtering yields only unconditional grants, with limits applied after filtering and pagination continuing through skipped matches.
 
 ## Unreleased
+
+### Local validation, parsers and prebuilt updates
+
+- Client-side validation now raises `LocalValidationError`, a subclass of both
+  `InvalidArgumentError` and `ValueError`, so `except ValueError` around bad
+  input (for example `Relationship.from_triple("document", "viewer", "user:1")`)
+  catches it; `except InvalidArgumentError` and `except grpc.RpcError` still
+  do, and `code()` is still `INVALID_ARGUMENT`. A server `INVALID_ARGUMENT`
+  stays a plain `InvalidArgumentError`.
+- **Breaking:** `ObjectRef` requires a type and ID that SpiceDB's tuple syntax
+  accepts (a lowercase definition name, optionally `prefix/name`, and a
+  nonempty ID of `a-z A-Z 0-9 / _ | - = +` characters, or `*`). Before:
+  `ObjectRef("", "")` was accepted and the server rejected the request. After:
+  it raises `LocalValidationError`. Values read from the server are kept as
+  sent.
+- New `ObjectRef.parse("type:id")` and `SubjectRef.parse("type:id[#relation]")`
+  (`#...` is a direct subject). `Relationship.from_triple` also treats a
+  `#...` subject relation as direct, as `from_tuple` does.
+- New `Transaction.add(update)` and `Transaction.extend(updates)` queue
+  prebuilt `Update` values; `extend` is all-or-nothing, and an `UNSPECIFIED`
+  operation is rejected.
+- Using an aio client from a second event loop now says to create one client
+  per event loop (or use `spicedb.sync` if the code is synchronous).
+- The `UpdateOperation` docstring covers queued transaction updates, not only
+  `watch()`.
+
+### Dependency floors
+
+- The protobuf floor drops from `7.36.2` to `5.26.1`: spicedb-python-proto's
+  bindings are now generated as protobuf 5.26.1 code (pinned plugins), so
+  applications on protobuf 5.x, 6.x and 7.x install without a protobuf
+  upgrade. The suites pass on 5.26.1, 5.29.5, 6.33.2 and 7.36.2.
+
+### Generated typed clients: runtime names
+
+- `object_by_name(type, id)` and `parse_object("type:id")` return the typed
+  object (`Document("readme")`), `subject_set_by_name(type, id, relation)` the
+  typed subject set (`TeamMember("eng")`), and `relationship_from_triple(...)`
+  a `TypedRelationship` checked against the schema exactly as SpiceDB checks a
+  write (subject type, subject relation, wildcard, caveat and expiration).
+  Unknown names raise `NotInSchemaError`, inadmissible subjects
+  `SubjectNotAllowedError`, malformed text `LocalValidationError`.
+- `SchemaObject` and `SubjectSet` are the unions of every generated object
+  and subject-set class.
+- `TypedClient.check_by_name` and `check_bulk_by_name` check permissions or
+  relations named at runtime; `lookup_subjects_by_name` is the counterpart of
+  `lookup_resources_by_name`.
+- `lookup_resources_by_name` accepts relations as well as permissions, as
+  SpiceDB does. A by-name lookup whose subject type cannot reach the
+  permission returns no results without a call (SpiceDB's answer) instead of
+  raising `SubjectNotAllowedError`; unknown names still raise.
+- Generated `sync.py`/`aio.py` pass mypy, including `--strict`:
+  `__exit__`/`__aexit__` return `None` instead of a `bool` that is always
+  False.
+- `--python.names-only` writes only the name constants, name tuples and
+  `SCHEMA_TEXT` to `names.py` (or `--python.module`), importing only the
+  standard library.
 
 ### Test doubles resolve checks and serve lookups
 

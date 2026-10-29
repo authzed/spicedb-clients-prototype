@@ -87,7 +87,7 @@ from spicedb._budget import Budget
 from spicedb._client_base import mutation_retry_policy, response_target, write_is_idempotent
 from spicedb._streams import AsyncStream, Stream
 from spicedb.consistency import Consistency
-from spicedb.errors import InvalidArgumentError, SpiceDBError
+from spicedb.errors import LocalValidationError, SpiceDBError
 from spicedb.options import (
     BulkItemErrors,
     CallOptions,
@@ -227,7 +227,7 @@ def cursor_after(n: int) -> str:
     SpiceDB cursor; never send it to a real server.
     """
     if isinstance(n, bool) or not isinstance(n, int) or n < 0:
-        raise InvalidArgumentError("n: expected non-negative integer")
+        raise LocalValidationError("n: expected non-negative integer")
     return str(n)
 
 
@@ -271,7 +271,7 @@ def _resolved(value: Any) -> CheckResult | None:
         return CheckResult(value, (), ZedToken(""))
     if isinstance(value, CheckResult):
         return value
-    raise InvalidArgumentError(
+    raise LocalValidationError(
         f"check resolver: expected CheckResult, Permissionship, bool or None, got {value!r}"
     )
 
@@ -295,12 +295,12 @@ def _precondition_error(text: str) -> SpiceDBError:
 
 def _call_options(call_options: CallOptions | None) -> None:
     if call_options is not None and not isinstance(call_options, CallOptions):
-        raise InvalidArgumentError(f"call_options: expected CallOptions, got {call_options!r}")
+        raise LocalValidationError(f"call_options: expected CallOptions, got {call_options!r}")
 
 
 def _positive(value, field):
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise InvalidArgumentError(f"{field}: expected positive integer")
+        raise LocalValidationError(f"{field}: expected positive integer")
 
 
 class _Store:
@@ -320,7 +320,7 @@ class _Store:
         self.schema_revision = SchemaRevision.INCLUDED
         for relationship in relationships:
             if not isinstance(relationship, Relationship):
-                raise InvalidArgumentError("relationships: expected Relationship values")
+                raise LocalValidationError("relationships: expected Relationship values")
             self.relationships[_key(relationship)] = relationship
 
     def token(self) -> ZedToken:
@@ -345,7 +345,7 @@ class _Store:
             return None
         error = hook(Fault(call, stage, item, batch))
         if error is not None and not isinstance(error, BaseException):
-            raise InvalidArgumentError(f"fault hook: expected an exception or None, got {error!r}")
+            raise LocalValidationError(f"fault hook: expected an exception or None, got {error!r}")
         return error
 
     def begin_or_raise(self, operation: Operation, request: Any, options: dict[str, Any]) -> Call:
@@ -395,7 +395,7 @@ class _Store:
                 elif update.operation is UpdateOperation.DELETE:
                     staged.pop(key, None)
                 else:
-                    raise InvalidArgumentError("unknown update operation")
+                    raise LocalValidationError("unknown update operation")
             self.relationships = staged
             self.revision += 1
             return WriteResult(self.token())
@@ -579,7 +579,7 @@ class InMemoryClient:
         if isinstance(result, Permissionship):
             result = CheckResult(result, (), ZedToken(""))
         if not isinstance(result, CheckResult):
-            raise InvalidArgumentError("result: expected CheckResult or Permissionship")
+            raise LocalValidationError("result: expected CheckResult or Permissionship")
         with self._store.lock:
             self._store.checks[_check_key(resource, permission, subject)] = result
 
@@ -595,14 +595,14 @@ class InMemoryClient:
         It must not call the double. Pass None to remove it.
         """
         if resolver is not None and not callable(resolver):
-            raise InvalidArgumentError("resolver: expected callable or None")
+            raise LocalValidationError("resolver: expected callable or None")
         with self._store.lock:
             self._store.resolver = resolver
 
     def set_reflect_schema_result(self, result: ReflectSchemaResult) -> None:
         """Register what ``reflect_schema`` returns (stamped with the current revision)."""
         if not isinstance(result, ReflectSchemaResult):
-            raise InvalidArgumentError("result: expected ReflectSchemaResult")
+            raise LocalValidationError("result: expected ReflectSchemaResult")
         with self._store.lock:
             self._store.reflection = result
 
@@ -622,7 +622,7 @@ class InMemoryClient:
         (:attr:`SchemaRevision.INCLUDED`, the default) or ``ZedToken("")``
         (:attr:`SchemaRevision.OMITTED`)."""
         if not isinstance(mode, SchemaRevision):
-            raise InvalidArgumentError(f"mode: expected SchemaRevision, got {mode!r}")
+            raise LocalValidationError(f"mode: expected SchemaRevision, got {mode!r}")
         with self._store.lock:
             self._store.schema_revision = mode
 
@@ -636,7 +636,7 @@ class InMemoryClient:
         hook must not call the double. Pass None to remove it.
         """
         if hook is not None and not callable(hook):
-            raise InvalidArgumentError("hook: expected callable or None")
+            raise LocalValidationError("hook: expected callable or None")
         with self._store.lock:
             self._store.hook = hook
 
@@ -644,9 +644,9 @@ class InMemoryClient:
         """Make the next call of ``operation`` raise ``error`` before doing
         anything; later calls succeed. Replaces any fault hook."""
         if not isinstance(operation, Operation):
-            raise InvalidArgumentError(f"operation: expected Operation, got {operation!r}")
+            raise LocalValidationError(f"operation: expected Operation, got {operation!r}")
         if not isinstance(error, BaseException):
-            raise InvalidArgumentError("error: expected an exception")
+            raise LocalValidationError("error: expected an exception")
         lock = threading.Lock()
         pending = [True]
 
@@ -687,7 +687,7 @@ class InMemoryClient:
         )
         Budget(timeout)
         if not isinstance(transaction, Transaction):
-            raise InvalidArgumentError("transaction: expected Transaction")
+            raise LocalValidationError("transaction: expected Transaction")
         mutation_retry_policy(call_options, write_is_idempotent(transaction), "write")
         _requests.write_request(transaction)
         _requests.context_struct(metadata)
@@ -761,10 +761,10 @@ class InMemoryClient:
         _positive(page_size, "page_size")
         _call_options(call_options)
         if not isinstance(filter, Filter):
-            raise InvalidArgumentError("filter: expected Filter")
+            raise LocalValidationError("filter: expected Filter")
         _requests.read_relationships_request(filter, consistency, page_size, None)
         if cursor is not None and (not isinstance(cursor, str) or not cursor):
-            raise InvalidArgumentError("cursor: expected nonempty cursor string")
+            raise LocalValidationError("cursor: expected nonempty cursor string")
         store = self._store
 
         def factory(_owner):
@@ -800,10 +800,10 @@ class InMemoryClient:
         _positive(page_size, "page_size")
         _call_options(call_options)
         if filter is not None and not isinstance(filter, Filter):
-            raise InvalidArgumentError("filter: expected Filter")
+            raise LocalValidationError("filter: expected Filter")
         _requests.export_request(consistency, filter._to_proto() if filter is not None else None, page_size, None)
         if cursor is not None and (not isinstance(cursor, str) or not cursor):
-            raise InvalidArgumentError("cursor: expected nonempty cursor string")
+            raise LocalValidationError("cursor: expected nonempty cursor string")
         store = self._store
         match = filter.matches if filter is not None else (lambda _r: True)
 
@@ -841,7 +841,7 @@ class InMemoryClient:
         mutation_retry_policy(call_options, False, "import relationships")
         for relationship in batch:
             if not isinstance(relationship, Relationship):
-                raise InvalidArgumentError("relationships: expected Relationship values")
+                raise LocalValidationError("relationships: expected Relationship values")
             relationship._to_proto()
         for start in range(0, len(batch), batch_size):
             contents = tuple(batch[start:start + batch_size])
@@ -882,7 +882,7 @@ class InMemoryClient:
     @staticmethod
     def _validate_delete(filter, must_match, must_not_match, limit, allow_partial, metadata) -> None:
         if not isinstance(filter, Filter):
-            raise InvalidArgumentError("filter: expected Filter")
+            raise LocalValidationError("filter: expected Filter")
         _requests.delete_relationships_request(
             filter, list(must_match), list(must_not_match), limit, None, allow_partial
         )
@@ -913,7 +913,7 @@ class InMemoryClient:
         mutation_retry_policy(call_options, False, "delete relationships")
         _positive(page_size, "page_size")
         if on_progress is not None and not callable(on_progress):
-            raise InvalidArgumentError("on_progress: expected callable")
+            raise LocalValidationError("on_progress: expected callable")
         must_match, must_not_match = tuple(must_match), tuple(must_not_match)
         self._validate_delete(filter, must_match, must_not_match, page_size, True, metadata)
         self._store.respond(call_options)
@@ -960,7 +960,7 @@ class InMemoryClient:
         Budget(timeout)
         mutation_retry_policy(call_options, True, "write schema")
         if not isinstance(schema, str):
-            raise InvalidArgumentError("schema: expected str")
+            raise LocalValidationError("schema: expected str")
         self._store.respond(call_options)
         with self._store.lock:
             self._store.schema = schema
@@ -1175,13 +1175,13 @@ class InMemoryClient:
             _positive(limit, "limit")
         _call_options(call_options)
         if not isinstance(subject, SubjectRef):
-            raise InvalidArgumentError("subject: expected SubjectRef")
+            raise LocalValidationError("subject: expected SubjectRef")
         _requests.lookup_resources_request(
             resource_type, permission, subject._to_proto(), _requests.context_struct(context), consistency,
             page_size, None,
         )
         if cursor is not None and (not isinstance(cursor, str) or not cursor):
-            raise InvalidArgumentError("cursor: expected nonempty cursor string")
+            raise LocalValidationError("cursor: expected nonempty cursor string")
         has_only = permissionship_filter is LookupPermissionshipFilter.HAS_PERMISSION_ONLY
         store = self._store
 
@@ -1247,7 +1247,7 @@ class InMemoryClient:
             _positive(limit, "limit")
         _call_options(call_options)
         if not isinstance(resource, ObjectRef):
-            raise InvalidArgumentError("resource: expected ObjectRef")
+            raise LocalValidationError("resource: expected ObjectRef")
         _requests.lookup_subjects_request(
             resource, permission, subject_type, subject_relation or "", _requests.context_struct(context),
             consistency,

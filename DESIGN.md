@@ -255,6 +255,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Streams and imports have no default lifetime timeout, but accept explicit
     total deadlines. Finite lookups and exports support deadlines even when
     their underlying RPC streams.
+  - Finite paged reads (relationship reads, lookups, exports) apply the client
+    default deadline to each page request, from opening it to receiving its
+    last item, so a server that stalls mid-read fails the read instead of
+    hanging it. A caller's total deadline still bounds the whole operation and
+    wins when earlier. Long-lived streams (watch) keep no default.
   - A named mode disables the client default deadline. The caller's own deadline
     or cancellation still applies. Zero or negative durations are never used as
     a magic "disabled" value.
@@ -396,6 +401,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Keep the server's status message verbatim in its own field. The display
     message may add operation context, but callers that forward errors must be
     able to reproduce exactly what the server said.
+  - Where the language has a standard invalid-input exception that callers
+    already catch around parsing (Python's `ValueError`), local validation
+    errors are also that type; server invalid-argument errors are not.
   - Native errors interoperate with the ecosystem's standard status inspection in
     both directions. A native error reports its matching transport status code
     through the language's status accessor, including errors for local
@@ -407,6 +415,13 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     existing handlers keep catching. MIGRATION.md states the interop either
     way. The verbatim server-message field always has a value: for local
     errors it is the error's message.
+  - A response the client cannot interpret (a missing required field, a
+    cursor that does not advance) fails with `INTERNAL`, which no retry policy
+    treats as retryable by default. Clients never skip such a response or fill
+    its missing fields with empty values: a skipped item makes a full page look
+    short and silently ends a paged read early.
+  - Local cancellation surfaces as the client's cancelled error, never as the
+    platform's own abort exception, whose fields may resemble a status code.
   - Provide a public constructor for native errors from a code and message, so
     test doubles produce errors that every predicate treats like real ones.
   - Wrapper errors (bulk item, deletion progress) report their inner status
@@ -427,12 +442,18 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     error naming the expected format: an endpoint never builds a client whose
     every call fails. The loopback check runs on the parsed host. An
     `http://` URL needs an explicit port (no client silently dials port 80);
-    an `https://` URL without one uses 443. Malformed forms (path, query,
+    an `https://` URL without one uses 443. The same holds for a bare host:
+    plaintext needs a port, TLS defaults to 443. Malformed forms (path, query,
     userinfo, non-numeric port) fail with an error naming that problem,
     checked before the remote-plaintext policy, whose message appears only
     for a well-formed remote host.
   - Connection errors display the endpoint and the root cause (refused, DNS,
     TLS), not only a generic transport category.
+  - gRPC target syntax beyond `host:port` (`dns:///host:port` for client-side
+    load balancing, `unix:` sockets) is accepted where the transport supports
+    it, with the loopback check on the resolved host, and rejected at
+    construction elsewhere with an error naming the accepted forms. A target a
+    client accepts must work; clients do not pass unknown schemes through.
   - Clients that connect lazily offer a startup readiness check (an
     eager-connect option or an awaitable connect/ready call), so a wrong or
     unreachable endpoint can still fail at startup.
@@ -475,6 +496,16 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     lookup of a definition by name, a resource-less permission ref by
     definition and permission name, and a lookup of resources by runtime names,
     each validated against the schema.
+  - String-keyed code reaches every typed value without hand-written
+    dispatch: a typed object from a type name and ID or from `type:id` text, a
+    subject set from type, ID and relation, a typed relationship from tuple
+    text whose subject the relation admits, checks and bulk checks by name,
+    and lookups of subjects as well as resources by name, plus a type naming
+    the union of generated objects.
+  - By-name lookups accept relations as well as permissions, as SpiceDB does.
+    When the subject's type and relation cannot reach the target, they return
+    an empty result without a call, which is SpiceDB's answer; unknown names
+    still fail.
   - Generated code exposes definition-name constants and the schema text it
     was generated from, so callers need neither a hand-kept name list nor a
     copy of the schema file to write it at startup.

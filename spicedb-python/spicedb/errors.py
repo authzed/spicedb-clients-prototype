@@ -94,7 +94,7 @@ class SpiceDBError(grpc.RpcError):
         like real ones.
         """
         if not isinstance(code, grpc.StatusCode):
-            raise InvalidArgumentError(f"code: expected grpc.StatusCode, got {code!r}")
+            raise LocalValidationError(f"code: expected grpc.StatusCode, got {code!r}")
         error_type = _CODE_TO_ERROR.get(code, SpiceDBError)
         result = error_type(
             message,
@@ -173,6 +173,22 @@ class InvalidArgumentError(SpiceDBError):
     grpc_code = grpc.StatusCode.INVALID_ARGUMENT
 
 
+class LocalValidationError(InvalidArgumentError, ValueError):
+    """Input the client rejected locally, before sending any request.
+
+    Every client-side validation failure -- a malformed tuple or triple, an
+    empty object type or ID, an unknown option value, unrepresentable JSON --
+    raises this class. It is an ``InvalidArgumentError`` (so ``code()`` is
+    ``INVALID_ARGUMENT`` and ``except InvalidArgumentError`` and
+    ``except grpc.RpcError`` keep matching) and also a ``ValueError``, so the
+    ordinary Python idiom ``except ValueError`` around bad input catches it.
+
+    An ``INVALID_ARGUMENT`` returned by the server stays a plain
+    ``InvalidArgumentError`` (not a ``ValueError``), with ``server_message``
+    set; a local one has ``server_message`` None.
+    """
+
+
 class FailedPreconditionError(SpiceDBError):
     """A precondition for the operation was not met."""
 
@@ -232,8 +248,10 @@ class EventLoopBindingError(SpiceDBError):
 
     A `grpc.aio` channel binds to the event loop running when it is first used.
     Calling into the same client from another loop -- most commonly by calling
-    `asyncio.run()` once per request against a client built at startup -- cannot
-    work. Use `spicedb.sync.SpiceDBClient` from synchronous code instead.
+    `asyncio.run()` once per request against a client built at startup, or
+    sharing one client between an application's loop and a worker running its
+    own loop -- cannot work. Create one client per event loop; code that is
+    genuinely synchronous uses `spicedb.sync.SpiceDBClient` instead.
     """
 
     grpc_code = grpc.StatusCode.FAILED_PRECONDITION

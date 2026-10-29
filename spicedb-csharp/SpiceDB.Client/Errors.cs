@@ -279,11 +279,30 @@ internal static class ErrorMapper
     /// <c>google.rpc.ErrorInfo</c> detail. See root DESIGN.md, "RULE: Error mapping must not lose
     /// the server's detail".</para>
     /// </summary>
-    public static SpiceDBException ToSpiceDBException(RpcException rpcException)
+    public static SpiceDBException ToSpiceDBException(RpcException rpcException) => ToSpiceDBException(rpcException, null);
+
+    /// <summary>
+    /// As <see cref="ToSpiceDBException(RpcException)"/>, and when the transport failed
+    /// locally (it attached a <see cref="Status.DebugException"/>, as for a refused
+    /// connection or a failed DNS lookup) the message also names
+    /// <paramref name="endpoint"/> and that root cause. Grpc.Net.Client otherwise reports
+    /// both as "Error connecting to subchannel." <see cref="SpiceDBException.ServerMessage"/>
+    /// keeps the status detail unchanged.
+    /// </summary>
+    public static SpiceDBException ToSpiceDBException(RpcException rpcException, string? endpoint)
     {
         ArgumentNullException.ThrowIfNull(rpcException);
 
         var message = rpcException.Status.Detail ?? rpcException.Message;
+        if (rpcException.Status.DebugException is { } debug)
+        {
+            var root = debug;
+            while (root.InnerException is { } inner) root = inner;
+            var parts = new List<string>();
+            if (!string.IsNullOrEmpty(endpoint)) parts.Add($"endpoint \"{endpoint}\"");
+            if (!message.Contains(root.Message, StringComparison.Ordinal)) parts.Add($"{root.GetType().Name}: {root.Message}");
+            if (parts.Count > 0) message = $"{message} ({string.Join("; ", parts)})";
+        }
         SpiceDBException mapped = rpcException.StatusCode switch
         {
             StatusCode.PermissionDenied => new PermissionDeniedException(message, rpcException),

@@ -171,7 +171,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     registration, and grant-all is one line); then the stored relationships,
     where a relationship on the resource whose relation is the permission's
     name and whose subject matches exactly or by wildcard grants it; anything
-    else is no permission. The double does not evaluate a schema. The resolver
+    else is no permission. The double does not evaluate a schema, and each
+    double's docs and AI guide say so, pointing schema-logic tests at SpiceDB
+    itself (`serve-testing` or a container). The resolver
     sees the check with the call's default context merged in (the check's own
     keys win), returns a result or declines (falling through), and never
     fails: failures come from the fault hooks. A wildcard matches only direct

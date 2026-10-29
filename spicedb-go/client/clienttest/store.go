@@ -12,20 +12,27 @@
 // matching, preconditions, CREATE conflicts, atomic transactions and imports)
 // and returns errors with the same codes and message shape as the real client
 // ("spicedb: <operation>: <server message>", with ServerMessage set). It does
-// not evaluate a schema: permission checks return results registered with
-// SetCheckResult, and ReflectSchema returns the result registered with
-// SetReflectSchemaResult.
+// not evaluate a schema. A permission check resolves, in order, to a result
+// registered with SetCheckResult, then to the answer of the resolver set with
+// SetCheckResolver (GrantAll grants everything), then to the stored
+// relationships (a relationship on the resource whose relation is the
+// permission's name and whose subject matches exactly or by wildcard grants
+// it), and otherwise to NoPermission. LookupResources and LookupSubjects
+// enumerate the objects of the requested type that appear in the stored
+// relationships and return those check resolution grants. ReflectSchema
+// returns the result registered with SetReflectSchemaResult.
 //
-// Options are honored where they change results: read and export cursors and
-// limits, the export filter, and WithResponseMetadata targets (filled from
+// Options are honored where they change results: read, export and lookup
+// cursors and limits, the export filter, the lookup permissionship filter,
+// check context, and WithResponseMetadata targets (filled from
 // SetResponseMetadata). Other options are accepted and ignored; inspect them
 // with client.ResolveOptions if a test needs to.
 //
 // Every call is recorded (Calls), with its request and resolved options, so
 // tests can assert on what was sent without a strict mock. Faults can be
 // injected at defined points (SetFaultHook, FailNext): before any operation,
-// before each import batch, before an import commits, and before each read or
-// export item, so failure paths need no fake gRPC server.
+// before each import batch, before an import commits, and before each read,
+// export, lookup or CheckIter item, so failure paths need no fake gRPC server.
 package clienttest
 
 import (
@@ -34,6 +41,7 @@ import (
 	"iter"
 	"strconv"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc/metadata"
 
@@ -51,6 +59,7 @@ type Store struct {
 	rels      []rel.Relationship // insertion order, for deterministic reads
 	revision  uint64
 	checks    map[string]client.CheckResult
+	resolver  CheckResolver
 	schema    string
 	reflect   *client.ReflectSchemaResult
 	header    metadata.MD
@@ -161,12 +170,12 @@ const (
 	OpCheckBulk           = "check bulk"
 	OpCheckIter           = "check iter"
 	OpDeleteAll           = "delete all relationships"
+	OpLookupResources     = "lookup resources"
+	OpLookupSubjects      = "lookup subjects"
 	OpUpdates             = "watch"
 
 	// Operations the Store records and fails as Unimplemented.
 	OpExpandPermissionTree          = "expand permission tree"
-	OpLookupResources               = "lookup resources"
-	OpLookupSubjects                = "lookup subjects"
 	OpComputablePermissions         = "computable permissions"
 	OpDependentRelations            = "dependent relations"
 	OpDiffSchema                    = "diff schema"
@@ -205,7 +214,8 @@ const (
 	StageImportBatch
 	// StageImportCommit runs after every batch, before the import commits.
 	StageImportCommit
-	// StageItem runs before a read or export yields item Fault.Item (0-based).
+	// StageItem runs before a read, export, lookup or CheckIter yields item
+	// Fault.Item (0-based).
 	StageItem
 )
 
@@ -239,9 +249,22 @@ func (s *Store) SetReadSchemaRevision(mode SchemaRevision) {
 }
 
 // CursorAfter returns a cursor that resumes a read or export after the first n
-// matching relationships (in insertion order), the same cursor the Store puts
-// on the n-th item. The format, the decimal count n, is stable for tests.
+// matching relationships (in insertion order), or a LookupResources call after
+// the first n granted resources; it is the cursor the Store puts on the n-th
+// item. The format, the decimal count n, is stable for tests.
 func CursorAfter(n int) string { return strconv.Itoa(n) }
+
+// parseCursor reads a CursorAfter cursor; empty means the start.
+func parseCursor(op, cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(cursor)
+	if err != nil || n < 0 {
+		return 0, serverError(op, client.CodeInvalidArgument, "invalid cursor")
+	}
+	return n, nil
+}
 
 // SetFaultHook installs hook, which runs at every Fault point; a non-nil
 // error is returned (or yielded) by the operation at that point, and a failed
@@ -319,9 +342,9 @@ func (s *Store) Relationships() []rel.Relationship {
 	return append([]rel.Relationship(nil), s.rels...)
 }
 
-// SetCheckResult registers the result Check and CheckBulk return for the
-// given resource, permission and subject. Unregistered checks return
-// PermissionshipNoPermission.
+// SetCheckResult registers the result checks and lookups resolve to for the
+// given resource, permission and subject. It takes precedence over the
+// resolver and the stored relationships.
 func (s *Store) SetCheckResult(resource rel.ObjectRef, permission string, subject rel.SubjectRef, result client.CheckResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -329,6 +352,31 @@ func (s *Store) SetCheckResult(resource rel.ObjectRef, permission string, subjec
 		s.checks = map[string]client.CheckResult{}
 	}
 	s.checks[checkKey(resource, permission, subject)] = result
+}
+
+// CheckResolver answers a permission check that has no registered result. It
+// returns the result and true to answer, or false to fall through to the
+// stored relationships. The check's Context includes the call's context
+// option. Return PermissionshipConditionalPermission (with MissingContext) to
+// emulate a caveat the caller did not satisfy.
+type CheckResolver func(client.PermissionCheck) (client.CheckResult, bool)
+
+// GrantAll is a CheckResolver that grants every check:
+//
+//	store.SetCheckResolver(clienttest.GrantAll)
+func GrantAll(client.PermissionCheck) (client.CheckResult, bool) {
+	return client.CheckResult{Permissionship: client.PermissionshipHasPermission}, true
+}
+
+// SetCheckResolver installs resolver, consulted for checks (including those a
+// lookup makes) after the results registered with SetCheckResult and before
+// the stored relationships, so tests over generated IDs need no per-ID
+// registration. It runs with the Store locked and must not call the Store.
+// Pass nil to remove it.
+func (s *Store) SetCheckResolver(resolver CheckResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolver = resolver
 }
 
 // SetReflectSchemaResult registers the result ReflectSchema returns.
@@ -403,13 +451,9 @@ func (s *Store) Write(_ context.Context, request client.WriteRequest, opts ...cl
 // page returns the matching relationships after cursor, up to limit (0 means
 // all), each with its cursor: the 1-based position it occupies in matching order.
 func (s *Store) page(f func(rel.Relationship) bool, cursor string, limit uint64) ([]rel.Relationship, []string, error) {
-	start := 0
-	if cursor != "" {
-		n, err := strconv.Atoi(cursor)
-		if err != nil || n < 0 {
-			return nil, nil, serverError("read relationships", client.CodeInvalidArgument, "invalid cursor")
-		}
-		start = n
+	start, err := parseCursor(OpReadRelationships, cursor)
+	if err != nil {
+		return nil, nil, err
 	}
 	var out []rel.Relationship
 	var cursors []string
@@ -678,8 +722,8 @@ func (s *Store) ReflectSchema(_ context.Context, request client.ReflectSchemaReq
 	return result, nil
 }
 
-// Check returns the result registered with SetCheckResult, stamped with the
-// store's current revision.
+// Check resolves the check (see SetCheckResolver for the order), stamped with
+// the store's current revision.
 func (s *Store) Check(_ context.Context, request client.PermissionCheck, opts ...client.CheckOption) (client.CheckResult, error) {
 	r := client.ResolveOptions(opts...)
 	if _, ferr := s.begin(OpCheck, request, r); ferr != nil {
@@ -691,10 +735,10 @@ func (s *Store) Check(_ context.Context, request client.PermissionCheck, opts ..
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.respond(r)
-	return s.check(request), nil
+	return s.check(request, r.CheckContext), nil
 }
 
-// CheckBulk returns the registered results in input order.
+// CheckBulk resolves each check like Check, returning results in input order.
 func (s *Store) CheckBulk(_ context.Context, requests []client.PermissionCheck, opts ...client.CheckOption) ([]client.CheckResult, error) {
 	r := client.ResolveOptions(opts...)
 	if _, ferr := s.begin(OpCheckBulk, requests, r); ferr != nil {
@@ -708,21 +752,76 @@ func (s *Store) CheckBulk(_ context.Context, requests []client.PermissionCheck, 
 	s.respond(r)
 	results := make([]client.CheckResult, len(requests))
 	for i, req := range requests {
-		results[i] = s.check(req)
+		results[i] = s.check(req, r.CheckContext)
 	}
 	return results, nil
 }
 
-func (s *Store) check(request client.PermissionCheck) client.CheckResult {
+// check resolves one check in the documented order: a registered result,
+// then the resolver, then the stored relationships, then NoPermission. The
+// call's context option is merged into the check's context (the check's own
+// keys win) before the resolver sees it. s.mu must be held.
+func (s *Store) check(request client.PermissionCheck, callContext map[string]any) client.CheckResult {
 	result, ok := s.checks[checkKey(request.Resource, request.Permission, request.Subject)]
+	if !ok && s.resolver != nil {
+		result, ok = s.resolver(withContext(request, callContext))
+	}
 	if !ok {
-		result = client.CheckResult{Permissionship: client.PermissionshipNoPermission}
+		result = s.fromRelationships(request)
 	}
 	result.CheckedAt = s.token()
 	return result
 }
 
-// CheckIter checks each request with the registered results, in input order.
+func withContext(request client.PermissionCheck, callContext map[string]any) client.PermissionCheck {
+	if len(callContext) == 0 {
+		return request
+	}
+	merged := make(map[string]any, len(callContext)+len(request.Context))
+	for k, v := range callContext {
+		merged[k] = v
+	}
+	for k, v := range request.Context {
+		merged[k] = v
+	}
+	request.Context = merged
+	return request
+}
+
+// fromRelationships grants the permission when a stored, unexpired
+// relationship on the resource has the permission's name as its relation and
+// a subject that matches exactly or by wildcard. A caveated match grants
+// conditionally (the Store does not evaluate caveats); an uncaveated match
+// wins over a caveated one. Anything else is NoPermission. s.mu must be held.
+func (s *Store) fromRelationships(request client.PermissionCheck) client.CheckResult {
+	now := time.Now()
+	result := client.CheckResult{Permissionship: client.PermissionshipNoPermission}
+	for _, r := range s.rels {
+		if r.Resource() != request.Resource || r.Relation() != request.Permission || !subjectMatches(r.Subject(), request.Subject) {
+			continue
+		}
+		if exp := r.Expiration(); exp != nil && !exp.After(now) {
+			continue
+		}
+		if r.CaveatName() == "" {
+			return client.CheckResult{Permissionship: client.PermissionshipHasPermission}
+		}
+		result.Permissionship = client.PermissionshipConditionalPermission
+	}
+	return result
+}
+
+// subjectMatches reports whether a stored subject grants to the checked one:
+// exactly, or as a wildcard (type:*) over a direct subject of that type.
+func subjectMatches(stored, checked rel.SubjectRef) bool {
+	if stored == checked {
+		return true
+	}
+	return stored.Object().ID() == "*" && stored.Relation() == "" && checked.Relation() == "" &&
+		stored.Object().Type() == checked.Object().Type()
+}
+
+// CheckIter resolves each check like Check, in input order.
 func (s *Store) CheckIter(_ context.Context, requests iter.Seq[client.PermissionCheck], opts ...client.CheckOption) iter.Seq2[client.CheckResult, error] {
 	r := client.ResolveOptions(opts...)
 	call, callErr := s.begin(OpCheckIter, requests, r)
@@ -738,7 +837,7 @@ func (s *Store) CheckIter(_ context.Context, requests iter.Seq[client.Permission
 				return
 			}
 			s.mu.Lock()
-			result := s.check(req)
+			result := s.check(req, r.CheckContext)
 			s.mu.Unlock()
 			if !yield(result, nil) {
 				return
@@ -746,6 +845,150 @@ func (s *Store) CheckIter(_ context.Context, requests iter.Seq[client.Permission
 			i++
 		}
 	}
+}
+
+// objectIDs returns the IDs of objects of objectType that appear in stored
+// relationships as resource or subject, in order of first appearance.
+// s.mu must be held.
+func (s *Store) objectIDs(objectType string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	add := func(o rel.ObjectRef) {
+		if o.Type() == objectType && !seen[o.ID()] {
+			seen[o.ID()] = true
+			ids = append(ids, o.ID())
+		}
+	}
+	for _, r := range s.rels {
+		add(r.Resource())
+		add(r.Subject().Object())
+	}
+	return ids
+}
+
+func granted(result client.CheckResult) bool {
+	return result.Permissionship == client.PermissionshipHasPermission ||
+		result.Permissionship == client.PermissionshipConditionalPermission
+}
+
+func partialCaveat(result client.CheckResult) *client.PartialCaveatInfo {
+	if result.Permissionship != client.PermissionshipConditionalPermission {
+		return nil
+	}
+	return &client.PartialCaveatInfo{MissingRequiredContext: append([]string(nil), result.MissingContext...)}
+}
+
+// emit yields items, running the StageItem fault hook before each.
+func emit[T any](s *Store, call Call, err error, items []T) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		var zero T
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		for i, item := range items {
+			if ferr := s.fault(call, StageItem, i); ferr != nil {
+				yield(zero, ferr)
+				return
+			}
+			if !yield(item, nil) {
+				return
+			}
+		}
+	}
+}
+
+// LookupResources yields the objects of the requested type that appear in the
+// stored relationships (as resource or subject) and that check resolution
+// grants to the subject, in order of first appearance. Conditional results
+// are yielded as conditional, with the resolved missing context, unless
+// WithLookupResourcesPermissionshipFilter(LookupHasPermissionOnly) drops them.
+// Each result's cursor is CursorAfter(n), where n counts granted results up
+// to it (filtered ones included, as the server's cursor advances past them);
+// limits count yielded results.
+func (s *Store) LookupResources(_ context.Context, request client.LookupResourcesRequest, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {
+	r := client.ResolveOptions(opts...)
+	call, err := s.begin(OpLookupResources, request, r)
+	if err == nil {
+		err = r.Err
+	}
+	if err == nil && (request.ResourceType == "" || request.Permission == "" || request.Subject.Validate() != nil) {
+		err = invalid("resource type, permission and valid subject required")
+	}
+	start := 0
+	if err == nil {
+		start, err = parseCursor(OpLookupResources, r.Cursor)
+	}
+	var out []client.LookupResource
+	if err == nil {
+		s.mu.Lock()
+		s.respond(r)
+		at := s.token()
+		pos := 0
+		for _, id := range s.objectIDs(request.ResourceType) {
+			if id == "*" {
+				continue
+			}
+			result := s.check(client.PermissionCheck{Resource: rel.MustNewObject(request.ResourceType, id),
+				Permission: request.Permission, Subject: request.Subject, Consistency: request.Consistency}, r.CheckContext)
+			if !granted(result) {
+				continue
+			}
+			pos++
+			if pos <= start || (r.LookupPermissionshipFilter == client.LookupHasPermissionOnly && !result.HasPermission()) {
+				continue
+			}
+			if r.Limit > 0 && uint64(len(out)) >= r.Limit {
+				break
+			}
+			out = append(out, client.LookupResource{ResourceID: id, Permissionship: result.Permissionship,
+				PartialCaveat: partialCaveat(result), LookedUpAt: at, AfterResultCursor: CursorAfter(pos)})
+		}
+		s.mu.Unlock()
+	}
+	return emit(s, call, err, out)
+}
+
+// LookupSubjects yields the objects of the requested subject type that appear
+// in the stored relationships (as resource or subject) and that check
+// resolution grants on the resource, in order of first appearance. A stored
+// wildcard subject (type:*) appears as a "*" result, as SpiceDB reports it.
+// Subjects carry the relation set by WithLookupSubjectsRelation (direct by
+// default). Conditional results are yielded as conditional and the limit
+// counts yielded results. Like the real client's, it has no cursor.
+func (s *Store) LookupSubjects(_ context.Context, request client.LookupSubjectsRequest, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {
+	r := client.ResolveOptions(opts...)
+	call, err := s.begin(OpLookupSubjects, request, r)
+	if err == nil {
+		err = r.Err
+	}
+	if err == nil && (request.Resource.Validate() != nil || request.Permission == "" || request.SubjectType == "") {
+		err = invalid("valid resource, permission and subject type required")
+	}
+	var out []client.LookupSubject
+	if err == nil {
+		s.mu.Lock()
+		s.respond(r)
+		at := s.token()
+		for _, id := range s.objectIDs(request.SubjectType) {
+			subject, serr := rel.NewSubject(rel.MustNewObject(request.SubjectType, id), r.LookupSubjectsRelation)
+			if serr != nil {
+				continue
+			}
+			result := s.check(client.PermissionCheck{Resource: request.Resource, Permission: request.Permission,
+				Subject: subject, Consistency: request.Consistency}, r.CheckContext)
+			if !granted(result) {
+				continue
+			}
+			if r.Limit > 0 && uint64(len(out)) >= r.Limit {
+				break
+			}
+			out = append(out, client.LookupSubject{LookedUpAt: at, Subject: client.ResolvedSubject{
+				SubjectID: id, Permissionship: result.Permissionship, PartialCaveat: partialCaveat(result)}})
+		}
+		s.mu.Unlock()
+	}
+	return emit(s, call, err, out)
 }
 
 // DeleteAllRelationshipsNonAtomic deletes every relationship matching the
@@ -830,14 +1073,6 @@ func unimplementedStream[T any](s *Store, op string, request any, r client.Resol
 
 func (s *Store) ExpandPermissionTree(_ context.Context, request client.ExpandPermissionTreeRequest, opts ...client.ExpandPermissionTreeOption) (client.ExpandPermissionTreeResult, error) {
 	return unimplemented[client.ExpandPermissionTreeResult](s, OpExpandPermissionTree, request, client.ResolveOptions(opts...))
-}
-
-func (s *Store) LookupResources(_ context.Context, request client.LookupResourcesRequest, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {
-	return unimplementedStream[client.LookupResource](s, OpLookupResources, request, client.ResolveOptions(opts...))
-}
-
-func (s *Store) LookupSubjects(_ context.Context, request client.LookupSubjectsRequest, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {
-	return unimplementedStream[client.LookupSubject](s, OpLookupSubjects, request, client.ResolveOptions(opts...))
 }
 
 func (s *Store) ComputablePermissions(_ context.Context, request client.ComputablePermissionsRequest, opts ...client.ComputablePermissionsOption) (client.ComputablePermissionsResult, error) {

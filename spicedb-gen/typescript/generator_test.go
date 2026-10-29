@@ -172,7 +172,7 @@ definition doc {
 	relation viewer: user
 	permission name = viewer
 }`,
-		"definition vs global": `definition date {}`,
+		"definition vs global":           `definition date {}`,
 		"definition vs schema constants": `definition definitions {}`,
 	} {
 		t.Run(name, func(t *testing.T) {

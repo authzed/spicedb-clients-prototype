@@ -256,7 +256,7 @@ class SpiceDBClient(ClientConfig):
         self._ensure_channel()
         return RawGrpc(channel=self._channel, metadata=tuple(self._metadata))
 
-    async def connect(self, *, timeout: float | None = None) -> None:
+    async def ready(self, *, timeout: float | None = None) -> None:
         """Wait until the channel is connected, as a startup readiness check.
 
         The client otherwise connects lazily on its first call, so a wrong or

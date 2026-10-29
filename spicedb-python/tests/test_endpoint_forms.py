@@ -266,7 +266,7 @@ def test_unix_socket_target_reaches_a_real_server():
     server.start()
     try:
         with SyncSpiceDBClient(f"unix:{path}", token=TOKEN, transport_security=PLAIN) as client:
-            client.connect(timeout=5.0)
+            client.ready(timeout=5.0)
             client.check_bulk([PermissionCheck(_REL.resource, _REL.relation, _REL.subject)], consistency=full())
     finally:
         server.stop(0)

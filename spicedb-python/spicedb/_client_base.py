@@ -83,7 +83,7 @@ async def capture_async(target: ResponseMetadata | None, call) -> None:
             setattr(target, name, _pairs(value))
 
 
-# The readiness probe sent after ``connect()`` times out on a channel in
+# The readiness probe sent after ``ready()`` times out on a channel in
 # TRANSIENT_FAILURE. A fail-fast call on such a channel returns at once with
 # the transport's own UNAVAILABLE detail (refused, DNS, TLS), which the
 # connectivity state alone does not carry. Any status other than UNAVAILABLE
@@ -99,7 +99,7 @@ def describe_target(endpoint: str | None) -> str:
 def not_ready_error(
     endpoint: str | None, waited: float | None, probe_error: grpc.RpcError | None
 ) -> SpiceDBError | None:
-    """The error ``connect()`` raises when the channel is not ready in time,
+    """The error ``ready()`` raises when the channel is not ready in time,
     or None when the probe shows a server did answer.
 
     UNAVAILABLE when the transport reported a connection failure (its detail

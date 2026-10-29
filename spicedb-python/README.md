@@ -77,7 +77,7 @@ URL's scheme must agree with `transport_security`, and any other form fails in
 the constructor with `InvalidArgumentError` naming the problem.
 
 The client connects lazily, on its first call. To fail at startup instead,
-call `client.connect(timeout=5.0)` (`await client.connect(...)` for `aio`):
+call `client.ready(timeout=5.0)` (`await client.ready(...)` for `aio`):
 it raises `UnavailableError` naming the endpoint and the cause, or
 `DeadlineExceededError` if the connection is still in progress.
 

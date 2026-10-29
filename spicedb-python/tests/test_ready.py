@@ -1,7 +1,7 @@
 """Startup readiness check: root DESIGN.md, "Accept the endpoint forms
 deployments use, or reject them at construction" (lazy clients offer one).
 
-Both clients connect lazily, so ``connect()`` is how a wrong or unreachable
+Both clients connect lazily, so ``ready()`` is how a wrong or unreachable
 endpoint fails at startup instead of on the first real call.
 """
 
@@ -43,24 +43,24 @@ def stalled_port():
 
 def test_sync_connect_returns_once_ready(server_port):
     with SyncSpiceDBClient(f"127.0.0.1:{server_port}", token=TOKEN, transport_security=PLAIN) as client:
-        client.connect(timeout=5.0)
+        client.ready(timeout=5.0)
 
 
 async def test_aio_connect_returns_once_ready(server_port):
     async with AsyncSpiceDBClient(f"127.0.0.1:{server_port}", token=TOKEN, transport_security=PLAIN) as client:
-        await client.connect(timeout=5.0)
+        await client.ready(timeout=5.0)
 
 
 def test_sync_connect_over_dns_target(server_port):
     with SyncSpiceDBClient(f"dns:///localhost:{server_port}", token=TOKEN, transport_security=PLAIN) as client:
-        client.connect(timeout=5.0)
+        client.ready(timeout=5.0)
 
 
 def test_sync_connect_refused_names_endpoint_and_cause():
     client = SyncSpiceDBClient("127.0.0.1:1", token=TOKEN, transport_security=PLAIN)
     try:
         with pytest.raises(UnavailableError) as excinfo:
-            client.connect(timeout=1.0)
+            client.ready(timeout=1.0)
     finally:
         client.close()
     message = str(excinfo.value)
@@ -73,7 +73,7 @@ async def test_aio_connect_refused_names_endpoint_and_cause():
     client = AsyncSpiceDBClient("127.0.0.1:1", token=TOKEN, transport_security=PLAIN)
     try:
         with pytest.raises(UnavailableError) as excinfo:
-            await client.connect(timeout=1.0)
+            await client.ready(timeout=1.0)
     finally:
         await client.close()
     message = str(excinfo.value)
@@ -85,7 +85,7 @@ def test_sync_connect_unresolvable_name_reports_dns():
     client = SyncSpiceDBClient("dns:///spicedb.invalid:50051", token=TOKEN)
     try:
         with pytest.raises(UnavailableError, match="(?i)dns"):
-            client.connect(timeout=2.0)
+            client.ready(timeout=2.0)
     finally:
         client.close()
 
@@ -95,7 +95,7 @@ def test_sync_connect_still_connecting_is_deadline_exceeded(stalled_port):
     started = time.monotonic()
     try:
         with pytest.raises(DeadlineExceededError, match="still connecting"):
-            client.connect(timeout=0.5)
+            client.ready(timeout=0.5)
     finally:
         client.close()
     assert time.monotonic() - started < 3.0
@@ -105,7 +105,7 @@ async def test_aio_connect_still_connecting_is_deadline_exceeded(stalled_port):
     client = AsyncSpiceDBClient(f"127.0.0.1:{stalled_port}", token=TOKEN, transport_security=PLAIN)
     try:
         with pytest.raises(DeadlineExceededError, match="still connecting"):
-            await client.connect(timeout=0.5)
+            await client.ready(timeout=0.5)
     finally:
         await client.close()
 
@@ -116,7 +116,7 @@ def test_connect_defaults_to_the_client_deadline():
     )
     try:
         with pytest.raises(UnavailableError, match="within 0.5s"):
-            client.connect()
+            client.ready()
     finally:
         client.close()
 
@@ -124,7 +124,7 @@ def test_connect_defaults_to_the_client_deadline():
 def test_sync_connect_over_a_supplied_channel(server_port):
     channel = grpc.insecure_channel(f"127.0.0.1:{server_port}")
     try:
-        SyncSpiceDBClient.from_channel(channel).connect(timeout=5.0)
+        SyncSpiceDBClient.from_channel(channel).ready(timeout=5.0)
     finally:
         channel.close()
 
@@ -132,28 +132,28 @@ def test_sync_connect_over_a_supplied_channel(server_port):
 def test_sync_connect_rejects_an_invalid_timeout_before_dialing():
     client = SyncSpiceDBClient("127.0.0.1:1", token=TOKEN, transport_security=PLAIN)
     with pytest.raises(LocalValidationError, match="timeout"):
-        client.connect(timeout=-1)
+        client.ready(timeout=-1)
     assert client._channel is None
 
 
 async def test_aio_connect_rejects_an_invalid_timeout_before_dialing():
     client = AsyncSpiceDBClient("127.0.0.1:1", token=TOKEN, transport_security=PLAIN)
     with pytest.raises(LocalValidationError, match="timeout"):
-        await client.connect(timeout=-1)
+        await client.ready(timeout=-1)
     assert client._channel is None
 
 
 def test_double_connect_is_a_noop():
     double = InMemoryClient()
-    double.connect()
-    double.connect(timeout=1.0)
+    double.ready()
+    double.ready(timeout=1.0)
     assert double.calls() == []
     with pytest.raises(LocalValidationError):
-        double.connect(timeout=0)
+        double.ready(timeout=0)
 
 
 async def test_async_double_connect_is_a_noop():
     double = AsyncInMemoryClient()
-    await double.connect(timeout=1.0)
+    await double.ready(timeout=1.0)
     with pytest.raises(LocalValidationError):
-        await double.connect(timeout=float("nan"))
+        await double.ready(timeout=float("nan"))

@@ -172,6 +172,14 @@ class TypedClient:
         self.close()
 {{- end}}
 
+    {{$def}} ready(self, *, timeout: float | None = None) -> None:
+        """Wait until the connection is ready, as a startup readiness check.
+
+        Raises UnavailableError or DeadlineExceededError when the endpoint
+        is unreachable within timeout (default: the client's default deadline).
+        """
+        {{$await}}self.client.ready(timeout=timeout)
+
     {{$def}} close(self) -> None:
         {{$await}}self.client.close()
 

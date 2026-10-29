@@ -88,7 +88,7 @@ client = SpiceDBClient("spicedb:50051", token="key",
   rejected at construction with `InvalidArgumentError`; authzed-py passed
   them to grpc unchecked.
 - authzed-py had no readiness check either; a client that should fail at
-  startup calls `client.connect(timeout=...)` (`await` it on `aio`).
+  startup calls `client.ready(timeout=...)` (`await` it on `aio`).
 - `bearer_token_credentials(token, certChain)` → `ca_cert=certChain`; mTLS uses
   `client_cert=` and `client_key=`.
 - Close the client (`close()`, `with`, `async with`); it owns its channel.

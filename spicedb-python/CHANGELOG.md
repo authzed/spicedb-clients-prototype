@@ -16,9 +16,9 @@
 
 ### Startup readiness and gRPC DNS targets
 
-- New `connect(timeout=None)` on `spicedb.sync.SpiceDBClient` and
-  `await connect(timeout=None)` on `spicedb.aio.SpiceDBClient` (and on
-  `ClientProtocol`/`AsyncClientProtocol`). Both clients still connect lazily;
+- New `ready(timeout=None)` on `spicedb.sync.SpiceDBClient` and
+  `await ready(timeout=None)` on `spicedb.aio.SpiceDBClient` (and on
+  `ClientProtocol`/`AsyncClientProtocol` and the generated `TypedClient`). Both clients still connect lazily;
   call it once at startup so a wrong or unreachable endpoint fails there. It
   waits for the channel to become ready within `timeout` (default: the
   client's `default_timeout`) and raises `UnavailableError` naming the

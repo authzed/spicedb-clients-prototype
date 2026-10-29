@@ -75,8 +75,8 @@ asyncio client binds to the event loop it is first used on: create one
 one for the web server and one for a worker that runs its own loop), never
 one shared at import time; another loop gets `EventLoopBindingError`.
 The client connects lazily: to fail at startup on a wrong or unreachable
-endpoint, call `tc.client.connect(timeout=5.0)` (`await` it on `aio`; on a
-native client, `client.connect(...)`), which raises `UnavailableError` or
+endpoint, call `tc.ready(timeout=5.0)` (`await` it on `aio`), which raises
+`UnavailableError` or
 `DeadlineExceededError`. The endpoint is `host:port`, `https://host`,
 `http://host:port`, `dns:///host:port` (client-side load balancing) or
 `unix:/path`. Plaintext is

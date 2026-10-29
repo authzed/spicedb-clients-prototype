@@ -1,6 +1,6 @@
-"""Fail at startup, not on the first request: ``connect()`` and target forms.
+"""Fail at startup, not on the first request: ``ready()`` and target forms.
 
-Both clients connect lazily. Call ``connect(timeout=...)`` once at startup
+Both clients connect lazily. Call ``ready(timeout=...)`` once at startup
 (for example in a lifespan hook) so a wrong or unreachable endpoint stops the
 process with a clear error instead of failing the first user request.
 
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.integration
 
 def test_sync_connect_at_startup():
     with SpiceDBClient(ENDPOINT, token=TOKEN, transport_security=PLAIN) as client:
-        client.connect(timeout=10.0)
+        client.ready(timeout=10.0)
         clear_documents_sync(client)
         client.write_schema(SCHEMA)
         assert "definition document" in client.read_schema().schema
@@ -33,7 +33,7 @@ def test_sync_connect_at_startup():
 
 async def test_aio_connect_at_startup():
     async with AsyncSpiceDBClient(ENDPOINT, token=TOKEN, transport_security=PLAIN) as client:
-        await client.connect(timeout=10.0)
+        await client.ready(timeout=10.0)
         await clear_documents(client)
         await client.write_schema(SCHEMA)
         assert "definition document" in (await client.read_schema()).schema
@@ -42,7 +42,7 @@ async def test_aio_connect_at_startup():
 def test_unreachable_endpoint_fails_at_startup():
     with SpiceDBClient("localhost:1", token=TOKEN, transport_security=PLAIN) as client:
         with pytest.raises(UnavailableError) as excinfo:
-            client.connect(timeout=1.0)
+            client.ready(timeout=1.0)
     # The error names the endpoint and the transport's own cause.
     assert "'localhost:1' not ready" in str(excinfo.value)
     assert "refused" in str(excinfo.value).lower()
@@ -50,7 +50,7 @@ def test_unreachable_endpoint_fails_at_startup():
 
 def test_sync_dns_target():
     with SpiceDBClient(f"dns:///{ENDPOINT}", token=TOKEN, transport_security=PLAIN) as client:
-        client.connect(timeout=10.0)
+        client.ready(timeout=10.0)
         clear_documents_sync(client)
         client.write_schema(SCHEMA)
         assert "definition document" in client.read_schema().schema
@@ -58,7 +58,7 @@ def test_sync_dns_target():
 
 async def test_aio_dns_target():
     async with AsyncSpiceDBClient(f"dns:///{ENDPOINT}", token=TOKEN, transport_security=PLAIN) as client:
-        await client.connect(timeout=10.0)
+        await client.ready(timeout=10.0)
         await clear_documents(client)
         await client.write_schema(SCHEMA)
         assert "definition document" in (await client.read_schema()).schema
@@ -74,7 +74,7 @@ needs_socket = pytest.mark.skipif(not UNIX_SOCKET, reason="SPICEDB_UNIX_SOCKET n
 @needs_socket
 def test_sync_unix_socket_target():
     with SpiceDBClient(f"unix:{UNIX_SOCKET}", token=TOKEN, transport_security=PLAIN) as client:
-        client.connect(timeout=10.0)
+        client.ready(timeout=10.0)
         clear_documents_sync(client)
         client.write_schema(SCHEMA)
         assert "definition document" in client.read_schema().schema
@@ -83,7 +83,7 @@ def test_sync_unix_socket_target():
 @needs_socket
 async def test_aio_unix_socket_target():
     async with AsyncSpiceDBClient(f"unix:{UNIX_SOCKET}", token=TOKEN, transport_security=PLAIN) as client:
-        await client.connect(timeout=10.0)
+        await client.ready(timeout=10.0)
         await clear_documents(client)
         await client.write_schema(SCHEMA)
         assert "definition document" in (await client.read_schema()).schema

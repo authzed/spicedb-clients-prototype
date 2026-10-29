@@ -73,7 +73,7 @@ class ClientProtocol(Protocol):
         """Return this client's authenticated channel; raw calls own their options."""
         ...
 
-    def connect(self, *, timeout: float | None = None) -> None:
+    def ready(self, *, timeout: float | None = None) -> None:
         """Wait until the channel is connected, as a startup readiness check."""
         ...
 
@@ -392,7 +392,7 @@ class AsyncClientProtocol(Protocol):
         """Return this client's authenticated channel; raw calls own their options."""
         ...
 
-    async def connect(self, *, timeout: float | None = None) -> None:
+    async def ready(self, *, timeout: float | None = None) -> None:
         """Wait until the channel is connected, as a startup readiness check."""
         ...
 

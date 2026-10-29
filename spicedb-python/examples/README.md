@@ -67,7 +67,7 @@ fail".
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes with a bounded consumer: subscribe, write, consume until the expected update arrives, then `aclose()` the stream |
-| `startup_readiness/` | `connect(timeout=...)` at startup so an unreachable endpoint fails there, plus real calls over `dns:///host:port` and (with `SPICEDB_UNIX_SOCKET` set to a local SpiceDB's `--grpc-network unix` socket) `unix:` targets |
+| `startup_readiness/` | `ready(timeout=...)` at startup so an unreachable endpoint fails there, plus real calls over `dns:///host:port` and (with `SPICEDB_UNIX_SOCKET` set to a local SpiceDB's `--grpc-network unix` socket) `unix:` targets |
 | `schema_management/` | Schema read/write/reflect/diff, plus computable_permissions/dependent_relations introspection |
 | `bulk_operations/` | Bulk checks and bulk relationship import/export |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |

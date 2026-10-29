@@ -360,3 +360,21 @@ async def test_async_check_by_name():
     assert (await client.check_by_name(full(), "team", "eng", "member", User("alice"))).has_permission
     results = await client.check_bulk_by_name(full(), [("team", "eng", "member", User("bob"))])
     assert [r.has_permission for r in results] == [False]
+
+
+def test_typed_client_ready_forwards_to_the_double():
+    """ready() is the startup readiness check; the double is always ready."""
+    double = InMemoryClient()
+    client = TypedClient(double)
+    client.ready(timeout=1.0)
+    client.ready()
+    assert double.calls() == []
+    with pytest.raises(InvalidArgumentError, match="timeout"):
+        client.ready(timeout=-1)
+
+
+async def test_async_typed_client_ready_forwards_to_the_double():
+    client = AsyncTypedClient(AsyncInMemoryClient())
+    await client.ready(timeout=1.0)
+    with pytest.raises(InvalidArgumentError, match="timeout"):
+        await client.ready(timeout=0)

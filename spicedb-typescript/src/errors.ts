@@ -38,6 +38,16 @@ export class SpiceDBError extends Error {
   declare readonly deleteProgress?: DeleteResult;
   declare readonly inputIndex?: number;
   /**
+   * Set on an error thrown while iterating a cursor-paged read
+   * (`readRelationships`, `lookupResources`, `exportRelationships`): the
+   * cursor to resume from. Pass it as the request's `cursor`, with the same
+   * request and page size, to continue after the last item the read
+   * delivered (for an export, after the last fully delivered batch). It is
+   * the request's own cursor when nothing was delivered yet, and absent when
+   * the read should restart from the beginning.
+   */
+  declare readonly resumeCursor?: string;
+  /**
    * The name of an `authzed.api.v1.ErrorReason` enum value, e.g.
    * `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`. Empty string when the server
    * attached no `ErrorInfo`.
@@ -402,6 +412,16 @@ export function toSpiceDBErrorFromStatus(status: {
   }
   const code = status.code as Code;
   return mapCode(code, new ConnectError(status.message, code).message, { ...reason, cause: status, serverMessage: status.message });
+}
+
+/**
+ * The error for a response the client cannot interpret: a missing required
+ * field, a cursor that does not advance, a malformed bulk pair. It is coded
+ * `Internal`, which no retry policy treats as retryable by default.
+ * @internal
+ */
+export function malformedResponse(message: string): SpiceDBError {
+  return new SpiceDBError(message, { code: Code.Internal });
 }
 
 // ResourceExhausted is deliberately excluded from the default. In SpiceDB it

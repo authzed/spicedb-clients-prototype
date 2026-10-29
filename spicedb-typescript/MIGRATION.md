@@ -34,11 +34,11 @@ native (schema-agnostic) client.
 | Requests | protobuf messages (`v1.CheckPermissionRequest.create({...})`) | native objects (`{ resource, permission, subject, consistency }`) |
 | Consistency | optional; omitted means server default (minimize latency) | **required** on every read: `full()`, `minLatency()`, `atLeast(token)`, `snapshot(token)` |
 | Tokens | `ZedToken` messages / strings | `ZedToken` class; persist with `token.toString()`, restore with `new ZedToken(text)` |
-| Deadline | 30 s on every RPC, streams included (a built-in `deadlineInterceptor`), unless the call sets its own | 30 s per unary operation (attempts, backoff, chunks and pages share it); streams, watch and imports have no default lifetime limit; `defaultDeadline: DefaultDeadline.Disabled` turns the unary default off |
+| Deadline | 30 s on every RPC, streams included (a built-in `deadlineInterceptor`), unless the call sets its own | 30 s per unary operation (attempts, backoff and chunks share it); finite paged reads (`readRelationships`, lookups, exports) get 30 s per page request, so a stalled server fails the read; watch and imports have no default; a call's `timeoutMs` bounds the whole call; `defaultDeadline: DefaultDeadline.Disabled` turns the default off |
 | Retries | none | idempotent reads retry Unavailable/Aborted up to 3 times (full jitter from 100 ms); never mutations. `retries: Retries.Disabled` or a `retryPolicy` changes it |
 | Streams | `promises.*` collect a stream into an array | `AsyncIterableIterator`, paged automatically; break to cancel |
 | Check result | `permissionship` enum compared by hand | `CheckResult.hasPermission()` is true only for an unconditional grant |
-| Errors | grpc-js `ServiceError` with numeric `.code` | `SpiceDBError` subclasses with `.code` (Connect `Code`), `.serverMessage`, `.reason` |
+| Errors | grpc-js `ServiceError` with numeric `.code` | `SpiceDBError` subclasses with `.code` (Connect `Code`), `.serverMessage`, `.reason`; a local abort is `CancelledError` (`Code.Canceled`, `name` `"AbortError"`), not a `DOMException`; a response the client cannot interpret is `Code.Internal`, never retried by default |
 | Plaintext | `ClientSecurity.INSECURE_PLAINTEXT_CREDENTIALS` | `TransportSecurity.Plaintext`; non-loopback also needs `RemoteCredentials.AllowPlaintext` |
 | Transport | `@grpc/grpc-js` | Connect over Node HTTP/2 (`@connectrpc/connect-node`) |
 | Minimum SpiceDB | any | 1.30 (older trailer-only data is reachable through `onTrailer`) |
@@ -77,11 +77,27 @@ non-numeric port and any other scheme are refused at construction with an
 `InvalidArgumentError` naming the problem; `@authzed/authzed-node` accepted
 only `host:port`.
 
+Like authzed-node, the client connects lazily. To fail at startup on a wrong
+or unreachable endpoint, `await client.ready({ timeoutMs })`: it rejects with
+`UnavailableError`, `DeadlineExceededError` or `UnauthenticatedError`.
+grpc-js targets such as `dns:///spicedb:50051` or `unix:/path` are rejected at
+construction (Connect over Node HTTP/2 supports neither); use `spicedb:50051`
+or an `http://`/`https://` URL, and put a load balancer or DNS round-robin in
+front of SpiceDB instead of client-side balancing.
+
 `NewClientWithChannelCredentials` has no direct equivalent; build a Connect
 transport yourself and use `SpiceDBClient.fromTransport(transport)`. The client
-never closes a transport you supply. A custom `deadlineInterceptor(ms)` becomes
-`defaultTimeoutMs: ms`; a long stream that relied on the old 30 s cut-off now
-needs an explicit `timeoutMs` or `signal`.
+never closes a transport you supply.
+
+A custom `deadlineInterceptor(ms)` is **not** the same as `defaultTimeoutMs: ms`.
+The interceptor put `ms` on every RPC, streams included. `defaultTimeoutMs`
+is the total budget of a unary operation (its attempts, backoff and bulk
+chunks share it) and the budget of each page request of a finite paged read
+(`readRelationships`, `lookupResources`, `lookupSubjects`, exports: from
+opening the page to its last item, not counting your loop body), and it never
+applies to `watch` or imports. Set `defaultTimeoutMs: ms` for the per-request
+part, and pass `timeoutMs` on a call that needs a total bound, such as a
+long-lived stream that relied on the old cut-off.
 
 ## Checks
 
@@ -165,6 +181,29 @@ for await (const rel of client.readRelationships({ filter: { resourceType: "docu
 To resume, pass `cursor: rel.afterResultCursor` with the same filter,
 consistency and `pageSize`. `lookupResources`, `lookupSubjects`,
 `exportRelationships` and `watch` work the same way.
+
+A read that fails part-way (with retries off, or once they are spent) carries
+the cursor to resume from on the error, so you need not track it yourself:
+
+```ts
+try {
+    for await (const item of client.lookupResources(request)) use(item);
+} catch (err) {
+    if (err instanceof SpiceDBError && err.resumeCursor !== undefined)
+        for await (const item of client.lookupResources({ ...request, cursor: err.resumeCursor })) use(item);
+    else throw err;
+}
+```
+
+`resumeCursor` is set on errors from `readRelationships`, `lookupResources`
+and `exportRelationships` (after the last fully delivered export batch). It
+is the request's own `cursor` when nothing was delivered, and absent when the
+read should start over. `lookupSubjects` has no cursor (SpiceDB does not page
+it).
+
+Each page request of these finite reads gets the client default deadline
+(30 s), so a server that stalls mid-read fails the read with
+`DeadlineExceededError` instead of hanging it.
 
 A raw `readRelationships`/`lookupResources` call without a limit is one
 unbounded request; this client pages by default. To reproduce the raw call
@@ -275,7 +314,7 @@ keep their protobuf name (`resource`, `permission`, `subject`, `consistency`,
 | `DeleteRelationshipsRequest.optionalPreconditions` | `DeleteOptions.mustMatch` / `mustNotMatch` |
 | `DeleteRelationshipsResponse.deletedAt` | `DeleteResult.revision` |
 | `DeleteRelationshipsResponse.relationshipsDeletedCount` | `DeleteResult.deletedCount` (`bigint`) |
-| `DeleteRelationshipsResponse.deletionProgress` | `DeleteResult.progress` (`"complete"` / `"partial"`) |
+| `DeleteRelationshipsResponse.deletionProgress` | `DeleteResult.progress` (`"complete"` / `"partial"` / `"unspecified"` when the server reports no progress) |
 | `ReadSchemaResponse.schemaText` / `readAt` | `SchemaResult.schema` / `revision` |
 | `WriteSchemaResponse.writtenAt` | the `ZedToken` `writeSchema` returns |
 | `WatchRequest.optionalObjectTypes` | `objectTypes` |
@@ -284,6 +323,8 @@ keep their protobuf name (`resource`, `permission`, `subject`, `consistency`,
 | `WatchRequest.optionalUpdateKinds` | `content: [WatchContent.Relationships, ...]` |
 | `WatchResponse.changesThrough` | `WatchEvent.changesThrough` (`ZedToken`) |
 | `ExpandPermissionTreeResponse.expandedAt` | `ExpandResult.revision` |
+| `ZedToken.token` | `ZedToken.token` (a readonly field; `toString()` returns the same text) |
+| `ReflectionSchemaDiff` (oneof case) | `SchemaDiff.kind` (`SchemaDiffKind` union, e.g. `"permission_expr_changed"`) |
 
 ## Raw protocol access
 

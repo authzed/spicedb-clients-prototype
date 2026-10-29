@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+### Paged reads, malformed responses, cancellation and readiness
+
+- **Behavior change:** finite paged reads (`readRelationships`,
+  `lookupResources`, `lookupSubjects`, `exportRelationships` and
+  `experimentalLookupPermissionSets`) apply the client default deadline
+  (`defaultTimeoutMs`, 30 s) to each page request, from opening it to its last
+  item (each export batch gets its own budget). Only time spent waiting on the
+  server counts, not the caller's loop body. A server that stalls mid-read now
+  fails the read with `DeadlineExceededError` instead of hanging it. A call's
+  `timeoutMs` still bounds the whole read and wins when earlier; `watch`,
+  permission-set watches and imports keep no default;
+  `DefaultDeadline.Disabled` turns the per-page default off.
+- An error thrown part-way through `readRelationships`, `lookupResources` or
+  `exportRelationships` carries `resumeCursor`: the cursor after the last
+  delivered item (for an export, after the last fully delivered batch), or the
+  request's own `cursor` when nothing was delivered. Pass it as the request's
+  `cursor` to continue, even with retries off.
+- **Behavior change:** a response the client cannot interpret fails with a
+  `SpiceDBError` coded `Code.Internal` (never retried by default) instead of
+  being skipped, filled with empty values, or reported as `Code.Unknown`: a
+  read response without a relationship (previously skipped, which could end a
+  paged read early), a relationship without its resource, relation or subject
+  (previously filled with `""`), a lookup result without its ID, a watch
+  update without its relationship, an expand response without its tree, a
+  counter response with neither a count nor a still-calculating marker
+  (previously reported as still calculating), a malformed bulk-check pair, and
+  a cursor that does not advance.
+- **Behavior change:** local cancellation (the caller's `signal`, an iterator's
+  `return()`, `close()`) rejects with `OperationAbortError`, now a
+  `CancelledError` (`Code.Canceled`, `cause` the signal's reason, `name` still
+  `"AbortError"`) instead of a `DOMException`, whose legacy numeric `code` (20)
+  read like a status code. The double's aborts match.
+- **Behavior change:** `ZedToken` keeps its text in the readonly public field
+  `token` (previously a private field), so `expect(a).toEqual(b)` and
+  `util.isDeepStrictEqual` tell different tokens apart. `toString()`,
+  `toJSON()` and `equals()` are unchanged.
+- `SchemaDiff.kind` is typed as the new `SchemaDiffKind` union of the diff
+  kinds (plus `"unknown"`) instead of `string`.
+- `InMemorySpiceDB.diffSchema` works in memory instead of failing with
+  `Code.Unimplemented`: identical schema text has no diffs; otherwise it
+  reports name-level diffs of definitions, relations and their subject types,
+  permissions and their expressions, caveats and their parameters and
+  expressions, ignoring comments and whitespace. It reports no doc-comment
+  changes and does not compile the schema.
+- `SpiceDBClient.ready(options?)` (also on `SpiceDBClientInterface`) makes one
+  cheap call so a wrong or unreachable endpoint fails at startup: it rejects
+  with `UnavailableError`, `DeadlineExceededError`, or `UnauthenticatedError`
+  for rejected credentials, and resolves once the server answers.
+  `InMemorySpiceDB.ready()` does nothing.
+- Docs: MIGRATION no longer says a custom `deadlineInterceptor(ms)` is
+  equivalent to `defaultTimeoutMs: ms`, lists `"unspecified"` among
+  `DeleteResult.progress` values, and covers `resumeCursor`, `ready()` and
+  `dns:///`/`unix:` targets (rejected at construction).
+
 ### Endpoint forms
 
 - Endpoints may be `http://host:port` or `https://host[:port]` as well as

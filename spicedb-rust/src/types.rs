@@ -328,8 +328,14 @@ impl Filter {
     }
 
     /// Narrows the filter to a specific subject relation.
+    /// `SubjectRelationFilter::Named("...")` is read as
+    /// [`SubjectRelationFilter::Direct`]: `...` is SpiceDB's name for a
+    /// direct subject.
     pub fn with_subject_relation(mut self, relation: SubjectRelationFilter) -> Self {
-        self.subject_relation = relation;
+        self.subject_relation = match relation {
+            SubjectRelationFilter::Named(n) if n == "..." => SubjectRelationFilter::Direct,
+            other => other,
+        };
         self
     }
 
@@ -375,14 +381,13 @@ impl Filter {
             }),
             SubjectRelationFilter::Named(name) => {
                 required("subject_relation", name)?;
-                if name == "..." {
-                    return Err(invalid(
-                        "subject_relation",
-                        "ellipsis is not a named relation",
-                    ));
-                }
+                // `...` means a direct subject (the wire's empty relation).
                 Some(proto::subject_filter::RelationFilter {
-                    relation: name.clone(),
+                    relation: if name == "..." {
+                        String::new()
+                    } else {
+                        name.clone()
+                    },
                 })
             }
         };
@@ -774,14 +779,23 @@ pub struct SubjectRef {
     relation: Option<String>,
 }
 impl SubjectRef {
+    /// A subject: `object` itself when `relation` is `None` (or `"..."`,
+    /// SpiceDB's name for a direct subject), otherwise the subject set
+    /// `object#relation`. Fails only for an empty relation.
     pub fn new(object: ObjectRef, relation: Option<String>) -> Result<Self, SpiceDBError> {
+        let relation = relation.filter(|r| r != "...");
         if let Some(r) = &relation {
             required("subject_relation", r)?;
-            if r == "..." {
-                return Err(invalid("subject_relation", "use None for a direct subject"));
-            }
         }
         Ok(Self { object, relation })
+    }
+    /// The direct subject `object`, with no relation. Infallible; also
+    /// available as `SubjectRef::from(object)` and `object.into()`.
+    pub fn direct(object: ObjectRef) -> Self {
+        Self {
+            object,
+            relation: None,
+        }
     }
     pub fn object(&self) -> &ObjectRef {
         &self.object
@@ -808,6 +822,12 @@ impl SubjectRef {
             object: ObjectRef::from_proto(None),
             relation: None,
         })
+    }
+}
+impl From<ObjectRef> for SubjectRef {
+    /// The direct subject `object` ([`SubjectRef::direct`]).
+    fn from(object: ObjectRef) -> Self {
+        Self::direct(object)
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1830,8 +1850,11 @@ impl LookupSubjectsOptions {
         self.context = Some(value);
         self
     }
+    /// Looks up subject sets `type:id#relation`. `"..."` means direct
+    /// subjects, the default.
     pub fn with_subject_relation(mut self, value: impl Into<String>) -> Self {
-        self.subject_relation = Some(value.into());
+        let value = value.into();
+        self.subject_relation = (value != "...").then_some(value);
         self
     }
     pub fn with_limit(mut self, value: u32) -> Self {

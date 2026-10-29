@@ -1137,9 +1137,6 @@ impl SpiceDBClient {
                 }
                 if let Some(r) = &request.options.subject_relation {
                     required("subject_relation", r)?;
-                    if r == "..." {
-                        Err(invalid("subject_relation", "use absence for direct"))?;
-                    }
                 }
                 let response = open_stream(|| async {
                     permissions
@@ -1273,7 +1270,7 @@ impl SpiceDBClient {
     /// Watch has no default lifetime deadline and never restarts automatically.
     ///
     /// The client-wide retry policy (including the default and
-    /// [`StreamRetryMode`](crate::StreamRetryMode)) never reopens a watch: a
+    /// [`StreamRetryMode`]) never reopens a watch: a
     /// watch reopened without a start revision would begin at a later
     /// revision and silently skip the changes in between, so a failure to
     /// open it is returned. A per-call

@@ -134,7 +134,7 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 				size = uint32(min(uint64(size), o.limit-total))
 			}
 			req := &v1.ExportBulkRelationshipsRequest{Consistency: cs, OptionalLimit: size, OptionalCursor: cur, OptionalRelationshipFilter: f}
-			pageCtx, pageCancel := context.WithCancel(ctx)
+			pageCtx, pageCancel := c.pageContext(ctx)
 			count := uint32(0)
 			prev := cur.GetToken()
 			for resp, e := range receive(pageCtx, c.retrySettings(o), "export relationships", !exposed, func(ctx context.Context) (receiver[*v1.ExportBulkRelationshipsResponse], error) {
@@ -147,7 +147,7 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 				}
 				cur = resp.GetAfterResultCursor()
 				for _, p := range resp.GetRelationships() {
-					r, e := nativeRelationship(p)
+					r, e := nativeRelationship("export relationships", p)
 					if e != nil {
 						pageCancel()
 						yield(ExportedRelationship{}, e)

@@ -121,7 +121,7 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 		pageSize := o.pageRequestLimit()
 		for {
 			req := &v1.ReadRelationshipsRequest{Consistency: cs, RelationshipFilter: f, OptionalLimit: pageSize, OptionalCursor: cur}
-			pageCtx, pageCancel := context.WithCancel(ctx)
+			pageCtx, pageCancel := c.pageContext(ctx)
 			seq := receive(pageCtx, c.retrySettings(o), "read relationships", !exposed, func(ctx context.Context) (receiver[*v1.ReadRelationshipsResponse], error) {
 				return c.psc.ReadRelationships(ctx, req, o.callOptions...)
 			})
@@ -136,7 +136,7 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 				count++
 				total++
 				cur = resp.GetAfterResultCursor()
-				r, e := nativeRelationship(resp.GetRelationship())
+				r, e := nativeRelationship("read relationships", resp.GetRelationship())
 				if e != nil {
 					pageCancel()
 					yield(ReadRelationship{}, e)

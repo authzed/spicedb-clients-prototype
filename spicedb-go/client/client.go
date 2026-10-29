@@ -23,6 +23,7 @@ type Client struct {
 	esc v1.ExperimentalServiceClient
 
 	proto             *proto.Client
+	endpoint          string // as given to the constructor; "" for NewFromConn
 	defaultTimeout    time.Duration
 	noDefaultDeadline bool
 	retries           *RetryPolicy // nil means DefaultRetryPolicy
@@ -141,12 +142,17 @@ func NewSystemTLS(endpoint, presharedKey string, opts ...Option) (*Client, error
 
 // NewWithOpts creates a client with functional options.
 //
-// The endpoint is host:port, a gRPC resolver target such as
-// unix:///path/to.sock, http://host:port (plaintext, with WithInsecure) or
-// https://host[:port] (TLS; 443 when the port is omitted). A URL whose
-// scheme disagrees with the transport, a plaintext endpoint without a port, an
-// unsupported scheme, or an endpoint with a path, query, fragment, userinfo
-// or non-numeric port fails here with ErrInvalidArgument naming the problem.
+// The endpoint is host:port, http://host:port (plaintext, with WithInsecure),
+// https://host[:port] (TLS; 443 when the port is omitted), or a gRPC target:
+// dns:///host:port (client-side DNS resolution), unix:/path/to.sock or
+// unix:///path/to.sock (a local socket, loopback for the plaintext check), or
+// passthrough:///host:port. A URL whose scheme disagrees with the transport, a
+// plaintext endpoint without a port, any other scheme (including other gRPC
+// resolvers), or an endpoint with a path, query, fragment, userinfo or
+// non-numeric port fails here with ErrInvalidArgument naming the problem.
+//
+// Construction does not connect. Call Ready at startup to fail on a wrong or
+// unreachable endpoint before the first real call.
 func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error) {
 	o, err := buildOptions(opts)
 	if err != nil {
@@ -185,7 +191,9 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 		return nil, fmt.Errorf("spicedb: failed to create client: %w", err)
 	}
 
-	return newClient(pc, o), nil
+	c := newClient(pc, o)
+	c.endpoint = endpoint
+	return c, nil
 }
 
 func newClient(pc *proto.Client, o *options) *Client {

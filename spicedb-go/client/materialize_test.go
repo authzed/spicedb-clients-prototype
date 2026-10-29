@@ -109,22 +109,27 @@ func TestMaterializeNativeCoverageAndStreamRelease(t *testing.T) {
 func TestPermissionSetVariantsAndUnknowns(t *testing.T) {
 	p := setChangeFixture()
 	p.Operation = 999
-	r := nativePermissionSetChange(p)
+	r, err := nativePermissionSetChange("test", p)
+	require.NoError(t, err)
 	require.Equal(t, PermissionSetOperationUnspecified, r.Operation)
 	p.Child = &materialize.PermissionSetChange_ChildSet{ChildSet: &materialize.SetReference{ObjectType: "group", ObjectId: "eng", PermissionOrRelation: "member"}}
-	r = nativePermissionSetChange(p)
+	r, err = nativePermissionSetChange("test", p)
+	require.NoError(t, err)
 	require.Equal(t, PermissionSetChildSet, r.ChildKind)
 	require.Nil(t, r.ChildMember)
 	require.Equal(t, "member", r.ChildSet.PermissionOrRelation)
 	p.Child = nil
-	require.Equal(t, PermissionSetChildUnknown, nativePermissionSetChange(p).ChildKind)
+	r, err = nativePermissionSetChange("test", p)
+	require.NoError(t, err)
+	require.Equal(t, PermissionSetChildUnknown, r.ChildKind)
 	cases := []struct {
 		p *materialize.WatchPermissionSetsResponse
 		k PermissionSetEventKind
 		r string
 	}{{&materialize.WatchPermissionSetsResponse{}, PermissionSetEventUnknown, ""}, {&materialize.WatchPermissionSetsResponse{Response: &materialize.WatchPermissionSetsResponse_CompletedRevision{CompletedRevision: &v1.ZedToken{Token: "complete"}}}, PermissionSetEventCompletedRevision, "complete"}, {&materialize.WatchPermissionSetsResponse{Response: &materialize.WatchPermissionSetsResponse_LookupPermissionSetsRequired{LookupPermissionSetsRequired: &materialize.LookupPermissionSetsRequired{RequiredLookupAt: &v1.ZedToken{Token: "backfill"}}}}, PermissionSetEventLookupRequired, "backfill"}, {&materialize.WatchPermissionSetsResponse{Response: &materialize.WatchPermissionSetsResponse_BreakingSchemaChange{BreakingSchemaChange: &materialize.BreakingSchemaChange{ChangeAt: &v1.ZedToken{Token: "breaking"}, AffectedPermissions: []*materialize.WatchedPermission{{ResourceType: "document", Permission: "view", SubjectType: "group", OptionalSubjectRelation: "member"}}}}}, PermissionSetEventBreakingSchemaChange, "breaking"}}
 	for _, tc := range cases {
-		event := nativePermissionSetEvent(tc.p)
+		event, err := nativePermissionSetEvent(tc.p)
+		require.NoError(t, err)
 		require.Equal(t, tc.k, event.Kind)
 		require.EqualValues(t, tc.r, event.Revision.String())
 		if tc.k == PermissionSetEventBreakingSchemaChange {

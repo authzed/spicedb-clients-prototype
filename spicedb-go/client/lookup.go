@@ -51,7 +51,7 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 		size := o.pageRequestLimit()
 		for {
 			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug}
-			pageCtx, pageCancel := context.WithCancel(ctx)
+			pageCtx, pageCancel := c.pageContext(ctx)
 			count := uint32(0)
 			prev := cur.GetToken()
 			for resp, e := range receive(pageCtx, c.retrySettings(o), "lookup resources", !exposed, func(ctx context.Context) (receiver[*v1.LookupResourcesResponse], error) {
@@ -65,6 +65,11 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 				count++
 				cur = resp.GetAfterResultCursor()
 				exposed = true
+				if resp.GetResourceObjectId() == "" {
+					pageCancel()
+					yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
+					return
+				}
 				if o.lookupPermissionshipFilter == LookupHasPermissionOnly && resp.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
 					continue
 				}
@@ -127,6 +132,10 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 		if o.limit > 0 && o.limit <= uint64(^uint32(0)) {
 			req.OptionalConcreteLimit = uint32(o.limit)
 		}
+		// LookupSubjects is one finite stream: its single page carries the
+		// client default deadline like every page of a paged read.
+		ctx, pageCancel := c.pageContext(ctx)
+		defer pageCancel()
 		var count uint64
 		for resp, e := range receive(ctx, c.retrySettings(o), "lookup subjects", true, func(ctx context.Context) (receiver[*v1.LookupSubjectsResponse], error) {
 			return c.psc.LookupSubjects(ctx, req, o.callOptions...)
@@ -139,12 +148,25 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 			if s.SubjectID == "" {
 				s = ResolvedSubject{SubjectID: resp.GetSubjectObjectId(), Permissionship: permissionshipFromProto(resp.GetPermissionship()), PartialCaveat: partialCaveatFromProto(resp.GetPartialCaveatInfo())} //nolint:staticcheck // Support older server response fields.
 			}
+			if s.SubjectID == "" {
+				yield(LookupSubject{}, malformed("lookup subjects", "subject is missing"))
+				return
+			}
 			var excluded []ResolvedSubject
 			for _, p := range resp.GetExcludedSubjects() {
-				excluded = append(excluded, resolvedSubjectFromProto(p))
+				x := resolvedSubjectFromProto(p)
+				if x.SubjectID == "" {
+					yield(LookupSubject{}, malformed("lookup subjects", "excluded subject id is missing"))
+					return
+				}
+				excluded = append(excluded, x)
 			}
 			if len(excluded) == 0 {
 				for _, id := range resp.GetExcludedSubjectIds() { //nolint:staticcheck // Support older server response fields.
+					if id == "" {
+						yield(LookupSubject{}, malformed("lookup subjects", "excluded subject id is missing"))
+						return
+					}
 					excluded = append(excluded, ResolvedSubject{SubjectID: id})
 				}
 			}

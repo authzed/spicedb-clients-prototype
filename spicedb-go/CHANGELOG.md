@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Finite paged reads (`ReadRelationships`, `LookupResources`,
+  `ExportRelationships`, and the single streams of `LookupSubjects` and
+  `LookupPermissionSets`) apply the client default deadline (30 seconds, or
+  `WithDefaultTimeout`) to each page request, from opening it to receiving its
+  last item, so a server that stalls mid-read fails the read with
+  `CodeDeadlineExceeded` instead of hanging it. Previously they had no default
+  deadline. A caller's total deadline (context or `With<Operation>Timeout`)
+  still bounds the whole read and wins when earlier;
+  `WithDefaultDeadline(DefaultDeadlineDisabled)` removes the per-page default.
+  Watches keep no default.
+- A response the client cannot interpret fails with `CodeInternal`
+  (`ErrInternal`), which no default policy retries, instead of being skipped
+  or filled with empty values: a read, export or watch item without its
+  relationship (or with a relationship missing its resource or subject), a
+  resource lookup without a resource ID, a subject lookup without a subject
+  (or with an excluded subject without an ID), an expand response without a
+  tree or with a leaf subject missing its object, and a permission set change
+  missing its change, parent set or child object. Malformed relationships
+  previously failed with `CodeUnknown`, and the other cases yielded empty
+  values.
+- `(*Client).Ready(ctx, opts...)` is a startup readiness check: constructors
+  connect lazily, and `Ready` connects and waits for the endpoint to serve
+  (via the gRPC health service), failing within the client default deadline
+  or `WithReadyTimeout` with `CodeDeadlineExceeded` naming the endpoint and
+  the latest connection error (refused, DNS, TLS). It is on `client.Interface`,
+  and `clienttest.Store.Ready` is a no-op.
+- gRPC targets are accepted only for the schemes this client dials and tests:
+  `dns:///host:port` (and `dns:host:port`), `unix:/path` and `unix:///path`,
+  and `passthrough:///host:port`. Any other scheme, including other
+  registered gRPC resolvers such as `unix-abstract:`, now fails at
+  construction with `ErrInvalidArgument` naming the accepted forms, instead of
+  being passed through to gRPC. The remote-plaintext check still judges the
+  resolved host (a unix socket is loopback; a `dns://` authority is remote).
 - Constructors accept `http://host:port` (plaintext) and
   `https://host[:port]` (TLS, 443 by default) endpoints, and reject at
   construction with `ErrInvalidArgument` any endpoint they cannot dial: a URL

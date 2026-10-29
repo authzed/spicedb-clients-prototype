@@ -51,6 +51,16 @@ func main() {
 	}
 	defer func() { _ = c.Close() }()
 
+	// ── 0. Startup readiness check ────────────────────────────────────────
+	//
+	// Constructors connect lazily, so a wrong or unreachable endpoint would
+	// otherwise surface on the first real call. Ready connects now and fails
+	// within its timeout instead.
+	if err := c.Ready(context.Background(), client.WithReadyTimeout(10*time.Second)); err != nil {
+		log.Fatalf("SpiceDB is not ready: %v", err)
+	}
+	fmt.Println("SpiceDB is ready")
+
 	// ── 1. The ordinary case: bound every unary call ─────────────────────
 	//
 	// 30 seconds is generous for a local SpiceDB. What matters is that the
@@ -169,6 +179,15 @@ definition document {
 	if elapsed > wedgedCallBudget+5*time.Second {
 		log.Fatalf("the %s deadline took %s to fire: the caller's context is not bounding the call",
 			wedgedCallBudget, elapsed)
+	}
+
+	// Ready at startup would have caught this server: it never completes a
+	// connection, so the readiness check fails with DeadlineExceeded naming
+	// the endpoint, within its timeout.
+	if err := wedgedClient.Ready(context.Background(), client.WithReadyTimeout(time.Second)); !errors.Is(err, client.ErrDeadlineExceeded) {
+		log.Fatalf("expected Ready against the wedged server to fail with client.ErrDeadlineExceeded, got: %v", err)
+	} else {
+		fmt.Printf("wedged server readiness: %v\n", err)
 	}
 
 	// A context whose deadline has already passed fails immediately: the same

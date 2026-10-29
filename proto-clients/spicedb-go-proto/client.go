@@ -36,7 +36,25 @@ var ErrInvalidEndpoint = errors.New("spicedb: invalid endpoint")
 
 // endpointForms names the accepted endpoint forms in every
 // ErrInvalidEndpoint message.
-const endpointForms = "expected host:port (e.g. localhost:50051), http://host:port (plaintext) or https://host[:port] (TLS)"
+const endpointForms = "expected host:port (e.g. localhost:50051), http://host:port (plaintext), https://host[:port] (TLS), dns:///host:port, unix:/path/to.sock or passthrough:///host:port"
+
+// targetSchemes are the gRPC resolver schemes NewClient dials. Each is a
+// resolver grpc-go registers itself, and each is exercised by a real call
+// against SpiceDB. Any other registered resolver (unix-abstract, xds, a
+// scheme some other package registers) is refused rather than passed
+// through: a target this client accepts must work.
+var targetSchemes = map[string]bool{"dns": true, "unix": true, "passthrough": true}
+
+// resolverTarget reports whether endpoint names one of targetSchemes, and
+// the scheme it names (lower-cased) when it parses as a URI with a
+// registered resolver at all.
+func resolverTarget(endpoint string) (scheme string, accepted bool) {
+	u, err := url.Parse(endpoint)
+	if err != nil || resolver.Get(u.Scheme) == nil {
+		return "", false
+	}
+	return u.Scheme, targetSchemes[u.Scheme]
+}
 
 func invalidEndpoint(endpoint, reason string) error {
 	return fmt.Errorf("%w %q: %s; %s", ErrInvalidEndpoint, endpoint, reason, endpointForms)
@@ -51,9 +69,11 @@ func invalidEndpoint(endpoint, reason string) error {
 //     scheme must agree with the transport; http:// needs an explicit port
 //     (no silent dial to port 80); https:// without one uses 443. A path
 //     other than a single "/", a query, a fragment or userinfo is refused.
-//   - Targets naming a registered gRPC resolver (unix:, dns:, passthrough:
-//     and so on) pass through unchanged; grpc-go parses them.
-//   - Any other "scheme://" form is an unsupported scheme.
+//   - dns:, unix: and passthrough: gRPC targets pass through unchanged;
+//     grpc-go parses them. The remote-plaintext guard judges their resolved
+//     host (a unix socket is loopback).
+//   - Any other scheme, including other registered gRPC resolvers, is an
+//     unsupported scheme.
 //   - Everything else is host[:port]. It must not carry userinfo, a path, a
 //     query, a fragment or whitespace, and a port must be numeric.
 func resolveEndpoint(endpoint string, insecure bool) (string, error) {
@@ -62,13 +82,15 @@ func resolveEndpoint(endpoint string, insecure bool) (string, error) {
 		case "http", "https":
 			return resolveURLEndpoint(endpoint, insecure)
 		}
-		if u, err := url.Parse(endpoint); err == nil && resolver.Get(u.Scheme) != nil {
+		if _, ok := resolverTarget(endpoint); ok {
 			return endpoint, nil
 		}
 		return "", invalidEndpoint(endpoint, fmt.Sprintf("unsupported scheme %q", scheme))
 	}
-	if u, err := url.Parse(endpoint); err == nil && resolver.Get(u.Scheme) != nil {
+	if scheme, ok := resolverTarget(endpoint); ok {
 		return endpoint, nil
+	} else if scheme != "" {
+		return "", invalidEndpoint(endpoint, fmt.Sprintf("unsupported scheme %q", scheme))
 	}
 
 	switch {

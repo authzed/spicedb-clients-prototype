@@ -117,14 +117,29 @@ func optionalToken(token consistency.ZedToken) *v1.ZedToken {
 	}
 	return &v1.ZedToken{Token: token.String()}
 }
-func nativeSet(p *materialize.SetReference) PermissionSetReference {
-	return PermissionSetReference{Object: nativeObject(&v1.ObjectReference{ObjectType: p.GetObjectType(), ObjectId: p.GetObjectId()}), PermissionOrRelation: p.GetPermissionOrRelation()}
-}
-func nativePermissionSetChange(p *materialize.PermissionSetChange) *PermissionSetChange {
+func nativeSet(op, field string, p *materialize.SetReference) (PermissionSetReference, error) {
 	if p == nil {
-		return nil
+		return PermissionSetReference{}, malformed(op, "%s is missing", field)
 	}
-	r := &PermissionSetChange{Revision: consistency.NewZedToken(p.GetAtRevision().GetToken()), Parent: nativeSet(p.GetParentSet())}
+	o, e := nativeObjectStrict(op, field+" object", &v1.ObjectReference{ObjectType: p.GetObjectType(), ObjectId: p.GetObjectId()})
+	if e != nil {
+		return PermissionSetReference{}, e
+	}
+	return PermissionSetReference{Object: o, PermissionOrRelation: p.GetPermissionOrRelation()}, nil
+}
+
+// nativePermissionSetChange converts a change. A missing change, parent set
+// or child object is a malformed response; an unknown operation or child
+// variant stays a safe unknown state.
+func nativePermissionSetChange(op string, p *materialize.PermissionSetChange) (*PermissionSetChange, error) {
+	if p == nil {
+		return nil, malformed(op, "permission set change is missing")
+	}
+	parent, e := nativeSet(op, "parent set", p.GetParentSet())
+	if e != nil {
+		return nil, e
+	}
+	r := &PermissionSetChange{Revision: consistency.NewZedToken(p.GetAtRevision().GetToken()), Parent: parent}
 	switch p.GetOperation() {
 	case materialize.PermissionSetChange_SET_OPERATION_ADDED:
 		r.Operation = PermissionSetAdded
@@ -133,26 +148,33 @@ func nativePermissionSetChange(p *materialize.PermissionSetChange) *PermissionSe
 	}
 	switch child := p.GetChild().(type) {
 	case *materialize.PermissionSetChange_ChildSet:
-		s := nativeSet(child.ChildSet)
+		s, e := nativeSet(op, "child set", child.ChildSet)
+		if e != nil {
+			return nil, e
+		}
 		r.ChildKind = PermissionSetChildSet
 		r.ChildSet = &s
 	case *materialize.PermissionSetChange_ChildMember:
 		r.ChildKind = PermissionSetChildMember
-		r.ChildMember = &PermissionSetMember{Object: nativeObject(&v1.ObjectReference{ObjectType: child.ChildMember.GetObjectType(), ObjectId: child.ChildMember.GetObjectId()}), PermissionOrRelation: child.ChildMember.GetOptionalPermissionOrRelation()}
+		member, e := nativeObjectStrict(op, "child member object", &v1.ObjectReference{ObjectType: child.ChildMember.GetObjectType(), ObjectId: child.ChildMember.GetObjectId()})
+		if e != nil {
+			return nil, e
+		}
+		r.ChildMember = &PermissionSetMember{Object: member, PermissionOrRelation: child.ChildMember.GetOptionalPermissionOrRelation()}
 	}
-	return r
+	return r, nil
 }
-func nativePermissionSetEvent(p *materialize.WatchPermissionSetsResponse) PermissionSetEvent {
+func nativePermissionSetEvent(p *materialize.WatchPermissionSetsResponse) (PermissionSetEvent, error) {
 	event := PermissionSetEvent{}
 	switch value := p.GetResponse().(type) {
 	case *materialize.WatchPermissionSetsResponse_Change:
-		event.Kind = PermissionSetEventChange
-		event.Change = nativePermissionSetChange(value.Change)
-		if event.Change != nil {
-			event.Revision = event.Change.Revision
-		} else {
-			event.Kind = PermissionSetEventUnknown
+		change, e := nativePermissionSetChange("watch permission sets", value.Change)
+		if e != nil {
+			return PermissionSetEvent{}, e
 		}
+		event.Kind = PermissionSetEventChange
+		event.Change = change
+		event.Revision = change.Revision
 	case *materialize.WatchPermissionSetsResponse_CompletedRevision:
 		event.Kind = PermissionSetEventCompletedRevision
 		event.Revision = consistency.NewZedToken(value.CompletedRevision.GetToken())
@@ -166,7 +188,7 @@ func nativePermissionSetEvent(p *materialize.WatchPermissionSetsResponse) Permis
 			event.AffectedPermissions = append(event.AffectedPermissions, WatchedPermission{p.GetResourceType(), p.GetPermission(), p.GetSubjectType(), p.GetOptionalSubjectRelation()})
 		}
 	}
-	return event
+	return event, nil
 }
 
 type WatchPermissionSetsRequest struct{}
@@ -204,7 +226,12 @@ func (c *Client) WatchPermissionSets(ctx context.Context, request WatchPermissio
 				yield(PermissionSetEvent{}, e)
 				return
 			}
-			if !yield(nativePermissionSetEvent(p), nil) {
+			event, e := nativePermissionSetEvent(p)
+			if e != nil {
+				yield(PermissionSetEvent{}, e)
+				return
+			}
+			if !yield(event, nil) {
 				return
 			}
 		}
@@ -252,6 +279,9 @@ func (c *Client) LookupPermissionSets(ctx context.Context, request LookupPermiss
 		if o.permissionSetCursor != nil {
 			req.OptionalStartingAfterCursor = permissionSetCursor(*o.permissionSetCursor)
 		}
+		// One bounded page: it carries the client default deadline.
+		ctx, pageCancel := c.pageContext(ctx)
+		defer pageCancel()
 		stub := materialize.NewWatchPermissionSetsServiceClient(c.proto.Connection())
 		for p, e := range receive(ctx, c.retrySettings(o), "lookup permission sets", true, func(ctx context.Context) (receiver[*materialize.LookupPermissionSetsResponse], error) {
 			return stub.LookupPermissionSets(ctx, req, o.callOptions...)
@@ -260,7 +290,12 @@ func (c *Client) LookupPermissionSets(ctx context.Context, request LookupPermiss
 				yield(LookupPermissionSet{}, e)
 				return
 			}
-			if !yield(LookupPermissionSet{nativePermissionSetChange(p.GetChange()), nativePermissionSetCursor(p.GetCursor())}, nil) {
+			change, e := nativePermissionSetChange("lookup permission sets", p.GetChange())
+			if e != nil {
+				yield(LookupPermissionSet{}, e)
+				return
+			}
+			if !yield(LookupPermissionSet{change, nativePermissionSetCursor(p.GetCursor())}, nil) {
 				return
 			}
 		}

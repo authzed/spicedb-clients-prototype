@@ -155,12 +155,12 @@ public final class ClientOptions {
         new java.util.EnumMap<>(ClientOperation.class);
 
     /**
-     * Sets the retry policy for every call of one operation, for example never reopening watches
-     * while every other operation keeps the client's policy:
+     * Sets the retry policy for every call of one operation, for example letting every watch reopen
+     * before its first event (the client-wide policy never reopens a watch):
      *
      * <pre>{@code
      * ClientOptions.builder()
-     *     .operationRetryPolicy(ClientOperation.WATCH, RetryPolicy.builder().maxRetries(0).build())
+     *     .operationRetryPolicy(ClientOperation.WATCH, RetryPolicy.builder().maxRetries(3).build())
      *     .build();
      * }</pre>
      *

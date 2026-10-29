@@ -258,7 +258,7 @@ class PerCallBehaviorTest {
   }
 
   @Test
-  void oneStreamCanBeExemptedWhileTheClientRetriesOthers() throws Exception {
+  void onlyAPerCallPolicyReopensAWatchTheClientRetriesNot() throws Exception {
     var watchCalls = new AtomicInteger();
     var watch =
         new WatchServiceGrpc.WatchServiceImplBase() {
@@ -284,18 +284,13 @@ class PerCallBehaviorTest {
       try (var events = client.updates(List.of(), null)) {
         assertThrows(UnavailableException.class, () -> events.iterator().hasNext());
       }
-      assertEquals(4, watchCalls.get(), "the client's policy retries establishment");
+      assertEquals(1, watchCalls.get(), "the client's policy never reopens a watch");
       watchCalls.set(0);
       try (var events =
-          client.updates(
-              List.of(),
-              null,
-              WatchOptions.builder()
-                  .retryPolicy(RetryPolicy.builder().maxRetries(0).build())
-                  .build())) {
+          client.updates(List.of(), null, WatchOptions.builder().retryPolicy(RETRY_ONCE).build())) {
         assertThrows(UnavailableException.class, () -> events.iterator().hasNext());
       }
-      assertEquals(1, watchCalls.get(), "the exempted watch opens once");
+      assertEquals(2, watchCalls.get(), "a per-call policy reopens before the first event");
     } finally {
       channel.shutdownNow();
       server.shutdownNow();

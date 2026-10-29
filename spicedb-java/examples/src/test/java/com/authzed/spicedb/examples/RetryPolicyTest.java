@@ -216,8 +216,8 @@ class RetryPolicyTest {
 
   @Test
   void oneCallCanBeExemptedFromRetries() throws Exception {
-    // A per-call policy with zero retries exempts one call (or one stream, such as a supervised
-    // watch) while the client keeps retrying everything else.
+    // A per-call policy with zero retries exempts one call while the client keeps retrying
+    // everything else. (Watches need no exemption: the client-wide policy never reopens one.)
     var service = new CountingService(1, Status.UNAVAILABLE);
     Server server = serve(service);
     try (SpiceDBClient client =
@@ -240,8 +240,8 @@ class RetryPolicyTest {
   @Test
   void oneOperationCanBeConfiguredClientWide() throws Exception {
     // A client-wide per-operation policy applies to every call of one operation, with no per-call
-    // option: here bulk checks are never retried (as a supervised watch would never be reopened),
-    // and idempotent writes are, while every other operation keeps the client's policy. A per-call
+    // option: here bulk checks are never retried, and idempotent writes are, while every other
+    // operation keeps the client's policy. A per-call
     // policy would still win over either.
     var service = new CountingService(1, Status.UNAVAILABLE);
     Server server = serve(service);

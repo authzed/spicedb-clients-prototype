@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Paging and watch fixes
+
+- A paged read or lookup whose full page ends without an after-result cursor,
+  or with the cursor it was sent, now fails with `INTERNAL` ("read page did not
+  advance cursor" / "lookup page did not advance cursor") instead of
+  re-requesting the same page forever. `deleteAllRelationshipsNonAtomic` does
+  the same ("delete page did not advance cursor", with delete progress
+  attached) for a partial page that returns the cursor it was sent.
+- The client-wide retry policy (the default included) and
+  `StreamRetries` no longer reopen `updates` or
+  `experimentalWatchPermissionSets`: a watch that fails before its first event
+  throws, since a reopened watch without a start revision would silently skip
+  the changes in between. A per-call `retryPolicy` or a `ClientOperation.WATCH`
+  / `WATCH_PERMISSION_SETS` operation policy opts in to reopening.
+
 ### Full-surface interface and test double
 
 - `SpiceDBApi` (extends `PermissionsApi` and `AutoCloseable`) mirrors every

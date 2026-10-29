@@ -826,6 +826,11 @@ public final class Permissions {
 
     // Native capabilities retain their options, results, errors, and stream identity.
 
+    /** Waits until the server is reachable; see the native {@link SpiceDBApi#awaitReady}. */
+    public void awaitReady(java.time.Duration timeout) {
+      client.awaitReady(timeout);
+    }
+
     public List<CheckResult> checkBulk(Collection<PermissionCheck> requests) {
       return client.checkBulk(requests);
     }

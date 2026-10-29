@@ -261,25 +261,34 @@ func GoIntegrationTest() error {
 		return err
 	}
 
-	// 5. Start SpiceDB via docker-compose
-	fmt.Println("==> Starting SpiceDB...")
-	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
-		return fmt.Errorf("docker compose up failed: %w", err)
+	// 5. Start SpiceDB via docker-compose, unless SPICEDB_ENDPOINT names one.
+	endpoint := os.Getenv("SPICEDB_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:50051"
+		fmt.Println("==> Starting SpiceDB...")
+		if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+			return fmt.Errorf("docker compose up failed: %w", err)
+		}
+		defer func() {
+			fmt.Println("==> Stopping SpiceDB...")
+			_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+		}()
 	}
-	defer func() {
-		fmt.Println("==> Stopping SpiceDB...")
-		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
-	}()
 
 	// Wait for SpiceDB to be ready
-	fmt.Println("==> Waiting for SpiceDB to be ready...")
-	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+	fmt.Println("==> Waiting for SpiceDB to be ready at " + endpoint + "...")
+	if err := waitForReady(endpoint, 30*time.Second); err != nil {
 		return err
 	}
 
-	// 6. Run go test
+	// 6. Run go test (the tests read SPICEDB_ENDPOINT).
 	fmt.Println("==> Running Go integration tests...")
-	if err := runInDir("testdata/go", "go", "test", "-v", "."); err != nil {
+	goTest := exec.Command("go", "test", "-v", ".")
+	goTest.Dir = "testdata/go"
+	goTest.Env = append(os.Environ(), "SPICEDB_ENDPOINT="+endpoint)
+	goTest.Stdout = os.Stdout
+	goTest.Stderr = os.Stderr
+	if err := goTest.Run(); err != nil {
 		return fmt.Errorf("go test failed: %w", err)
 	}
 

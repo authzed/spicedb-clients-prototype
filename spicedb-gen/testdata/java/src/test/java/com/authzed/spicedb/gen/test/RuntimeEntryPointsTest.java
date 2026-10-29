@@ -262,6 +262,7 @@ class RuntimeEntryPointsTest {
           List.of("rn-eng"),
           drain(tc.lookupSubjects(c, "document", "rn-doc", "viewer", "team", "member")).stream()
               .map(s -> s.subject().subjectId())
+              .distinct() // SpiceDB may report a subject once per path
               .toList());
       assertEquals(
           List.of("rn-alice"),

@@ -297,8 +297,10 @@ func TestRuntimeNamesAgainstServer(t *testing.T) {
 
 	sets, err := collect(t, LookupSubjectsByName(ctx, tc, cs, "document", "rn-doc", "viewer", "team", "member"))
 	require.NoError(t, err)
-	require.Len(t, sets, 1)
-	require.Equal(t, "rn-eng", sets[0].Subject.SubjectID)
+	require.NotEmpty(t, sets, "SpiceDB may report a subject once per path")
+	for _, s := range sets {
+		require.Equal(t, "rn-eng", s.Subject.SubjectID)
+	}
 
 	users, err := collect(t, LookupSubjectsByName(ctx, tc, cs, "document", "rn-doc", "view", "user", ""))
 	require.NoError(t, err)

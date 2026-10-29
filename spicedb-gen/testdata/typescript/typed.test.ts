@@ -187,7 +187,7 @@ describe("TypedClient", () => {
 
             const sets: string[] = [];
             for await (const s of tc.lookupSubjectsByName(full(), "document", "rn-doc", "viewer", "team", "member")) sets.push(s.subject.subjectId);
-            expect(sets).toEqual(["rn-eng"]);
+            expect([...new Set(sets)]).toEqual(["rn-eng"]); // SpiceDB may report a subject once per path
             const users: string[] = [];
             for await (const s of tc.lookupSubjectsByName(full(), "document", "rn-doc", "view", "user")) users.push(s.subject.subjectId);
             expect(users).toEqual(["rn-alice"]);

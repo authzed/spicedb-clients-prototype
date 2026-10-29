@@ -1779,6 +1779,9 @@ export class TypedClient {
     }
 
     // Native capabilities retain their full typed signatures and stream ownership.
+    ready(...args: Parameters<SpiceDBClientInterface["ready"]>): ReturnType<SpiceDBClientInterface["ready"]> {
+        return this.client.ready(...args);
+    }
     raw(...args: Parameters<SpiceDBClientInterface["raw"]>): ReturnType<SpiceDBClientInterface["raw"]> {
         return this.client.raw(...args);
     }

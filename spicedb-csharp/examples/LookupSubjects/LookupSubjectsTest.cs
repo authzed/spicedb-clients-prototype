@@ -57,8 +57,8 @@ public class LookupSubjectsTest
             Assert.Equal(Permissionship.HasPermission, result.Subject.Permissionship);
             Assert.Empty(result.ExcludedSubjects); // no wildcard relationships yet
             Assert.NotEmpty(result.LookedUpAt.Value);
-            if (result.Subject.Permissionship == Permissionship.HasPermission && result.Subject.SubjectID != "*" && result.ExcludedSubjects.Count == 0)
-                subjectIDs.Add(result.Subject.SubjectID);
+            if (result.Subject.Permissionship == Permissionship.HasPermission && result.Subject.SubjectId != "*" && result.ExcludedSubjects.Count == 0)
+                subjectIDs.Add(result.Subject.SubjectId);
         }
 
         // The exact set, not merely "alice and bob are somewhere in it": a
@@ -85,7 +85,7 @@ public class LookupSubjectsTest
         var excludedIDs = new HashSet<string>();
         await foreach (var result in client.LookupSubjectsAsync(Full(), new ObjectRef("document", "publicdoc"), "view", "user", null, default))
         {
-            if (result.Subject.SubjectID != "*" || result.Subject.Permissionship != Permissionship.HasPermission)
+            if (result.Subject.SubjectId != "*" || result.Subject.Permissionship != Permissionship.HasPermission)
             {
                 continue;
             }
@@ -96,7 +96,7 @@ public class LookupSubjectsTest
             // Never grant access on the wildcard match alone.
             foreach (var excluded in result.ExcludedSubjects)
             {
-                excludedIDs.Add(excluded.SubjectID);
+                excludedIDs.Add(excluded.SubjectId);
             }
         }
 

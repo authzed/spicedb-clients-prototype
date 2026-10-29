@@ -5,6 +5,22 @@
 the idiomatic client built on `SpiceDB.Proto`, the canonical generated binding. This
 guide lists every behavior change a migrating application will see.
 
+## Requirements
+
+| Requirement | Floor |
+| --- | --- |
+| .NET | `net8.0`, `net9.0` or `net10.0` (each package targets all three) |
+| SpiceDB server | 1.30 or later (older servers' trailer-only data is reachable through `RawProto()`) |
+| `Grpc.Net.Client`, `Grpc.Core.Api`, `Grpc.StatusProto` | 2.80.0 |
+| `Google.Protobuf` | 3.34.1 |
+| `Google.Api.CommonProtos` | 2.17.0 |
+| Legacy code in the same process | `Authzed.Net` 2.0.0 (the bridge); 1.x cannot be referenced alongside |
+
+The dependency floors are the same as `Authzed.Net` 1.6.0's, so adopting the client raises
+nothing a migrating application already has. NuGet versions are minimums: newer releases
+of these packages work. The packages are not on NuGet yet; see the [README](README.md) for
+consuming them from a local feed.
+
 ## Migrate incrementally: both in one process
 
 The generated types (`Authzed.Api.V1.*`, `Authzed.Api.Materialize.V0.*`) exist once, in
@@ -80,6 +96,52 @@ var allowed = result.HasPermission; // only an unconditional grant
   of 1,000, validate every echoed item, and throw for the first failed item unless
   `CheckOptions.ItemErrors = BulkItemErrors.Returned`.
 - `ZedToken` is a native value: `new ZedToken(text)`, `.Value` to persist it.
+- A direct subject is one step from an object: `ObjectRef` converts implicitly to
+  `SubjectRef`, or call `SubjectRef.Direct(obj)`. A subject relation of `...` (as tuples,
+  the protocol and user input spell a direct subject) means direct everywhere:
+  `SubjectRef.Named(obj, "...")` and `SubjectRelationFilter.Named("...")` return the direct
+  forms, so input can be passed through without a hand mapping.
+- Native results serialize with `System.Text.Json` as canonical values: enums as names
+  (`"Permissionship":"HasPermission"`) and `ZedToken` as its string. For the protocol
+  messages themselves, `Google.Protobuf.JsonFormatter` and `ToString()` work as before.
+
+## Renamed members
+
+Code that read the generated response messages reads native results instead. The members
+that changed name or shape:
+
+| Legacy (`Authzed.Api.V1`) | `SpiceDB.Client` |
+| --- | --- |
+| `ReadSchemaResponse.SchemaText` | `SchemaResult.Schema` |
+| `ReadSchemaResponse.ReadAt.Token` | `SchemaResult.Revision.Value` |
+| `WriteSchemaResponse.WrittenAt.Token` | the returned `ZedToken`'s `.Value` |
+| `CheckPermissionResponse.Permissionship == ...Types.Permissionship.HasPermission` | `CheckResult.HasPermission` (or `.Permissionship == Permissionship.HasPermission`) |
+| `CheckPermissionResponse.CheckedAt.Token` | `CheckResult.CheckedAt.Value` |
+| `CheckPermissionResponse.PartialCaveatInfo.MissingRequiredContext` | `CheckResult.MissingContext` |
+| `CheckPermissionResponse.OptionalExpiresAt` | `CheckResult.Expiration` |
+| `CheckBulkPermissionsResponse.Pairs[i].Item` / `.Error` | `CheckBulkAsync(...)[i]` / `CheckResult.Error` (with `ItemErrors = Returned`) |
+| `WriteRelationshipsResponse.WrittenAt.Token` | `WriteResult.Revision.Value` |
+| `DeleteRelationshipsResponse.DeletedAt` | `DeleteResult.Revision` |
+| `DeleteRelationshipsResponse.RelationshipsDeletedCount` | `DeleteResult.DeletedCount` |
+| `DeleteRelationshipsResponse.DeletionProgress` | `DeleteResult.Completed` |
+| `ReadRelationshipsResponse.Relationship` / `.ReadAt` / `.AfterResultCursor.Token` | `ReadRelationship.Relationship` / `.ReadAt` / `.AfterResultCursor` |
+| `Relationship.Resource.ObjectType` / `.ObjectId` | `Relationship.ResourceType` / `.ResourceId` |
+| `Relationship.Subject.Object.ObjectId` / `.Subject.OptionalRelation` | `Relationship.SubjectId` / `.SubjectRelation` (null when direct) |
+| `Relationship.OptionalCaveat.CaveatName` / `.Context` | `Relationship.CaveatName` / `.CaveatContext` |
+| `Relationship.OptionalExpiresAt` | `Relationship.Expiration` |
+| `LookupResourcesResponse.ResourceObjectId` | `LookupResource.ResourceId` |
+| `LookupResourcesResponse.LookedUpAt.Token` / `.AfterResultCursor.Token` | `LookupResource.LookedUpAt.Value` / `.AfterResultCursor` |
+| `LookupResourcesResponse.PartialCaveatInfo` | `LookupResource.PartialCaveat` |
+| `LookupSubjectsResponse.Subject.SubjectObjectId` | `LookupSubject.Subject.SubjectId` |
+| `LookupSubjectsResponse.ExcludedSubjects[i].SubjectObjectId` | `LookupSubject.ExcludedSubjects[i].SubjectId` |
+| `ExpandPermissionTreeResponse.TreeRoot` / `.ExpandedAt` | `ExpandResult.Tree` / `.Revision` |
+| `WatchResponse.Updates` / `.ChangesThrough` | `WatchEvent.Updates` / `.ChangesThrough` |
+| `ImportBulkRelationshipsResponse.NumLoaded` | the returned `ulong` |
+| `ExperimentalCountRelationshipsResponse.ReadCounterValue.RelationshipCount` | `CountResult.RelationshipCount` |
+
+Earlier builds of this client named the lookup identifiers `LookupResource.ResourceID` and
+`ResolvedSubject.SubjectID`. Those names remain as `[Obsolete]` aliases of `ResourceId` and
+`SubjectId`.
 
 ## Defaults: deadlines and retries
 
@@ -127,17 +189,41 @@ catch (FailedPreconditionException e) { ... }
 catch (SpiceDBException e) when (e.StatusCode == StatusCode.FailedPrecondition) { ... }
 ```
 
+**`SpiceDBException` is not an `RpcException`, so an existing `catch (RpcException)` still
+compiles but no longer matches anything the client throws.** Search for every
+`catch (RpcException` and `when (... is RpcException` around client calls and convert it.
+The exception does not derive from `RpcException` because `RpcException` has no
+constructor that takes an inner exception: a subclass could not keep the server's
+`RpcException` as `InnerException`, which is where the server's status, trailers and
+`ErrorInfo` reason are preserved, and it would be re-caught by the client's own
+`catch (RpcException)` mapping. The mapping:
+
+| Legacy (`RpcException e`) | `SpiceDB.Client` (`SpiceDBException e`) |
+| --- | --- |
+| `catch (RpcException e)` | `catch (SpiceDBException e)` |
+| `e.StatusCode` | `e.StatusCode` (same `Grpc.Core.StatusCode`, also for local errors) |
+| `e.Status` | `e.Status` (the server's own status for server errors) |
+| `e.Status.Detail` | `e.ServerMessage` (never null; equals `e.Message` for local errors) |
+| `e.Trailers`, `e.GetRpcStatus()` | `e.Trailers`, `e.ToRpcException().GetRpcStatus()`, or `e.Reason` / `e.ReasonMetadata` |
+| `when (e.StatusCode == StatusCode.X)` | the typed subclass (`NotFoundException`, ...) or the same `when` on `SpiceDBException` |
+| code that must keep an `RpcException` | `e.ToRpcException()`, or `e.InnerException as RpcException` for server errors |
+| one handler for both tiers mid-migration | `catch (Exception e) when (SpiceDBException.CodeOf(e) == StatusCode.X)` |
+
 - The server's `RpcException` is the `InnerException`; `Status`, `Trailers` and
   `ToRpcException()` expose it (with `ErrorInfo` details), and `Reason`/`ReasonMetadata`
   surface SpiceDB's `ErrorInfo` directly.
-- `ServerMessage` is the server's message verbatim, for forwarding errors to others.
+- `ServerMessage` is the server's message verbatim, for forwarding errors to others. It is
+  never null: for local validation, deadlines and caller-built errors it equals `Message`,
+  so `e.ServerMessage ?? e.Message` fallbacks can be dropped.
 - Caller cancellation is an `OperationCanceledException` carrying your token, not an
   `RpcException(Cancelled)`. `SpiceDBException.CodeOf(ex)` classifies native, raw
   `RpcException` and cancellation exceptions alike.
 - Local validation failures are `InvalidArgumentException` before any RPC.
 - Test doubles: `SpiceDBException.Create(StatusCode.NotFound, "...")`, or use
-  `SpiceDB.Client.Testing.InMemorySpiceDBClient` behind `ISpiceDBRelationshipClient` and
-  `ISpiceDBSchemaClient`.
+  `SpiceDB.Client.Testing.InMemorySpiceDBClient` behind `ISpiceDBClient` (or
+  `ISpiceDBRelationshipClient` and `ISpiceDBSchemaClient`). It answers checks from
+  registrations, a resolver (`SetCheckResolver`, `GrantAllChecks()`) and its stored
+  relationships, and serves `LookupResourcesAsync` and `LookupSubjectsAsync`.
 
 ## Relationships and reads
 
@@ -180,6 +266,4 @@ var version = sink.Headers?.GetValue("x-example-header");
 
 ## Minimum versions
 
-`SpiceDB.Client` supports SpiceDB 1.30 and later natively, and requires
-`Grpc.Net.Client` 2.80.0 and `Google.Protobuf` 3.34.1 or later, the same floors as
-Authzed.Net 1.6.0.
+See [Requirements](#requirements) at the top of this guide.

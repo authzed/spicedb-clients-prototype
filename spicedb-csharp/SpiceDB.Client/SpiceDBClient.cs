@@ -469,7 +469,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                 request.OptionalCursor = response.AfterResultCursor; count++;
                 if (options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly && response.Permissionship != LookupPermissionship.HasPermission) continue;
                 remaining--;
-                yield return new() { ResourceID = response.ResourceObjectId, Permissionship = ToPermissionship(response.Permissionship), PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
+                yield return new() { ResourceId = response.ResourceObjectId, Permissionship = ToPermissionship(response.Permissionship), PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
                 if (remaining == 0) yield break;
             }
             if (single || count < size) yield break;
@@ -891,7 +891,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             return new ResolvedSubject();
         return new ResolvedSubject
         {
-            SubjectID = v.SubjectObjectId,
+            SubjectId = v.SubjectObjectId,
             Permissionship = ToPermissionship(v.Permissionship),
             PartialCaveat = ToPartialCaveatInfo(v.PartialCaveatInfo),
         };
@@ -900,12 +900,12 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     internal static LookupSubject ToLookupSubject(LookupSubjectsResponse resp)
     {
         var subject = ToResolvedSubject(resp.Subject);
-        if (string.IsNullOrEmpty(subject.SubjectID))
+        if (string.IsNullOrEmpty(subject.SubjectId))
         {
 #pragma warning disable CS0612 // deprecated proto fields — explicit fallback for older servers
             subject = new ResolvedSubject
             {
-                SubjectID = resp.SubjectObjectId,
+                SubjectId = resp.SubjectObjectId,
                 Permissionship = ToPermissionship(resp.Permissionship),
                 PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
             };
@@ -921,7 +921,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         {
 #pragma warning disable CS0612 // deprecated proto field — explicit fallback for older servers
             if (resp.ExcludedSubjectIds.Count > 0)
-                excluded = resp.ExcludedSubjectIds.Select(id => new ResolvedSubject { SubjectID = id }).ToList();
+                excluded = resp.ExcludedSubjectIds.Select(id => new ResolvedSubject { SubjectId = id }).ToList();
 #pragma warning restore CS0612
         }
 

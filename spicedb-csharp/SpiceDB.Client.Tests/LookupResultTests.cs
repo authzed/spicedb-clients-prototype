@@ -43,7 +43,7 @@ public class LookupResultTests
         results[0].LookedUpAt!.Value.Should().Be("revision");
         if (filter == LookupPermissionshipFilter.HasPermissionOnly)
         {
-            results.Select(r => r.ResourceID).Should().Equal("doc3", "doc5");
+            results.Select(r => r.ResourceId).Should().Equal("doc3", "doc5");
             requests.Select(r => r.OptionalCursor?.Token).Should().Equal(null, "2", "4");
         }
         else results.Select(r => r.Permissionship).Should().Equal(Permissionship.ConditionalPermission, Permissionship.Unspecified, Permissionship.Unspecified, Permissionship.HasPermission, Permissionship.ConditionalPermission, Permissionship.HasPermission, Permissionship.HasPermission);
@@ -109,7 +109,7 @@ public class LookupResultTests
     {
         var result = SpiceDBClient.ToResolvedSubject(null);
 
-        result.SubjectID.Should().BeEmpty();
+        result.SubjectId.Should().BeEmpty();
         result.Permissionship.Should().Be(Permissionship.Unspecified);
         result.PartialCaveat.Should().BeNull();
     }
@@ -126,7 +126,7 @@ public class LookupResultTests
 
         var result = SpiceDBClient.ToResolvedSubject(proto);
 
-        result.SubjectID.Should().Be("alice");
+        result.SubjectId.Should().Be("alice");
         result.Permissionship.Should().Be(Permissionship.ConditionalPermission);
         result.PartialCaveat.Should().NotBeNull();
         result.PartialCaveat!.MissingRequiredContext.Should().Equal("ip");
@@ -162,7 +162,7 @@ public class LookupResultTests
 
         var result = SpiceDBClient.ToLookupSubject(resp);
 
-        result.Subject.SubjectID.Should().Be("*");
+        result.Subject.SubjectId.Should().Be("*");
         result.Subject.Permissionship.Should().Be(Permissionship.HasPermission);
 
         // Critical: both excluded subjects must be surfaced, not dropped —
@@ -170,12 +170,12 @@ public class LookupResultTests
         // over-grant access to alice and bob.
         result.ExcludedSubjects.Should().HaveCount(2);
 
-        result.ExcludedSubjects[0].SubjectID.Should().Be("alice");
+        result.ExcludedSubjects[0].SubjectId.Should().Be("alice");
         result.ExcludedSubjects[0].Permissionship.Should().Be(Permissionship.HasPermission);
         result.ExcludedSubjects[0].PartialCaveat.Should().BeNull();
 
         // HAS vs CONDITIONAL must be distinguished per excluded subject too.
-        result.ExcludedSubjects[1].SubjectID.Should().Be("bob");
+        result.ExcludedSubjects[1].SubjectId.Should().Be("bob");
         result.ExcludedSubjects[1].Permissionship.Should().Be(Permissionship.ConditionalPermission);
         result.ExcludedSubjects[1].PartialCaveat.Should().NotBeNull();
         result.ExcludedSubjects[1].PartialCaveat!.MissingRequiredContext.Should().Equal("region");
@@ -212,7 +212,7 @@ public class LookupResultTests
 
         var result = SpiceDBClient.ToLookupSubject(resp);
 
-        result.Subject.SubjectID.Should().Be("alice");
+        result.Subject.SubjectId.Should().Be("alice");
         result.Subject.Permissionship.Should().Be(Permissionship.ConditionalPermission);
         result.Subject.PartialCaveat.Should().NotBeNull();
         result.Subject.PartialCaveat!.MissingRequiredContext.Should().Equal("role");
@@ -236,7 +236,7 @@ public class LookupResultTests
 
         var result = SpiceDBClient.ToLookupSubject(resp);
 
-        result.Subject.SubjectID.Should().Be("alice");
+        result.Subject.SubjectId.Should().Be("alice");
         result.Subject.Permissionship.Should().Be(Permissionship.HasPermission);
     }
 
@@ -256,9 +256,9 @@ public class LookupResultTests
 
         // The deprecated field carries only IDs — no permissionship/caveat info.
         result.ExcludedSubjects.Should().HaveCount(2);
-        result.ExcludedSubjects[0].SubjectID.Should().Be("carol");
+        result.ExcludedSubjects[0].SubjectId.Should().Be("carol");
         result.ExcludedSubjects[0].Permissionship.Should().Be(Permissionship.Unspecified);
-        result.ExcludedSubjects[1].SubjectID.Should().Be("dave");
+        result.ExcludedSubjects[1].SubjectId.Should().Be("dave");
     }
 
     [Fact]
@@ -276,7 +276,7 @@ public class LookupResultTests
         var result = SpiceDBClient.ToLookupSubject(resp);
 
         result.ExcludedSubjects.Should().ContainSingle();
-        result.ExcludedSubjects[0].SubjectID.Should().Be("alice");
+        result.ExcludedSubjects[0].SubjectId.Should().Be("alice");
     }
 
     // ── End-to-end: LookupSubjectsAsync surfaces wildcard exclusions ────────
@@ -328,9 +328,9 @@ public class LookupResultTests
 
         results.Should().ContainSingle();
         var lookupSubject = results[0];
-        lookupSubject.Subject.SubjectID.Should().Be("*");
+        lookupSubject.Subject.SubjectId.Should().Be("*");
         lookupSubject.ExcludedSubjects.Should().HaveCount(2);
-        lookupSubject.ExcludedSubjects.Select(s => s.SubjectID).Should().Equal("alice", "bob");
+        lookupSubject.ExcludedSubjects.Select(s => s.SubjectId).Should().Equal("alice", "bob");
         lookupSubject.ExcludedSubjects[1].Permissionship.Should().Be(Permissionship.ConditionalPermission);
     }
 
@@ -368,7 +368,7 @@ public class LookupResultTests
         }
 
         results.Should().ContainSingle();
-        results[0].ResourceID.Should().Be("doc1");
+        results[0].ResourceId.Should().Be("doc1");
         results[0].Permissionship.Should().Be(Permissionship.ConditionalPermission);
         results[0].PartialCaveat.Should().NotBeNull();
         results[0].PartialCaveat!.MissingRequiredContext.Should().Equal("ip");

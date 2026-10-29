@@ -93,7 +93,7 @@ var ids = new List<string>();
 await foreach (var resource in client.LookupResourcesAsync(Consistency.MinLatency(), "organization", "view",
     SubjectRef.Direct(new ObjectRef("user", userId)),
     new LookupOptions { PermissionshipFilter = LookupPermissionshipFilter.HasPermissionOnly }, ct))
-    ids.Add(resource.ResourceID);
+    ids.Add(resource.ResourceId);
 ```
 
 Omit the filter only if you handle `Permissionship.ConditionalPermission` explicitly.
@@ -185,6 +185,13 @@ server's exact wire shape, including `ProtoConvert.ToCheckBulkResponse(requests,
 for a whole bulk check with per-item error statuses. Use `RawProto()` only
 when no native operation or option covers the need.
 
+Native results serialize directly with `System.Text.Json`: `JsonSerializer.Serialize(result)`
+writes enums as names (`"Permissionship":"HasPermission"`) and `ZedToken` as its string, so
+tool output needs no hand-built DTO. A direct subject is one step from an object: an
+`ObjectRef` converts implicitly to `SubjectRef`, and a relation of `...` (as user input and
+tuples spell a direct subject) means direct in `SubjectRef.Named` and
+`SubjectRelationFilter.Named`.
+
 ## Errors
 
 ```csharp
@@ -199,7 +206,9 @@ catch (SpiceDBException e) when (e.StatusCode == Grpc.Core.StatusCode.Permission
 inspects gRPC statuses; `SpiceDBException.CodeOf(ex)` classifies any exception, including
 raw `RpcException`s and cancellation. Caller cancellation stays an
 `OperationCanceledException`. Forward `e.ServerMessage`, not `e.Message`, when relaying an
-error to another party.
+error to another party; it is never null (for local errors it equals `e.Message`). Native
+errors are not `RpcException`s: catch `SpiceDBException`, never `RpcException`, around
+client calls.
 
 ## Test
 
@@ -215,6 +224,12 @@ fake.SetCheckError(new ObjectRef("organization", "acme"), "can_admin",
 
 ISpiceDBRelationshipClient authz = fake; // production code takes the same interface; SpiceDBClient implements it
 ISpiceDBClient full = fake; // or the client's full surface; operations the double cannot run fail as Unimplemented
+
+// Checks over IDs generated at run time: a resolver, or grant everything.
+fake.SetCheckResolver(check => check.Permission == "view" ? new CheckResult(Permissionship.HasPermission, [], default) : null);
+fake.GrantAllChecks(); // same as fake.SetCheckResolver(InMemorySpiceDBClient.GrantAll)
+// Lookups run over the stored relationships through the same check resolution.
+await foreach (var org in fake.LookupResourcesAsync(Consistency.Full(), "organization", "admin", new ObjectRef("user", "alice"))) { }
 
 // Failure paths without a fake server: fail one call, or fail at a defined point.
 fake.FailNext(SpiceDBOperation.Check, InMemorySpiceDBClient.ServerError(Grpc.Core.StatusCode.Unavailable, "down"));
@@ -235,14 +250,19 @@ complete deletes, imports, exports) and `ISpiceDBSchemaClient` (read, write and 
 schema) where code under test talks to SpiceDB; both `SpiceDBClient` and
 `InMemorySpiceDBClient` implement them with identical signatures. `ISpiceDBClient` extends
 both with the rest of the client (lookups, watch, introspection, experimental operations,
-`RawProto`, disposal); the double implements it too, failing operations it has no in-memory
-semantics for with `StatusCode.Unimplemented` after recording them. The double applies
+`RawProto`, disposal); the double implements it too, serving lookups and failing operations
+it has no in-memory semantics for (watch, introspection, expansion, experimental operations)
+with `StatusCode.Unimplemented` after recording them. The double applies
 preconditions, CREATE conflicts, one-transaction imports and SpiceDB filter semantics
 (`Filter.Matches`), honors cursors, limits and response-metadata sinks
 (`SetResponseMetadata`), and throws the same exception types and messages as the real
-client; unregistered checks return `NoPermission`, and `ReflectSchemaAsync` returns what
+client. A check resolves to a registered result or error, then the resolver (null declines),
+then a stored relationship whose relation is the permission's name and whose subject matches
+exactly or by wildcard (conditional if caveated), then `NoPermission`; it never evaluates a
+schema. `LookupResourcesAsync` and `LookupSubjectsAsync` yield the known objects of the type
+that this resolution grants. `ReflectSchemaAsync` returns what
 `SetReflectSchemaResult` registered. Build expected errors with
 `SpiceDBException.Create(code, message)` or `InMemorySpiceDBClient.ServerError(code, message, reason)`.
 Every call is recorded (`Calls`, `CallsOf`), and fault hooks run before each call, import
-batch, import commit and read or export item; a failed write or import applies nothing. For integration tests, run
+batch, import commit and read, export or lookup item; a failed write or import applies nothing. For integration tests, run
 `authzed/spicedb serve-testing` and assert both granted and denied cases.

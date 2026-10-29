@@ -1,7 +1,9 @@
 using System.Runtime.CompilerServices;
 using M = Authzed.Api.Materialize.V0;
+using System.Text.Json.Serialization;
 namespace SpiceDB.Client;
 
+[JsonConverter(typeof(JsonStringEnumConverter<PermissionSetOperation>))]
 public enum PermissionSetOperation { Unspecified, Added, Removed }
 public sealed record PermissionSetReference(ObjectRef Object, string PermissionOrRelation);
 public sealed record PermissionSetMember(ObjectRef Object, string? PermissionOrRelation);

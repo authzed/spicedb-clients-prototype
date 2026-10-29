@@ -12,7 +12,8 @@ public sealed record SubjectRelationFilter
     private SubjectRelationFilter(string? relation) => Relation = relation;
     public static SubjectRelationFilter Any { get; } = new((string?)null);
     public static SubjectRelationFilter Direct { get; } = new("");
-    public static SubjectRelationFilter Named(string relation) => relation == "..." ? throw new InvalidArgumentException("Use Direct for a direct relation.") : new(Native.Required(relation, nameof(relation)));
+    /// <summary>Subjects with relation <paramref name="relation"/>; <c>...</c> is the direct relation and gives <see cref="Direct"/>.</summary>
+    public static SubjectRelationFilter Named(string relation) => relation == SubjectRef.DirectRelation ? Direct : new(Native.Required(relation, nameof(relation)));
 
     /// <summary>Any (no constraint), Direct (no subject relation) or Named (<see cref="Name"/>).</summary>
     public SubjectRelationKind Kind => Relation switch { null => SubjectRelationKind.Any, "" => SubjectRelationKind.Direct, _ => SubjectRelationKind.Named };

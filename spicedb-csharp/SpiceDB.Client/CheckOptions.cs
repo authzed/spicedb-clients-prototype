@@ -1,6 +1,8 @@
+using System.Text.Json.Serialization;
 namespace SpiceDB.Client;
 
 /// <summary>How bulk checks report per-item failures.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<BulkItemErrors>))]
 public enum BulkItemErrors
 {
     /// <summary>The first failing item fails the whole call with an exception carrying its input index. The default.</summary>

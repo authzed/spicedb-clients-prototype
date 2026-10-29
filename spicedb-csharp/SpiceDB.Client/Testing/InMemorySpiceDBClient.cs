@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using Google.Protobuf.WellKnownTypes;
 using Google.Rpc;
 using Grpc.Core;
+using System.Text.Json.Serialization;
 
 namespace SpiceDB.Client.Testing;
 
@@ -18,12 +19,25 @@ namespace SpiceDB.Client.Testing;
 /// Filtered reads, exports and bounded or complete deletes use <see cref="Filter.Matches"/>, and
 /// reads and exports honor <c>ResumeCursor</c> and <c>Limit</c>. Schema writes store the text
 /// without compiling it; <see cref="ReflectSchemaAsync"/> returns the result registered with
-/// <see cref="SetReflectSchemaResult"/> (an empty result without one). Checks return results registered with
-/// <see cref="SetCheckResult"/> or <see cref="SetCheckError"/>, and
-/// <see cref="Permissionship.NoPermission"/> otherwise; it does not evaluate a schema.
+/// <see cref="SetReflectSchemaResult"/> (an empty result without one).
+/// <para>
+/// A check resolves in a fixed order: a result or error registered for exactly that question
+/// (<see cref="SetCheckResult"/>, <see cref="SetCheckError"/>); then the check resolver
+/// (<see cref="SetCheckResolver"/>, or <see cref="GrantAllChecks"/>), unless it declines; then
+/// the stored relationships, where an unexpired relationship on the resource whose relation is
+/// the permission's name and whose subject matches exactly, or by a direct wildcard
+/// (<c>user:*</c>), grants it (conditionally when the relationship has a caveat, which is not
+/// evaluated; an uncaveated match wins); anything else
+/// is <see cref="Permissionship.NoPermission"/>. The double does not evaluate a schema.
+/// <see cref="LookupResourcesAsync"/> and <see cref="LookupSubjectsAsync"/> enumerate the objects
+/// of the requested type that appear in the stored relationships (as resource or subject, in
+/// order of first appearance) and return those the same resolution grants, reporting
+/// conditional results as conditional with their missing context and honoring the permissionship filter, the limit and,
+/// for resources, the double's cursors (<see cref="CursorAfter"/>).
+/// </para>
 /// <see cref="CheckAnyAsync"/> and <see cref="CheckAllAsync"/> reduce a bulk check, as the client
 /// does, and <see cref="DisposeAsync"/> does nothing. Operations without in-memory semantics
-/// (lookups, watch, schema introspection and diff, expansion and the experimental operations)
+/// (watch, schema introspection and diff, expansion and the experimental operations)
 /// are recorded and consult the fault hook, then fail with <see cref="StatusCode.Unimplemented"/>
 /// in the real client's error shape; <see cref="RawProto"/> throws
 /// <see cref="InvalidOperationException"/>, as a client without a raw transport does.
@@ -31,8 +45,8 @@ namespace SpiceDB.Client.Testing;
 /// Errors have the same types, codes and message shape as the real client's for the same
 /// failure: server failures carry the server's message in both <see cref="Exception.Message"/>
 /// and <see cref="SpiceDBException.ServerMessage"/> (and SpiceDB's <c>ErrorInfo</c> reason where
-/// SpiceDB attaches one), and local validation is an <see cref="InvalidArgumentException"/> with
-/// no server message. Per-call options are plain values the double reads directly:
+/// SpiceDB attaches one), and local validation is an <see cref="InvalidArgumentException"/> whose
+/// server message is its message. Per-call options are plain values the double reads directly:
 /// <see cref="TransportOptions.ResponseMetadata"/> sinks receive the metadata set with
 /// <see cref="SetResponseMetadata"/>, and a mutation given a <c>RetryPolicy</c> with retries is
 /// rejected as the real client rejects it. Thread-safe.
@@ -41,8 +55,8 @@ namespace SpiceDB.Client.Testing;
 /// Every call is recorded (<see cref="Calls"/>, <see cref="CallsOf"/>) with its arguments and
 /// options, so tests can assert on what was sent without a strict mock. Faults can be injected
 /// at defined points (<see cref="SetFaultHook"/>, <see cref="FailNext"/>): before any
-/// operation, before each import batch, before an import commits, and before each read or
-/// export item (an import-batch fault carries the batch's relationships), so failure paths
+/// operation, before each import batch, before an import commits, and before each read,
+/// export or lookup item (an import-batch fault carries the batch's relationships), so failure paths
 /// need no fake gRPC server. <see cref="CursorAfter"/> builds the resume cursors reads and
 /// exports return, and <see cref="SetReadSchemaRevision"/> emulates servers whose schema
 /// reads report no revision. Build injected errors with
@@ -63,6 +77,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     private readonly List<RecordedCall> _calls = [];
     private readonly Dictionary<SpiceDBOperation, int> _counts = [];
     private Func<Fault, Exception?>? _hook;
+    private Func<PermissionCheck, CheckResult?>? _resolver;
     private bool _omitSchemaRevision;
 
     /// <summary>Every recorded call, in order.</summary>
@@ -145,6 +160,34 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
         lock (_lock) _checks[Key(resource, permission, subject)] = (null, error);
     }
 
+    /// <summary>
+    /// Installs a check resolver, consulted for every check (and every check a lookup makes) that
+    /// no <see cref="SetCheckResult"/> or <see cref="SetCheckError"/> registration answers, before
+    /// the stored relationships. It receives the check with the call's
+    /// <see cref="CheckOptions.Context"/> (or <see cref="LookupOptions.Context"/>) merged into
+    /// the check's context, the check's own keys winning, so tests over IDs generated at run time
+    /// need no per-ID registration. A returned result answers the check (its
+    /// <see cref="CheckResult.CheckedAt"/> is replaced by the double's revision); return
+    /// <see cref="Permissionship.ConditionalPermission"/> with missing context to emulate a
+    /// caveat the caller did not satisfy. Null declines and falls through to the stored
+    /// relationships. The resolver answers and never fails: inject failures with
+    /// <see cref="SetFaultHook"/>, <see cref="FailNext"/> or <see cref="SetCheckError"/>. It runs
+    /// with the double locked and must not call it. Pass null to remove it.
+    /// </summary>
+    public void SetCheckResolver(Func<PermissionCheck, CheckResult?>? resolver)
+    {
+        lock (_lock) _resolver = resolver;
+    }
+
+    /// <summary>
+    /// A check resolver that grants every check:
+    /// <c>store.SetCheckResolver(InMemorySpiceDBClient.GrantAll)</c>, or <see cref="GrantAllChecks"/>.
+    /// </summary>
+    public static CheckResult? GrantAll(PermissionCheck check) => new(Permissionship.HasPermission, [], default);
+
+    /// <summary>Installs <see cref="GrantAll"/> as the check resolver, replacing any other.</summary>
+    public void GrantAllChecks() => SetCheckResolver(GrantAll);
+
     /// <summary>Registers the result <see cref="ReflectSchemaAsync"/> returns (stamped with the current revision).</summary>
     public void SetReflectSchemaResult(ReflectSchemaResult result)
     {
@@ -168,7 +211,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
         lock (_lock)
         {
             Respond(options?.Transport);
-            var (result, error) = Lookup(request);
+            var (result, error) = Lookup(WithCallContext(request, options?.Context));
             if (error is not null) throw error;
             return Task.FromResult(result!);
         }
@@ -187,10 +230,10 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
             Respond(options?.Transport);
             for (var i = 0; i < items.Length; i++)
             {
-                var (result, error) = Lookup(items[i]);
+                var (result, error) = Lookup(WithCallContext(items[i], options?.Context));
                 if (error is not null)
                 {
-                    var itemError = SpiceDBException.Create(error.StatusCode, error.ServerMessage ?? error.Message);
+                    var itemError = SpiceDBException.Create(error.StatusCode, error.ServerMessage);
                     itemError.InputIndex = i;
                     if (options?.ItemErrors != BulkItemErrors.Returned) throw itemError;
                     results.Add(new CheckResult(itemError, Token()));
@@ -421,14 +464,102 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     /// <summary>Does nothing; the double holds no transport.</summary>
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
+    /// <summary>
+    /// Yields the resources of <paramref name="resourceType"/> that appear in the stored
+    /// relationships (as resource or subject, in order of first appearance) and that check
+    /// resolution grants <paramref name="permission"/> to <paramref name="subject"/>; conditional
+    /// grants are reported as conditional. Honors <see cref="LookupOptions.PermissionshipFilter"/>,
+    /// <see cref="LookupOptions.Limit"/> (counting yielded results) and
+    /// <see cref="LookupOptions.ResumeCursor"/>: item n (counting granted results from 1, whether or
+    /// not the filter yields them) carries <see cref="CursorAfter"/>(n). A registered check error
+    /// for a candidate fails the lookup.
+    /// </summary>
+    public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var call = Begin(SpiceDBOperation.LookupResources, options, options?.RetryPolicy, cancellationToken, consistency, resourceType, permission, subject);
+        if (options?.SubjectRelation is not null) throw new InvalidArgumentException("LookupResources uses the supplied SubjectRef relation.");
+        Positive(options?.PageSize ?? 512, "PageSize");
+        var limit = Positive(options?.Limit ?? int.MaxValue, "Limit");
+        Native.Required(consistency, nameof(consistency));
+        Native.Required(resourceType, nameof(resourceType));
+        Native.Required(permission, nameof(permission));
+        Native.Required(subject, nameof(subject));
+        (string Id, CheckResult Result)[] granted; ZedToken at;
+        lock (_lock)
+        {
+            Respond(options?.Transport);
+            at = Token();
+            granted = Granted(ObjectsOf(resourceType).Where(id => id != "*"),
+                id => new PermissionCheck(new ObjectRef(resourceType, id), permission, subject, consistency, options?.Context));
+        }
+        var onlyGrants = options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly;
+        var yielded = 0;
+        for (var i = Start(options?.ResumeCursor); i < granted.Length && yielded < limit; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (onlyGrants && granted[i].Result.Permissionship != Permissionship.HasPermission) continue;
+            await Task.Yield();
+            Inject(call, FaultStage.Item, yielded);
+            yielded++;
+            yield return new LookupResource
+            {
+                ResourceId = granted[i].Id,
+                Permissionship = granted[i].Result.Permissionship,
+                PartialCaveat = PartialCaveat(granted[i].Result),
+                LookedUpAt = at,
+                AfterResultCursor = CursorAfter(i + 1),
+            };
+        }
+    }
+
+    /// <summary>
+    /// Yields the subjects of <paramref name="subjectType"/> (with <see cref="LookupOptions.SubjectRelation"/>,
+    /// direct when null or <c>...</c>) that appear in the stored relationships (as resource or
+    /// subject, in order of first appearance, including a wildcard <c>*</c>) and that check
+    /// resolution grants <paramref name="permission"/> on <paramref name="resource"/>; conditional
+    /// grants are reported as conditional. Honors <see cref="LookupOptions.Limit"/> and rejects the
+    /// options the real client rejects for this operation. A registered check error for a
+    /// candidate fails the lookup.
+    /// </summary>
+    public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(Consistency consistency, ObjectRef resource, string permission, string subjectType, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var call = Begin(SpiceDBOperation.LookupSubjects, options, options?.RetryPolicy, cancellationToken, consistency, resource, permission, subjectType);
+        if (options is not null && options.PermissionshipFilter != LookupPermissionshipFilter.All) throw new InvalidArgumentException("LookupSubjects does not support PermissionshipFilter.");
+        if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null || options?.Paging is Paging.SingleRequest) throw new InvalidArgumentException("LookupSubjects does not support Debug, PageSize or Paging; upstream concrete pagination is unimplemented.");
+        var limit = Positive(options?.Limit ?? int.MaxValue, "Limit");
+        Native.Required(consistency, nameof(consistency));
+        Native.Required(resource, nameof(resource));
+        Native.Required(permission, nameof(permission));
+        Native.Required(subjectType, nameof(subjectType));
+        var relation = options?.SubjectRelation is null or "" ? null : options.SubjectRelation;
+        (string Id, CheckResult Result)[] granted; ZedToken at;
+        lock (_lock)
+        {
+            Respond(options?.Transport);
+            at = Token();
+            granted = Granted(ObjectsOf(subjectType),
+                id => new PermissionCheck(resource, permission, new SubjectRef(new ObjectRef(subjectType, id), relation), consistency, options?.Context));
+        }
+        for (var i = 0; i < granted.Length && i < limit; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Yield();
+            Inject(call, FaultStage.Item, i);
+            yield return new LookupSubject
+            {
+                Subject = new ResolvedSubject
+                {
+                    SubjectId = granted[i].Id,
+                    Permissionship = granted[i].Result.Permissionship,
+                    PartialCaveat = PartialCaveat(granted[i].Result),
+                },
+                LookedUpAt = at,
+            };
+        }
+    }
+
     // The remaining operations have no in-memory semantics. Each is recorded and consults the
     // fault hook, then fails with Unimplemented in the real client's error shape.
-
-    public IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, CancellationToken cancellationToken = default) =>
-        UnimplementedStream<LookupResource>(SpiceDBOperation.LookupResources, options, options?.RetryPolicy, cancellationToken, consistency, resourceType, permission, subject);
-
-    public IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(Consistency consistency, ObjectRef resource, string permission, string subjectType, LookupOptions? options = null, CancellationToken cancellationToken = default) =>
-        UnimplementedStream<LookupSubject>(SpiceDBOperation.LookupSubjects, options, options?.RetryPolicy, cancellationToken, consistency, resource, permission, subjectType);
 
     public IAsyncEnumerable<WatchEvent> UpdatesAsync(IReadOnlyList<string> objectTypes, ZedToken? startRevision, WatchOptions? options = null, CancellationToken cancellationToken = default) =>
         UnimplementedStream<WatchEvent>(SpiceDBOperation.Updates, options, options?.RetryPolicy, cancellationToken, objectTypes, startRevision);
@@ -557,10 +688,79 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
         $"could not CREATE relationship `{relationship}`, as it already existed. If this is persistent, please switch to TOUCH operations or specify a precondition",
         "ERROR_REASON_ATTEMPT_TO_RECREATE_RELATIONSHIP");
 
-    private (CheckResult? Result, SpiceDBException? Error) Lookup(PermissionCheck request) =>
-        _checks.TryGetValue(Key(request.Resource, request.Permission, request.Subject), out var registered)
-            ? registered
-            : (new CheckResult(Permissionship.NoPermission, [], Token()), null);
+    /// <summary>
+    /// Resolves a check: the registered result or error, then the resolver, then the stored
+    /// relationships, then no permission. Callers hold the lock.
+    /// </summary>
+    private (CheckResult? Result, SpiceDBException? Error) Lookup(PermissionCheck request)
+    {
+        if (_checks.TryGetValue(Key(request.Resource, request.Permission, request.Subject), out var registered)) return registered;
+        if (_resolver?.Invoke(request) is { } answer)
+            return (new CheckResult(answer.Permissionship, answer.MissingContext, Token(), answer.DebugTrace, answer.Expiration), null);
+        return (new CheckResult(Stored(request), [], Token()), null);
+    }
+
+    /// <summary>The check with the call's context merged into its own; the check's keys win.</summary>
+    private static PermissionCheck WithCallContext(PermissionCheck request, IReadOnlyDictionary<string, object?>? callContext)
+    {
+        if (request is null || callContext is null || callContext.Count == 0) return request!;
+        var merged = new Dictionary<string, object?>(callContext);
+        foreach (var pair in request.Context ?? new Dictionary<string, object?>()) merged[pair.Key] = pair.Value;
+        return request.WithContext(merged);
+    }
+
+    /// <summary>
+    /// The permissionship the stored relationships give: an unexpired relationship on the
+    /// resource, with the permission's name as its relation and a subject matching exactly or by a
+    /// direct wildcard, grants it; a caveated one grants it conditionally (caveats are not
+    /// evaluated).
+    /// </summary>
+    private Permissionship Stored(PermissionCheck request)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var result = Permissionship.NoPermission;
+        foreach (var r in _relationships)
+        {
+            if (r.Resource != request.Resource || r.Relation != request.Permission) continue;
+            if (r.Expiration is { } expiration && expiration <= now) continue;
+            var subject = request.Subject;
+            var matches = r.Subject == subject
+                || (r.SubjectId == "*" && r.SubjectRelation is null && subject.Relation is null && r.SubjectType == subject.Object.ObjectType);
+            if (!matches) continue;
+            if (r.CaveatName is null) return Permissionship.HasPermission;
+            result = Permissionship.ConditionalPermission;
+        }
+        return result;
+    }
+
+    /// <summary>The distinct IDs of objects of <paramref name="type"/> in the stored relationships, as resource or subject, in order of first appearance.</summary>
+    private IEnumerable<string> ObjectsOf(string type)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var r in _relationships)
+        {
+            if (r.ResourceType == type && seen.Add(r.ResourceId)) yield return r.ResourceId;
+            if (r.SubjectType == type && seen.Add(r.SubjectId)) yield return r.SubjectId;
+        }
+    }
+
+    /// <summary>The candidates check resolution grants (unconditionally or conditionally); a candidate's check error fails the lookup.</summary>
+    private (string Id, CheckResult Result)[] Granted(IEnumerable<string> candidates, Func<string, PermissionCheck> check)
+    {
+        var granted = new List<(string, CheckResult)>();
+        foreach (var id in candidates.ToArray())
+        {
+            var (result, error) = Lookup(check(id));
+            if (error is not null) throw error;
+            if (result!.Permissionship is Permissionship.HasPermission or Permissionship.ConditionalPermission)
+                granted.Add((id, result));
+        }
+        return granted.ToArray();
+    }
+
+    /// <summary>A conditional result's missing context, as the real client reports it on lookup results.</summary>
+    private static PartialCaveatInfo? PartialCaveat(CheckResult result) =>
+        result.Permissionship == Permissionship.ConditionalPermission ? new PartialCaveatInfo { MissingRequiredContext = result.MissingContext } : null;
 
     private void CheckPreconditions(IReadOnlyList<Precondition> preconditions)
     {
@@ -596,6 +796,7 @@ public sealed record RecordedCall(SpiceDBOperation Operation, int Index, IReadOn
 }
 
 /// <summary>Where in an operation a fault hook runs.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<FaultStage>))]
 public enum FaultStage
 {
     /// <summary>Before the operation does anything, including before a stream yields its first item.</summary>
@@ -604,7 +805,7 @@ public enum FaultStage
     ImportBatch,
     /// <summary>After every batch, before the import commits.</summary>
     ImportCommit,
-    /// <summary>Before a read or export yields item <see cref="Fault.Item"/> (0-based within the call).</summary>
+    /// <summary>Before a read, export or lookup yields item <see cref="Fault.Item"/> (0-based within the call).</summary>
     Item,
 }
 
@@ -619,6 +820,7 @@ public sealed record Fault(RecordedCall Call, FaultStage Stage, int Item)
 }
 
 /// <summary>Whether <see cref="InMemorySpiceDBClient.ReadSchemaAsync"/> reports a revision; see <see cref="InMemorySpiceDBClient.SetReadSchemaRevision"/>.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<SchemaRevision>))]
 public enum SchemaRevision
 {
     /// <summary>Reports the double's current revision. The default.</summary>

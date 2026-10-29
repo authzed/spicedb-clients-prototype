@@ -214,7 +214,7 @@ def check_result(resp):
 def permission_set_change(value):
     parent = (
         PermissionSetRef(
-            ObjectRef(value.parent_set.object_type, value.parent_set.object_id),
+            ObjectRef._unchecked(value.parent_set.object_type, value.parent_set.object_id),
             value.parent_set.permission_or_relation,
         )
         if value.HasField("parent_set")
@@ -223,12 +223,12 @@ def permission_set_change(value):
     child = None
     if value.HasField("child_set"):
         child = PermissionSetRef(
-            ObjectRef(value.child_set.object_type, value.child_set.object_id),
+            ObjectRef._unchecked(value.child_set.object_type, value.child_set.object_id),
             value.child_set.permission_or_relation,
         )
     elif value.HasField("child_member"):
         child = PermissionSetMember(
-            ObjectRef(value.child_member.object_type, value.child_member.object_id),
+            ObjectRef._unchecked(value.child_member.object_type, value.child_member.object_id),
             value.child_member.optional_permission_or_relation or None,
         )
     operation = {

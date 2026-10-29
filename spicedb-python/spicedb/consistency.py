@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from spicedb.options import _option
-from spicedb.errors import InvalidArgumentError
+from spicedb.errors import LocalValidationError
 
 from authzed.api.v1 import permission_service_pb2
 from authzed.api.v1 import core_pb2
@@ -34,9 +34,9 @@ class Consistency:
         _option(self.strategy, ConsistencyMode)
         if self.strategy in (ConsistencyMode.AT_LEAST, ConsistencyMode.SNAPSHOT):
             if self.token is None or not _token_string(self.token):
-                raise InvalidArgumentError("consistency: expected nonempty ZedToken")
+                raise LocalValidationError("consistency: expected nonempty ZedToken")
         elif self.token is not None:
-            raise InvalidArgumentError("consistency: this mode does not accept a token")
+            raise LocalValidationError("consistency: this mode does not accept a token")
 
     def _to_proto(self) -> permission_service_pb2.Consistency:
         if self.strategy in (ConsistencyMode.FULL, ConsistencyMode.MIN_LATENCY):

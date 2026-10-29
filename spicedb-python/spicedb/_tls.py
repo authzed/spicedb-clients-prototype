@@ -81,7 +81,7 @@ def require_tls_material_usable(
 
     :raises spicedb.errors.InvalidArgumentError: on either condition.
     """
-    from spicedb.errors import InvalidArgumentError
+    from spicedb.errors import LocalValidationError
 
     if insecure and (
         ca_cert is not None or client_cert is not None or client_key is not None
@@ -95,7 +95,7 @@ def require_tls_material_usable(
             )
             if value is not None
         )
-        raise InvalidArgumentError(
+        raise LocalValidationError(
             f"spicedb: refusing to build a client with transport_security=TransportSecurity.PLAINTEXT and TLS material "
             f"({supplied}): a plaintext connection performs no TLS handshake, so the "
             f"material would be ignored and everything -- including the bearer token -- "
@@ -106,7 +106,7 @@ def require_tls_material_usable(
     if (client_cert is None) != (client_key is None):
         missing = "client_key" if client_key is None else "client_cert"
         present = "client_cert" if client_key is None else "client_key"
-        raise InvalidArgumentError(
+        raise LocalValidationError(
             f"spicedb: {present} was supplied without {missing}: mutual TLS needs both "
             f"halves of the client identity, and neither is usable alone"
         )

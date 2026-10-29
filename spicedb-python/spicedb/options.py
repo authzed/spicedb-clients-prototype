@@ -9,7 +9,7 @@ from typing import Any
 
 import grpc
 
-from spicedb.errors import InvalidArgumentError, SpiceDBError
+from spicedb.errors import LocalValidationError, SpiceDBError
 
 class Tracing(Enum):
     DISABLED = False
@@ -161,19 +161,19 @@ class RetryPolicy:
 
     def __post_init__(self) -> None:
         if isinstance(self.max_retries, bool) or not isinstance(self.max_retries, int) or self.max_retries < 0:
-            raise InvalidArgumentError("retry_policy.max_retries: expected non-negative integer")
+            raise LocalValidationError("retry_policy.max_retries: expected non-negative integer")
         codes = frozenset(self.retryable_codes)
         if not all(isinstance(code, grpc.StatusCode) for code in codes):
-            raise InvalidArgumentError("retry_policy.retryable_codes: expected grpc.StatusCode values")
+            raise LocalValidationError("retry_policy.retryable_codes: expected grpc.StatusCode values")
         if grpc.StatusCode.OK in codes:
-            raise InvalidArgumentError("retry_policy.retryable_codes: OK is not an error")
+            raise LocalValidationError("retry_policy.retryable_codes: OK is not an error")
         object.__setattr__(self, "retryable_codes", codes)
         for name in ("initial_backoff", "max_backoff"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
-                raise InvalidArgumentError(f"retry_policy.{name}: expected finite non-negative number")
+                raise LocalValidationError(f"retry_policy.{name}: expected finite non-negative number")
         if self.on_retry is not None and not callable(self.on_retry):
-            raise InvalidArgumentError("retry_policy.on_retry: expected callable")
+            raise LocalValidationError("retry_policy.on_retry: expected callable")
 
 
 DEFAULT_RETRY_POLICY = RetryPolicy()
@@ -184,7 +184,7 @@ def _retry_policy(value: RetryPolicy | Retries, field: str = "retry_policy") -> 
     if value is Retries.DISABLED:
         return _NO_RETRIES
     if not isinstance(value, RetryPolicy):
-        raise InvalidArgumentError(f"{field}: expected RetryPolicy or Retries.DISABLED, got {value!r}")
+        raise LocalValidationError(f"{field}: expected RetryPolicy or Retries.DISABLED, got {value!r}")
     return value
 
 
@@ -241,16 +241,16 @@ def _operation_retry_policies(value) -> dict[Operation, RetryPolicy]:
     try:
         items = list(value.items())
     except AttributeError:
-        raise InvalidArgumentError(
+        raise LocalValidationError(
             "operation_retry_policies: expected a mapping of Operation to RetryPolicy or Retries.DISABLED"
         ) from None
     policies: dict[Operation, RetryPolicy] = {}
     for operation, policy in items:
         if not isinstance(operation, Operation):
-            raise InvalidArgumentError(f"operation_retry_policies: expected Operation keys, got {operation!r}")
+            raise LocalValidationError(f"operation_retry_policies: expected Operation keys, got {operation!r}")
         resolved = _retry_policy(policy, f"operation_retry_policies[{operation.name}]")
         if operation in _NEVER_IDEMPOTENT and resolved.max_retries > 0:
-            raise InvalidArgumentError(
+            raise LocalValidationError(
                 f"operation_retry_policies[{operation.name}]: {operation.value} cannot be retried: "
                 "it is not idempotent on replay"
             )
@@ -306,19 +306,19 @@ class CallOptions:
         pairs = tuple(tuple(pair) for pair in self.metadata)
         for pair in pairs:
             if len(pair) != 2 or not isinstance(pair[0], str):
-                raise InvalidArgumentError("call_options.metadata: expected (str, value) pairs")
+                raise LocalValidationError("call_options.metadata: expected (str, value) pairs")
         object.__setattr__(self, "metadata", pairs)
         if self.wait_for_ready is not None and not isinstance(self.wait_for_ready, bool):
-            raise InvalidArgumentError("call_options.wait_for_ready: expected bool")
+            raise LocalValidationError("call_options.wait_for_ready: expected bool")
         if self.compression is not None and not isinstance(self.compression, grpc.Compression):
-            raise InvalidArgumentError("call_options.compression: expected grpc.Compression")
+            raise LocalValidationError("call_options.compression: expected grpc.Compression")
         if self.response_metadata is not None and not isinstance(self.response_metadata, ResponseMetadata):
-            raise InvalidArgumentError("call_options.response_metadata: expected ResponseMetadata")
+            raise LocalValidationError("call_options.response_metadata: expected ResponseMetadata")
         if self.retry_policy is not None:
             _retry_policy(self.retry_policy, "call_options.retry_policy")
 
 
 def _option(value, kind):
     if not isinstance(value, kind):
-        raise InvalidArgumentError(f"expected {kind.__name__}, got {value!r}")
+        raise LocalValidationError(f"expected {kind.__name__}, got {value!r}")
     return value.value

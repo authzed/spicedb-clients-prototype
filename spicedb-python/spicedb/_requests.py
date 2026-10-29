@@ -22,7 +22,7 @@ from authzed.api.v1 import (
 )
 from google.protobuf import struct_pb2
 
-from spicedb.errors import InvalidArgumentError
+from spicedb.errors import LocalValidationError
 from spicedb.consistency import Consistency
 from spicedb.types import (
     JSONObject,
@@ -95,9 +95,9 @@ def _merge_check_context(
 
 def check_fields(check: PermissionCheck, context):
     if not isinstance(check, PermissionCheck):
-        from spicedb.errors import InvalidArgumentError
+        from spicedb.errors import LocalValidationError
 
-        raise InvalidArgumentError("check: expected PermissionCheck")
+        raise LocalValidationError("check: expected PermissionCheck")
     return dict(
         resource=check.resource._to_proto(),
         permission=check.permission,
@@ -275,7 +275,7 @@ def watch_request(
     filters: Sequence[Filter] = (),
 ) -> watch_service_pb2.WatchRequest:
     if object_types and filters:
-        raise InvalidArgumentError("watch object_types and filters are mutually exclusive")
+        raise LocalValidationError("watch object_types and filters are mutually exclusive")
     cursor = None
     if start_revision is not None:
         cursor = core_pb2.ZedToken(token=_token_string(start_revision))

@@ -117,6 +117,13 @@ public interface SpiceDBApi extends PermissionsApi, AutoCloseable {
   Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
       ZedToken atRevision, CallOptions options);
 
+  /**
+   * Startup readiness check: connects now and waits up to {@code timeout} for the connection,
+   * failing with {@code UNAVAILABLE} or {@code DEADLINE_EXCEEDED} when the endpoint is not
+   * reachable. See {@link SpiceDBClient#awaitReady}; the in-memory double returns at once.
+   */
+  void awaitReady(java.time.Duration timeout);
+
   /** The client's authenticated transport; {@code null} on implementations without one. */
   Channel rawChannel();
 

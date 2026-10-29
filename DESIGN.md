@@ -446,6 +446,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     for a well-formed remote host.
   - Connection errors display the endpoint and the root cause (refused, DNS,
     TLS), not only a generic transport category.
+  - gRPC target syntax beyond `host:port` (`dns:///host:port` for client-side
+    load balancing, `unix:` sockets) is accepted where the transport supports
+    it, with the loopback check on the resolved host, and rejected at
+    construction elsewhere with an error naming the accepted forms. A target a
+    client accepts must work; clients do not pass unknown schemes through.
   - Clients that connect lazily offer a startup readiness check (an
     eager-connect option or an awaitable connect/ready call), so a wrong or
     unreachable endpoint can still fail at startup.

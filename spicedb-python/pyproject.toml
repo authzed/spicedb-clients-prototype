@@ -2,6 +2,7 @@
 name = "spicedb-python"
 version = "0.1.0"
 description = "Idiomatic Python client for SpiceDB"
+readme = "README.md"
 requires-python = ">=3.11"
 # Runtime floors are the lowest versions the test suite passes against
 # (verified on Python 3.11 with exactly these versions installed); see

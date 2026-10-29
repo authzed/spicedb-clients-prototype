@@ -7,6 +7,27 @@ lists a behavior change you will observe, followed by a before/after. If your
 application owns its schema, also consider the generated typed client
 (`spicedb-gen --lang python`); see [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md).
 
+## Requirements
+
+| Requirement | spicedb-python | authzed-py |
+| --- | --- | --- |
+| Python | 3.11 or later | |
+| `grpcio` | `>=1.73.0` | `~=1.63` |
+| `protobuf` | `>=7.36.2` | `>=5.26` |
+| `googleapis-common-protos` | `>=1.56.1` | |
+| SpiceDB | 1.30 or later | |
+
+- grpcio 1.73 is the first release whose transport rejects an
+  authority-bearing `unix:` target, which the plaintext-credential guard
+  relies on; protobuf 7.36.2 is the bindings' generated-code version. Both are
+  inside authzed-py's ranges, so one environment can hold both clients (see
+  below). Test tooling is only in the `dev` extra.
+- SpiceDB 1.30 and later is supported natively. Data older servers sent only
+  in trailers (for example check debug traces) is reachable through
+  `call_options=CallOptions(response_metadata=ResponseMetadata())`.
+- Installation, including from a checkout before publication:
+  [README.md](README.md).
+
 ## Installing both during the migration
 
 authzed-py and `spicedb-python-proto` (which spicedb-python depends on) both
@@ -29,21 +50,6 @@ The bridged authzed-py keeps its client classes and `grpcutil`, drops its own
 generated modules, and requires `spicedb-python-proto`, so `authzed.api.v1.CheckPermissionRequest`
 and spicedb-python's requests are the same class from one descriptor pool.
 Values pass between the two without conversion.
-
-## Dependency floors
-
-spicedb-python needs `grpcio>=1.73.0` (authzed-py: `~=1.63`) and
-`protobuf>=7.36.2` (authzed-py: `>=5.26`). grpcio 1.73 is the first release
-whose transport rejects an authority-bearing `unix:` target, which the
-plaintext-credential guard relies on; protobuf 7.36.2 is the bindings'
-generated-code version. Both are inside authzed-py's ranges. Test tooling is
-only in the `dev` extra.
-
-## SpiceDB version
-
-SpiceDB 1.30 and later is supported natively. Data older servers sent only in
-trailers (for example check debug traces) is reachable through
-`call_options=CallOptions(response_metadata=ResponseMetadata())`.
 
 ## Constructors and transport security
 
@@ -108,6 +114,43 @@ allowed = result.has_permission   # only an unconditional grant; CONDITIONAL nev
   `resource_type`, `subject_type`, `subject_relation`.
 - `Relationship.from_tuple("document:readme#viewer@user:alice[expiration:2030-01-01T00:00:00Z]")`
   parses SpiceDB's full tuple syntax; `str(relationship)` formats it.
+
+## Renamed request and response members
+
+Requests are keyword arguments and native values, and responses are frozen
+dataclasses. Where a protobuf member has a different name or shape:
+
+| authzed-py (protobuf) | spicedb-python |
+| --- | --- |
+| `ObjectReference(object_type=, object_id=)` | `ObjectRef(object_type, object_id)` |
+| `SubjectReference(object=, optional_relation=)` | `SubjectRef(object, relation)` (`None` or `"..."` is direct) |
+| `Relationship.subject.object.object_id` | `Relationship.subject_id` (also `resource_id`, `resource_type`, `subject_type`, `subject_relation`) |
+| `Relationship.optional_caveat`, `optional_expires_at` | `Relationship.caveat`, `expiration` (`datetime`) |
+| `ZedToken.token` | `str(token)` on a `ZedToken` |
+| `Consistency(fully_consistent=True)` / `(minimize_latency=True)` / `(at_least_as_fresh=t)` / `(at_exact_snapshot=t)` | `full()` / `min_latency()` / `at_least(t)` / `snapshot(t)` |
+| `CheckPermissionRequest.with_tracing` | `tracing=Tracing.ENABLED` |
+| `CheckPermissionResponse.permissionship == PERMISSIONSHIP_HAS_PERMISSION` | `CheckResult.has_permission` (or `permissionship is Permissionship.HAS_PERMISSION`) |
+| `CheckPermissionResponse.partial_caveat_info.missing_required_context` | `CheckResult.missing_context` |
+| `CheckPermissionResponse.checked_at` | `CheckResult.checked_at` |
+| `CheckBulkPermissionsResponse.pairs[i].item` / `.error` | `check_bulk(...)[i]` / `.error` with `item_errors=BulkItemErrors.RETURN` |
+| `WriteRelationshipsRequest.updates`, `optional_preconditions` | `Transaction().touch/create/delete(...)`, `.must_match/.must_not_match(filter)` |
+| `WriteRelationshipsResponse.written_at` | `WriteResult.revision` |
+| `RelationshipFilter(resource_type=, optional_resource_id=, optional_resource_id_prefix=, optional_relation=, optional_subject_filter=)` | `Filter(resource_type, resource_id=, resource_id_prefix=, relation=, subject=)` |
+| `SubjectFilter(subject_type=, optional_subject_id=, optional_relation=)` | `SubjectFilter(subject_type, subject_id=, relation=SubjectRelationFilter.any()/.direct()/.named(r))` |
+| `DeleteRelationshipsRequest.optional_limit`, `optional_allow_partial_deletions` | `delete_relationships(limit=, partial=DeletePartial.ALLOWED/DISALLOWED)` |
+| `DeleteRelationshipsResponse.deleted_at`, `relationships_deleted_count`, `deletion_progress` | `DeleteResult.revision`, `deleted_count`, `progress` |
+| `ReadRelationshipsRequest.optional_limit`, `optional_cursor` | `read_relationships(page_size=, cursor=)` (cursor is a `str`) |
+| `ReadRelationshipsResponse.after_result_cursor.token` | `ReadRelationship.after_result_cursor` |
+| `LookupResourcesRequest.resource_object_type`, `optional_limit`, `optional_cursor` | `lookup_resources(resource_type=, page_size=/limit=, cursor=)` |
+| `LookupResourcesResponse.resource_object_id`, `partial_caveat_info` | `LookupResource.resource_id`, `partial_caveat` |
+| `LookupSubjectsRequest.subject_object_type`, `optional_subject_relation`, `optional_concrete_limit`, `wildcard_option` | `lookup_subjects(subject_type=, subject_relation=, page_size=/limit=, wildcards=)` |
+| `LookupSubjectsResponse.subject.subject_object_id` (or deprecated `subject_object_id`) | `LookupSubject.subject.subject_id` |
+| `ExpandPermissionTreeResponse.tree_root`, `expanded_at` | `ExpandResult.tree`, `revision` |
+| `ReadSchemaResponse.schema_text`, `read_at` | `SchemaResult.schema`, `revision` |
+| `WriteSchemaResponse.written_at` | the returned `ZedToken` |
+| `WatchRequest.optional_object_types`, `optional_relationship_filters`, `optional_start_cursor` | `watch(object_types, filters=, start_revision=)` |
+| `WatchResponse.changes_through`, `optional_transaction_metadata` | `WatchEvent.changes_through`, `transaction_metadata` |
+| `ExportBulkRelationshipsResponse.relationships`, `after_result_cursor` | one `ExportedRelationship(relationship, after_result_cursor)` per relationship |
 
 ## Writes
 
@@ -263,5 +306,8 @@ or persistence: `spicedb.protoconv`.
 
 Replace mocks of authzed-py stubs with `spicedb.testing.InMemoryClient` (or
 `AsyncInMemoryClient`): writes with preconditions and create conflicts,
-filtered reads and deletes, and registered check results, with the real
-client's method signatures.
+filtered reads and deletes, checks resolved from registered results, a
+resolver callback (`set_check_resolver(grant_all)` grants everything) or the
+stored relationships, and lookups over the objects it knows, with the real
+client's method signatures. A generated `TypedClient` wraps it:
+`TypedClient(InMemoryClient())`.

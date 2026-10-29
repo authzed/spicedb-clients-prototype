@@ -46,6 +46,7 @@ var wantExamples = []string{
 	"delete_relationships",
 	"error_mapping",
 	"expand_permission_tree",
+	"in_memory_double",
 	"insecure_opt_in",
 	"lookup_resources",
 	"lookup_subjects",

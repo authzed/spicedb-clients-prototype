@@ -12,6 +12,48 @@
 
 ## Unreleased
 
+### Test doubles resolve checks and serve lookups
+
+- `InMemoryClient` and `AsyncInMemoryClient` now resolve a check in a fixed
+  order: a result registered with `set_check_result`; then a check resolver
+  installed with the new `set_check_resolver(resolver)` (a callable taking the
+  `PermissionCheck` and returning a `CheckResult`, a `Permissionship`, a bool,
+  or None to defer), so tests over generated IDs need no per-ID registration
+  (`set_check_resolver(grant_all)` grants everything); then the stored
+  relationships, where a relationship on the resource whose relation is the
+  permission's name and whose subject matches exactly or by wildcard grants it
+  (conditionally when caveated; expired ones are ignored). Anything else is
+  `NO_PERMISSION`. Previously only registered results counted, so a check of a
+  relationship the test had just written reported no permission.
+- `lookup_resources` and `lookup_subjects` work on the doubles instead of
+  raising `UNIMPLEMENTED`: they enumerate the objects of the requested type in
+  the stored relationships and yield those the check resolution grants,
+  reporting conditional results, honoring `permissionship_filter`, `limit`,
+  `cursor` and `wildcards`, recording each call and consulting the fault hook
+  before the call and each item. `cursor_after(n)` builds a lookup cursor too.
+
+### Generated typed clients
+
+- `TypedClient(client)` accepts `spicedb.protocols.ClientProtocol` (sync) or
+  `AsyncClientProtocol` (aio), so a typed client wraps a `spicedb.testing`
+  double: `TypedClient(InMemoryClient())`.
+- New schema-level lookups for names received at runtime, each validated
+  against the schema: `definition_by_name(name)` (the generated class),
+  `permission_ref_by_name(definition, permission)` (a resource-less
+  `PermissionRef`) and `TypedClient.lookup_resources_by_name(c, resource_type,
+  permission, subject, ...)`, which raises `NotInSchemaError` or
+  `SubjectNotAllowedError` before any call.
+- Generated modules expose `DefinitionNames` constants, a `DEFINITION_NAMES`
+  tuple and `SCHEMA_TEXT`, the schema they were generated from, so a service
+  can write its schema at startup without shipping the `.zed` file.
+
+### Documentation
+
+- New `README.md` covering installation (including from a checkout before
+  publication), a first call and links to the other guides.
+- `MIGRATION.md` opens with a Requirements section and has a table of renamed
+  request and response members.
+
 ### Paging and bridge fixes
 
 - A paged read or lookup whose page was retried after a mid-page failure no

@@ -458,16 +458,20 @@ async def test_async_double_covers_the_whole_client():
         await client.download_permission_sets()
     assert raised.value.code() is grpc.StatusCode.UNIMPLEMENTED
     with pytest.raises(SpiceDBError) as raised:
-        [x async for x in client.lookup_subjects(
-            resource=ObjectRef("document", "d0"), permission="view", subject_type="user", consistency=full(),
-        )]
+        [x async for x in client.watch(["document"])]
     assert raised.value.code() is grpc.StatusCode.UNIMPLEMENTED
+    # Lookups work in memory (see test_testing_double_resolution.py).
+    assert [x async for x in client.lookup_subjects(
+        resource=ObjectRef("document", "d0"), permission="view", subject_type="user", consistency=full(),
+    )] == []
     with pytest.raises(SpiceDBError):
         await client.raw_grpc()
     async with client as entered:
         assert entered is client
     await client.close()
-    assert [c.operation for c in client.calls()] == [Operation.DOWNLOAD_PERMISSION_SETS, Operation.LOOKUP_SUBJECTS]
+    assert [c.operation for c in client.calls()] == [
+        Operation.DOWNLOAD_PERMISSION_SETS, Operation.WATCH, Operation.LOOKUP_SUBJECTS,
+    ]
 
 
 def test_read_schema_without_revision():

@@ -213,12 +213,22 @@ func parseRenames(v string) (map[string]string, error) {
 //     definitions whose names would otherwise collide with generated
 //     identifiers. Renames change TypeScript identifiers only; the schema
 //     names sent to SpiceDB never change.
+//   - "names-only" (--typescript.names-only): emit only the name constants,
+//     literal unions and SchemaText into names.gen.ts, with no imports, so a
+//     shared package can use the names without depending on the client.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	module := DefaultClientModule
 	format := "none"
 	renames := map[string]string{}
+	namesOnly := false
 	for k, v := range opts {
 		switch k {
+		case generator.NamesOnlyOption:
+			b, err := generator.BoolOption("typescript", k, v)
+			if err != nil {
+				return nil, err
+			}
+			namesOnly = b
 		case "client-module":
 			if !clientModuleRe.MatchString(v) {
 				return nil, fmt.Errorf("--typescript.client-module=%q is not a valid module specifier", v)
@@ -238,6 +248,9 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		default:
 			return nil, fmt.Errorf("unknown TypeScript option --typescript.%s", k)
 		}
+	}
+	if _, ok := opts["client-module"]; ok && namesOnly {
+		return nil, fmt.Errorf("--typescript.client-module has no effect with --typescript.names-only, whose output imports nothing")
 	}
 	known := map[string]bool{}
 	for _, def := range s.Definitions {
@@ -269,8 +282,12 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 
+	name, path := "typed_client.ts.tmpl", "typed_client.gen.ts"
+	if namesOnly {
+		name, path = "names_only.ts.tmpl", "names.gen.ts"
+	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
 		return nil, err
 	}
 
@@ -282,7 +299,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	}
 	return []generator.GeneratedFile{
 		{
-			Path:    "typed_client.gen.ts",
+			Path:    path,
 			Content: content,
 		},
 	}, nil
@@ -928,5 +945,6 @@ func (g *Generator) Options() []generator.Option {
 		{Name: "client-module", Value: "<specifier>", Description: `Module specifier the generated file imports the native client from (default "@spicedb/client").`},
 		{Name: "format", Value: "none|prettier", Description: `Format the output with the project's Prettier (default none).`},
 		{Name: "rename", Value: "<definition>=<Name>[,...]", Description: `Identifier stem for a definition whose generated names collide; schema names on the wire are unchanged.`},
+		generator.NamesOnlyOptionDescription,
 	}
 }

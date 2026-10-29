@@ -76,6 +76,16 @@ current native APIs.
   - Output is formatted with the language's canonical formatter; the output
     package/module name is a generator option.
 
+- **Offer a names-only mode** (root DESIGN.md, "Generate every schema position
+  a caller can name"). `--<lang>.names-only` (Go, TypeScript, Java) emits only
+  the definition, relation and permission name constants, their name lists and
+  the schema text, with the same identifiers as the full output (renames
+  apply, collisions still fail). It imports nothing beyond the language's
+  standard library, never the client library or proto tier, so a shared API
+  package can depend on it alone. Caveat names have no constants in either
+  mode. Each target has a fixture that builds the output with no client
+  available.
+
 - **Make every option discoverable.** Each generator implements
   `generator.OptionDescriber`; `spicedb-gen --help` lists every language's
   options, and a test fails if a generator stops describing them.
@@ -138,6 +148,12 @@ and options forwarding rather than just generated text fragments.
   without changing the schema names sent to SpiceDB, e.g.
   `--go.rename=subject=SubjectDef` for a schema with `definition subject`.
   `--go.package` sets the package name, and output is gofmt-formatted.
+- `--go.names-only` writes `names.gen.go` with no imports: `Definitions`,
+  `DefinitionNames()`, `SchemaText`, and per definition `DRelations`,
+  `DPermissions`, `DRelationNames()` and `DPermissionNames()`.
+  `testdata/go-names` is a module whose go.mod requires nothing; `mage
+  goTypeErrors` tests it, and a unit test keeps it current with the generator.
+  A bare `--<lang>.<option>` flag means `=true`.
 - `RKey(subject)` is generated only for relations admitting a caveated or
   expiring subject; elsewhere the writer's `TypedRelationship` already
   identifies the tuple. The typed `Txn` exposes `Updates()`, `Preconditions()`
@@ -219,6 +235,13 @@ and options forwarding rather than just generated text fragments.
   is an explicit option rather than the default. The fixture is generated with
   `--typescript.format=prettier` and the Magefile checks it with
   `prettier --check`.
+- `--typescript.names-only` writes `names.gen.ts` with no imports: `SchemaText`,
+  `Definitions`, `DefinitionNames`, `DefinitionName`, and per definition
+  `DRelations`, `DPermissions`, `DRelationNames`, `DPermissionNames` and the
+  `DRelationName`/`DPermissionName` unions. It rejects
+  `--typescript.client-module`. `mage typeScriptTypeErrors` copies
+  `testdata/typescript-names` to a directory with no `node_modules` above it and
+  type-checks it there, so any package import fails to resolve.
 - Negative type fixtures put `// @ts-expect-error` on the line before each
   forbidden single-line statement. tsc reports an unused directive as an error, so
   each line must fail on its own; the Magefile rejects directives that do not
@@ -292,6 +315,12 @@ and options forwarding rather than just generated text fragments.
   1.22.0, the version spicedb-java uses) verifies it. `--java.formatter="<cmd>"`
   pipes the output through a formatter command, for names long enough to need
   wrapping the writer does not model.
+- `--java.names-only` writes a `Permissions` class (in `--java.package`) that
+  imports only `java.util.List`: the `DRelations`/`DPermissions` classes,
+  `Definitions` and `SCHEMA`, rendered exactly as in the full class. `mage
+  javaTypeErrors` runs the fixture's `compileNamesOnly` task, which compiles it
+  and `testdata/java/names_only` with an empty classpath, and `spotlessCheck`
+  covers it.
 - Negative type fixtures mark each forbidden line `// should not compile`.
   `mage javaTypeErrors` compiles them with every diagnostic (`-Xmaxerrs`) and
   requires an error on every marked line, no error on any unmarked line, and no

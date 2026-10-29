@@ -21,10 +21,13 @@ Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go*
 > `has_permission`, `has_permission?`, `hasPermission()`), never the result object
 > itself. See [DESIGN.md](DESIGN.md#domain-types-and-checks).
 
-For typed examples, first generate the wrapper from your schema:
+For typed examples, first generate the wrapper from your schema. The generator
+is its own Go module, so build or install it from its directory (`go build
+./spicedb-gen/cmd/spicedb-gen` from the repository root fails):
 
 ```bash
-spicedb-gen --schema schema.zed --lang <go|typescript|java|python> --out <output-path>
+cd spicedb-gen && go build -o spicedb-gen ./cmd/spicedb-gen   # or: go install ./cmd/spicedb-gen
+./spicedb-gen --schema schema.zed --lang <go|typescript|java|python> --out <output-path>
 ```
 
 Tracing is optional and disabled by default; the examples enable it to make

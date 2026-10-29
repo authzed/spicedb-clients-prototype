@@ -155,8 +155,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     the `Any`/`Direct`/`Named` subject relation distinction. Test doubles use this
     rather than reimplementing filter semantics.
   - Each client ships an in-memory test double for relationship writes (with
-    preconditions and create conflicts), filtered reads and deletes, and
-    registered check results, plus imports, exports and schema reads and writes.
+    preconditions and create conflicts), filtered reads and deletes, permission
+    checks, lookups, imports, exports and schema reads and writes.
     Its errors carry the same codes and message shape as the real client's for
     the same failure. It records every call with its request and resolved
     options, and accepts fault injection at defined points (before any call,
@@ -165,6 +165,18 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     failure paths and option assertions need neither a fake transport nor a
     strict mock. Its resume cursors have a documented format or constructor,
     and it can emulate servers whose schema reads report no revision.
+  - The double resolves a check in a fixed order: a result registered for
+    that exact question; then a caller-supplied check resolver (a callback
+    receiving the check, so tests over generated IDs need no per-ID
+    registration, and grant-all is one line); then the stored relationships,
+    where a relationship on the resource whose relation is the permission's
+    name and whose subject matches exactly or by wildcard grants it; anything
+    else is no permission. The double does not evaluate a schema.
+  - The double serves LookupResources and LookupSubjects: it enumerates the
+    objects of the requested type that appear in its stored relationships (as
+    resource or subject) and returns those its check resolution grants,
+    reporting conditional results as conditional and honoring the
+    permissionship filter, limit and cursor with the double's cursor format.
   - Each client exports an interface (or protocol) with the full client's
     method set, kept in sync with the client by a test, and the double
     implements all of it: operations without in-memory semantics are recorded,
@@ -172,7 +184,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     shape. Its surface matches the real client's so one
     interface or protocol accepts both: caller-defined where the language is
     structurally typed (Go, TypeScript, Python protocols), library-provided and
-    implemented by both where it is nominally typed (C#, Java).
+    implemented by both where it is nominally typed (C#, Java). Generated typed
+    clients take that interface, so a typed client wraps the double.
   - Languages whose constructors return errors make constants and test fixtures
     one call: panicking variants where that is idiomatic (Go `Must*`), or a
     one-call parse from tuple text where call-site assertion is the convention
@@ -181,6 +194,13 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     call's options into an inspectable snapshot (cursor, limits, page size,
     response-metadata targets, retry override), so test doubles and wrappers
     can honor them without a fake transport.
+  - A direct subject is one call from an object (an implicit conversion, `From`,
+    or a `direct` constructor), and the subject relation `...` means a direct
+    subject everywhere a subject relation is accepted, as tuple and proto
+    parsing already treat it.
+  - Native results serialize with the ecosystem's default serializer as their
+    canonical forms: enums as names and tokens as strings, not as numbers or
+    wrapper objects.
   - Relationship accessors offer short paths for the most common fields
     (resource ID and subject ID) in addition to the nested object accessors.
   - Tuple parsing and formatting cover SpiceDB's full syntax, including
@@ -369,6 +389,12 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     through the language's status accessor, including errors for local
     cancellation, local validation, and errors built by caller code. Code
     classification helpers also accept raw transport status errors.
+  - Where the legacy client surfaced a transport exception type that the
+    language lets a library subclass, native errors are that type for the
+    matching code (or match it in the language's rescue/catch idiom), so
+    existing handlers keep catching. MIGRATION.md states the interop either
+    way. The verbatim server-message field always has a value: for local
+    errors it is the error's message.
   - Provide a public constructor for native errors from a code and message, so
     test doubles produce errors that every predicate treats like real ones.
   - Wrapper errors (bulk item, deletion progress) report their inner status
@@ -381,6 +407,16 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     differ from the host's managed trust store.
   - Reject TLS material combined with plaintext. Document actual TLS and mTLS
     capabilities rather than inferring them from system-root support.
+
+- **Accept the endpoint forms deployments use, or reject them at construction.**
+  - Constructors accept `host:port` and, where the transport understands them,
+    `http://` and `https://` URLs (the scheme selects plaintext or TLS and must
+    agree with the constructor). Any other form fails at construction with an
+    error naming the expected format: an endpoint never builds a client whose
+    every call fails. The loopback check runs on the parsed host.
+  - Clients that connect lazily offer a startup readiness check (an
+    eager-connect option or an awaitable connect/ready call), so a wrong or
+    unreachable endpoint can still fail at startup.
 
 - **Require an explicit decision before sending credentials over remote plaintext.**
   - Every client library must expose a documented, named opt-in that permits
@@ -415,6 +451,14 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Validated by-name lookups resolve runtime permission and relation names to
     typed values, rejecting names (and subjects) the schema does not allow.
     Generated name lists support startup verification.
+  - Code that receives type and permission names at runtime (policy
+    expressions, admin tools) stays typed: generated code offers a schema-level
+    lookup of a definition by name, a resource-less permission ref by
+    definition and permission name, and a lookup of resources by runtime names,
+    each validated against the schema.
+  - Generated code exposes definition-name constants and the schema text it
+    was generated from, so callers need neither a hand-kept name list nor a
+    copy of the schema file to write it at startup.
 
 - **Make generated values composable with the native layer in both directions.**
   - Typed permissions, permission refs and relationships expose their resource
@@ -467,6 +511,26 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     bypassed (grpc for Python and Ruby before 1.73 resolves `UNIX://host/...`
     as a DNS target, defeating the remote-plaintext loopback check). Verify
     floors by running the suites at exactly those versions.
+  - Floors and framework targets match the hosts consumers use: target every
+    supported LTS framework (.NET 8 and later), the current major of the
+    transport ecosystem (tonic and prost for Rust), and protobuf runtimes no
+    newer than the dominant host framework manages (Spring Boot for Java). A
+    runtime below the floor fails at client construction with a message naming
+    what to override.
+  - Each MIGRATION.md opens with a Requirements section listing runtime,
+    framework and dependency floors, and has a legacy-to-new table for renamed
+    request and response members.
+  - Each client directory has a README covering installation (including how to
+    consume it before it is published), a first call, and links to DESIGN,
+    MIGRATION and the AI integration guide.
+  - Published artifacts declare every dependency with a version, verified on
+    the generated manifest (POM, nuspec, gemspec, Cargo manifest), and the
+    client and proto artifacts share coordinates and version.
+  - Library builds treat compiler warnings as errors, so none surface in
+    consumer builds.
+  - Each client documents whether one instance may be shared across threads or
+    tasks, how it behaves across a fork, and where to build it in common
+    application servers.
 
 - **Verify observable behavior rather than merely successful execution.**
   - Reconcile examples against their runners by name, execute them in CI, and

@@ -14,6 +14,20 @@
 
 ## Unreleased
 
+### Per-page default deadlines
+
+- Finite paged reads (`read_relationships`, `lookup_resources`,
+  `lookup_subjects`, `export_relationships`, `lookup_permission_sets`) now
+  apply the client `default_timeout` to each page, so a server that stalls
+  mid-read fails it with `DeadlineExceededError` instead of hanging. The
+  deadline counts only time spent waiting on the server: time your code
+  spends between items never counts, so a slow consumer of a healthy server
+  always finishes. A paged read gives each page request the default; an
+  unpaged subject lookup, an export, a permission-set lookup or a
+  `Paging.SINGLE_REQUEST` read bounds each wait for the next message. A
+  per-call `timeout` still bounds the whole read and wins when earlier;
+  `watch` keeps no default; `DefaultDeadline.DISABLED` turns it off.
+
 ### Startup readiness and gRPC DNS targets
 
 - New `ready(timeout=None)` on `spicedb.sync.SpiceDBClient` and

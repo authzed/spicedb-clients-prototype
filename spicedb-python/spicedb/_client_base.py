@@ -121,6 +121,29 @@ def not_ready_error(
     return None
 
 
+# How a streaming read applies the client default deadline (root DESIGN.md,
+# "Treat a deadline as a budget"). It bounds only time spent waiting on the
+# server, never the caller's processing between items:
+# - PAGE: a cursor-paged read gives each page request the default as a
+#   budget of server-wait time, from opening it to its last item;
+# - MESSAGE: an unpaged or single-request read, which may be arbitrarily
+#   long, bounds each wait for the server's next message by the default;
+# - None: a long-lived stream (watch) has no default.
+# The caller's total timeout still bounds the whole read as the call deadline.
+PAGE = "page"
+MESSAGE = "message"
+
+
+def stalled_error(seconds: float, per_page: bool) -> SpiceDBError:
+    from spicedb.errors import DeadlineExceededError
+
+    what = "a page" if per_page else "the next message"
+    return DeadlineExceededError(
+        f"spicedb: the server did not send {what} within {seconds:g}s "
+        "(the client default deadline; time spent processing items does not count)"
+    )
+
+
 class ClientConfig:
     """Operation settings shared by both client flavors and both constructors."""
 

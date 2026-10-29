@@ -258,8 +258,11 @@ authzed-py had no default deadline and no retries.
 
 - Every unary call (including bulk chunks and auto-fetched pages) has a
   30-second budget; per call `timeout=`, client-wide `default_timeout=`, or
-  `default_timeout=DefaultDeadline.DISABLED` for none. Streams have no default
-  lifetime.
+  `default_timeout=DefaultDeadline.DISABLED` for none. Finite paged reads
+  (relationship reads, lookups, exports, permission-set lookups) apply the
+  default to each page's wait on the server (to each wait for the next
+  message on an unpaged read), so a stalled server fails the read; time your
+  code spends between items never counts. Watch has no default lifetime.
 - Reads retry `UNAVAILABLE`/`ABORTED` up to three times with backoff, and
   stream establishment retries before the first item. If you have your own
   policy: `retry_policy=Retries.DISABLED` (or a `RetryPolicy(...)`) and

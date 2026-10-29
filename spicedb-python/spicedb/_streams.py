@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator, Callable, Generator, AsyncGenerator
 from typing import Generic, TypeVar
 
@@ -129,3 +130,49 @@ class AsyncStream(AsyncIterator[T], Generic[T]):
 
     async def __aexit__(self, *args) -> None:
         await self.aclose()
+
+
+class Watchdog:
+    """Cancel a sync call when one wait for its next message runs too long.
+
+    ``arm`` starts a wait and ``disarm`` ends it, so time the caller spends
+    holding an item never counts. One daemon thread per call; ``stop`` ends it.
+    ``fired`` reports whether this watchdog cancelled the call.
+    """
+
+    def __init__(self, call) -> None:
+        self._call = call
+        self._cond = threading.Condition()
+        self._deadline: float | None = None
+        self._stopped = False
+        self.fired = False
+        threading.Thread(target=self._run, name="spicedb-stream-watchdog", daemon=True).start()
+
+    def arm(self, seconds: float) -> None:
+        with self._cond:
+            self._deadline = time.monotonic() + seconds
+            self._cond.notify()
+
+    def disarm(self) -> None:
+        with self._cond:
+            self._deadline = None
+            self._cond.notify()
+
+    def stop(self) -> None:
+        with self._cond:
+            self._stopped = True
+            self._cond.notify()
+
+    def _run(self) -> None:
+        with self._cond:
+            while not self._stopped:
+                if self._deadline is None:
+                    self._cond.wait()
+                    continue
+                remaining = self._deadline - time.monotonic()
+                if remaining > 0:
+                    self._cond.wait(remaining)
+                    continue
+                self.fired = True
+                self._deadline = None
+                self._call.cancel()

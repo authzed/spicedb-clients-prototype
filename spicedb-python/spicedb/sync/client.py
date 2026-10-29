@@ -56,6 +56,8 @@ from spicedb._endpoint import parse_endpoint
 from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._budget import Budget
 from spicedb._client_base import (
+    MESSAGE,
+    PAGE,
     PROBE_METHOD,
     PROBE_TIMEOUT,
     ClientConfig,
@@ -63,9 +65,10 @@ from spicedb._client_base import (
     capture_sync,
     not_ready_error,
     response_target,
+    stalled_error,
     write_is_idempotent,
 )
-from spicedb._streams import Stream
+from spicedb._streams import Stream, Watchdog
 from spicedb.consistency import Consistency
 from spicedb.errors import (
     LocalValidationError,
@@ -755,11 +758,18 @@ class SpiceDBClient(ClientConfig):
         start_cursor=None,
         single_request=False,
         operation=None,
+        deadline=None,
     ):
+        """Stream ``mapper``'s items over one or more requests.
+
+        ``deadline`` is PAGE, MESSAGE or None; see ``spicedb._client_base``.
+        """
         # Validate options before any transport work.
         kwargs = self._call_kwargs(call_options)
         target = response_target(call_options)
         policy = self._stream_policy(watch, call_options, operation)
+        page_default = self._default_timeout if deadline is not None else None
+        per_page = deadline == PAGE
 
         def factory(owner):
             """Factory."""
@@ -783,7 +793,14 @@ class SpiceDBClient(ClientConfig):
                         # skipped by the include filter, or the retry would
                         # not be allowed) must not count toward this page.
                         page_count = 0
+                        page_cursor = None
                         call = None
+                        watchdog = None
+                        # Server-wait time left for this page (PAGE) or for
+                        # each message (MESSAGE). Measured only around the
+                        # wait for the server, never while the caller holds
+                        # an item, so a slow consumer never fails the read.
+                        page_left = page_default
                         try:
                             call = rpc_factory()(
                                 request,
@@ -791,9 +808,25 @@ class SpiceDBClient(ClientConfig):
                                 **kwargs,
                             )
                             owner._set_call(call)
-                            for response in call:
+                            if page_default is not None:
+                                watchdog = Watchdog(call)
+                            responses = iter(call)
+                            while True:
+                                if watchdog is not None:
+                                    bound = page_left if per_page else page_default
+                                    waited = time.monotonic()
+                                    watchdog.arm(bound)
+                                try:
+                                    response = next(responses)
+                                except StopIteration:
+                                    break
+                                finally:
+                                    if watchdog is not None:
+                                        watchdog.disarm()
+                                        if per_page:
+                                            page_left -= time.monotonic() - waited
                                 budget.remaining()
-                                cursor = (
+                                page_cursor = (
                                     response.after_result_cursor
                                     if hasattr(response, "after_result_cursor")
                                     and response.HasField("after_result_cursor")
@@ -810,10 +843,13 @@ class SpiceDBClient(ClientConfig):
                                     if limit is not None and delivered >= limit:
                                         return
                             capture_sync(target, call)
+                            cursor = page_cursor
                             break
                         except SpiceDBError:
                             raise
                         except grpc.RpcError as error:
+                            if watchdog is not None and watchdog.fired:
+                                raise stalled_error(page_default, per_page) from error
                             capture_sync(target, error)
                             converted = to_spicedb_error(error)
                             if delivered or not self._should_retry(policy, error, attempt):
@@ -824,6 +860,8 @@ class SpiceDBClient(ClientConfig):
                             time.sleep(delay)
                             budget.remaining()
                         finally:
+                            if watchdog is not None:
+                                watchdog.stop()
                             if call is not None:
                                 call.cancel()
                     if single_request or page_size is None or page_count < page_size or cursor is None:
@@ -877,6 +915,7 @@ class SpiceDBClient(ClientConfig):
             start_cursor=start,
             single_request=single,
             operation=Operation.READ_RELATIONSHIPS,
+            deadline=MESSAGE if single else PAGE,
         )
 
     def lookup_resources(
@@ -937,6 +976,7 @@ class SpiceDBClient(ClientConfig):
             start_cursor=start,
             single_request=single,
             operation=Operation.LOOKUP_RESOURCES,
+            deadline=MESSAGE if single else PAGE,
         )
 
     def lookup_subjects(
@@ -989,6 +1029,7 @@ class SpiceDBClient(ClientConfig):
             limit,
             call_options=call_options,
             operation=Operation.LOOKUP_SUBJECTS,
+            deadline=MESSAGE if page_size is None else PAGE,
         )
 
     def export_relationships(
@@ -1029,6 +1070,7 @@ class SpiceDBClient(ClientConfig):
             call_options=call_options,
             start_cursor=start,
             operation=Operation.EXPORT_RELATIONSHIPS,
+            deadline=MESSAGE,
         )
 
     def watch(
@@ -1199,6 +1241,7 @@ class SpiceDBClient(ClientConfig):
             limit=limit,
             call_options=call_options,
             operation=Operation.LOOKUP_PERMISSION_SETS,
+            deadline=MESSAGE,
         )
 
     def download_permission_sets(

@@ -11,9 +11,11 @@ repository = "https://github.com/authzed/spicedb-clients"
 # Library requirements are the lowest versions that build and pass the tests,
 # and only the features the library uses, so consumers inherit no tooling and
 # no extra runtime features (root DESIGN.md, "Library modules declare the
-# lowest dependency versions they actually need"). tonic 0.12, tonic-types
-# 0.12, prost 0.13 and tower 0.4 are one coherent generation: bump them
-# together, along with the proto tier's tonic-build.
+# lowest dependency versions they actually need"). tonic 0.14, tonic-types
+# 0.14, prost 0.14 and tower 0.5 are one coherent generation (the current one,
+# so a tonic 0.14 application links a single tonic, prost, tower and hyper
+# stack): bump them together, along with the proto tier's tonic-prost and
+# tonic-prost-build.
 [features]
 default = []
 # serde::Serialize for relationships, filters, updates, preconditions,
@@ -21,18 +23,18 @@ default = []
 serde = ["dep:serde", "chrono/serde"]
 # spicedb::testing: an in-memory SpiceDB double reached through a real
 # SpiceDBClient (see DESIGN.md, "Ship an in-memory test double").
-testing = ["tonic/server", "dep:tower", "dep:hyper-util", "tokio/io-util"]
+testing = ["tonic/server", "tonic/router", "dep:tower", "dep:hyper-util", "tokio/io-util"]
 
 [dependencies]
 spicedb-proto = { path = "../proto-clients/spicedb-rust-proto" }
 
-tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "channel"] }
+tonic = { version = "0.14", default-features = false, features = ["codegen", "channel"] }
 # google.rpc error details (ErrorInfo) and Status::get_details_error_info --
 # tonic's own decoder for the grpc-status-details-bin trailer, used instead of
 # decoding that trailer by hand.
-tonic-types = "0.12"
-prost = "0.13"
-prost-types = "0.13"
+tonic-types = "0.14"
+prost = "0.14"
+prost-types = "0.14"
 tokio = { version = "1.38", features = ["macros", "rt", "sync", "time"] }
 futures = "0.3.21"
 async-stream = "0.3.5"
@@ -44,7 +46,7 @@ serde_json = "1.0.70"
 chrono = { version = "0.4.35", default-features = false, features = ["std", "clock"] }
 
 serde = { version = "1.0.100", optional = true, features = ["derive"] }
-tower = { version = "0.4.13", optional = true, default-features = false, features = ["util"] }
+tower = { version = "0.5", optional = true, default-features = false, features = ["util"] }
 hyper-util = { version = "0.1.4", optional = true, default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
@@ -52,7 +54,7 @@ hyper-util = { version = "0.1.4", optional = true, default-features = false, fea
 # server stubs from spicedb-proto plus a TcpListener-backed incoming stream.
 tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "net", "io-util"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tonic = { version = "0.12", features = ["server"] }
+tonic = { version = "0.14", features = ["server", "router"] }
 serde = { version = "1", features = ["derive"] }
 
 [[test]]

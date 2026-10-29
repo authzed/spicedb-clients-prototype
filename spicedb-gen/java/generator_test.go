@@ -467,3 +467,75 @@ func TestCelTypeToJavaType(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeNameSurface(t *testing.T) {
+	content := generateSample(t)
+	for _, want := range []string{
+		// The typed client wraps the client interface, so it also wraps the in-memory double.
+		"public TypedClient(SpiceDBApi client)",
+		"public TypedClient(SpiceDBApi client, boolean ownsClient)",
+		"public SpiceDBApi client()",
+		// Schema-level runtime-name lookups.
+		"public static Definition definitionByName(String name)",
+		`case "document":`,
+		"public static PermissionRef<?> permissionRefByName(String definition, String permission)",
+		`case "document#view":`,
+		"return Document_View;",
+		"public sealed interface DefinitionRef extends Subject",
+		"Stream<LookupResult.LookupResource> lookupResources(\n        Consistency c, String definition, String permission, Subject subject)",
+		// Refs carry their admitted subjects, for runtime validation.
+		`new PermissionRef<>("document", "view", DocumentViewSubject.class)`,
+		"public record PermissionRef<S extends Subject>(\n      String resourceType, String permission, Class<S> subjectType)",
+		// Constants.
+		"public static final class Definitions {",
+		`public static final String DOCUMENT = "document";`,
+		`return List.of("user", "team", "document", "organization", "invitation");`,
+		"public static final String SCHEMA =\n      String.join(\n          \"\\n\",\n          \"use expiration\",",
+		`"    allowed_cidr == \"0.0.0.0/0\"",`,
+	} {
+		assert.Contains(t, content, want)
+	}
+	assert.NotContains(t, content, "TypedClient(SpiceDBClient client")
+	assert.NotContains(t, content, "public SpiceDBClient client()")
+	// The runtime-name lookup takes a generated Subject; TypedParityTest pins that the native
+	// lookupResources signature stays absent.
+}
+
+func TestSchemaTextRoundTrips(t *testing.T) {
+	src := "// Ünïcode 🚀 \"quoted\" back\\slash\ttab\r\ndefinition user {}\n"
+	s, err := schema.ParseString(src)
+	require.NoError(t, err)
+	assert.Equal(t, src, s.Source)
+	files, err := (&Generator{}).Generate(s, map[string]string{"package": "p"})
+	require.NoError(t, err)
+	content := string(files[0].Content)
+	assert.Contains(t, content,
+		`"// \u00dcn\u00efcode \ud83d\ude80 \"quoted\" back\\slash\ttab\r",`)
+	assert.Contains(t, content, "\"definition user {}\",\n          \"\");")
+
+	empty, err := (&Generator{}).Generate(&schema.Schema{}, map[string]string{"package": "p"})
+	require.NoError(t, err)
+	assert.Contains(t, string(empty[0].Content), `public static final String SCHEMA = "";`)
+}
+
+func TestJavaText(t *testing.T) {
+	for in, want := range map[string]string{
+		"":           `""`,
+		"plain":      `"plain"`,
+		`a"b\c`:      `"a\"b\\c"`,
+		"\n\r\t\x01": `"\n\r\t\u0001"`,
+		"é😀\x7f":     `"\u00e9\ud83d\ude00\u007f"`,
+	} {
+		assert.Equal(t, want, javaText(in), in)
+	}
+}
+
+func TestRuntimeNameTypesCollide(t *testing.T) {
+	s, err := schema.ParseString("definition user {}\ndefinition doc {\n\trelation viewer: user\n}")
+	require.NoError(t, err)
+	// A definition whose Java stem is "Definition" would shadow the runtime DefinitionRef type.
+	_, err = (&Generator{}).Generate(s, map[string]string{"package": "p", "rename": "doc=Definition"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"DefinitionRef"`)
+	assert.Contains(t, err.Error(), "--java.rename")
+}

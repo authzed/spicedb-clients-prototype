@@ -2,8 +2,9 @@
 
 ## Native forwarding
 
-`TypedClient` adds explicit native instance overloads for every public `SpiceDBClient`
-instance method except the three schema-aware operations. Relationship write/read,
+`TypedClient` wraps a `SpiceDBApi` (the native `SpiceDBClient` or the in-memory test
+double; `client()` returns it) and adds explicit native instance overloads for every public
+`SpiceDBClient` instance method except the three schema-aware operations. Relationship write/read,
 bounded deletion (including the all-or-nothing `deleteRelationships(Filter, DeleteOptions)`),
 non-atomic deletion, import/export, bulk check/any/all, schema
 read/write/reflection/diff/dependencies/computable permissions, expansion, watch
@@ -17,7 +18,9 @@ method, requires its exact parameter signature and generic result, and fails on 
 introduced omissions. It rejects native signatures for the three explicit schema-aware
 exceptions: `check`, `lookupResources`, `lookupSubjects`. Those capabilities remain
 directly available through their generated schema-aware signatures (plus
-`check(Consistency, TypedCheck)` for runtime-validated pairs); adding permissive native
+`check(Consistency, TypedCheck)` for runtime-validated pairs and
+`lookupResources(Consistency, String, String, Subject[, LookupOptions])` for runtime names, which
+takes a generated `Subject` rather than a native `SubjectRef`); adding permissive native
 overloads would bypass subject constraints. `close` keeps owned-versus-borrowed lifecycle
 semantics. Because native `check(PermissionCheck)` is deliberately absent, `TypedClient`
 does not implement `PermissionsApi`; use `client()` where that interface is required.
@@ -48,6 +51,9 @@ new permissive static factory overloads.
 | identifier overrides | `--java.rename=subject=SubjectDef` renames a definition's Java identifiers only (wire names unchanged) |
 | relation checks | `ref.memberRelation()` → `Permission<OrganizationMemberRelationSubject>` |
 | by-name | `permissionByName`, `relationByName`, `relationshipByName` (throw `NotInSchemaException` / `SubjectNotAllowedException`), `Permission.forDynamicSubject(Subject)`, `XRelations.names()`, `XPermissions.names()` |
+| runtime names | `definitionByName(type)` → `Definition` (`ref(id)` → `DefinitionRef`, `permissionByName(id, p)`, `relationByName(id, r)`, `permissionRef(p)`, `filter()`, name lists); `permissionRefByName(type, p)` → `PermissionRef<?>` with no resource; `PermissionRef.subjectType()/admits(Subject)`; `TypedClient.lookupResources(Consistency, type, p, Subject[, LookupOptions])` validated before the call |
+| schema constants | `Definitions.DOCUMENT`..., `Definitions.names()`, `SCHEMA` (the generator's input text, byte for byte) |
+| test double | `new TypedClient(new InMemorySpiceDB())`: typed writes, reads, checks and lookups run against the double |
 
 ## Verification ledger
 
@@ -58,7 +64,9 @@ new permissive static factory overloads.
   the renamed output in the fixture project.
 - `testdata/java` compiles the generated fixture, runs `spotlessCheck` (google-java-format
   1.22.0) against it, runs `AdoptionTest` (no server), `TypedParityTest`, the forwarding
-  tests, and the live `PermissionsTest`/`AdoptionIntegrationTest`.
+  tests, `RuntimeNamesTest` (runtime names, constants and the typed client over
+  `InMemorySpiceDB`; no server), and the live `PermissionsTest`/`AdoptionIntegrationTest` (the
+  latter writes `SCHEMA` and looks up by runtime names).
 - `mage javaTypeErrors` compiles `type_errors/` with every diagnostic and requires an error
   on each of its lines marked `// should not compile`, no error elsewhere, and no
   "cannot find symbol" on a marked line.

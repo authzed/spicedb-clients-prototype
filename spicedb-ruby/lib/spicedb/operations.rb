@@ -8,7 +8,7 @@ module SpiceDB
     private
 
     def unary_budget(timeout, call_options = nil, retry_policy: nil)
-      raise Error, 'client is closed' if @closed
+      raise FailedPreconditionError, 'client is closed' if @closed
 
       Budget.new(timeout || (@default_deadline == DefaultDeadline::ENABLED ? @default_timeout : nil), call_options: call_options,
                                                                                                       retry_policy: retry_policy)
@@ -16,6 +16,14 @@ module SpiceDB
 
     def stream_budget(timeout, call_options = nil, retry_policy: nil)
       Budget.new(timeout, call_options: call_options, retry_policy: retry_policy)
+    end
+
+    # A finite paged read (relationship reads, lookups, exports): +timeout+
+    # bounds the whole operation, and the client default deadline bounds each
+    # page request (Budget#page). Watch and imports use #stream_budget.
+    def paged_budget(timeout, call_options = nil, retry_policy: nil)
+      page_timeout = @default_deadline == DefaultDeadline::ENABLED ? @default_timeout : nil
+      Budget.new(timeout, call_options: call_options, retry_policy: retry_policy, page_timeout: page_timeout)
     end
 
     def with_budget(timeout, call_options = nil, retryable: true, operation: nil, retry_policy: nil)
@@ -30,25 +38,25 @@ module SpiceDB
     end
 
     def positive(value, name)
-      raise InvalidArgumentError, "#{name} must be a positive integer" unless value.is_a?(Integer) && value.positive?
+      raise LocalValidationError, "#{name} must be a positive integer" unless value.is_a?(Integer) && value.positive?
 
       value
     end
 
     def object_to_proto(object)
-      raise InvalidArgumentError, 'expected ObjectRef' unless object.is_a?(ObjectRef)
+      raise LocalValidationError, 'expected ObjectRef' unless object.is_a?(ObjectRef)
 
       Authzed::Api::V1::ObjectReference.new(object_type: object.object_type, object_id: object.object_id)
     end
 
     def subject_to_proto(subject)
-      raise InvalidArgumentError, 'expected SubjectRef' unless subject.is_a?(SubjectRef)
+      raise LocalValidationError, 'expected SubjectRef' unless subject.is_a?(SubjectRef)
 
       Authzed::Api::V1::SubjectReference.new(object: object_to_proto(subject.object), optional_relation: subject.relation || '')
     end
 
     def check_request(check, context)
-      raise InvalidArgumentError, 'check: expected PermissionCheck' unless check.is_a?(PermissionCheck)
+      raise LocalValidationError, 'check: expected PermissionCheck' unless check.is_a?(PermissionCheck)
 
       { resource: object_to_proto(check.resource), permission: check.permission, subject: subject_to_proto(check.subject),
         context: check_context_to_struct(merge_check_context(Values.context(context), check.context)) }
@@ -75,7 +83,7 @@ module SpiceDB
       result = DeleteResult.new(revision: ZedToken.from_proto(response.deleted_at), deleted_count: response.relationships_deleted_count,
                                 progress: progress, cursor: response.after_result_cursor&.token)
       if progress == :unspecified
-        error = Error.new('delete returned unknown progress')
+        error = malformed_response('delete_relationships returned unknown progress')
         error.instance_variable_set(:@delete_progress, result)
         raise error
       end
@@ -85,7 +93,7 @@ module SpiceDB
     def make_stream(&)
       stream = Stream.new(on_close: ->(closed) { @mutex.synchronize { @streams.delete(closed) } }, &)
       @mutex.synchronize do
-        raise Error, 'client is closed' if @closed
+        raise FailedPreconditionError, 'client is closed' if @closed
 
         @streams << stream
       end
@@ -110,21 +118,29 @@ module SpiceDB
       call_retry_policy(budget)
     end
 
-    def consume_rpc(stream, service, operation, request, budget, retryable: true)
+    # +page_timeout:+ bounds each response of a call that streams several
+    # pages (see PageWatchdog).
+    def consume_rpc(stream, service, operation, request, budget, retryable: true, page_timeout: nil)
       policy = stream_retry_policy(budget, retryable)
       produced = 0
       attempt = 0
       begin
         call = proto_client.public_send(service).public_send(operation, request, **stub_kwargs(budget), return_op: true)
         stream.attach(call)
+        watchdog = page_timeout && PageWatchdog.new(page_timeout, call)
         call.execute.each do |response|
+          watchdog&.received
           budget.remaining
           produced += 1
           yield response
+          watchdog&.waiting
         end
         record_metadata(budget, call)
       rescue StandardError => e
         raise StopIteration if stream.closed?
+
+        watchdog&.stop
+        raise DeadlineExceededError, "#{operation}: no page arrived within the #{page_timeout}s per-page deadline" if watchdog&.expired?
 
         record_metadata(budget, call, e) if call && e.is_a?(GRPC::BadStatus)
         if policy && produced.zero? && attempt < policy.max_retries && policy.retryable?(e)
@@ -142,6 +158,7 @@ module SpiceDB
 
         raise
       ensure
+        watchdog&.stop
         call&.cancel
         stream.detach(call) if call
       end
@@ -151,7 +168,7 @@ module SpiceDB
       positive(limit, 'limit') if limit
       stream = make_stream do |owner, out|
         delivered = 0
-        consume_rpc(owner, service, operation, request, budget, retryable: retryable) do |response|
+        consume_rpc(owner, service, operation, request, budget.page, retryable: retryable) do |response|
           out << mapper.call(response)
           delivered += 1
           break if limit && delivered >= limit
@@ -180,7 +197,7 @@ module SpiceDB
           request.optional_limit = single ? [limit || 0, MAX_UINT32].min : page_size
           request.optional_cursor = cursor_proto(cursor)
           previous = cursor
-          consume_rpc(owner, service, operation, request, budget) do |response|
+          consume_rpc(owner, service, operation, request, budget.page) do |response|
             cursor = response.after_result_cursor&.token
             count += 1
             result = mapper.call(response, cursor)
@@ -191,7 +208,7 @@ module SpiceDB
             break if limit && delivered >= limit
           end
           break if single || count < page_size || (limit && delivered >= limit)
-          raise Error, 'paged stream did not advance its cursor' if cursor.nil? || cursor.empty? || cursor == previous
+          raise malformed_response("#{operation}: the page cursor did not advance") if cursor.nil? || cursor.empty? || cursor == previous
         end
       end
       return_stream(stream, &)
@@ -203,7 +220,7 @@ module SpiceDB
       request.optional_limit = page_size
       stream = make_stream do |owner, out|
         delivered = 0
-        consume_rpc(owner, :permissions, :export_bulk_relationships, request, budget) do |response|
+        consume_rpc(owner, :permissions, :export_bulk_relationships, request, budget, page_timeout: budget.page_timeout) do |response|
           cursor = response.after_result_cursor&.token
           response.relationships.each do |relationship|
             break if limit && delivered >= limit

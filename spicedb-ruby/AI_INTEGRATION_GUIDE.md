@@ -28,7 +28,10 @@ at_exit { client.close }
 
 `new_plaintext` is for local development; a non-loopback plaintext target also
 needs `remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT`.
-`new_custom_tls(endpoint, token, ca_cert:)` trusts a private CA. To use an
+`new_custom_tls(endpoint, token, ca_cert:)` trusts a private CA. Endpoints
+may also be `http://`/`https://` URLs, `dns:///host:port` (gRPC's DNS
+resolver, which spreads calls over every resolved address) or a `unix:` socket.
+To use an
 existing `GRPC::Core::Channel`, wrap it; `close` leaves the channel open:
 
 ```ruby
@@ -134,6 +137,9 @@ Results stream: iterate with a block or `each`; `break` releases the RPC.
 `paging: SpiceDB::Paging::SINGLE_REQUEST` (reads and resource lookups) sends
 exactly one request like the raw API: its limit is `limit:` (unbounded
 without one) and `page_size:` is ignored.
+Reads, lookups and exports apply the client default deadline (30 s) to each
+page, so a stalled server raises `SpiceDB::DeadlineExceededError`; `timeout:`
+bounds the whole read. Watch has no default.
 
 ## Schema-agnostic and tooling code
 
@@ -193,6 +199,13 @@ new code. `SpiceDB.code_of(err)` classifies any error, including a raw
 `GRPC::BadStatus`. Forward `e.server_message`, not `e.message`, when relaying
 an error to another party; it always has a value (a local error's is its
 message).
+
+Bad input raises `SpiceDB::LocalValidationError` (an `InvalidArgumentError`)
+before any request, and `rescue ArgumentError` catches it; a server's
+INVALID_ARGUMENT is a plain `InvalidArgumentError`. A response the client
+cannot interpret raises `SpiceDB::Error` with code INTERNAL, and it is not
+retried. Closing the client while another thread reads one of its streams raises
+`SpiceDB::CancelledError` in that thread.
 
 ## Test
 

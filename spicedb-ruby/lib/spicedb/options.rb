@@ -20,7 +20,7 @@ module SpiceDB
     def self.values = @values
 
     def self.validate(value)
-      raise InvalidArgumentError, "expected #{self}: #{values.map(&:name).join(', ')}" unless values.include?(value)
+      raise LocalValidationError, "expected #{self}: #{values.map(&:name).join(', ')}" unless values.include?(value)
 
       value
     end

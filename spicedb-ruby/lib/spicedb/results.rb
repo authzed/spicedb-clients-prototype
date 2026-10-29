@@ -56,7 +56,7 @@ module SpiceDB
   # an errored item has :unspecified permissionship and never grants.
   CheckResult = Values.record(:permissionship, :missing_context, :checked_at, :debug_trace, :expiration, :error) do
     def initialize(permissionship:, missing_context:, checked_at:, debug_trace: nil, expiration: nil, error: nil)
-      raise InvalidArgumentError, 'error: expected SpiceDB::Error' unless error.nil? || error.is_a?(Error)
+      raise LocalValidationError, 'error: expected SpiceDB::Error' unless error.nil? || error.is_a?(Error)
 
       super(**Values.snapshot({ permissionship: error ? :unspecified : permissionship, missing_context: missing_context,
                                 checked_at: checked_at.nil? ? nil : ZedToken.validate(checked_at), debug_trace: debug_trace,

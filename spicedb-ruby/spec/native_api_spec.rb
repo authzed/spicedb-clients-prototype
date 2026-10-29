@@ -202,6 +202,7 @@ RSpec.describe 'operation budgets and bounded deletion' do
       expect(error.delete_progress.deleted_count).to eq(5)
       expect(error.delete_progress.revision).to eq(SpiceDB::ZedToken.new('last'))
       expect(error.delete_progress.progress).to eq(:unspecified)
+      expect(error.code).to eq(GRPC::Core::StatusCodes::INTERNAL)
     end
   end
 

@@ -42,7 +42,8 @@ module SpiceDBProto
     private_constant :AUTHORITY_SHIFTING
 
     # The forms .parse_endpoint accepts, named in every endpoint error.
-    ENDPOINT_FORMS = "expected host:port, http://host:port (plaintext) or https://host[:port] (TLS)"
+    ENDPOINT_FORMS = "expected host:port, http://host:port (plaintext), https://host[:port] (TLS), " \
+                     "dns:///host:port or a unix: socket path"
 
     # Each character that cannot appear in a dialable authority, with the
     # problem it signals, in the order they are checked.
@@ -181,7 +182,9 @@ module SpiceDBProto
     def self.validate_connection!(endpoint, insecure: false, allow_insecure_remote_credentials: false,
                                   ca_cert: nil, client_cert: nil, client_key: nil)
       original = endpoint
-      endpoint, = parse_endpoint(endpoint, insecure: insecure)
+      endpoint, scheme = parse_endpoint(endpoint, insecure: insecure)
+      # A dns:/// target's loopback check runs on the host:port it resolves.
+      checked = scheme == :dns ? endpoint.delete_prefix("dns:///") : endpoint
 
       # See root DESIGN.md, "RULE: Credentials over insecure transport require an
       # explicit opt-in". This is the guard for the BearerTokenInterceptor bypass in
@@ -189,7 +192,7 @@ module SpiceDBProto
       # because channel credentials can't carry call credentials over a plaintext
       # channel, so nothing else stops a bearer token from reaching an arbitrary
       # insecure host.
-      if insecure && !allow_insecure_remote_credentials && !loopback_endpoint?(endpoint)
+      if insecure && !allow_insecure_remote_credentials && !loopback_endpoint?(checked)
         raise InsecureRemoteHostError,
           "spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint #{original.inspect}: " \
           "to allow it, pass both insecure: true and allow_insecure_remote_credentials: true; otherwise use TLS (insecure: false)"
@@ -200,14 +203,20 @@ module SpiceDBProto
     end
 
     # Parses an endpoint into the gRPC target this client dials and the URL
-    # scheme it was written with (+:http+, +:https+, or nil for a bare host).
+    # scheme it was written with (+:http+, +:https+, +:dns+, or nil for a bare
+    # host or a +unix:+ target).
     #
     # Accepted forms (root DESIGN.md, "Accept the endpoint forms deployments
     # use, or reject them at construction"):
     #
     # - +host:port+ (and a +unix:+ socket target, passed to gRPC unchanged);
     # - +http://host:port+, which selects plaintext;
-    # - +https://host[:port]+, which selects TLS.
+    # - +https://host[:port]+, which selects TLS;
+    # - +dns:///host[:port]+, gRPC's DNS resolver target (client-side load
+    #   balancing across every address the name resolves to), dialed as
+    #   +dns:///host:port+ with the same port rule. An explicit DNS server
+    #   authority (+dns://8.8.8.8/host:port+) and the slashless +dns:host:port+
+    #   are refused.
     #
     # The port rule is the same with or without a scheme: plaintext needs an
     # explicit port, so no client silently dials port 80 or 443, and TLS
@@ -227,6 +236,7 @@ module SpiceDBProto
     def self.parse_endpoint(endpoint, insecure: false)
       raise InvalidEndpointError, "spicedb: endpoint must be a String, got #{endpoint.class}" unless endpoint.is_a?(String)
       return [endpoint, nil] if endpoint.match?(/\Aunix(-abstract)?:/i)
+      return parse_dns_target(endpoint, insecure) if endpoint.match?(/\Adns:/i)
 
       scheme = nil
       authority = endpoint
@@ -255,6 +265,23 @@ module SpiceDBProto
         port = "443"
       end
       ["#{host}:#{port}", scheme]
+    end
+
+    # Parses a +dns:///host[:port]+ target (see .parse_endpoint).
+    private_class_method def self.parse_dns_target(endpoint, insecure)
+      m = endpoint.match(%r{\Adns:///(.*)\z}im)
+      unless m
+        raise InvalidEndpointError,
+              invalid_endpoint_message(endpoint, "a dns target must be dns:///host:port (no DNS server authority)")
+      end
+
+      host, port = split_authority(endpoint, m[1])
+      if port.nil?
+        raise InvalidEndpointError, invalid_endpoint_message(endpoint, "a plaintext endpoint needs an explicit port, e.g. dns:///localhost:50051") if insecure
+
+        port = "443"
+      end
+      ["dns:///#{host}:#{port}", :dns]
     end
 
     # Splits +authority+ into a host (IPv6 literals bracketed) and a port (nil

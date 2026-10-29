@@ -129,7 +129,7 @@ module SpiceDB
       # store puts on item number +count+ (1-based). The format, +count+ in
       # decimal, is stable for tests.
       def self.cursor_after(count)
-        raise InvalidArgumentError, 'cursor_after: expected a non-negative Integer' unless count.is_a?(Integer) && !count.negative?
+        raise LocalValidationError, 'cursor_after: expected a non-negative Integer' unless count.is_a?(Integer) && !count.negative?
 
         count.to_s
       end
@@ -162,7 +162,7 @@ module SpiceDB
       # import applies nothing. Build server-shaped errors with
       # Store.server_error. The hook must not call the store.
       def fault_hook=(hook)
-        raise InvalidArgumentError, 'fault_hook: expected a callable or nil' unless hook.nil? || hook.respond_to?(:call)
+        raise LocalValidationError, 'fault_hook: expected a callable or nil' unless hook.nil? || hook.respond_to?(:call)
 
         @mutex.synchronize { @fault_hook = hook }
       end
@@ -170,7 +170,7 @@ module SpiceDB
       # Makes the next call of +operation+ (one of OPERATIONS) raise +error+
       # before doing anything; later calls succeed. Replaces any fault hook.
       def fail_next(operation, error)
-        raise InvalidArgumentError, "fail_next: unknown operation #{operation.inspect}" unless OPERATIONS.include?(operation)
+        raise LocalValidationError, "fail_next: unknown operation #{operation.inspect}" unless OPERATIONS.include?(operation)
 
         failed = false
         self.fault_hook = lambda do |fault|
@@ -196,7 +196,7 @@ module SpiceDB
       # symbol such as :has_permission.
       def set_check_result(check, result)
         result = CheckResult.new(permissionship: result, missing_context: [], checked_at: nil) if result.is_a?(Symbol)
-        raise InvalidArgumentError, 'set_check_result: expected CheckResult or permissionship Symbol' unless result.is_a?(CheckResult)
+        raise LocalValidationError, 'set_check_result: expected CheckResult or permissionship Symbol' unless result.is_a?(CheckResult)
 
         @mutex.synchronize { @checks[check_key(check)] = result }
         self
@@ -214,7 +214,7 @@ module SpiceDB
       # grants everything. It may run on several threads at once, and must
       # not call the store.
       def check_resolver=(resolver)
-        raise InvalidArgumentError, 'check_resolver: expected a callable or nil' unless resolver.nil? || resolver.respond_to?(:call)
+        raise LocalValidationError, 'check_resolver: expected a callable or nil' unless resolver.nil? || resolver.respond_to?(:call)
 
         @mutex.synchronize { @check_resolver = resolver }
       end
@@ -223,7 +223,7 @@ module SpiceDB
       # store's current revision). Without one it returns no definitions and
       # no caveats, as SpiceDB does for an empty schema.
       def set_reflect_schema_result(result) # rubocop:disable Naming/AccessorMethodName -- pairs with set_check_result
-        raise InvalidArgumentError, 'set_reflect_schema_result: expected ReflectSchemaResult' unless result.is_a?(ReflectSchemaResult)
+        raise LocalValidationError, 'set_reflect_schema_result: expected ReflectSchemaResult' unless result.is_a?(ReflectSchemaResult)
 
         @mutex.synchronize { @reflection = result }
         self
@@ -247,7 +247,7 @@ module SpiceDB
 
       def write(transaction, timeout: nil, metadata: nil, call_options: nil, retry_policy: nil)
         begin_call(:write, transaction, binding)
-        raise InvalidArgumentError, 'write: expected Transaction' unless transaction.is_a?(Transaction)
+        raise LocalValidationError, 'write: expected Transaction' unless transaction.is_a?(Transaction)
 
         Retrying.mutation_policy(retry_policy, transaction.idempotent?, 'write')
         operation(call_options) do
@@ -274,7 +274,7 @@ module SpiceDB
       def read_relationships(filter, consistency:, page_size: 1000, limit: nil, timeout: nil, cursor: nil, call_options: nil,
                              retry_policy: nil, paging: Paging::AUTOMATIC, &)
         call = begin_call(:read_relationships, filter, binding)
-        raise InvalidArgumentError, 'expected Filter' unless filter.is_a?(Filter)
+        raise LocalValidationError, 'expected Filter' unless filter.is_a?(Filter)
 
         validate_paging(page_size, limit, retry_policy)
         Paging.validate(paging)
@@ -291,7 +291,7 @@ module SpiceDB
       def export_relationships(filter = nil, consistency:, page_size: 1000, timeout: nil, limit: nil, cursor: nil, call_options: nil,
                                retry_policy: nil, &)
         call = begin_call(:export_relationships, filter, binding)
-        raise InvalidArgumentError, 'expected Filter' unless filter.nil? || filter.is_a?(Filter)
+        raise LocalValidationError, 'expected Filter' unless filter.nil? || filter.is_a?(Filter)
 
         validate_paging(page_size, limit, retry_policy)
         items = operation(call_options) do
@@ -311,7 +311,7 @@ module SpiceDB
         Retrying.mutation_policy(retry_policy, false, 'import_relationships')
         positive(batch_size, 'batch_size')
         batch = relationships.to_a
-        batch.each { |relationship| raise InvalidArgumentError, 'import: expected Relationship' unless relationship.is_a?(Relationship) }
+        batch.each { |relationship| raise LocalValidationError, 'import: expected Relationship' unless relationship.is_a?(Relationship) }
         batch.each_slice(batch_size).with_index { |slice, index| fault(call, FaultStage::IMPORT_BATCH, index, slice.freeze) }
         fault(call, FaultStage::IMPORT_COMMIT)
         operation(call_options) do
@@ -329,7 +329,7 @@ module SpiceDB
 
       # Removes up to +limit+ matching relationships. With
       # DeletePartial::DISALLOWED it deletes all or nothing: more matches than
-      # +limit+ raise InvalidArgumentError, as SpiceDB does.
+      # +limit+ raise LocalValidationError, as SpiceDB does.
       def delete_relationships(filter, limit: nil, partial: DeletePartial::ALLOWED, must_match: [], must_not_match: [], timeout: nil,
                                cursor: nil, call_options: nil, retry_policy: nil)
         begin_call(:delete_relationships, filter, binding)
@@ -360,8 +360,8 @@ module SpiceDB
                                               on_progress: nil, call_options: nil, retry_policy: nil)
         begin_call(:delete_all_relationships_non_atomic, filter, binding)
         Retrying.mutation_policy(retry_policy, false, 'delete_all_relationships_non_atomic')
-        raise InvalidArgumentError, 'on_progress must respond to call' unless on_progress.nil? || on_progress.respond_to?(:call)
-        raise InvalidArgumentError, 'expected Filter' unless filter.is_a?(Filter)
+        raise LocalValidationError, 'on_progress must respond to call' unless on_progress.nil? || on_progress.respond_to?(:call)
+        raise LocalValidationError, 'expected Filter' unless filter.is_a?(Filter)
 
         positive(page_size, 'page_size')
         result = operation(call_options) do
@@ -391,7 +391,7 @@ module SpiceDB
       def write_schema(schema, timeout: nil, call_options: nil, retry_policy: nil)
         begin_call(:write_schema, schema, binding)
         Retrying.mutation_policy(retry_policy, true, 'write_schema')
-        raise InvalidArgumentError, 'write_schema: expected String' unless schema.is_a?(String)
+        raise LocalValidationError, 'write_schema: expected String' unless schema.is_a?(String)
 
         operation(call_options) do
           @schema = schema.dup.freeze
@@ -410,7 +410,7 @@ module SpiceDB
 
       def check(check, consistency:, context: nil, timeout: nil, tracing: Tracing::DISABLED, call_options: nil, retry_policy: nil)
         begin_call(:check, check, binding)
-        raise InvalidArgumentError, 'check: expected PermissionCheck' unless check.is_a?(PermissionCheck)
+        raise LocalValidationError, 'check: expected PermissionCheck' unless check.is_a?(PermissionCheck)
 
         validate_policy(retry_policy)
         resolve_check(merge_context(check, context), operation(call_options) { snapshot })
@@ -422,7 +422,7 @@ module SpiceDB
         BulkItemErrors.validate(item_errors)
         validate_policy(retry_policy)
         checks = checks.to_a
-        checks.each { |item| raise InvalidArgumentError, 'check: expected PermissionCheck' unless item.is_a?(PermissionCheck) }
+        checks.each { |item| raise LocalValidationError, 'check: expected PermissionCheck' unless item.is_a?(PermissionCheck) }
         state = operation(call_options) { snapshot }
         checks.map { |item| resolve_check(merge_context(item, context), state) }.freeze
       end
@@ -439,7 +439,7 @@ module SpiceDB
         call = begin_call(:lookup_resources, nil, binding)
         resource_type = Values.name(resource_type, 'resource_type')
         permission = Values.name(permission, 'permission')
-        raise InvalidArgumentError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
+        raise LocalValidationError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
 
         LookupPermissionshipFilter.validate(permissionship_filter)
         Paging.validate(paging)
@@ -468,7 +468,7 @@ module SpiceDB
       def lookup_subjects(resource:, permission:, subject_type:, consistency:, subject_relation: nil,
                           context: nil, timeout: nil, limit: nil, call_options: nil, retry_policy: nil, &)
         call = begin_call(:lookup_subjects, nil, binding)
-        raise InvalidArgumentError, "resource: expected ObjectRef, got #{Values.received(resource)}" unless resource.is_a?(ObjectRef)
+        raise LocalValidationError, "resource: expected ObjectRef, got #{Values.received(resource)}" unless resource.is_a?(ObjectRef)
 
         permission = Values.name(permission, 'permission')
         subject_type = Values.name(subject_type, 'subject_type')
@@ -629,7 +629,7 @@ module SpiceDB
       # Runs +block+ under the lock and records the registered response
       # metadata, on success or failure, as the client does.
       def operation(call_options, &)
-        raise InvalidArgumentError, 'call_options: expected SpiceDB::CallOptions' unless call_options.nil? || call_options.is_a?(CallOptions)
+        raise LocalValidationError, 'call_options: expected SpiceDB::CallOptions' unless call_options.nil? || call_options.is_a?(CallOptions)
 
         @mutex.synchronize do
           call_options&.response_metadata&.record(header: @header, trailer: @trailer)
@@ -653,11 +653,11 @@ module SpiceDB
       end
 
       def validate_policy(policy)
-        raise InvalidArgumentError, 'retry_policy: expected SpiceDB::RetryPolicy' unless policy.nil? || policy.is_a?(RetryPolicy)
+        raise LocalValidationError, 'retry_policy: expected SpiceDB::RetryPolicy' unless policy.nil? || policy.is_a?(RetryPolicy)
       end
 
       def positive(value, name)
-        raise InvalidArgumentError, "#{name} must be a positive integer" unless value.is_a?(Integer) && value.positive?
+        raise LocalValidationError, "#{name} must be a positive integer" unless value.is_a?(Integer) && value.positive?
       end
 
       def server_error(...) = Store.server_error(...)
@@ -716,7 +716,7 @@ module SpiceDB
         when true then CheckResult.new(permissionship: :has_permission, missing_context: [], checked_at: revision)
         when false then CheckResult.new(permissionship: :no_permission, missing_context: [], checked_at: revision)
         when Symbol then CheckResult.new(permissionship: value, missing_context: [], checked_at: revision)
-        else raise InvalidArgumentError, "check_resolver: expected CheckResult, permissionship Symbol, true, false or nil, got #{Values.received(value)}"
+        else raise LocalValidationError, "check_resolver: expected CheckResult, permissionship Symbol, true, false or nil, got #{Values.received(value)}"
         end
       end
 

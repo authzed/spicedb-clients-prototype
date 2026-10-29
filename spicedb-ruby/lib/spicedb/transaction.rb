@@ -19,8 +19,8 @@ module SpiceDB
     include DeepHash
 
     def initialize(operation:, filter:)
-      raise InvalidArgumentError, 'precondition: operation must be :must_match or :must_not_match' unless %i[must_match must_not_match].include?(operation)
-      raise InvalidArgumentError, 'precondition: expected Filter' unless filter.is_a?(Filter)
+      raise LocalValidationError, 'precondition: operation must be :must_match or :must_not_match' unless %i[must_match must_not_match].include?(operation)
+      raise LocalValidationError, 'precondition: expected Filter' unless filter.is_a?(Filter)
 
       super
     end
@@ -105,7 +105,7 @@ module SpiceDB
 
     def add(operation, relationship)
       relationship = relationship.relationship if relationship.is_a?(ReadRelationship) || relationship.is_a?(ExportedRelationship)
-      raise InvalidArgumentError, "#{operation}: expected Relationship" unless relationship.is_a?(Relationship)
+      raise LocalValidationError, "#{operation}: expected Relationship" unless relationship.is_a?(Relationship)
 
       @updates << Update.new(operation: operation, relationship: relationship)
       self

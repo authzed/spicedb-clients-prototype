@@ -279,15 +279,17 @@ func (c *Client) LookupPermissionSets(ctx context.Context, request LookupPermiss
 		if o.permissionSetCursor != nil {
 			req.OptionalStartingAfterCursor = permissionSetCursor(*o.permissionSetCursor)
 		}
-		// One bounded page: it carries the client default deadline.
-		ctx, pageCancel := c.pageContext(ctx)
-		defer pageCancel()
+		// One bounded page: the client default deadline bounds its server
+		// time, paused while the caller holds an item.
+		ctx, clock, release := c.serverClock(ctx, true)
+		defer release()
 		stub := materialize.NewWatchPermissionSetsServiceClient(c.proto.Connection())
 		for p, e := range receive(ctx, c.retrySettings(o), "lookup permission sets", true, func(ctx context.Context) (receiver[*materialize.LookupPermissionSetsResponse], error) {
 			return stub.LookupPermissionSets(ctx, req, o.callOptions...)
 		}) {
+			clock.hold()
 			if e != nil {
-				yield(LookupPermissionSet{}, e)
+				yield(LookupPermissionSet{}, clock.err(ctx, "lookup permission sets", e))
 				return
 			}
 			change, e := nativePermissionSetChange("lookup permission sets", p.GetChange())
@@ -298,6 +300,7 @@ func (c *Client) LookupPermissionSets(ctx context.Context, request LookupPermiss
 			if !yield(LookupPermissionSet{change, nativePermissionSetCursor(p.GetCursor())}, nil) {
 				return
 			}
+			clock.wait()
 		}
 	}
 }

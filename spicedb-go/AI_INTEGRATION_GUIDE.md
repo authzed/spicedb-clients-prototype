@@ -180,7 +180,8 @@ for r, err := range tc.ReadRelationships(ctx, client.ReadRelationshipsRequest{
 
 Each item also carries `r.AfterResultCursor` and `r.ReadAt`. To resume, pass
 `client.WithReadRelationshipsCursor(cursor)` with the **same request and page size**.
-Each page request gets the client default deadline (30s); a stalled page fails
+Each page request gets the client default deadline (30s) for waiting on the
+server; time your loop body spends on an item does not count. A stalled page fails
 with `client.ErrDeadlineExceeded`. Bound the whole read with the context.
 
 ## Schema-agnostic code (native tier)

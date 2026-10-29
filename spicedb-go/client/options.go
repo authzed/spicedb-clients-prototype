@@ -71,23 +71,6 @@ func (c *Client) operation(ctx context.Context, o operationOptions, stream bool)
 	return x, cancel, nil
 }
 
-// pageContext bounds one page request of a finite paged read (relationship
-// reads, lookups, exports) by the client default deadline, from opening the
-// page to receiving its last item, so a server that stalls mid-read fails the
-// read instead of hanging it. ctx carries the operation's total deadline,
-// which still wins when earlier. WithDefaultDeadline(DefaultDeadlineDisabled)
-// removes the per-page default; watches never call this.
-func (c *Client) pageContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if c.noDefaultDeadline {
-		return context.WithCancel(ctx)
-	}
-	d := c.defaultTimeout
-	if d == 0 {
-		d = 30 * time.Second
-	}
-	return context.WithTimeout(ctx, d)
-}
-
 // retry runs an idempotent read under the client's retry policy.
 func retry[T any](ctx context.Context, rs retrySettings, op string, call func() (T, error)) (T, error) {
 	var zero T

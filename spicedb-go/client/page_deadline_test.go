@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	materialize "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/materialize/v0"
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -24,6 +26,10 @@ type stallServer struct {
 	v1.UnimplementedPermissionsServiceServer
 	v1.UnimplementedWatchServiceServer
 	stallPage int
+	subjects  int // LookupSubjects sends this many and ends; 0 sends one and stalls
+	// pad lengthens every object ID, so a page outgrows gRPC's flow-control
+	// window and the server is still sending while the caller works.
+	pad       string
 	pageDelay time.Duration
 	pages     atomic.Int32
 }
@@ -45,25 +51,33 @@ func (s *stallServer) page(ctx context.Context, limit uint32, send func(i uint32
 
 func (s *stallServer) LookupResources(r *v1.LookupResourcesRequest, stream grpc.ServerStreamingServer[v1.LookupResourcesResponse]) error {
 	return s.page(stream.Context(), r.OptionalLimit, func(i uint32, n int) error {
-		return stream.Send(&v1.LookupResourcesResponse{ResourceObjectId: fmt.Sprintf("%d-%d", n, i), Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION, AfterResultCursor: &v1.Cursor{Token: fmt.Sprint(n)}})
+		return stream.Send(&v1.LookupResourcesResponse{ResourceObjectId: fmt.Sprintf("%d-%d%s", n, i, s.pad), Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION, AfterResultCursor: &v1.Cursor{Token: fmt.Sprint(n)}})
 	})
 }
 
 func (s *stallServer) ReadRelationships(r *v1.ReadRelationshipsRequest, stream grpc.ServerStreamingServer[v1.ReadRelationshipsResponse]) error {
 	return s.page(stream.Context(), r.OptionalLimit, func(i uint32, n int) error {
-		p, _ := relationship(testTriple("document", fmt.Sprintf("%d-%d", n, i), "viewer", "user", "alice", ""))
+		p, _ := relationship(testTriple("document", fmt.Sprintf("%d-%d%s", n, i, s.pad), "viewer", "user", "alice", ""))
 		return stream.Send(&v1.ReadRelationshipsResponse{Relationship: p, AfterResultCursor: &v1.Cursor{Token: fmt.Sprint(n)}})
 	})
 }
 
 func (s *stallServer) ExportBulkRelationships(r *v1.ExportBulkRelationshipsRequest, stream grpc.ServerStreamingServer[v1.ExportBulkRelationshipsResponse]) error {
 	return s.page(stream.Context(), r.OptionalLimit, func(i uint32, n int) error {
-		p, _ := relationship(testTriple("document", fmt.Sprintf("%d-%d", n, i), "viewer", "user", "alice", ""))
-		return stream.Send(&v1.ExportBulkRelationshipsResponse{Relationships: []*v1.Relationship{p}, AfterResultCursor: &v1.Cursor{Token: fmt.Sprintf("%d-%d", n, i)}})
+		p, _ := relationship(testTriple("document", fmt.Sprintf("%d-%d%s", n, i, s.pad), "viewer", "user", "alice", ""))
+		return stream.Send(&v1.ExportBulkRelationshipsResponse{Relationships: []*v1.Relationship{p}, AfterResultCursor: &v1.Cursor{Token: fmt.Sprintf("%d-%d%s", n, i, s.pad)}})
 	})
 }
 
 func (s *stallServer) LookupSubjects(_ *v1.LookupSubjectsRequest, stream grpc.ServerStreamingServer[v1.LookupSubjectsResponse]) error {
+	for i := range s.subjects {
+		if e := stream.Send(&v1.LookupSubjectsResponse{Subject: &v1.ResolvedSubject{SubjectObjectId: fmt.Sprint(i) + s.pad, Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION}}); e != nil {
+			return e
+		}
+	}
+	if s.subjects > 0 {
+		return nil
+	}
 	if e := stream.Send(&v1.LookupSubjectsResponse{Subject: &v1.ResolvedSubject{SubjectObjectId: "alice", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION}}); e != nil {
 		return e
 	}
@@ -223,4 +237,80 @@ func TestLocalCancellationIsClientCanceledError(t *testing.T) {
 		yield(testTriple("document", "1", "viewer", "user", "alice", ""))
 	}})
 	requireCanceled(t, err)
+}
+
+// slowConsumer reads every item of seq, sleeping per item, and returns how
+// many it saw and the error that ended the read.
+func slowConsumer[T any](seq func(func(T, error) bool), perItem time.Duration) (int, error) {
+	n := 0
+	for _, e := range seq {
+		if e != nil {
+			return n, e
+		}
+		n++
+		time.Sleep(perItem)
+	}
+	return n, nil
+}
+
+// The per-page default bounds only waiting on the server, never the caller's
+// processing time: a caller spending 100 ms on each of 5 items (500 ms in
+// all) under a 200 ms default reads a healthy server to the end.
+func TestPageDeadline_CallerProcessingTimeNeverCounts(t *testing.T) {
+	const def, perItem = 200 * time.Millisecond, 100 * time.Millisecond
+	ctx := context.Background()
+	cases := map[string]func(c *Client) (int, error){
+		"read relationships": func(c *Client) (int, error) {
+			return slowConsumer(c.ReadRelationships(ctx, ReadRelationshipsRequest{Filter: testFilter("document"), Consistency: consistency.Full()}, WithReadRelationshipsPageSize(5), WithReadRelationshipsLimit(5)), perItem)
+		},
+		"lookup resources": func(c *Client) (int, error) {
+			return slowConsumer(c.LookupResources(ctx, lookupReq(), WithLookupResourcesPageSize(5), WithLookupResourcesLimit(5)), perItem)
+		},
+		"export relationships": func(c *Client) (int, error) {
+			return slowConsumer(c.ExportRelationships(ctx, ExportRelationshipsRequest{Consistency: consistency.Full()}, WithExportRelationshipsPageSize(5), WithExportRelationshipsLimit(5)), perItem)
+		},
+		"lookup subjects": func(c *Client) (int, error) {
+			return slowConsumer(c.LookupSubjects(ctx, LookupSubjectsRequest{Resource: testObject("document", "1"), Permission: "view", SubjectType: "user", Consistency: consistency.Full()}), perItem)
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := newStallClient(t, &stallServer{subjects: 5, pad: strings.Repeat("x", 64*1024)}, WithDefaultTimeout(def))
+			n, err := run(c)
+			require.NoError(t, err)
+			require.Equal(t, 5, n)
+		})
+	}
+}
+
+// healthyPermissionSets answers LookupPermissionSets with Limit changes at
+// once.
+type healthyPermissionSets struct {
+	materialize.UnimplementedWatchPermissionSetsServiceServer
+}
+
+func (healthyPermissionSets) LookupPermissionSets(r *materialize.LookupPermissionSetsRequest, stream materialize.WatchPermissionSetsService_LookupPermissionSetsServer) error {
+	for i := uint32(0); i < r.Limit; i++ {
+		change := setChangeFixture()
+		change.ParentSet.ObjectId = strings.Repeat("x", 64*1024)
+		if e := stream.Send(&materialize.LookupPermissionSetsResponse{Change: change, Cursor: &materialize.Cursor{Cursor: "c"}}); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func TestPageDeadline_PermissionSetLookupProcessingTimeNeverCounts(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	gs := grpc.NewServer()
+	materialize.RegisterWatchPermissionSetsServiceServer(gs, healthyPermissionSets{})
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+	c, err := NewWithOpts("passthrough:///bufnet", "t", WithInsecure(), WithRemotePlaintextCredentials(RemotePlaintextAllowed), WithDefaultTimeout(200*time.Millisecond),
+		WithDialOptions(grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	n, err := slowConsumer(c.LookupPermissionSets(context.Background(), LookupPermissionSetsRequest{Limit: 5}), 100*time.Millisecond)
+	require.NoError(t, err)
+	require.Equal(t, 5, n)
 }

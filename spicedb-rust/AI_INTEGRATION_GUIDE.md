@@ -198,9 +198,10 @@ exactly one request like the raw API (limit = `with_limit` or unbounded).
 Each page of a read, lookup or export must arrive within the client default
 deadline (30 s, `default_timeout`), from requesting it to its last item, so a
 stalled server fails the stream with `SpiceDBError::DeadlineExceeded` instead
-of hanging it. A slow consumer counts against the page, so don't hold a page
-open for long work per item. `with_timeout` on the options bounds the whole
-stream; watches have no default.
+of hanging it. Only waiting on the server counts: the client receives each
+page before handing you its items, so time you spend on items never counts
+against the page. `with_timeout` on the options bounds the whole stream,
+including your processing time; watches have no default.
 
 ## Schema-agnostic code (native tier)
 

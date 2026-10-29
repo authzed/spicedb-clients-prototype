@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The per-page default deadline bounds only waiting on the server, never the
+  time the caller spends on items. Reads, resource lookups, exports and
+  permission-set lookups receive each page in full within its deadline before
+  yielding its items (a page holds at most the page size); an unpaged subject
+  lookup bounds each wait for the server's next message and no longer sends
+  the page budget as the request's gRPC timeout. Previously a caller doing
+  slow work per item on a large page could fail with `DeadlineExceeded`
+  against a healthy server.
 - **Breaking:** finite paged reads (`read_relationships`, `lookup_resources`,
   `lookup_subjects`, `export_relationships`, `lookup_permission_sets`) apply
   the client default deadline (30 s, `default_timeout`) to each page, from

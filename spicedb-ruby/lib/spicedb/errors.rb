@@ -170,6 +170,22 @@ module SpiceDB
                   'on Linux, with GRPC.prefork and GRPC.postfork_child) also allows it.'
       super(message, **)
     end
+
+    # The message for a new client in a child process whose parent (+used_pid+,
+    # nil when unknown) already used gRPC.
+    def self.fresh_client_message(used_pid, current_pid)
+      parent = used_pid ? "process #{used_pid}" : 'a parent process'
+      "spicedb: gRPC was already used in #{parent} before it forked this process (#{current_pid}), and gRPC cannot be used " \
+        'in a child once its parent has used it -- building a new SpiceDB::Client in the child does not help. Make no SpiceDB ' \
+        "(or other gRPC) call in the parent: connect only in each worker, for example SPICEDB.connect! in Puma's on_worker_boot. " \
+        "Or enable grpc's fork support where it is available (GRPC_ENABLE_FORK_SUPPORT=1 on Linux, with GRPC.prefork and " \
+        'GRPC.postfork_child around the fork).'
+    end
+
+    # Whether +error+ is grpc's own refusal to run in a forked child.
+    def self.grpc_fork_refusal?(error)
+      error.is_a?(RuntimeError) && error.message.match?(/before and after forking|GRPC\.prefork must be called/)
+    end
   end
 
   # Maps gRPC status codes to SpiceDB exception classes. Codes without an
@@ -293,6 +309,17 @@ module SpiceDB
   # platform grpc supports it on.
   def grpc_fork_support?
     ENV['GRPC_ENABLE_FORK_SUPPORT'] == '1' && RUBY_PLATFORM.include?('linux')
+  end
+
+  # The process that first opened a gRPC channel through this library (any
+  # client), or nil. A forked child inherits it, so a child can tell that
+  # its parent used gRPC, which grpc refuses to let the child do.
+  def grpc_used_pid = @grpc_used_pid
+
+  # Records that this process opened a gRPC channel (first use wins: a
+  # child keeps its ancestor's pid).
+  def note_grpc_use
+    @grpc_used_pid = Process.pid if @grpc_used_pid.nil?
   end
 
   # Returns true if the DEFAULT retry policy would retry the error.

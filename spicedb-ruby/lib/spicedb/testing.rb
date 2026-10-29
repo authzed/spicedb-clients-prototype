@@ -62,8 +62,16 @@ module SpiceDB
     # Empty writes check their preconditions and return the current revision,
     # as SpiceDB does.
     #
-    # It evaluates no schema. A check resolves in this order, the same in
-    # every SpiceDB client's double:
+    # It does not evaluate the schema. A permission such as
+    # +view = reader + writer + parent_folder->read+ is granted only by a
+    # stored relationship whose relation is literally +view+, or by the check
+    # resolver: storing +document:1#reader@user:alice+ does not grant +view+.
+    # Tests of real permission logic should model it in the check resolver,
+    # or run SpiceDB itself (+spicedb serve-testing+ or a container) for
+    # schema-accurate results.
+    #
+    # A check resolves in this order, the same in every SpiceDB client's
+    # double:
     #
     # 1. a result registered for that exact check with #set_check_result;
     # 2. the check resolver (#check_resolver=, or +check_resolver:+ on

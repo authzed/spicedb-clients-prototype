@@ -58,6 +58,26 @@ RSpec.describe 'Concurrency and forking' do
     unreachable.close
   end
 
+  it 'explains that a new client in the child does not help once the parent connected', if: Process.respond_to?(:fork) do
+    client.connect!(timeout: 5) # the parent (e.g. a Puma master) used gRPC
+    reader, writer = IO.pipe
+    pid = fork do
+      fresh = SpiceDB::Client.new_plaintext(SPICEDB_ENDPOINT, SPICEDB_TOKEN)
+      begin
+        fresh.connect!(timeout: 5)
+        writer.puts 'no error'
+      rescue SpiceDB::ForkedClientError => e
+        writer.puts e.message
+      rescue StandardError => e
+        writer.puts "untyped #{e.class}"
+      end
+      exit!(0)
+    end
+    Process.wait(pid)
+    writer.close
+    expect(reader.read).to include('does not help')
+  end
+
   it 'explains a client that was already connected before the fork', if: Process.respond_to?(:fork) do
     client.read_schema # connected in this (parent) process
     reader, writer = IO.pipe

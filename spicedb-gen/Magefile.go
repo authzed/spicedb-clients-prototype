@@ -375,7 +375,7 @@ func verifyJavaTypeErrors(dir, file string) error {
 var pythonGenerated = []string{"permissions.py", "sync.py", "aio.py"}
 
 // PythonIntegrationTest builds the CLI, generates Python code from the sample
-// schema, checks ruff formatting and lint, type-checks it with pyright
+// schema, checks ruff formatting and lint, type-checks it with pyright and mypy
 // (positive, and per-line negative), then runs pytest against SpiceDB.
 //
 // When SPICEDB_ENDPOINT is set, pytest runs against that server and no
@@ -416,6 +416,10 @@ func PythonIntegrationTest() error {
 		return fmt.Errorf("pyright failed on project: %w", err)
 	}
 
+	if err := PythonMypy(); err != nil {
+		return err
+	}
+
 	fmt.Println("==> Verifying type errors are caught at type-check time...")
 	if err := verifyPythonTypeErrors("testdata/python", "type_errors.py"); err != nil {
 		return err
@@ -450,6 +454,21 @@ func PythonIntegrationTest() error {
 	}
 
 	fmt.Println("==> Python integration tests passed!")
+	return nil
+}
+
+// PythonMypy type-checks the generated package with mypy, both with its
+// defaults and with --strict, so applications that run mypy on their source
+// tree (generated code included) see no errors from it. pyright runs
+// separately; both checkers must stay clean.
+func PythonMypy() error {
+	fmt.Println("==> Type-checking generated code with mypy (default and --strict)...")
+	if err := runInDir("testdata/python", "uv", "run", "mypy", "-p", "testdata"); err != nil {
+		return fmt.Errorf("mypy failed on the generated package: %w", err)
+	}
+	if err := runInDir("testdata/python", "uv", "run", "mypy", "--strict", "-p", "testdata"); err != nil {
+		return fmt.Errorf("mypy --strict failed on the generated package: %w", err)
+	}
 	return nil
 }
 

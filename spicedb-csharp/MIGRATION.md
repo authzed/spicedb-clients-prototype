@@ -162,7 +162,8 @@ Authzed.Net applied no deadline and no retries.
   `new ClientOptions { DefaultDeadline = DefaultDeadline.Disabled }`, or set
   `ClientOptions.DefaultTimeout` / a per-operation `Timeout`.
 - Relationship reads, lookups and exports have no total default, but each page request gets
-  the default deadline, so a stalled server fails the read rather than hanging it. Watch has
+  the default deadline, so a stalled server fails the read rather than hanging it. Time your
+  loop spends processing items does not count against it. Watch has
   no default. `DefaultDeadline.Disabled` removes both defaults.
 - Idempotent reads, and stream establishment before any item, retry Unavailable/Aborted
   up to three times with jittered backoff. Writes, deletes and imports never retry.

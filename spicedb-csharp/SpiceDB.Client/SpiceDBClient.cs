@@ -188,36 +188,46 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         // Timer rounding can cancel before the monotonic elapsed-time check expires.
         // Keep the deadline source separate from caller and client-lifetime cancellation.
         private readonly CancellationTokenSource _deadline = new();
-        // The current page request of a paged read, when PageTimeout is set: its own deadline
-        // source (kept apart from the linked token for the same timer-rounding reason) and a
-        // token linking it to the operation's.
-        private CancellationTokenSource? _pageDeadline;
-        private CancellationTokenSource? _page;
-        private long _pageStart;
-        public CancellationToken Token => _page?.Token ?? _linked.Token;
+        // The per-page deadline of a paged read, when PageTimeout is set. It is a watchdog on
+        // waiting for the server: each wait for the next message runs under its own deadline
+        // source (kept apart from the linked token for the timer-rounding reason above) for
+        // what is left of the page's allowance, and the clock stops while the caller holds an
+        // item, so the caller's processing never counts.
+        private CancellationTokenSource? _waitDeadline;
+        private CancellationTokenSource? _wait;
+        private long _waitStart;
+        private TimeSpan _pageWaited;
+        public CancellationToken Token => _wait?.Token ?? _linked.Token;
+        /// <summary>The operation's token, without the page watchdog.</summary>
+        public CancellationToken OperationToken => _linked.Token;
         public bool StreamRetries { get; }
         /// <summary>The per-page deadline of a paged read: the client default, or null.</summary>
         public TimeSpan? PageTimeout { get; init; }
-        /// <summary>Starts a page request's deadline. A no-op without <see cref="PageTimeout"/>.</summary>
-        public void StartPage()
+        /// <summary>Starts a new page's allowance of server wait time.</summary>
+        public void StartPage() { EndWait(); _pageWaited = TimeSpan.Zero; }
+        /// <summary>Starts waiting on the server for the next message. A no-op without <see cref="PageTimeout"/>.</summary>
+        public void StartWait()
         {
-            EndPage();
+            EndWait();
             if (PageTimeout is not { } p) return;
-            _pageStart = Stopwatch.GetTimestamp();
-            _pageDeadline = new();
-            _page = CancellationTokenSource.CreateLinkedTokenSource(_linked.Token, _pageDeadline.Token);
-            _pageDeadline.CancelAfter(p);
+            var left = p - _pageWaited;
+            _waitStart = Stopwatch.GetTimestamp();
+            _waitDeadline = new();
+            _wait = CancellationTokenSource.CreateLinkedTokenSource(_linked.Token, _waitDeadline.Token);
+            if (left > TimeSpan.Zero) _waitDeadline.CancelAfter(left); else _waitDeadline.Cancel();
         }
-        /// <summary>Ends the current page request's deadline, if any.</summary>
-        public void EndPage()
+        /// <summary>Stops the clock: the wait's time counts against the page, the caller's next does not.</summary>
+        public void EndWait()
         {
-            _page?.Dispose(); _page = null;
-            _pageDeadline?.Dispose(); _pageDeadline = null;
+            if (_waitDeadline is null) return;
+            _pageWaited += Stopwatch.GetElapsedTime(_waitStart);
+            _wait?.Dispose(); _wait = null;
+            _waitDeadline.Dispose(); _waitDeadline = null;
         }
-        private bool PageExpired => _pageDeadline is not null && PageTimeout is { } p && (_pageDeadline.IsCancellationRequested || Stopwatch.GetElapsedTime(_pageStart) >= p);
+        private bool PageExpired => _waitDeadline is not null && PageTimeout is { } p && (_waitDeadline.IsCancellationRequested || _pageWaited + Stopwatch.GetElapsedTime(_waitStart) >= p);
         private DeadlineExceededException PageDeadlineExceeded(Exception? inner = null)
         {
-            var message = $"Page request deadline exceeded: no complete page within the client default deadline ({PageTimeout}).";
+            var message = $"Page request deadline exceeded: the server did not deliver the page within the client default deadline ({PageTimeout}).";
             return inner is null ? new(message) : new(message, inner);
         }
         public Budget(TimeSpan? timeout, CancellationToken caller, CancellationToken lifetime, TransportOptions? transport, RetryPolicy? retry, bool streamRetries, string operation, string? endpoint)
@@ -231,9 +241,9 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             get
             {
                 Check();
-                DateTime? total = _timeout is { } t ? DateTime.UtcNow + (t - Stopwatch.GetElapsedTime(_start)) : null;
-                DateTime? page = _page is not null && PageTimeout is { } p ? DateTime.UtcNow + (p - Stopwatch.GetElapsedTime(_pageStart)) : null;
-                return total is null ? page : page is null || total <= page ? total : page;
+                // Only the total budget goes on the wire: the page watchdog stops while the
+                // caller holds an item, which an absolute call deadline cannot.
+                return _timeout is { } t ? DateTime.UtcNow + (t - Stopwatch.GetElapsedTime(_start)) : null;
             }
         }
         /// <summary>gRPC call options for one attempt: remaining deadline, budget token and caller transport settings.</summary>
@@ -283,7 +293,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             catch (OperationCanceledException ex) { throw Map(ex); }
             Check();
         }
-        public void Dispose() { EndPage(); _linked.Dispose(); _deadline.Dispose(); }
+        public void Dispose() { EndWait(); _linked.Dispose(); _deadline.Dispose(); }
     }
     private static async Task<T> Unary<T>(Budget budget, Func<Grpc.Core.CallOptions, AsyncUnaryCall<T>> call, bool retry = true)
     {
@@ -300,7 +310,15 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             }
         }
     }
-    private static async IAsyncEnumerable<T> Stream<T>(Budget budget, Func<Grpc.Core.CallOptions, AsyncServerStreamingCall<T>> open)
+    /// <summary>
+    /// Opens a server stream with establishment retries. In a paged read (a budget with a
+    /// <see cref="Budget.PageTimeout"/>) the per-page deadline bounds only waiting on the server:
+    /// the clock runs while the client waits for the next message and stops while the caller
+    /// holds an item, so the caller's processing never counts. A page's waits share one
+    /// allowance; with <paramref name="perMessage"/> (a stream not bounded by a page size) each
+    /// wait for a message gets the whole allowance.
+    /// </summary>
+    private static async IAsyncEnumerable<T> Stream<T>(Budget budget, Func<Grpc.Core.CallOptions, AsyncServerStreamingCall<T>> open, bool perMessage = false)
     {
         bool exposed = false;
         for (int attempt = 0; ; attempt++)
@@ -316,15 +334,18 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             {
                 try
                 {
-                    using (budget.Token.Register(call.Dispose))
+                    using (budget.OperationToken.Register(call.Dispose))
                     {
                         while (true)
                         {
                             budget.Check();
+                            if (perMessage) budget.StartPage();
+                            budget.StartWait();
                             bool next;
                             try { next = await call.ResponseStream.MoveNext(budget.Token).WaitAsync(budget.Token); }
                             catch (RpcException ex) when (!exposed && budget.StreamRetries && budget.ShouldRetry(ex, attempt)) { retryCause = ex; break; }
                             catch (Exception ex) when (ex is RpcException or OperationCanceledException) { throw budget.Map(ex); }
+                            budget.EndWait();
                             if (!next) yield break;
                             exposed = true;
                             yield return call.ResponseStream.Current;
@@ -333,12 +354,12 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                 }
                 finally
                 {
+                    budget.EndWait();
                     budget.Capture(() => call.ResponseHeadersAsync, call.GetTrailers);
                     call.Dispose();
-                    budget.EndPage();
                 }
             }
-            budget.EndPage();
+            budget.EndWait();
             if (retryCause is null) yield break;
             await budget.Backoff(attempt, retryCause);
         }
@@ -527,7 +548,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         while (true)
         {
             int count = 0;
-            await foreach (var response in Stream(budget, o => _permissions.ReadRelationships(request, o.Headers, o.Deadline, o.CancellationToken)))
+            await foreach (var response in Stream(budget, o => _permissions.ReadRelationships(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: single))
             {
                 request.OptionalCursor = response.AfterResultCursor; count++; remaining--;
                 yield return new(Response.Relationship(response.Relationship, "ReadRelationships"), response.AfterResultCursor?.Token, new(response.ReadAt?.Token ?? ""));
@@ -548,7 +569,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         while (true)
         {
             int count = 0;
-            await foreach (var response in Stream(budget, o => _permissions.LookupResources(request, o.Headers, o.Deadline, o.CancellationToken)))
+            await foreach (var response in Stream(budget, o => _permissions.LookupResources(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: single))
             {
                 request.OptionalCursor = response.AfterResultCursor; count++;
                 if (options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly && response.Permissionship != LookupPermissionship.HasPermission) continue;
@@ -567,7 +588,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null || options?.Paging is Paging.SingleRequest) throw new InvalidArgumentException("LookupSubjects does not support Debug, PageSize or Paging; upstream concrete pagination is unimplemented.");
         int remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var request = new LookupSubjectsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), Resource = Native.Required(resource, nameof(resource)).ToProto(), Permission = Native.Required(permission, nameof(permission)), SubjectObjectType = Native.Required(subjectType, nameof(subjectType)), OptionalSubjectRelation = options?.SubjectRelation ?? "", Context = Native.Struct(options?.Context) };
-        await foreach (var response in Stream(budget, o => _permissions.LookupSubjects(request, o.Headers, o.Deadline, o.CancellationToken)))
+        await foreach (var response in Stream(budget, o => _permissions.LookupSubjects(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: true))
         {
             yield return ValidLookupSubject(response);
             if (--remaining == 0) yield break;

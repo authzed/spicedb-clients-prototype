@@ -10,6 +10,23 @@ with minimal boilerplate for connection setup and authentication.
 Everything under `gen/` is produced by `buf generate` and MUST NOT be manually
 modified. These files are regenerated on every `mage gen`.
 
+`buf.gen.yaml` pins both plugin versions. The protoc plugin version is the
+protobuf-java runtime floor of every consumer (generated classes refuse an older
+runtime at class load), so it stays at the lowest version the dependencies need
+and no higher than the dominant host framework manages: v33.2 (protobuf-java
+4.33.2, what proto-google-common-protos 2.65 already requires; Spring Boot 4.1
+manages 4.34.2). `build.gradle.kts`'s `protobufFloor` and spicedb-java's
+`ProtobufRuntime.FLOOR` repeat it (a spicedb-java test compares the latter with
+the stamp in `gen/`). Raise all three together, and only when a feature needs it.
+The grpc-java plugin is pinned at v1.80.0 (Spring Boot 4.1.0's gRPC); the BOM
+below must stay at or above it.
+
+## Publishing
+
+`gradle publishToMavenLocal` publishes `com.authzed.spicedb:spicedb-java-proto`
+(jar, sources, POM, Gradle module metadata) at the version spicedb-java uses.
+`versionMapping` writes each dependency's resolved version into the POM.
+
 ## Canonical binding
 
 This module is the single JVM binding for `authzed.api.v1` and

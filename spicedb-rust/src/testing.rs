@@ -13,17 +13,25 @@
 //! current revision), paged reads and exports with cursors, limits and the
 //! export filter, all-or-nothing imports, bounded and all-or-nothing deletes —
 //! and serves `SchemaService` reads and writes of the schema text. It
-//! evaluates no schema: permission checks return results registered with
-//! [`InMemorySpiceDB::set_check_result`] (default `NoPermission`), and
+//! evaluates no schema. A permission check resolves to the result registered
+//! for that exact question ([`InMemorySpiceDB::set_check_result`]), then to the
+//! answer of a check resolver ([`InMemorySpiceDB::set_check_resolver`];
+//! [`grant_all`] grants everything), then to the stored relationships (an
+//! unexpired relationship on the resource whose relation is the permission's
+//! name and whose subject matches exactly, or as a wildcard over a direct
+//! subject, grants it; caveated ones only conditionally), and otherwise to
+//! `NoPermission`. `lookup_resources` and `lookup_subjects` return the objects
+//! of the requested type in the stored relationships that check resolution
+//! grants, with conditional results reported as conditional.
 //! `reflect_schema` returns the result registered with
 //! [`InMemorySpiceDB::set_reflect_schema_result`]. `delete_all_relationships_non_atomic`
 //! and `check_bulk` work through the RPCs it models.
 //!
 //! It serves every service the client calls (permissions, schema, watch,
 //! experimental and Materialize), so every [`SpiceDBClient`] method reaches
-//! it: RPCs it does not model (lookups, expand, watch, schema
-//! introspection, counters, Materialize) are recorded, consult the fault hook,
-//! and otherwise return `UNIMPLEMENTED`, which the client maps to
+//! it: RPCs it does not model (expand, watch, schema introspection, counters,
+//! Materialize) are recorded, consult the fault hook, and otherwise return
+//! `UNIMPLEMENTED`, which the client maps to
 //! [`SpiceDBError`] as it maps SpiceDB's own status. A test that calls every
 //! client method keeps the two in step, so no separate trait is needed: the
 //! double's surface is the client.
@@ -50,7 +58,7 @@
 //! Because the client's retries and pages are separate RPCs, they are recorded
 //! separately. Faults can be injected ([`InMemorySpiceDB::set_fault_hook`],
 //! [`InMemorySpiceDB::fail_next`]) before any RPC, before each import batch,
-//! before an import commits and before each read or export item; the client
+//! before an import commits and before each read, export or lookup item; the client
 //! maps an injected [`server_error`] exactly as it maps SpiceDB's, so failure
 //! paths need no hand-written gRPC server.
 //!
@@ -68,6 +76,10 @@
 //! client.write(WriteRequest::new(txn)).await?;
 //! assert_eq!(fake.relationships(), vec![viewer.clone()]);
 //!
+//! // The stored relationship grants `viewer` itself; other permissions need a
+//! // registered result or a resolver.
+//! let check = PermissionCheck::new(viewer.resource().clone(), "viewer", viewer.subject().clone(), consistency::full());
+//! assert!(client.check(check).await?.has_permission());
 //! fake.set_check_result(viewer.resource(), "view", viewer.subject(), Permissionship::HasPermission);
 //! let check = PermissionCheck::new(viewer.resource().clone(), "view", viewer.subject().clone(), consistency::full());
 //! assert!(client.check(check).await?.has_permission());
@@ -121,6 +133,7 @@ struct State {
     relationships: Vec<Relationship>,
     revision: u64,
     checks: HashMap<String, Permissionship>,
+    resolver: Option<CheckResolver>,
     schema: Option<String>,
     reflection: Option<ReflectSchemaResult>,
     headers: MetadataMap,
@@ -131,6 +144,85 @@ struct State {
 }
 
 type FaultHook = Arc<dyn Fn(&Fault) -> Option<Status> + Send + Sync>;
+type CheckResolver = Arc<dyn Fn(&PermissionCheck) -> Option<Resolution> + Send + Sync>;
+
+/// The answer a check resolver gives
+/// ([`InMemorySpiceDB::set_check_resolver`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Resolution {
+    /// The check's permissionship.
+    pub permissionship: Permissionship,
+    /// For [`Permissionship::ConditionalPermission`], the caveat context the
+    /// check is missing; it reaches the client as
+    /// [`CheckResult::missing_context`] and as a lookup result's
+    /// `partial_caveat`.
+    pub missing_context: Vec<String>,
+}
+
+impl Resolution {
+    /// Granted outright.
+    pub fn has_permission() -> Self {
+        Permissionship::HasPermission.into()
+    }
+    /// Not granted.
+    pub fn no_permission() -> Self {
+        Permissionship::NoPermission.into()
+    }
+    /// Granted only if a caveat the caller did not satisfy holds; `missing`
+    /// names the context it needs.
+    pub fn conditional<S: Into<String>>(missing: impl IntoIterator<Item = S>) -> Self {
+        Self {
+            permissionship: Permissionship::ConditionalPermission,
+            missing_context: missing.into_iter().map(Into::into).collect(),
+        }
+    }
+    fn granted(&self) -> bool {
+        matches!(
+            self.permissionship,
+            Permissionship::HasPermission | Permissionship::ConditionalPermission
+        )
+    }
+    fn partial_caveat(&self) -> Option<proto::PartialCaveatInfo> {
+        (self.permissionship == Permissionship::ConditionalPermission).then(|| {
+            proto::PartialCaveatInfo {
+                missing_required_context: self.missing_context.clone(),
+            }
+        })
+    }
+}
+
+impl From<Permissionship> for Resolution {
+    fn from(permissionship: Permissionship) -> Self {
+        Self {
+            permissionship,
+            missing_context: Vec::new(),
+        }
+    }
+}
+
+/// A check resolver that grants every check, for tests whose IDs are generated
+/// at run time:
+///
+/// ```
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), spicedb::SpiceDBError> {
+/// use spicedb::testing::{grant_all, InMemorySpiceDB};
+/// use spicedb::{consistency, ObjectRef, PermissionCheck};
+/// let fake = InMemorySpiceDB::new();
+/// fake.set_check_resolver(grant_all);
+/// let check = PermissionCheck::new(
+///     ObjectRef::new("document", "generated-id")?,
+///     "view",
+///     ObjectRef::new("user", "alice")?.into(),
+///     consistency::full(),
+/// );
+/// assert!(fake.client()?.check(check).await?.has_permission());
+/// # Ok(()) }
+/// ```
+pub fn grant_all(_: &PermissionCheck) -> Option<Resolution> {
+    Some(Resolution::has_permission())
+}
 
 /// A recorded protocol request, downcast with [`Call::request`].
 trait Recorded: Any + Debug + Send + Sync {
@@ -193,7 +285,7 @@ pub enum FaultStage {
     ImportBatch,
     /// After every batch was received, before the import commits.
     ImportCommit,
-    /// Before a read or export sends item [`Fault::item`] (0-based). The
+    /// Before a read, export or lookup sends item [`Fault::item`] (0-based). The
     /// stream ends with the error; the client never restarts a stream that
     /// exposed data.
     Item,
@@ -205,7 +297,7 @@ pub enum FaultStage {
 pub struct Fault {
     pub call: Call,
     pub stage: FaultStage,
-    /// The batch index for [`FaultStage::ImportBatch`], the item index for
+    /// The batch index for [`FaultStage::ImportBatch`], the item (or lookup result) index for
     /// [`FaultStage::Item`], 0 otherwise.
     pub item: usize,
     /// The relationships in the batch at [`FaultStage::ImportBatch`]; empty
@@ -231,7 +323,9 @@ pub enum SchemaRevision {
 /// The cursor that resumes a read or export after its first `n` matching
 /// relationships (in insertion order): the same cursor the double puts on
 /// item `n` (1-based) as `after_result_cursor`. Pass it to the options'
-/// `with_cursor`. The format, the decimal count `n`, is stable for tests.
+/// `with_cursor`. For `lookup_resources` it resumes after the first `n`
+/// granted resources (counting conditional ones a permissionship filter
+/// drops). The format, the decimal count `n`, is stable for tests.
 ///
 /// ```
 /// # #[tokio::main(flavor = "current_thread")]
@@ -290,6 +384,42 @@ impl State {
             None => self.relationships.push(r),
         }
     }
+    /// Step 3 of check resolution: an unexpired stored relationship on the
+    /// resource, with the permission's name as its relation and a matching
+    /// subject, grants; a caveated one only conditionally (caveats are not
+    /// evaluated), and an uncaveated match wins.
+    fn resolve_stored(&self, check: &PermissionCheck) -> Resolution {
+        let now = chrono::Utc::now();
+        let mut result = Resolution::no_permission();
+        for r in &self.relationships {
+            if r.resource() != check.resource()
+                || r.relation() != check.permission()
+                || !subject_matches(r.subject(), check.subject())
+                || r.expiration().is_some_and(|e| e <= now)
+            {
+                continue;
+            }
+            if r.caveat_name().is_empty() {
+                return Resolution::has_permission();
+            }
+            result = Resolution::conditional(Vec::<String>::new());
+        }
+        result
+    }
+    /// IDs of objects of `object_type` in the stored relationships (as
+    /// resource or subject), in order of first appearance.
+    fn object_ids(&self, object_type: &str) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut ids = Vec::new();
+        for r in &self.relationships {
+            for o in [r.resource(), r.subject().object()] {
+                if o.object_type() == object_type && seen.insert(o.object_id().to_string()) {
+                    ids.push(o.object_id().to_string());
+                }
+            }
+        }
+        ids
+    }
     fn check_preconditions(&self, preconditions: &[proto::Precondition]) -> Result<(), Status> {
         for p in preconditions {
             let p = protoconv::precondition_from_proto(p).map_err(Status::from)?;
@@ -320,6 +450,59 @@ fn reasoned(code: Code, message: String, reason: &str) -> Status {
 
 fn check_key(resource: &ObjectRef, permission: &str, subject: &SubjectRef) -> String {
     format!("{resource}#{permission}@{subject}")
+}
+
+/// Whether a stored subject grants to the checked one: exactly, or as a
+/// wildcard (`type:*`) over a direct subject of that type.
+fn subject_matches(stored: &SubjectRef, checked: &SubjectRef) -> bool {
+    stored == checked
+        || (stored.object().object_id() == "*"
+            && stored.relation().is_none()
+            && checked.relation().is_none()
+            && stored.object().object_type() == checked.object().object_type())
+}
+
+/// The native check the server received, for the resolver.
+fn check_from_proto(
+    resource: Option<&proto::ObjectReference>,
+    permission: &str,
+    subject: Option<&proto::SubjectReference>,
+    consistency: Option<&proto::Consistency>,
+    context: Option<&prost_types::Struct>,
+) -> Result<PermissionCheck, Status> {
+    let resource =
+        protoconv::object_from_proto(required(resource, "resource")?).map_err(Status::from)?;
+    let subject =
+        protoconv::subject_from_proto(required(subject, "subject")?).map_err(Status::from)?;
+    if permission.is_empty() {
+        return Err(Status::invalid_argument("permission is required"));
+    }
+    let consistency = match consistency {
+        Some(c) => protoconv::consistency_from_proto(c).map_err(Status::from)?,
+        None => crate::consistency::min_latency(),
+    };
+    let mut check = PermissionCheck::new(resource, permission, subject, consistency);
+    if let Some(context) = context {
+        check = check.with_context(context_from_proto(context));
+    }
+    Ok(check)
+}
+
+fn check_permissionship_to_proto(p: &Permissionship) -> i32 {
+    use proto::check_permission_response::Permissionship as P;
+    (match p {
+        Permissionship::HasPermission => P::HasPermission,
+        Permissionship::ConditionalPermission => P::ConditionalPermission,
+        Permissionship::NoPermission => P::NoPermission,
+        _ => P::Unspecified,
+    }) as i32
+}
+
+fn lookup_permissionship_to_proto(p: &Permissionship) -> i32 {
+    (match p {
+        Permissionship::ConditionalPermission => proto::LookupPermissionship::ConditionalPermission,
+        _ => proto::LookupPermissionship::HasPermission,
+    }) as i32
 }
 
 /// An in-memory SpiceDB double. Cheap to clone; clones share one store.
@@ -508,8 +691,10 @@ impl InMemorySpiceDB {
         self.lock().relationships.clone()
     }
 
-    /// Registers the permissionship `check` and `check_bulk` return for this
-    /// exact question. Unregistered questions are `NoPermission`.
+    /// Registers the permissionship `check`, `check_bulk` and lookups resolve
+    /// to for this exact question, ahead of the check resolver and the stored
+    /// relationships (see [`set_check_resolver`](Self::set_check_resolver)
+    /// for the order).
     pub fn set_check_result(
         &self,
         resource: &ObjectRef,
@@ -520,6 +705,80 @@ impl InMemorySpiceDB {
         self.lock()
             .checks
             .insert(check_key(resource, permission, subject), permissionship);
+    }
+
+    /// Installs `resolver`, which answers checks (including those a lookup
+    /// makes) that have no result registered with
+    /// [`set_check_result`](Self::set_check_result). A check resolves, in
+    /// order, to:
+    ///
+    /// 1. the result registered for that exact question;
+    /// 2. the resolver's answer, when it returns `Some` ([`grant_all`] grants
+    ///    everything);
+    /// 3. the stored relationships: an unexpired relationship on the resource
+    ///    whose relation is the permission's name, with the checked subject
+    ///    or a wildcard (`type:*`) over a direct subject of that type, grants
+    ///    it. Caveats are not evaluated: a caveated match is
+    ///    `ConditionalPermission`, and an uncaveated match wins over it;
+    /// 4. otherwise `NoPermission`.
+    ///
+    /// The resolver receives the check as the server received it, including
+    /// the consistency and caveat context (call-level context merged in, the
+    /// check's own keys winning). It cannot fail a check: inject failures
+    /// with [`set_fault_hook`](Self::set_fault_hook). It runs without the
+    /// store's lock held. Replaces any previous resolver.
+    ///
+    /// ```
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), spicedb::SpiceDBError> {
+    /// use spicedb::testing::{InMemorySpiceDB, Resolution};
+    /// use spicedb::{consistency, ObjectRef, PermissionCheck};
+    /// let fake = InMemorySpiceDB::new();
+    /// // Admins see every document; everyone else falls through to the
+    /// // stored relationships.
+    /// fake.set_check_resolver(|check| {
+    ///     (check.subject().object().object_id() == "admin").then(Resolution::has_permission)
+    /// });
+    /// let client = fake.client()?;
+    /// let check = |user: &str| -> Result<PermissionCheck, spicedb::SpiceDBError> {
+    ///     Ok(PermissionCheck::new(
+    ///         ObjectRef::new("document", "any")?,
+    ///         "view",
+    ///         ObjectRef::new("user", user)?.into(),
+    ///         consistency::full(),
+    ///     ))
+    /// };
+    /// assert!(client.check(check("admin")?).await?.has_permission());
+    /// assert!(!client.check(check("alice")?).await?.has_permission());
+    /// # Ok(()) }
+    /// ```
+    pub fn set_check_resolver(
+        &self,
+        resolver: impl Fn(&PermissionCheck) -> Option<Resolution> + Send + Sync + 'static,
+    ) {
+        self.lock().resolver = Some(Arc::new(resolver));
+    }
+
+    /// Removes the check resolver.
+    pub fn clear_check_resolver(&self) {
+        self.lock().resolver = None;
+    }
+
+    /// Resolves one check in the documented order. Takes the lock itself and
+    /// releases it around the resolver.
+    fn resolve(&self, check: &PermissionCheck) -> Resolution {
+        let resolver = {
+            let state = self.lock();
+            let key = check_key(check.resource(), check.permission(), check.subject());
+            if let Some(p) = state.checks.get(&key) {
+                return p.clone().into();
+            }
+            state.resolver.clone()
+        };
+        if let Some(answer) = resolver.and_then(|r| r(check)) {
+            return answer;
+        }
+        self.lock().resolve_stored(check)
     }
 
     /// Registers the result `reflect_schema` returns (its revision is
@@ -790,16 +1049,19 @@ impl PermissionsService for Service {
     ) -> Result<Response<proto::CheckPermissionResponse>, Status> {
         self.0.begin(Operation::Check, &request)?;
         let request = request.into_inner();
-        let state = self.0.lock();
-        let permissionship = lookup_check(
-            &state,
-            &request.resource,
+        let check = check_from_proto(
+            request.resource.as_ref(),
             &request.permission,
-            &request.subject,
+            request.subject.as_ref(),
+            request.consistency.as_ref(),
+            request.context.as_ref(),
         )?;
+        let resolution = self.0.resolve(&check);
+        let state = self.0.lock();
         Ok(state.respond(proto::CheckPermissionResponse {
             checked_at: Some(state.token()),
-            permissionship,
+            permissionship: check_permissionship_to_proto(&resolution.permissionship),
+            partial_caveat_info: resolution.partial_caveat(),
             ..Default::default()
         }))
     }
@@ -810,30 +1072,42 @@ impl PermissionsService for Service {
     ) -> Result<Response<proto::CheckBulkPermissionsResponse>, Status> {
         self.0.begin(Operation::CheckBulk, &request)?;
         let request = request.into_inner();
-        let state = self.0.lock();
         let mut pairs = Vec::with_capacity(request.items.len());
         for item in request.items {
-            let response =
-                match lookup_check(&state, &item.resource, &item.permission, &item.subject) {
-                    Ok(permissionship) => proto::check_bulk_permissions_pair::Response::Item(
+            let checked = check_from_proto(
+                item.resource.as_ref(),
+                &item.permission,
+                item.subject.as_ref(),
+                request.consistency.as_ref(),
+                item.context.as_ref(),
+            );
+            let response = match checked {
+                Ok(check) => {
+                    let resolution = self.0.resolve(&check);
+                    proto::check_bulk_permissions_pair::Response::Item(
                         proto::CheckBulkPermissionsResponseItem {
-                            permissionship,
+                            permissionship: check_permissionship_to_proto(
+                                &resolution.permissionship,
+                            ),
+                            partial_caveat_info: resolution.partial_caveat(),
                             ..Default::default()
                         },
-                    ),
-                    Err(status) => proto::check_bulk_permissions_pair::Response::Error(
-                        spicedb_proto::google::rpc::Status {
-                            code: status.code() as i32,
-                            message: status.message().to_string(),
-                            details: Vec::new(),
-                        },
-                    ),
-                };
+                    )
+                }
+                Err(status) => proto::check_bulk_permissions_pair::Response::Error(
+                    spicedb_proto::google::rpc::Status {
+                        code: status.code() as i32,
+                        message: status.message().to_string(),
+                        details: Vec::new(),
+                    },
+                ),
+            };
             pairs.push(proto::CheckBulkPermissionsPair {
                 request: Some(item),
                 response: Some(response),
             });
         }
+        let state = self.0.lock();
         Ok(state.respond(proto::CheckBulkPermissionsResponse {
             checked_at: Some(state.token()),
             pairs,
@@ -848,20 +1122,146 @@ impl PermissionsService for Service {
         unimplemented("ExpandPermissionTree")
     }
 
+    /// The objects of the requested type in the stored relationships (as
+    /// resource or subject), in first-appearance order, that check
+    /// resolution grants to the subject. Each result's cursor counts granted
+    /// results up to it (the client's permissionship filter drops some after
+    /// they are counted); the limit counts results sent.
     async fn lookup_resources(
         &self,
         request: Request<proto::LookupResourcesRequest>,
     ) -> Result<Response<Self::LookupResourcesStream>, Status> {
-        self.0.begin(Operation::LookupResources, &request)?;
-        unimplemented("LookupResources")
+        let call = self.0.begin(Operation::LookupResources, &request)?;
+        let request = request.into_inner();
+        if request.resource_object_type.is_empty() {
+            return Err(Status::invalid_argument("resource_object_type is required"));
+        }
+        let start = parse_cursor(request.optional_cursor.as_ref())?;
+        let limit = match request.optional_limit {
+            0 => usize::MAX,
+            n => n as usize,
+        };
+        let (ids, at, headers) = {
+            let state = self.0.lock();
+            (
+                state.object_ids(&request.resource_object_type),
+                state.token(),
+                state.headers.clone(),
+            )
+        };
+        let mut items = Vec::new();
+        let mut position = 0;
+        for id in ids {
+            if id == "*" || items.len() >= limit {
+                continue;
+            }
+            let resource = proto::ObjectReference {
+                object_type: request.resource_object_type.clone(),
+                object_id: id.clone(),
+            };
+            let check = check_from_proto(
+                Some(&resource),
+                &request.permission,
+                request.subject.as_ref(),
+                request.consistency.as_ref(),
+                request.context.as_ref(),
+            )?;
+            let resolution = self.0.resolve(&check);
+            if !resolution.granted() {
+                continue;
+            }
+            position += 1;
+            if position <= start {
+                continue;
+            }
+            items.push(proto::LookupResourcesResponse {
+                looked_up_at: Some(at.clone()),
+                resource_object_id: id,
+                permissionship: lookup_permissionship_to_proto(&resolution.permissionship),
+                partial_caveat_info: resolution.partial_caveat(),
+                after_result_cursor: Some(proto::Cursor {
+                    token: cursor_after(position),
+                }),
+            });
+        }
+        let mut response = Response::new(self.0.faulted_items(call, items));
+        *response.metadata_mut() = headers;
+        Ok(response)
     }
 
+    /// The objects of the requested subject type in the stored relationships
+    /// (as resource or subject), in first-appearance order, that check
+    /// resolution grants on the resource, with the requested subject relation
+    /// (direct by default). A stored wildcard subject is returned as `*`
+    /// unless wildcards are excluded. No cursor, as the client sends none;
+    /// the limit counts results sent.
+    #[allow(deprecated)]
     async fn lookup_subjects(
         &self,
         request: Request<proto::LookupSubjectsRequest>,
     ) -> Result<Response<Self::LookupSubjectsStream>, Status> {
-        self.0.begin(Operation::LookupSubjects, &request)?;
-        unimplemented("LookupSubjects")
+        let call = self.0.begin(Operation::LookupSubjects, &request)?;
+        let request = request.into_inner();
+        if request.subject_object_type.is_empty() {
+            return Err(Status::invalid_argument("subject_object_type is required"));
+        }
+        let limit = match request.optional_concrete_limit {
+            0 => usize::MAX,
+            n => n as usize,
+        };
+        let exclude_wildcards = request.wildcard_option
+            == proto::lookup_subjects_request::WildcardOption::ExcludeWildcards as i32;
+        let (ids, at, headers) = {
+            let state = self.0.lock();
+            (
+                state.object_ids(&request.subject_object_type),
+                state.token(),
+                state.headers.clone(),
+            )
+        };
+        let mut items = Vec::new();
+        for id in ids {
+            if items.len() >= limit || (id == "*" && exclude_wildcards) {
+                continue;
+            }
+            let subject = proto::SubjectReference {
+                object: Some(proto::ObjectReference {
+                    object_type: request.subject_object_type.clone(),
+                    object_id: id.clone(),
+                }),
+                optional_relation: request.optional_subject_relation.clone(),
+            };
+            let check = check_from_proto(
+                request.resource.as_ref(),
+                &request.permission,
+                Some(&subject),
+                request.consistency.as_ref(),
+                request.context.as_ref(),
+            )?;
+            let resolution = self.0.resolve(&check);
+            if !resolution.granted() {
+                continue;
+            }
+            let permissionship = lookup_permissionship_to_proto(&resolution.permissionship);
+            let partial_caveat_info = resolution.partial_caveat();
+            items.push(proto::LookupSubjectsResponse {
+                looked_up_at: Some(at.clone()),
+                subject_object_id: id.clone(),
+                excluded_subject_ids: Vec::new(),
+                permissionship,
+                partial_caveat_info: partial_caveat_info.clone(),
+                subject: Some(proto::ResolvedSubject {
+                    subject_object_id: id,
+                    permissionship,
+                    partial_caveat_info,
+                }),
+                excluded_subjects: Vec::new(),
+                after_result_cursor: None,
+            });
+        }
+        let mut response = Response::new(self.0.faulted_items(call, items));
+        *response.metadata_mut() = headers;
+        Ok(response)
     }
 
     /// One transaction, as SpiceDB does: a relationship that already exists
@@ -1210,30 +1610,6 @@ impl WatchPermissionSetsService for Service {
             "DownloadPermissionSets",
         )
     }
-}
-
-fn lookup_check(
-    state: &State,
-    resource: &Option<proto::ObjectReference>,
-    permission: &str,
-    subject: &Option<proto::SubjectReference>,
-) -> Result<i32, Status> {
-    let resource = protoconv::object_from_proto(required(resource.as_ref(), "resource")?)
-        .map_err(Status::from)?;
-    let subject = protoconv::subject_from_proto(required(subject.as_ref(), "subject")?)
-        .map_err(Status::from)?;
-    let permissionship = state
-        .checks
-        .get(&check_key(&resource, permission, &subject))
-        .cloned()
-        .unwrap_or(Permissionship::NoPermission);
-    use proto::check_permission_response::Permissionship as P;
-    Ok(match permissionship {
-        Permissionship::HasPermission => P::HasPermission,
-        Permissionship::ConditionalPermission => P::ConditionalPermission,
-        Permissionship::NoPermission => P::NoPermission,
-        _ => P::Unspecified,
-    } as i32)
 }
 
 #[cfg(test)]

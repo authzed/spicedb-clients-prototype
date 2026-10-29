@@ -15,7 +15,7 @@ manually modified. To populate them:
 buf export buf.build/authzed/api -o proto
 ```
 
-After exporting, `cargo build` invokes `build.rs` which uses `tonic-build` to
+After exporting, `cargo build` invokes `build.rs` which uses `tonic-prost-build` to
 generate Rust types from the proto files. The generated code lives in the
 `target/` directory (managed by Cargo) and is included via `tonic::include_proto!`.
 
@@ -45,13 +45,13 @@ to build with `google/protobuf/descriptor.proto: File not found`, while builds o
 machines that happened to have the files kept working. The vendored toolchain
 removes that ambient dependency; the `apt` protoc install in `rust.yaml` is now
 redundant. This client is the only one affected because it compiles protos with
-protoc/tonic-build; the others use `buf generate`, which has the well-known types
+protoc/tonic-prost-build; the others use `buf generate`, which has the well-known types
 built into buf's image.
 
 ## Build Steps
 
 1. `buf export buf.build/authzed/api -o proto` — download proto definitions
-2. `cargo build` — tonic-build generates Rust types from proto files
+2. `cargo build` — tonic-prost-build generates Rust types from proto files
 3. `cargo test` — run tests
 
 ## Additional Code (for Claude)
@@ -89,6 +89,27 @@ The `src/client.rs` file provides:
    `InsecureRemoteHostNotAllowed(String)` variant for a rejected combination
    and a `Transport(tonic::transport::Error)` variant for everything tonic
    itself can fail on.
+
+   Endpoint forms (root DESIGN.md, "Accept the endpoint forms deployments use,
+   or reject them at construction"): `host:port`, `http://host[:port]` and
+   `https://host[:port]` (scheme case-insensitive, one trailing `/` allowed).
+   A URL's scheme must agree with `insecure` (`http` with `true`, `https` with
+   `false`); the scheme is never prefixed a second time. Any other scheme, a
+   disagreeing one, userinfo, a path, a query, a non-numeric port or an
+   unparseable authority fails with `InvalidEndpoint(String)`, whose message
+   names the accepted forms. The loopback guard runs first on plaintext and
+   judges the URL's authority, so `http://127.0.0.1:50051` is loopback, while
+   authority-shifting endpoints still fail as `InsecureRemoteHostNotAllowed`.
+   `is_loopback_endpoint` accepts URLs too; `endpoint_scheme(endpoint)`
+   returns the `EndpointScheme` of a URL endpoint so the idiomatic builder can
+   let it select the transport.
+
+   `SpiceDBProtoClient::new_with_connect_mode(endpoint, token, insecure,
+   allow_insecure_remote_credentials, ConnectMode)` chooses when the channel
+   is dialed: `TransportDefault` (what `new_with_options` uses: TLS eager,
+   plaintext lazy), `Lazy` or `Eager`. `Eager` lets a plaintext client fail at
+   construction with `Transport` when the server is unreachable (root
+   DESIGN.md: lazy clients offer a startup readiness check).
 
 3. **`SpiceDBProtoClient::from_channel(channel, token: Option<&str>)`** —
    synchronous constructor over an existing tonic `Channel` (in-memory
@@ -144,10 +165,14 @@ is **not applicable** to Rust, and this tier ships no bridge generator:
 
 Root DESIGN.md, "Library modules declare the lowest dependency versions they
 actually need". `tonic` is declared with `default-features = false` and only
-`codegen`, `prost`, `channel`, `tls` and `tls-native-roots`, so consumers do not
-inherit tonic's server stack. tokio and tonic's `server` feature are
-dev-dependencies for the tests. tonic 0.12 / prost 0.13 / tonic-build 0.12 are
-one generation and move together. Build tooling (`tonic-build`, `glob`,
+`codegen`, `channel`, `tls-ring` and `tls-native-roots`, so consumers do not
+inherit tonic's server stack or router. The generated stubs use the prost codec
+from `tonic-prost`. tokio and tonic's `server` and `router` features are
+dev-dependencies for the tests. tonic 0.14 / tonic-prost 0.14 / prost 0.14 /
+tonic-prost-build 0.14 are one generation, the current one, and move together:
+an application on tonic 0.14 then links one tonic, prost, tower and hyper stack,
+and `tonic::Status`, `Channel` and `Code` values cross between it and these
+crates. Build tooling (`tonic-prost-build`, `glob`,
 `protoc-bin-vendored`) is a build-dependency only and the Magefile is a Go
 module outside the crate.
 

@@ -260,13 +260,53 @@ fn exact_filters_preserve_direct_named_and_any_without_widening() {
         .with_resource_id_prefix("prefix")
         .to_proto()
         .is_err());
-    for name in ["", "..."] {
-        assert!(Filter::new("document")
+    assert!(Filter::new("document")
+        .with_subject_type("user")
+        .with_subject_relation(SubjectRelationFilter::Named(String::new()))
+        .to_proto()
+        .is_err());
+    // `...` is SpiceDB's name for a direct subject: it means Direct, as tuple
+    // and proto parsing already read it.
+    let ellipsis = Filter::new("document")
+        .with_subject_type("user")
+        .with_subject_relation(SubjectRelationFilter::Named("...".into()));
+    assert_eq!(ellipsis.subject_relation(), &SubjectRelationFilter::Direct);
+    assert_eq!(
+        ellipsis.to_proto().unwrap(),
+        Filter::new("document")
             .with_subject_type("user")
-            .with_subject_relation(SubjectRelationFilter::Named(name.into()))
+            .with_subject_relation(SubjectRelationFilter::Direct)
             .to_proto()
-            .is_err());
-    }
+            .unwrap()
+    );
+}
+
+#[test]
+fn direct_subjects_are_one_call_and_ellipsis_means_direct() {
+    let user = ObjectRef::new("user", "alice").unwrap();
+    let direct = SubjectRef::new(user.clone(), None).unwrap();
+    assert_eq!(SubjectRef::direct(user.clone()), direct);
+    assert_eq!(SubjectRef::from(user.clone()), direct);
+    let into: SubjectRef = user.clone().into();
+    assert_eq!(into, direct);
+    assert_eq!(
+        SubjectRef::new(user.clone(), Some("...".into())).unwrap(),
+        direct
+    );
+    assert!(SubjectRef::new(user.clone(), Some(String::new())).is_err());
+    let members = SubjectRef::new(user, Some("member".into())).unwrap();
+    assert_eq!(members.relation(), Some("member"));
+    assert_eq!(
+        LookupSubjectsOptions::new()
+            .with_subject_relation("...")
+            .subject_relation,
+        None
+    );
+    let rel: Relationship = "document:1#viewer@user:alice".parse().unwrap();
+    assert!(Filter::new("document")
+        .with_subject_type("user")
+        .with_subject_relation(SubjectRelationFilter::Named("...".into()))
+        .matches(&rel));
 }
 #[test]
 fn recursive_tree_variants_are_exclusive_and_unknown_is_safe() {

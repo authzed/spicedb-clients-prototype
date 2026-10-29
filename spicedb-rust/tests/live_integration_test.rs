@@ -417,3 +417,38 @@ async fn all_or_nothing_delete_and_response_metadata() {
         captured.headers()
     );
 }
+
+/// The URL form deployments configure (`http://host:port`) reaches a real
+/// SpiceDB through the plain builder with an eager connect, and checks see a
+/// direct subject built with `into()`; the same eager connect to a closed port
+/// fails at startup.
+#[tokio::test]
+#[ignore = "requires a live SpiceDB server (see module docs)"]
+async fn http_url_endpoint_with_eager_connect_reaches_spicedb() {
+    let _guard = LIVE_LOCK.lock().await;
+    adoption_client().await;
+    let url = format!("http://{}", live_endpoint());
+    let client = SpiceDBClient::builder(&url, live_token())
+        .connect_mode(spicedb::ConnectMode::Eager)
+        .build()
+        .await
+        .unwrap_or_else(|e| panic!("{url} must connect: {e:?}"));
+    let viewer: spicedb::Relationship = "doc:url#viewer@user:alice".parse().unwrap();
+    let mut txn = Transaction::new();
+    txn.touch(&viewer);
+    let written = client.write(spicedb::WriteRequest::new(txn)).await.unwrap();
+    let check = spicedb::PermissionCheck::new(
+        viewer.resource().clone(),
+        "view",
+        spicedb::ObjectRef::new("user", "alice").unwrap().into(),
+        consistency::at_least(written.revision),
+    );
+    assert!(client.check(check).await.unwrap().has_permission());
+    cleanup(&client).await;
+
+    let down = SpiceDBClient::builder("http://127.0.0.1:1", live_token())
+        .connect_mode(spicedb::ConnectMode::Eager)
+        .build()
+        .await;
+    assert!(matches!(down, Err(spicedb::SpiceDBError::Transport(_))));
+}

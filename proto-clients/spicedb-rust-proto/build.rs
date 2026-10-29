@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build both client and server stubs. The server stubs are required so
     // that the idiomatic clients can stand up in-process mock gRPC servers in
     // their test suites (e.g. a mock WatchService to exercise streaming).
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(true)
         .compile_protos(&proto_files, &include_dirs)?;
 

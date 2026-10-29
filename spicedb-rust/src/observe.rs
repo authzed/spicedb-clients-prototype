@@ -249,6 +249,9 @@ impl Filter {
         match &self.subject_relation {
             SubjectRelationFilter::Any => true,
             SubjectRelationFilter::Direct => relationship.subject_relation().is_none(),
+            SubjectRelationFilter::Named(n) if n == "..." => {
+                relationship.subject_relation().is_none()
+            }
             SubjectRelationFilter::Named(n) => relationship.subject_relation() == Some(n.as_str()),
         }
     }

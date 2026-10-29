@@ -34,8 +34,82 @@ pub enum SpiceDBProtoClientError {
     /// unwind here aborts the task carrying it (or the process, under
     /// `panic = "abort"`).
     InvalidToken(String),
-    /// A tonic transport-level error (invalid URI, TLS/connect failure).
+    /// Refused because `endpoint` is not one of the accepted forms --
+    /// `host:port`, `http://host[:port]` or `https://host[:port]` -- or because
+    /// its URL scheme disagrees with the transport the caller chose (`http://`
+    /// with TLS, `https://` with `insecure`). Raised at construction, so an
+    /// endpoint never builds a client whose every call fails. The message
+    /// names the expected format.
+    InvalidEndpoint(String),
+    /// A tonic transport-level error (TLS/connect failure).
     Transport(tonic::transport::Error),
+}
+
+/// The URL scheme of an endpoint given as a URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EndpointScheme {
+    /// `http://`: plaintext.
+    Http,
+    /// `https://`: TLS.
+    Https,
+}
+
+/// When a constructor dials the endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConnectMode {
+    /// TLS connects at construction (the handshake validates the server);
+    /// plaintext connects on the first call.
+    #[default]
+    TransportDefault,
+    /// Connect on the first call, so construction succeeds while the server
+    /// is down.
+    Lazy,
+    /// Connect at construction, so an unreachable or wrong endpoint fails
+    /// with [`SpiceDBProtoClientError::Transport`] there.
+    Eager,
+}
+
+const ENDPOINT_FORMS: &str =
+    "expected host:port, http://host[:port] (plaintext) or https://host[:port] (TLS)";
+
+fn invalid_endpoint(endpoint: &str, reason: &str) -> SpiceDBProtoClientError {
+    SpiceDBProtoClientError::InvalidEndpoint(format!(
+        "spicedb: invalid endpoint \"{endpoint}\": {reason}; {ENDPOINT_FORMS}"
+    ))
+}
+
+/// Splits a URL endpoint into its scheme and the rest. `Ok(None)` for an
+/// endpoint without `://` (the `host:port` form). The scheme is matched
+/// case-insensitively; any scheme other than `http` and `https` is an error.
+/// One trailing `/` after the authority is accepted, as deployment URLs often
+/// carry one.
+fn split_scheme(endpoint: &str) -> Result<Option<(EndpointScheme, &str)>, SpiceDBProtoClientError> {
+    let Some((scheme, rest)) = endpoint.split_once("://") else {
+        return Ok(None);
+    };
+    let scheme = if scheme.eq_ignore_ascii_case("http") {
+        EndpointScheme::Http
+    } else if scheme.eq_ignore_ascii_case("https") {
+        EndpointScheme::Https
+    } else {
+        return Err(invalid_endpoint(
+            endpoint,
+            &format!("unsupported scheme \"{scheme}\""),
+        ));
+    };
+    Ok(Some((scheme, rest.strip_suffix('/').unwrap_or(rest))))
+}
+
+/// The scheme of an endpoint written as an `http://` or `https://` URL, or
+/// `None` for the `host:port` form (and for anything construction rejects).
+/// The idiomatic client uses it to let the scheme select plaintext or TLS.
+pub fn endpoint_scheme(endpoint: &str) -> Option<EndpointScheme> {
+    split_scheme(endpoint)
+        .ok()
+        .flatten()
+        .map(|(scheme, _)| scheme)
 }
 
 impl fmt::Display for SpiceDBProtoClientError {
@@ -44,6 +118,7 @@ impl fmt::Display for SpiceDBProtoClientError {
             Self::InsecureRemoteHostNotAllowed(msg) => write!(f, "{msg}"),
             Self::UnixSocketNotSupported(msg) => write!(f, "{msg}"),
             Self::InvalidToken(msg) => write!(f, "{msg}"),
+            Self::InvalidEndpoint(msg) => write!(f, "{msg}"),
             Self::Transport(e) => write!(f, "{e}"),
         }
     }
@@ -54,7 +129,8 @@ impl std::error::Error for SpiceDBProtoClientError {
         match self {
             Self::InsecureRemoteHostNotAllowed(_)
             | Self::UnixSocketNotSupported(_)
-            | Self::InvalidToken(_) => None,
+            | Self::InvalidToken(_)
+            | Self::InvalidEndpoint(_) => None,
             Self::Transport(e) => Some(e),
         }
     }
@@ -132,7 +208,20 @@ fn transport_authority(endpoint: &str) -> String {
 /// Never performs a DNS lookup: `str::parse::<IpAddr>` is pure parsing (no
 /// I/O either way), so a real remote hostname is simply rejected as "not
 /// an IP" and treated as non-loopback.
+///
+/// An `http://` or `https://` URL is judged by its authority (the host the
+/// transport dials), so `http://127.0.0.1:50051` is loopback; any other
+/// scheme is not.
 pub fn is_loopback_endpoint(endpoint: &str) -> bool {
+    match split_scheme(endpoint) {
+        Ok(Some((_, authority))) => is_loopback_authority(authority),
+        Ok(None) => is_loopback_authority(endpoint),
+        Err(_) => false,
+    }
+}
+
+/// [`is_loopback_endpoint`] for an endpoint without a scheme.
+fn is_loopback_authority(endpoint: &str) -> bool {
     // There is deliberately no "unix:" exemption here -- see the doc comment
     // above, and the unconditional refusal in new_with_options below.
 
@@ -290,6 +379,34 @@ impl SpiceDBProtoClient {
         insecure: bool,
         allow_insecure_remote_credentials: bool,
     ) -> Result<Self, SpiceDBProtoClientError> {
+        Self::new_with_connect_mode(
+            endpoint,
+            token,
+            insecure,
+            allow_insecure_remote_credentials,
+            ConnectMode::TransportDefault,
+        )
+        .await
+    }
+
+    /// As [`new_with_options`](Self::new_with_options), choosing when the
+    /// endpoint is dialed. [`ConnectMode::Eager`] makes a plaintext client
+    /// fail at construction when the server is unreachable.
+    ///
+    /// `endpoint` is `host:port`, `http://host[:port]` or
+    /// `https://host[:port]`. A URL's scheme must agree with `insecure`
+    /// (`http` with `true`, `https` with `false`); any other scheme, a
+    /// disagreeing one, or an endpoint that is not a bare authority (userinfo,
+    /// a path, a query) fails with
+    /// [`SpiceDBProtoClientError::InvalidEndpoint`]. The loopback check runs on
+    /// the URL's host.
+    pub async fn new_with_connect_mode(
+        endpoint: &str,
+        token: &str,
+        insecure: bool,
+        allow_insecure_remote_credentials: bool,
+        connect: ConnectMode,
+    ) -> Result<Self, SpiceDBProtoClientError> {
         // Refused unconditionally -- ahead of the credential guard below, and
         // regardless of TLS or of allow_insecure_remote_credentials -- because
         // this transport cannot do what such an endpoint asks for. tonic's
@@ -323,7 +440,30 @@ impl SpiceDBProtoClient {
         // other language bindings do, so nothing else here stops a bearer
         // token from reaching an arbitrary insecure host. Refuse before any
         // Endpoint, TLS config, or channel is created.
-        if insecure && !allow_insecure_remote_credentials && !is_loopback_endpoint(endpoint) {
+        //
+        // A URL endpoint's scheme selects the transport, so it must agree
+        // with the one the caller chose; never prefix a second scheme. The
+        // guard and the dialer below both use the authority split off here.
+        let authority = match split_scheme(endpoint)? {
+            Some((EndpointScheme::Http, _)) if !insecure => {
+                return Err(invalid_endpoint(
+                    endpoint,
+                    "http:// selects plaintext, but this client was configured for TLS",
+                ))
+            }
+            Some((EndpointScheme::Https, _)) if insecure => {
+                return Err(invalid_endpoint(
+                    endpoint,
+                    "https:// selects TLS, but this client was configured for plaintext",
+                ))
+            }
+            Some((_, authority)) => authority,
+            None => endpoint,
+        };
+        if authority.is_empty() {
+            return Err(invalid_endpoint(endpoint, "no host"));
+        }
+        if insecure && !allow_insecure_remote_credentials && !is_loopback_authority(authority) {
             return Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(
                 format!(
                 "spicedb: refusing to send credentials over an insecure (plaintext) connection to \
@@ -338,12 +478,41 @@ impl SpiceDBProtoClient {
         // be bracketed to be a legal URI authority, and it is the same
         // function the guard above vetted, so the two cannot disagree about
         // where this connection goes.
-        let authority = transport_authority(endpoint);
+        let authority = transport_authority(authority);
         let uri = if insecure {
             format!("http://{}", authority)
         } else {
             format!("https://{}", authority)
         };
+
+        // Parse once, here, and refuse anything that is not a bare authority
+        // rather than letting the transport dial something else or accept an
+        // endpoint whose every call then fails. Endpoint::from_shared would
+        // accept a path or query and route every RPC under it.
+        let parsed: Uri = uri
+            .parse()
+            .map_err(|_| invalid_endpoint(endpoint, "not a valid host and port"))?;
+        if authority.contains('@') {
+            return Err(invalid_endpoint(endpoint, "userinfo is not supported"));
+        }
+        if parsed.host().is_none_or(str::is_empty) {
+            return Err(invalid_endpoint(endpoint, "no host"));
+        }
+        // The URI grammar admits any port text; a port must be a number.
+        let after_host = authority
+            .rsplit_once(']')
+            .map_or(authority.as_str(), |(_, p)| p);
+        if let Some((_, port)) = after_host.rsplit_once(':') {
+            if port.parse::<u16>().is_err() {
+                return Err(invalid_endpoint(endpoint, "the port is not a number"));
+            }
+        }
+        if !matches!(parsed.path(), "" | "/") || parsed.query().is_some() {
+            return Err(invalid_endpoint(
+                endpoint,
+                "a path or query is not supported",
+            ));
+        }
 
         let mut ep = Endpoint::from_shared(uri)?;
 
@@ -355,14 +524,19 @@ impl SpiceDBProtoClient {
             ep = ep.tls_config(ClientTlsConfig::new().with_native_roots())?;
         }
 
-        // Use connect_lazy for insecure (plaintext) connections so that client
-        // construction succeeds even when no server is running.  For TLS
-        // connections, a real handshake is needed to validate certs, so we
-        // keep the eager connect() path there.
-        let channel = if insecure {
-            ep.connect_lazy()
-        } else {
+        // By default plaintext connects lazily so that client construction
+        // succeeds even when no server is running, and TLS connects eagerly
+        // because a real handshake validates the certificate. ConnectMode
+        // overrides either: Eager lets a plaintext client fail at startup.
+        let eager = match connect {
+            ConnectMode::Eager => true,
+            ConnectMode::Lazy => false,
+            ConnectMode::TransportDefault => !insecure,
+        };
+        let channel = if eager {
             ep.connect().await?
+        } else {
+            ep.connect_lazy()
         };
 
         let bearer = bearer_token(token)?;

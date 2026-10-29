@@ -273,6 +273,9 @@ mod insecure_host_guard {
             Err(other @ SpiceDBProtoClientError::UnixSocketNotSupported(_)) => {
                 panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
             }
+            Err(other @ SpiceDBProtoClientError::InvalidEndpoint(_)) => {
+                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
+            }
             Err(SpiceDBProtoClientError::Transport(e)) => panic!(
                 "expected InsecureRemoteHostNotAllowed (proving the guard ran before any \
                  URI/transport work), but got a Transport error instead -- meaning control reached \
@@ -363,6 +366,9 @@ mod insecure_host_guard {
                 panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
             }
             Err(other @ SpiceDBProtoClientError::UnixSocketNotSupported(_)) => {
+                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
+            }
+            Err(other @ SpiceDBProtoClientError::InvalidEndpoint(_)) => {
                 panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
             }
             Err(SpiceDBProtoClientError::Transport(e)) => panic!(
@@ -540,5 +546,154 @@ mod insecure_host_guard {
             result,
             Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_))
         ));
+    }
+
+    /// `http://` and `https://` URLs are accepted, and the loopback check runs
+    /// on the URL's host: `http://127.0.0.1` used to be judged as a whole
+    /// string, so the `/` made it "remote".
+    #[test]
+    fn is_loopback_endpoint_judges_a_url_by_its_host() {
+        for endpoint in [
+            "http://127.0.0.1:50051",
+            "http://localhost:50051/",
+            "HTTP://[::1]:50051",
+            "https://localhost",
+        ] {
+            assert!(is_loopback_endpoint(endpoint), "{endpoint}");
+        }
+        for endpoint in [
+            "http://spicedb:50051",
+            "http://127.0.0.1:443@evil.com",
+            "http://localhost/../evil.com",
+            "http://localhost:50051/path",
+            "grpc://127.0.0.1:50051",
+            "http://",
+        ] {
+            assert!(!is_loopback_endpoint(endpoint), "{endpoint}");
+        }
+    }
+
+    /// A loopback `http://` URL connects as plaintext with no opt-in and
+    /// reaches the server; the scheme is not prefixed a second time.
+    #[tokio::test]
+    async fn loopback_http_url_connects_as_plaintext() {
+        for form in ["http://{addr}", "http://{addr}/", "HTTP://{addr}"] {
+            let (addr, mut rx) = start_capturing_server().await;
+            let endpoint = form.replace("{addr}", &addr.to_string());
+            let client = SpiceDBProtoClient::new(&endpoint, "test-token", true)
+                .await
+                .unwrap_or_else(|e| panic!("{endpoint:?} must construct: {e}"));
+            let mut schema = client.schema.clone();
+            let _ = schema.read_schema(ReadSchemaRequest {}).await;
+            let got = rx.recv().await.expect("server must have observed a call");
+            assert_eq!(got, Some("Bearer test-token".to_string()), "{endpoint}");
+        }
+    }
+
+    /// A remote `http://` URL is refused at construction under the default
+    /// policy, naming the endpoint, and permitted with the opt-in.
+    #[tokio::test]
+    async fn remote_http_url_requires_the_opt_in() {
+        let result =
+            SpiceDBProtoClient::new_with_options("http://spicedb:50051", "t", true, false).await;
+        match result {
+            Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)) => {
+                assert!(msg.contains("http://spicedb:50051"), "{msg}");
+            }
+            other => panic!(
+                "expected InsecureRemoteHostNotAllowed, got {:?}",
+                other.err()
+            ),
+        }
+        let result =
+            SpiceDBProtoClient::new_with_options("http://192.0.2.1:1234", "t", true, true).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    /// An unsupported scheme, a scheme that disagrees with the transport, or
+    /// an endpoint that is not a bare authority fails at construction with an
+    /// error naming the expected format -- whatever the transport and opt-in,
+    /// and before anything is dialed.
+    #[tokio::test]
+    async fn rejects_other_endpoint_forms_at_construction() {
+        for (endpoint, insecure, allow_remote) in [
+            ("grpc://127.0.0.1:50051", true, false),
+            ("dns:///spicedb:50051", false, false),
+            ("http://127.0.0.1:50051", false, false),
+            ("https://127.0.0.1:50051", true, false),
+            ("https://127.0.0.1:50051", true, true),
+            ("http://", true, true),
+            ("https://", false, false),
+            ("https://spicedb.example.com:443/v1", false, false),
+            ("https://spicedb.example.com:443?x=1", false, false),
+            ("https://user@spicedb.example.com:443", false, false),
+            ("http://127.0.0.1:443@evil.com", true, true),
+            ("spicedb.example.com:notaport", false, false),
+            ("spicedb example.com:443", false, false),
+        ] {
+            let result =
+                SpiceDBProtoClient::new_with_options(endpoint, "t", insecure, allow_remote).await;
+            match result {
+                Err(SpiceDBProtoClientError::InvalidEndpoint(msg)) => {
+                    assert!(msg.contains(endpoint), "{msg}");
+                    assert!(msg.contains("host:port"), "{msg}");
+                    assert!(msg.contains("https://"), "{msg}");
+                }
+                other => panic!(
+                    "expected InvalidEndpoint for {endpoint:?} (insecure={insecure}, \
+                     allow_remote={allow_remote}), got {:?}",
+                    other.err()
+                ),
+            }
+        }
+    }
+
+    /// An `https://` URL uses TLS: against a plaintext server the (eager) TLS
+    /// handshake fails, instead of the call going out in cleartext.
+    #[tokio::test]
+    async fn https_url_uses_tls() {
+        let (addr, mut rx) = start_capturing_server().await;
+        let result =
+            SpiceDBProtoClient::new_with_options(&format!("https://{addr}"), "t", false, false)
+                .await;
+        assert!(
+            matches!(result, Err(SpiceDBProtoClientError::Transport(_))),
+            "a TLS handshake against a plaintext server must fail: {:?}",
+            result.err()
+        );
+        assert!(rx.try_recv().is_err(), "no RPC may reach the server");
+    }
+
+    /// Plaintext connects lazily by default, so a closed port constructs;
+    /// `ConnectMode::Eager` makes the same endpoint fail at construction.
+    #[tokio::test]
+    async fn eager_connect_fails_at_construction_for_an_unreachable_server() {
+        use spicedb_proto::ConnectMode;
+        let lazy = SpiceDBProtoClient::new("127.0.0.1:1", "t", true).await;
+        assert!(lazy.is_ok(), "{:?}", lazy.err());
+        let eager = SpiceDBProtoClient::new_with_connect_mode(
+            "http://127.0.0.1:1",
+            "t",
+            true,
+            false,
+            ConnectMode::Eager,
+        )
+        .await;
+        assert!(
+            matches!(eager, Err(SpiceDBProtoClientError::Transport(_))),
+            "{:?}",
+            eager.err()
+        );
+
+        let (addr, _rx) = start_capturing_server().await;
+        let reachable = SpiceDBProtoClient::new_with_connect_mode(
+            &addr.to_string(),
+            "t",
+            true,
+            false,
+            ConnectMode::Eager,
+        )
+        .await;
+        assert!(reachable.is_ok(), "{:?}", reachable.err());
     }
 }

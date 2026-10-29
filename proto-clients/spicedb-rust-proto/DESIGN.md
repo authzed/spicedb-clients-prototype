@@ -90,6 +90,27 @@ The `src/client.rs` file provides:
    and a `Transport(tonic::transport::Error)` variant for everything tonic
    itself can fail on.
 
+   Endpoint forms (root DESIGN.md, "Accept the endpoint forms deployments use,
+   or reject them at construction"): `host:port`, `http://host[:port]` and
+   `https://host[:port]` (scheme case-insensitive, one trailing `/` allowed).
+   A URL's scheme must agree with `insecure` (`http` with `true`, `https` with
+   `false`); the scheme is never prefixed a second time. Any other scheme, a
+   disagreeing one, userinfo, a path, a query, a non-numeric port or an
+   unparseable authority fails with `InvalidEndpoint(String)`, whose message
+   names the accepted forms. The loopback guard runs first on plaintext and
+   judges the URL's authority, so `http://127.0.0.1:50051` is loopback, while
+   authority-shifting endpoints still fail as `InsecureRemoteHostNotAllowed`.
+   `is_loopback_endpoint` accepts URLs too; `endpoint_scheme(endpoint)`
+   returns the `EndpointScheme` of a URL endpoint so the idiomatic builder can
+   let it select the transport.
+
+   `SpiceDBProtoClient::new_with_connect_mode(endpoint, token, insecure,
+   allow_insecure_remote_credentials, ConnectMode)` chooses when the channel
+   is dialed: `TransportDefault` (what `new_with_options` uses: TLS eager,
+   plaintext lazy), `Lazy` or `Eager`. `Eager` lets a plaintext client fail at
+   construction with `Transport` when the server is unreachable (root
+   DESIGN.md: lazy clients offer a startup readiness check).
+
 3. **`SpiceDBProtoClient::from_channel(channel, token: Option<&str>)`** —
    synchronous constructor over an existing tonic `Channel` (in-memory
    `connect_with_connector` channels, buffered listeners, embedded servers).

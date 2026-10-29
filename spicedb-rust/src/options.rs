@@ -269,6 +269,21 @@ impl fmt::Display for Operation {
     }
 }
 
+/// When [`SpiceDBClientBuilder::build`](crate::SpiceDBClientBuilder::build)
+/// dials the endpoint. Without a choice, TLS connects at construction (the
+/// handshake validates the server) and plaintext on the first call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConnectMode {
+    /// Connect on the first call: construction succeeds while SpiceDB is
+    /// down or the endpoint is wrong, and calls fail until it is reachable.
+    Lazy,
+    /// Connect during `build`, so an unreachable or wrong endpoint fails
+    /// there with [`SpiceDBError::Transport`](crate::SpiceDBError::Transport)
+    /// and a service can refuse to start.
+    Eager,
+}
+
 /// Whether unary operations get the client's default deadline when no
 /// per-call timeout is set.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -68,7 +68,7 @@ Tools with their own policy should not stack it on the client's:
 c, err := client.NewPlaintext(endpoint, key,
     client.WithDefaultDeadline(client.DefaultDeadlineDisabled), // no 30s budget
     client.WithRetries(client.RetriesDisabled),                  // or WithRetryPolicy(...)
-    client.WithStreamRetries(client.StreamRetriesDisabled))     // e.g. never reopen Watch
+    client.WithStreamRetries(client.StreamRetriesDisabled))     // open each read stream once
 ```
 
 ## Checks
@@ -111,14 +111,16 @@ other schema reads. Where your raw requests left consistency unset, pass
 Disable or replace the client's policy client-wide (`WithRetries`,
 `WithRetryPolicy`), and override it per call with
 `client.WithCallRetryPolicy[O](policy)`: for example `RetryPolicy{}` on one
-`Updates` call to never reopen a supervised watch, or a policy on a touch-only
+read to open it exactly once, or a policy on a touch-only
 `Write` or a `WriteSchema` to retry those idempotent writes. Other mutations
 reject the opt-in. To apply a rule to every call of an operation, set it once
-on the client:
+on the client. The client-wide policy never reopens a watch (an unpinned
+reopen would skip changes); a watch policy opts in, losslessly when every
+`Updates` call pins `WithUpdatesStart`:
 
 ```go
 c, err := client.NewSystemTLS(endpoint, key,
-    client.WithOperationRetryPolicy[client.UpdatesOption](client.RetryPolicy{}), // never reopen watches
+    client.WithOperationRetryPolicy[client.UpdatesOption](myPolicy), // reopen watches before their first event
     client.WithOperationRetryPolicy[client.WriteOption](myPolicy))               // retries idempotent writes only
 ```
 

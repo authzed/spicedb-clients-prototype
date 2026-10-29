@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Paged reads and lookups send the page size as every request's limit,
+  whatever the total limit, so a cursor from a limited call resumes an
+  unlimited one with the same page size.
+- The client-wide retry policy no longer reopens a watch that fails before its
+  first event (a reopened watch with no start revision skips changes); a
+  per-call or per-operation policy for watch opts in.
+- Retry backoff bounds no longer overflow for large attempt counts.
 - `client.Interface` mirrors `*client.Client`'s method set; `clienttest.Store`
   implements all of it (unsupported operations are recorded and fail with
   `CodeUnimplemented`; `CheckIter`, `DeleteAllRelationshipsNonAtomic` and

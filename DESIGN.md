@@ -263,6 +263,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     transaction type, so callers decide eligibility with the client's own rule. Stream-establishment retry has its own named
     setting, so long-lived streams like watch can opt out. No configuration can
     make a mutation replay.
+  - The client-wide policy, default included, never reopens a watch: a reopened
+    watch with no start revision begins later and silently skips the changes in
+    between. Only a per-call or per-operation policy for watch opts in.
 
 ## Streams and ownership
 
@@ -296,7 +299,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     page size. SpiceDB hashes request arguments, including consistency and
     limit, into each cursor and rejects a cursor sent with different arguments;
     the cursor itself pins later pages to the first page's revision. Enforce a
-    total limit client-side rather than by shrinking the last page's limit.
+    total limit client-side rather than by shrinking any page's limit, so the
+    wire limit is the page size alone and a cursor from a limited call resumes
+    an unlimited one.
     Live tests must read across more than one page.
   - A named single-request mode sends exactly one request, as the raw API does:
     its limit is the total limit or unbounded, and no follow-up page is fetched.

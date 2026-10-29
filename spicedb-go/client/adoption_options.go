@@ -1,6 +1,7 @@
 package client
 
 import (
+	"math"
 	"reflect"
 	"time"
 
@@ -273,8 +274,8 @@ const (
 	// StreamRetriesEnabled retries stream establishment with the retry
 	// policy. This is the default.
 	StreamRetriesEnabled StreamRetries = iota
-	// StreamRetriesDisabled opens each stream once, e.g. so a watch that the
-	// caller supervises is never reopened by the client.
+	// StreamRetriesDisabled opens each stream once, e.g. for reads the caller
+	// retries itself. (The client-wide policy never reopens a watch either way.)
 	StreamRetriesDisabled
 )
 
@@ -307,15 +308,28 @@ func (p RetryPolicy) retryable(err error) bool {
 	return false
 }
 
+// delayBound is InitialBackoff doubled per attempt, capped at MaxBackoff
+// (or, with no MaxBackoff, at 2^20 times InitialBackoff), without overflowing.
 func (p RetryPolicy) delayBound(attempt int) time.Duration {
-	d := p.InitialBackoff << attempt
-	if d <= 0 || (p.MaxBackoff > 0 && d > p.MaxBackoff) {
-		if p.MaxBackoff > 0 {
-			return p.MaxBackoff
+	ceiling := p.MaxBackoff
+	if ceiling <= 0 {
+		ceiling = math.MaxInt64
+		if p.InitialBackoff > 0 && p.InitialBackoff <= math.MaxInt64>>20 {
+			ceiling = p.InitialBackoff << 20
 		}
-		return p.InitialBackoff << 20
 	}
-	return d
+	if p.InitialBackoff <= 0 {
+		return 0
+	}
+	d := p.InitialBackoff
+	for i := 0; i < attempt && d < ceiling; i++ {
+		if d > ceiling/2 {
+			d = ceiling
+			break
+		}
+		d *= 2
+	}
+	return min(d, ceiling)
 }
 
 // retrySettings is the retry behavior for one operation.
@@ -388,10 +402,10 @@ var neverReplayable = map[reflect.Type]string{
 // WithOperationRetryPolicy sets the retry policy for every call of one
 // operation, identified by its option type, for example
 //
-//	client.WithOperationRetryPolicy[client.UpdatesOption](client.RetryPolicy{})
+//	client.WithOperationRetryPolicy[client.ReadRelationshipsOption](client.RetryPolicy{})
 //
-// so watches are never reopened while other operations keep the client's
-// policy. A per-call WithCallRetryPolicy still wins. For WriteOption the
+// so reads are opened exactly once while other operations keep the client's
+// policy (a watch policy, conversely, opts watches in to reopening). A per-call WithCallRetryPolicy still wins. For WriteOption the
 // policy applies only to writes that are idempotent on replay
 // (rel.Txn.IsIdempotent); other writes are not retried. Operations that are
 // never idempotent (deletes, delete-all, imports, counter registration)
@@ -448,15 +462,13 @@ func WithLookupResourcesPaging(mode Paging) LookupResourcesOption {
 }
 
 // pageRequestLimit is the OptionalLimit every request of a paged read sends:
-// fixed for the whole call (SpiceDB rejects a cursor sent with a different
-// limit), capped by the total limit, and the total limit alone (0 meaning
-// unbounded) in single-request mode.
+// the page size alone, fixed for the whole call and independent of the total
+// limit (SpiceDB rejects a cursor sent with a different limit, so a cursor
+// from a limited call must resume an unlimited one with the same page size),
+// and the total limit alone (0 meaning unbounded) in single-request mode.
 func (o operationOptions) pageRequestLimit() uint32 {
 	if o.singleRequest {
 		return uint32(min(o.limit, uint64(^uint32(0))))
-	}
-	if o.limit > 0 {
-		return uint32(min(uint64(o.pageSize), o.limit))
 	}
 	return o.pageSize
 }

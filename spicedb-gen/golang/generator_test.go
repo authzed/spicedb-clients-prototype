@@ -263,10 +263,10 @@ func TestToLowerCamel(t *testing.T) {
 }
 
 func TestGoSubjectRefTypeName(t *testing.T) {
-	assert.Equal(t, "UserRef", goSubjectRefTypeName(schema.SubjectType{Definition: "user"}))
-	assert.Equal(t, "TeamMemberRef", goSubjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member"}))
-	assert.Equal(t, "UserIpRange", goSubjectRefTypeName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
-	assert.Equal(t, "UserExpiring", goSubjectRefTypeName(schema.SubjectType{Definition: "user", Expiration: true}))
+	assert.Equal(t, "UserRef", renamer(nil).goSubjectRefTypeName(schema.SubjectType{Definition: "user"}))
+	assert.Equal(t, "TeamMemberRef", renamer(nil).goSubjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member"}))
+	assert.Equal(t, "UserIpRange", renamer(nil).goSubjectRefTypeName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
+	assert.Equal(t, "UserExpiring", renamer(nil).goSubjectRefTypeName(schema.SubjectType{Definition: "user", Expiration: true}))
 }
 
 func TestCelTypeToGoType(t *testing.T) {

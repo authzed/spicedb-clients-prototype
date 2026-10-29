@@ -287,6 +287,9 @@ func PermissionTreeToProto(t client.PermissionTree) *v1.PermissionRelationshipTr
 }
 
 // CheckRequestToProto converts a native permission check to a bulk request item.
+// It encodes the check's own Context only: CheckBulk merges WithCheckContext
+// defaults into each item before sending, so to reproduce the items the
+// server saw, merge those defaults into Context first.
 func CheckRequestToProto(c client.PermissionCheck) (*v1.CheckBulkPermissionsRequestItem, error) {
 	ctx, err := conv.ContextStruct(c.Context)
 	if err != nil {
@@ -302,7 +305,8 @@ func CheckRequestToProto(c client.PermissionCheck) (*v1.CheckBulkPermissionsRequ
 // message: one pair per item, carrying either the item's result or, for a
 // result with Err set (WithBulkItemErrors(ItemErrorsReturned)), its status.
 // The response's checked-at is the last item's revision; CheckBulk may span
-// several requests, each with its own revision.
+// several requests, each with its own revision. Request items carry each
+// check's own Context, as CheckRequestToProto does.
 func CheckBulkToProto(requests []client.PermissionCheck, results []client.CheckResult) (*v1.CheckBulkPermissionsResponse, error) {
 	if len(requests) != len(results) {
 		return nil, fmt.Errorf("check bulk: %d requests but %d results", len(requests), len(results))

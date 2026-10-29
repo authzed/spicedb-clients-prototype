@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -229,13 +230,30 @@ func TestRetryPolicyIsConfigurable(t *testing.T) {
 }
 
 func TestStreamRetriesCanBeDisabled(t *testing.T) {
+	policy := RetryPolicy{MaxRetries: 3, RetryableCodes: []ErrorCode{CodeUnavailable}, InitialBackoff: time.Millisecond}
 	srv := &adoptionServer{}
-	c := newAdoptionClient(t, srv, WithRetryPolicy(RetryPolicy{MaxRetries: 3, RetryableCodes: []ErrorCode{CodeUnavailable}, InitialBackoff: time.Millisecond}))
+	c := newAdoptionClient(t, srv, WithRetryPolicy(policy))
+	for _, err := range c.Updates(context.Background(), UpdatesRequest{}) {
+		require.ErrorIs(t, err, ErrUnavailable)
+		break
+	}
+	require.EqualValues(t, 1, srv.watchCalls.Load(), "the client-wide policy never reopens a watch: an unpinned reopen would skip changes")
+
+	srv = &adoptionServer{}
+	c = newAdoptionClient(t, srv, WithRetryPolicy(policy))
+	for _, err := range c.Updates(context.Background(), UpdatesRequest{}, WithCallRetryPolicy[UpdatesOption](policy)) {
+		require.NoError(t, err)
+		break
+	}
+	require.EqualValues(t, 2, srv.watchCalls.Load(), "a per-call policy opts the watch in to reopening")
+
+	srv = &adoptionServer{}
+	c = newAdoptionClient(t, srv, WithOperationRetryPolicy[UpdatesOption](policy))
 	for _, err := range c.Updates(context.Background(), UpdatesRequest{}) {
 		require.NoError(t, err)
 		break
 	}
-	require.EqualValues(t, 2, srv.watchCalls.Load(), "enabled: the failed open is retried")
+	require.EqualValues(t, 2, srv.watchCalls.Load(), "a per-operation policy opts every watch in to reopening")
 
 	srv = &adoptionServer{}
 	c = newAdoptionClient(t, srv, WithStreamRetries(StreamRetriesDisabled))
@@ -514,4 +532,28 @@ func TestOperationRetryPolicy(t *testing.T) {
 	_, err = newAdoptionClient(t, srv).ReadSchema(ctx, ReadSchemaRequest{}, noRetry[ReadSchemaOption]())
 	require.Error(t, err)
 	require.EqualValues(t, 1, srv.readSchema.Load())
+}
+
+func TestDelayBoundNeverOverflows(t *testing.T) {
+	p := RetryPolicy{MaxRetries: 100, InitialBackoff: 100 * time.Millisecond}
+	prev := time.Duration(0)
+	for attempt := 0; attempt <= 100; attempt++ {
+		d := p.delayBound(attempt)
+		require.Positive(t, d, "attempt %d", attempt)
+		require.GreaterOrEqual(t, d, prev, "attempt %d: the bound never shrinks", attempt)
+		require.LessOrEqual(t, d, p.InitialBackoff<<20, "attempt %d: capped with no MaxBackoff", attempt)
+		prev = d
+	}
+	capped := RetryPolicy{MaxRetries: 100, InitialBackoff: time.Second, MaxBackoff: 5 * time.Second}
+	require.Equal(t, 5*time.Second, capped.delayBound(63))
+	require.Equal(t, 5*time.Second, capped.delayBound(1000))
+	require.Equal(t, time.Duration(math.MaxInt64), RetryPolicy{InitialBackoff: math.MaxInt64 / 2}.delayBound(70))
+}
+
+func TestPageRequestLimitIsThePageSizeWhateverTheTotalLimit(t *testing.T) {
+	limited := operationOptions{pageSize: 512, limit: 100}
+	unlimited := operationOptions{pageSize: 512}
+	require.Equal(t, unlimited.pageRequestLimit(), limited.pageRequestLimit(),
+		"a cursor from a limited call must resume an unlimited one with the same page size")
+	require.EqualValues(t, 100, operationOptions{singleRequest: true, limit: 100}.pageRequestLimit())
 }

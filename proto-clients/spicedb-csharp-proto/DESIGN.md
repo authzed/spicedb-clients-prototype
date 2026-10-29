@@ -74,12 +74,18 @@ Create a `Client.cs` file in the package root with:
    opt-in", for why a hand-rolled split is prohibited here. `internal` so the guard tests
    can drive it directly.
 
-7. **`TransitiveProtoStubs.cs`** — stub types for transitive proto dependencies that the
-   buf-generated descriptor registrations reference (`Buf.Validate`,
-   `Grpc.Gateway.ProtocGenOpenapiv2.Options`, and similar). Metadata only, never called at
-   runtime. It exists so the project builds without BSR NuGet authentication or packages
-   that do not exist on nuget.org. Hand-written, but not to be edited except when buf's
-   output starts or stops referencing such a dependency.
+7. **`TransitiveProtoStubs.cs`** — stub descriptors for transitive proto dependencies that
+   the buf-generated descriptor registrations reference (`buf/validate/validate.proto`,
+   `validate/validate.proto`, and the openapiv2 `annotations.proto`/`openapiv2.proto`).
+   The SpiceDB protos use them only as custom options, so each stub is an otherwise empty
+   `FileDescriptorProto` that **must carry the dependency's real file name and package**
+   (and its own dependencies), built once and cached. The descriptor pool keys files by
+   name: stubs built from empty bytes all had the name `""`, collided, and made every
+   SpiceDB descriptor throw `TypeInitializationException`, which broke `ToString()`,
+   `JsonFormatter` and `.Descriptor` for every message. It exists so the project builds
+   without BSR NuGet authentication or packages that do not exist on nuget.org.
+   Hand-written, but not to be edited except when buf's output starts or stops referencing
+   such a dependency.
 
 9. **Constructor: `SpiceDBProtoClient(CallInvoker callInvoker)`** — the existing-connection
    constructor behind `SpiceDBClient.CreateFromCallInvoker` (root DESIGN.md, "Keep protocol
@@ -117,6 +123,12 @@ the library package depends on no test framework (root DESIGN.md, dependency flo
 `SpiceDB.Proto.csproj` excludes `tests/**` and `bridge/**` from compilation and declares
 exact minimum package versions (no floating wildcards). `spicedb-csharp/SpiceDB.Client.sln`
 includes the test project, so the C# unit job runs it; `mage test` runs it directly.
+
+`DescriptorInitializationTest.cs` initialises the descriptor of every generated file and
+calls `ToString()`, `JsonFormatter.Default.Format` and `.Descriptor` on every message in it,
+does the same through an `Authzed.Net` type name, and runs `tests/DescriptorProbe` (a
+console program built but not referenced by the test project) as a separate process, so a
+type initialiser failure is caught in a fresh process too.
 
 `AuthzedNetBridgeTest.cs` loads the bridge `Authzed.Net` and this assembly in one process
 and proves: every exported generated type is forwarded here; assembly-qualified legacy
@@ -166,7 +178,8 @@ Any methods or fields marked deprecated in the proto definitions must carry
 
 - No business logic — only plumbing (connection, auth)
 - Generated files under `gen/` are never modified
-- Project targets `net10.0` (`SpiceDB.Proto.csproj`)
+- `SpiceDB.Proto.csproj` and the bridge target `net8.0;net9.0;net10.0` and build with
+  `TreatWarningsAsErrors`; the test, probe and generator projects target `net10.0`
 - Package references are exact floors (currently Grpc 2.80.0, Google.Protobuf 3.34.1,
   Google.Api.CommonProtos 2.17.0, matching the legacy Authzed.Net 1.6.0)
 

@@ -8,7 +8,10 @@
     process. TypeForwards.g.cs is written by ../generator; never edit it by hand.
   -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- Every supported .NET LTS and STS release, so a net8.0 or net9.0 host can reference this package. -->
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <!-- No warning may surface in a consumer's build. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>Authzed.Net</AssemblyName>
     <RootNamespace>Authzed.Net</RootNamespace>
     <Version>2.0.0</Version>

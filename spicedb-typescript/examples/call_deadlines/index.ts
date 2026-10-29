@@ -39,6 +39,9 @@ const client = createSpiceDBClient(endpoint, token, {
     transportSecurity: TransportSecurity.Plaintext,
     defaultTimeoutMs: 5000
 });
+// The client connects lazily; ready() fails here, at startup, if the endpoint
+// is wrong or SpiceDB is down, rather than on the first real call.
+await client.ready({ timeoutMs: 10000 });
 // The schema below is narrower than the one most examples write, and they all
 // share one SpiceDB. SpiceDB refuses a WriteSchema that drops a relation while
 // a relationship still exists under it, so clear before writing, not after: an
@@ -200,6 +203,21 @@ const perCallOutcome = await Promise.race([
     watchdog,
 ]);
 assert(perCallOutcome instanceof DeadlineExceededError, `expected a per-call timeoutMs to expire against the wedged server, got: ${String(perCallOutcome)}`);
+// The startup readiness check fails the same way against a server that never answers.
+const readyOutcome = await Promise.race([wedgedClient.ready({ timeoutMs: 1000 }).then(() => undefined, (err: unknown) => err), watchdog]);
+assert(readyOutcome instanceof DeadlineExceededError, `expected ready() to time out against the wedged server, got: ${String(readyOutcome)}`);
+// Finite paged reads get the client default per page request, so a read
+// against a wedged server fails instead of hanging, with no per-call option.
+const pagedOutcome = await Promise.race([(async () => {
+    try {
+        for await (const _ of wedgedClient.lookupResources({ resourceType: "document", permission: "view", subject: check.subject, consistency: full() })) { /* drain */ }
+        return undefined;
+    }
+    catch (err) {
+        return err;
+    }
+})(), watchdog]);
+assert(pagedOutcome instanceof DeadlineExceededError, `expected a paged lookup to hit the per-page default against the wedged server, got: ${String(pagedOutcome)}`);
 wedgedClient.close();
 wedged.close();
 // Clean up so later examples that write a narrower schema aren't blocked by

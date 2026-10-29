@@ -77,6 +77,9 @@ func TestEndpointForms_RejectedAtConstruction(t *testing.T) {
 		{"bare IPv4 plaintext", plaintext, "127.0.0.1", "needs an explicit port"},
 		{"bare IPv6 plaintext", plaintext, "::1", "needs an explicit port"},
 		{"bracketed IPv6 plaintext", plaintext, "[::1]", "needs an explicit port"},
+		// Registered gRPC resolvers beyond dns, unix and passthrough are
+		// refused, not passed through.
+		{"unix-abstract target", plaintext, "unix-abstract:spicedb.sock", `unsupported scheme "unix-abstract"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,7 +87,7 @@ func TestEndpointForms_RejectedAtConstruction(t *testing.T) {
 			require.Nil(t, c)
 			require.ErrorIs(t, err, ErrInvalidArgument)
 			require.ErrorContains(t, err, tc.reason)
-			require.ErrorContains(t, err, "expected host:port (e.g. localhost:50051), http://host:port (plaintext) or https://host[:port] (TLS)")
+			require.ErrorContains(t, err, "expected host:port (e.g. localhost:50051), http://host:port (plaintext), https://host[:port] (TLS), dns:///host:port, unix:/path/to.sock or passthrough:///host:port")
 			require.NotContains(t, err.Error(), "WithRemotePlaintextCredentials(RemotePlaintextAllowed)")
 		})
 	}

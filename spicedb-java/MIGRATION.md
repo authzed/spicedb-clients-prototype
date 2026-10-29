@@ -124,12 +124,19 @@ SpiceDBClient client = SpiceDBClient.createSystemTls("spicedb.example.com:443", 
 - The preshared key is a constructor argument, not call credentials.
 - The endpoint is `host:port` (as `forTarget` took), `http://host:port`
   (plaintext constructor only; the port is required) or `https://host[:port]`
-  (TLS constructor only; the port defaults to 443), or `unix:/path`. A bare
-  host without a port dials 443 over TLS; `createPlaintext("localhost", ...)`
-  fails, so write `localhost:50051`. Other gRPC
-  target schemes such as `dns:///` and any path, query, fragment or userinfo
-  fail at construction with `InvalidArgumentException`; pass the `host:port`
-  instead.
+  (TLS constructor only; the port defaults to 443), `dns:///host:port` (gRPC's
+  DNS target, for client-side load balancing; the loopback check runs on the
+  host) or `unix:/path`. A bare host without a port dials 443 over TLS;
+  `createPlaintext("localhost", ...)` fails, so write `localhost:50051`.
+  `unix:` needs Netty's native epoll transport (Linux); elsewhere, such as
+  macOS, it fails at construction instead of building a client whose calls
+  fail. Other target schemes and any path, query, fragment or userinfo fail at
+  construction with `InvalidArgumentException` naming the accepted forms.
+- The channel connects lazily, as a legacy `ManagedChannel` did. To fail at
+  startup when the endpoint is wrong or down, call
+  `client.awaitReady(Duration.ofSeconds(10))`: it throws
+  `UnavailableException` (could not connect) or `DeadlineExceededException`
+  (still connecting), both naming the endpoint.
 - `createPlaintext` sends the key in cleartext only to loopback by default. A
   remote plaintext host needs an explicit opt-in:
   `SpiceDBClient.createPlaintext(endpoint, token,
@@ -252,8 +259,14 @@ authzed-java stubs have no deadline and no retries. spicedb-java:
 - gives unary calls a 30 second budget (covering retries, chunks and pages).
   Override per call with `.timeout(...)` on the operation's options, change the
   default with `ClientOptions.builder().defaultTimeout(...)`, or remove it with
-  `.defaultDeadline(DefaultDeadline.DISABLED)`. Streams and imports have no
+  `.defaultDeadline(DefaultDeadline.DISABLED)`. Watches and imports have no
   default lifetime.
+- applies that default to each page of a finite paged read (relationship
+  reads, lookups, exports), so a server that stalls mid-read fails the read
+  with `DeadlineExceededException` instead of hanging it. A legacy blocking
+  iterator over a stalled stream waited forever. An operation `timeout` still
+  bounds the whole read and wins when earlier; `DefaultDeadline.DISABLED`
+  removes the per-page budget too.
 - retries idempotent reads on `UNAVAILABLE`/`ABORTED` up to three times with
   jittered backoff, and retries opening a stream before any item is exposed.
   Writes, deletes, imports and counter registration are never retried. Tune with
@@ -318,6 +331,20 @@ try {
   and metadata are `getReason()` and `getReasonMetadata()`.
 - Local cancellation (thread interrupt, closed stream or client) raises
   `java.util.concurrent.CancellationException` with a `CANCELLED` status cause.
+- A response the client cannot interpret (a relationship, resource, subject or
+  object missing; a cursor that does not advance) fails with `INTERNAL`, which
+  is not retried by default. It is never skipped or filled with empty values.
+- Local validation (`Relationship.fromTuple`, `ObjectRef`, option builders,
+  endpoint parsing) throws `InvalidArgumentException`, not
+  `IllegalArgumentException`. Java has single class inheritance and `catch`
+  needs a class, so one exception cannot be both a `SpiceDBException` (with
+  `code()`, the status accessors and `catch (SpiceDBException e)`) and an
+  `IllegalArgumentException`. Code that wrapped legacy parsing in
+  `catch (IllegalArgumentException e)` should catch
+  `InvalidArgumentException`, or both:
+  `catch (IllegalArgumentException | InvalidArgumentException e)`. Both local
+  and server invalid-argument errors report `INVALID_ARGUMENT`; a local one's
+  `serverMessage()` is `null`, which tells the two apart.
 
 ## Transport-level data
 

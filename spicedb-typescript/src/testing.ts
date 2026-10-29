@@ -5,6 +5,7 @@ import { DeletePartial, LookupDebug, LookupPermissionshipFilter, Paging, Wildcar
 import { OperationAbortError } from "./operation.js";
 import { mutationRetry, validRetryPolicy } from "./retry.js";
 import { ZedToken } from "./token.js";
+import { diffSchemas } from "./schemadiff.js";
 import type { SpiceDBClientInterface, SpiceDBProtoClient } from "./client.js";
 import {
     CheckResult, Transaction, filterMatches, immutableSnapshot, jsonSnapshot, nativeRelationshipFields, objectRefToString, positiveLimit, preconditionToString, relationshipToFilter,
@@ -14,14 +15,14 @@ import {
     type ReadRelationshipsRequest, type ReflectSchemaRequest, type ReflectSchemaResult, type Relationship, type RelationshipFilter, type SchemaResult,
     type SubjectRef, type WriteResult, type LookupResourcesRequest, type LookupResource, type LookupSubjectsRequest, type LookupSubject,
     type ExpandPermissionTreeRequest, type ExpandResult, type ComputablePermissionsRequest, type DependentRelationsRequest, type RelationsResult,
-    type DiffSchemaRequest, type SchemaDiffResult, type WatchRequest, type WatchEvent, type RelationshipCountResult, type WatchPermissionSetsRequest,
+    type DiffSchemaRequest, type SchemaDiff, type SchemaDiffResult, type WatchRequest, type WatchEvent, type RelationshipCountResult, type WatchPermissionSetsRequest,
     type PermissionSetEvent, type LookupPermissionSetsRequest, type LookupPermissionSet, type DownloadPermissionSetsRequest,
     type DownloadPermissionSetsResult, type RoaringLookupResourcesRequest, type RoaringLookupResourcesResult,
 } from "./types.js";
 
 /**
  * The operations {@link InMemorySpiceDB} records, named like the client's
- * methods. Those after `lookupSubjects` have no in-memory semantics: they
+ * methods. Those after `lookupSubjects` (except `diffSchema`) have no in-memory semantics: they
  * are recorded, consult the fault hook, and fail with `Code.Unimplemented`.
  */
 export type InMemoryOperation = "write" | "readRelationships" | "exportRelationships" | "importRelationships" | "deleteRelationships"
@@ -142,8 +143,9 @@ export type CheckResolver = (check: CheckRequest) => Permissionship | undefined;
  * `write`, `readRelationships`, `deleteRelationships`,
  * `deleteAllRelationshipsNonAtomic`, `importRelationships`,
  * `exportRelationships`, `readSchema`, `writeSchema`, `reflectSchema`, `check`,
- * `checkBulk`, `lookupResources`, `lookupSubjects` and `close` work in memory.
- * The other operations (expand, schema introspection, watch and the
+ * `checkBulk`, `lookupResources`, `lookupSubjects`, `diffSchema` (a name-level diff
+ * of the stored schema text) and `close` work in memory; `ready` does nothing.
+ * The other operations (expand, computable and dependent relations, watch and the
  * experimental methods) are
  * recorded, consult the fault hook, and then fail with `Code.Unimplemented` in
  * the client's error shape (a stream fails from iteration); `raw()` throws.
@@ -482,6 +484,9 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
 
     close(): void { this.#closed = true; }
 
+    /** Does nothing: the double is always ready. */
+    async ready(options?: CallOptions): Promise<void> { void options; }
+
     /** Throws `Code.Unimplemented`: the double has no protocol client. */
     raw(): SpiceDBProtoClient {
         throw SpiceDBError.fromCode(Code.Unimplemented, "InMemorySpiceDB has no protocol client");
@@ -554,8 +559,33 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     async dependentRelations(request: DependentRelationsRequest, options?: CallOptions): Promise<RelationsResult> {
         return this.#unimplemented("dependentRelations", request, options);
     }
+    /**
+     * Diffs `comparisonSchema` against the stored schema text (an empty schema
+     * before any write) at name level: identical text has no diffs; otherwise
+     * definitions, relations and their subject types, permissions and their
+     * expressions, caveats, caveat parameters and caveat expressions are
+     * compared, with whitespace and comments ignored. It does not compile the
+     * schema and reports no doc-comment changes. Unparseable text fails with
+     * `InvalidArgument`, as the server's parse does.
+     */
     async diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult> {
-        return this.#unimplemented("diffSchema", request, options);
+        this.#start("diffSchema", request, options);
+        requireConsistency(request.consistency);
+        this.#begin(options);
+        const existing = this.#schema ?? "";
+        const revision = new ZedToken(String(this.#revision));
+        if (existing === request.comparisonSchema)
+            return immutableSnapshot({ diffs: [], revision });
+        let diffs: SchemaDiff[];
+        try {
+            diffs = diffSchemas(existing, request.comparisonSchema);
+        }
+        catch (error) {
+            if (error instanceof InvalidArgumentError)
+                throw serverError(Code.InvalidArgument, error.message);
+            throw error;
+        }
+        return immutableSnapshot({ diffs, revision });
     }
     watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent> {
         return this.#unimplementedStream("watch", request, options);

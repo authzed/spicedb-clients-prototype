@@ -134,7 +134,9 @@ may also be an `https://host[:port]` URL (TLS constructors, port 443 by
 default) or an `http://host:port` URL (`new_plaintext`, port required). A
 plaintext endpoint always needs a port: `new_plaintext('localhost', ...)`,
 which `authzed` sent to port 443, now raises; write `localhost:50051`;
-`authzed` passed such a URL straight to gRPC, which failed every call. Other
+`authzed` passed such a URL straight to gRPC, which failed every call.
+`dns:///host:port` targets work as they did with `authzed`; the
+remote-plaintext check runs on their host. Other
 schemes, paths, userinfo and non-numeric ports raise `InvalidArgumentError` at
 construction (README.md, "Endpoints"). If you build
 your own `GRPC::Core::Channel` (custom channel arguments), wrap it with
@@ -144,10 +146,14 @@ open. `authzed`'s `options:` channel arguments move there.
 ## Deadlines and retries
 
 `authzed` sets no deadline unless you pass `timeout:`, and never retries.
-`spicedb` gives every unary call (including bulk-check chunks and paged reads)
-a 30-second total budget, and retries idempotent reads on UNAVAILABLE and
-ABORTED up to three times with jittered backoff. Writes and other mutations are
-never retried. Streams have no default deadline.
+`spicedb` gives every unary call (including bulk-check chunks) a 30-second
+total budget, and retries idempotent reads on UNAVAILABLE and ABORTED up to
+three times with jittered backoff. Writes and other mutations are never retried.
+Finite paged reads (`read_relationships`, `lookup_resources`,
+`lookup_subjects`, `export_relationships`) apply the same default to each page
+request, so a server that stalls mid-read raises `DeadlineExceededError`
+instead of hanging; a `timeout:` bounds the whole read. Watch and imports have
+no default deadline.
 
 ```ruby
 # authzed
@@ -298,7 +304,13 @@ Code that tests `is_a?`/`kind_of?` on grpc's per-code classes needs the
 
 Local errors match by their code as well: local validation is
 INVALID_ARGUMENT, so `rescue GRPC::InvalidArgument` also catches a
-`SpiceDB::InvalidArgumentError` raised before any request.
+`SpiceDB::LocalValidationError` (an `InvalidArgumentError`) raised before any
+request. `rescue ArgumentError` catches it too, as Ruby code expects around bad
+input; a server's INVALID_ARGUMENT is not an `ArgumentError`. A response the
+client cannot interpret raises `SpiceDB::Error` with code INTERNAL (grpc's
+`GRPC::Internal` matches it). Closing a client while another thread reads one
+of its streams raises `SpiceDB::CancelledError` in that reader, never grpc's
+own `GRPC::Cancelled`.
 
 `e.server_message` is the server's message verbatim, and always has a value:
 for an error raised locally it is the error's message. `e.reason` and

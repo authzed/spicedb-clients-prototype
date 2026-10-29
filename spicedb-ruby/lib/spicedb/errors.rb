@@ -98,9 +98,35 @@ module SpiceDB
     def self.default_code = GRPC::Core::StatusCodes::ALREADY_EXISTS
   end
 
-  # The request contained an invalid argument. Local validation raises this.
+  # The request contained an invalid argument: the server's INVALID_ARGUMENT,
+  # or (as LocalValidationError) input this client rejected itself.
   class InvalidArgumentError < Error
     def self.default_code = GRPC::Core::StatusCodes::INVALID_ARGUMENT
+  end
+
+  # Input the client rejected locally, before sending any request: a
+  # malformed tuple, an empty object type or ID, an unknown option value,
+  # an endpoint it cannot dial, unrepresentable caveat context.
+  #
+  # It is an InvalidArgumentError (code INVALID_ARGUMENT), and +rescue
+  # ArgumentError+ also catches it, the Ruby idiom around bad input (see
+  # ArgumentErrorMatch; +is_a?(ArgumentError)+ stays false, since Ruby has
+  # single inheritance and every SpiceDB error is a GRPC::BadStatus). An
+  # INVALID_ARGUMENT from the server stays a plain InvalidArgumentError and
+  # is not caught by +rescue ArgumentError+.
+  class LocalValidationError < InvalidArgumentError
+  end
+
+  # Extends +ArgumentError.===+ so +rescue ArgumentError+ (and +case+) also
+  # matches a LocalValidationError. Only ArgumentError itself gains this:
+  # its subclasses (KeyError, a library's own ArgumentError subclass) match
+  # exactly as before.
+  module ArgumentErrorMatch
+    ArgumentError.singleton_class.prepend(Module.new do
+      define_method(:===) do |other|
+        super(other) || (equal?(ArgumentError) && other.is_a?(SpiceDB::LocalValidationError))
+      end
+    end)
   end
 
   # A precondition for the operation was not met.

@@ -29,6 +29,9 @@ class EndpointTest {
     "https://example.com, example.com:443, HTTPS",
     "https://example.com:8443, example.com:8443, HTTPS",
     "unix:/var/run/spicedb.sock, unix:/var/run/spicedb.sock, UNIX",
+    "dns:///localhost:50051, dns:///localhost:50051, DNS",
+    "DNS:///[::1]:50051, dns:///[::1]:50051, DNS",
+    "dns:///example.com, dns:///example.com, DNS",
   })
   void parsesAcceptedForms(String endpoint, String target, Endpoint.Scheme scheme) {
     var parsed = Endpoint.parse(endpoint);
@@ -51,7 +54,11 @@ class EndpointTest {
         "https://example.com:0 | invalid port \"0\"",
         "https://example.com:70000 | invalid port \"70000\"",
         "ftp://host:1 | unsupported scheme \"ftp\"",
-        "dns:///example.com:443 | unsupported scheme \"dns\"",
+        "dns://8.8.8.8/example.com:443 | a DNS server authority is not supported",
+        "dns:example.com:443 | must be dns:///host:port",
+        "dns:///example.com:443/x | a path is not allowed",
+        "dns:///::1:50051 | must be bracketed",
+        "unix: | missing socket path",
         "http://::1:50051 | must be bracketed",
         "http:// | missing host",
       })
@@ -108,6 +115,38 @@ class EndpointTest {
     assertEquals(target, Endpoint.parse(endpoint).forTransport(false, "tls", "plaintext").target());
     try (var client = SpiceDBClient.createSystemTls(endpoint, "k")) {
       assertNotNull(client);
+    }
+  }
+
+  @Test
+  void dnsTargetFollowsThePortRuleAndTheLoopbackCheckRunsOnItsHost() {
+    assertEquals(
+        "dns:///example.com:443",
+        Endpoint.parse("dns:///example.com").forTransport(false, "tls", "plaintext").target());
+    var noPort =
+        assertThrows(
+            com.authzed.spicedb.errors.InvalidArgumentException.class,
+            () -> SpiceDBClient.createPlaintext("dns:///localhost", "k"));
+    assertTrue(noPort.getMessage().contains("explicit port"), noPort.getMessage());
+    try (var client = SpiceDBClient.createPlaintext("dns:///localhost:50051", "k")) {
+      assertNotNull(client);
+    }
+    var remote =
+        assertThrows(
+            com.authzed.spicedb.errors.InvalidArgumentException.class,
+            () -> SpiceDBClient.createPlaintext("dns:///example.com:50051", "k"));
+    assertTrue(remote.getMessage().contains("non-loopback"), remote.getMessage());
+  }
+
+  @Test
+  void unixSocketIsAcceptedOnlyWhereTheTransportCanDialIt() {
+    // Linux (epoll) builds the client; elsewhere construction fails with the client's own argument
+    // error naming the accepted forms, never the transport's IllegalArgumentException.
+    try (var client = SpiceDBClient.createPlaintext("unix:/var/run/spicedb.sock", "k")) {
+      assertNotNull(client);
+    } catch (com.authzed.spicedb.errors.InvalidArgumentException e) {
+      assertTrue(e.getMessage().contains("Unix domain sockets are not supported"), e.getMessage());
+      assertTrue(e.getMessage().contains("dns:///host:port"), e.getMessage());
     }
   }
 

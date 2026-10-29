@@ -67,7 +67,8 @@ module SpiceDB
     # Operation options shared by every constructor:
     #
     # @param default_timeout [Numeric] seconds of budget for unary operations
-    #   called without +timeout:+
+    #   called without +timeout:+, and for each page request of a relationship
+    #   read, lookup or export (whose +timeout:+ bounds the whole read)
     # @param default_deadline [DefaultDeadline] DISABLED runs those operations
     #   unbounded (the caller's own +timeout:+ still applies)
     # @param retry_policy [RetryPolicy] client-wide read retry policy
@@ -92,9 +93,9 @@ module SpiceDB
       SpiceDBProto::Client.validate_connection!(endpoint, **options)
       @connect = -> { SpiceDBProto::Client.new(endpoint, token, **options) }
     rescue SpiceDBProto::InsecureRemoteHostError
-      raise InvalidArgumentError, remote_plaintext_refusal(endpoint)
+      raise LocalValidationError, remote_plaintext_refusal(endpoint)
     rescue ArgumentError => e
-      raise InvalidArgumentError, e.message
+      raise LocalValidationError, e.message
     end
 
     # Builds a client over an existing, caller-owned GRPC::Core::Channel (for
@@ -109,7 +110,7 @@ module SpiceDB
       client.send(:adopt_connection, SpiceDBProto::Client.from_channel(channel, interceptors: interceptors))
       client
     rescue ArgumentError => e
-      raise InvalidArgumentError, e.message
+      raise LocalValidationError, e.message
     end
 
     def close
@@ -119,7 +120,7 @@ module SpiceDB
         @closed = true
         @streams.dup
       end
-      streams.each(&:close)
+      streams.each { |stream| stream.cancel('spicedb: the client was closed while this stream was being read') }
       # A connection opened in another process (before a fork) belongs to it.
       @proto_client&.close if @connected_pid.nil? || @connected_pid == Process.pid
     end
@@ -155,7 +156,7 @@ module SpiceDB
     #   +timeout+ passed
     # @raise [ForkedClientError] see #proto_client
     def connect!(timeout: DEFAULT_CONNECT_TIMEOUT_SECONDS)
-      raise InvalidArgumentError, "timeout: expected a positive number of seconds, got #{Values.received(timeout)}" unless
+      raise LocalValidationError, "timeout: expected a positive number of seconds, got #{Values.received(timeout)}" unless
         timeout.is_a?(Numeric) && timeout.positive?
 
       channel = proto_client.channel
@@ -198,12 +199,14 @@ module SpiceDB
       items.each_slice(DEFAULT_CHECK_BATCH_SIZE).with_index.flat_map do |chunk, chunk_index|
         request = Authzed::Api::V1::CheckBulkPermissionsRequest.new(consistency: cs, items: chunk, with_tracing: tracing == Tracing::ENABLED)
         response = rpc(proto_client.permissions, :check_bulk_permissions, request, budget)
-        raise Error, "check_bulk returned #{response.pairs.length} pair(s) for #{chunk.length} request item(s)" unless response.pairs.length == chunk.length
+        unless response.pairs.length == chunk.length
+          raise malformed_response("check_bulk returned #{response.pairs.length} pair(s) for #{chunk.length} request item(s)")
+        end
 
         token = ZedToken.from_proto(response.checked_at)
         response.pairs.each_with_index.map do |pair, index|
           absolute = (chunk_index * DEFAULT_CHECK_BATCH_SIZE) + index
-          raise Error, "check item #{absolute}: malformed echoed request" unless pair.request == chunk[index]
+          raise malformed_response("check item #{absolute}: malformed echoed request") unless pair.request == chunk[index]
 
           if pair.response == :error
             error = SpiceDB.to_spicedb_error(pair.error)
@@ -212,7 +215,7 @@ module SpiceDB
 
             next CheckResult.new(permissionship: :unspecified, missing_context: [], checked_at: token, error: error)
           end
-          raise Error, "check item #{absolute}: malformed empty pair" unless pair.response == :item
+          raise malformed_response("check item #{absolute}: malformed empty pair") unless pair.response == :item
 
           check_result(pair.item, token)
         end
@@ -229,7 +232,7 @@ module SpiceDB
     # +operation_retry_policies:+ entry for +:write+ retries only idempotent
     # transactions (Transaction#idempotent?) and leaves others unretried.
     def write(transaction, timeout: nil, metadata: nil, call_options: nil, retry_policy: nil)
-      raise InvalidArgumentError, 'write: expected Transaction' unless transaction.is_a?(Transaction)
+      raise LocalValidationError, 'write: expected Transaction' unless transaction.is_a?(Transaction)
 
       policy = mutation_retry_policy(:write, retry_policy, transaction.idempotent?)
       budget = unary_budget(timeout, call_options, retry_policy: policy)
@@ -265,7 +268,7 @@ module SpiceDB
     def delete_all_relationships_non_atomic(filter, page_size: 1000, must_match: [], must_not_match: [], timeout: nil, cursor: nil,
                                             on_progress: nil, call_options: nil, retry_policy: nil)
       mutation_retry_policy(:delete_all_relationships_non_atomic, retry_policy, false)
-      raise InvalidArgumentError, 'on_progress must respond to call' unless on_progress.nil? || on_progress.respond_to?(:call)
+      raise LocalValidationError, 'on_progress must respond to call' unless on_progress.nil? || on_progress.respond_to?(:call)
 
       budget = unary_budget(timeout, call_options)
       positive(page_size, 'page_size')
@@ -295,7 +298,7 @@ module SpiceDB
         ReadRelationship.new(relationship: relationship_from_proto(response.relationship), cursor: after,
                              read_at: ZedToken.from_proto(response.read_at))
       end
-      paged_stream(:permissions, :read_relationships, request, page_size, limit, stream_budget(timeout, call_options, retry_policy: retry_policy),
+      paged_stream(:permissions, :read_relationships, request, page_size, limit, paged_budget(timeout, call_options, retry_policy: retry_policy),
                    cursor, mapper, paging: paging, &)
     end
 
@@ -309,7 +312,7 @@ module SpiceDB
                                                              permission: Values.name(permission, 'permission'), subject: subject_to_proto(subject),
                                                              context: check_context_to_struct(Values.context(context)))
       include_result = (->(result) { result.permissionship == :has_permission } if permissionship_filter == LookupPermissionshipFilter::HAS_PERMISSION_ONLY)
-      paged_stream(:permissions, :lookup_resources, request, page_size, limit, stream_budget(timeout, call_options, retry_policy: retry_policy),
+      paged_stream(:permissions, :lookup_resources, request, page_size, limit, paged_budget(timeout, call_options, retry_policy: retry_policy),
                    cursor, method(:lookup_resource_from_proto), include_result: include_result, paging: paging, &)
     end
 
@@ -321,7 +324,7 @@ module SpiceDB
                                                             subject_object_type: Values.name(subject_type, 'subject_type'),
                                                             optional_subject_relation: Values.optional_name(subject_relation, 'subject_relation') || '',
                                                             context: check_context_to_struct(Values.context(context)))
-      budget = stream_budget(timeout, call_options, retry_policy: retry_policy)
+      budget = paged_budget(timeout, call_options, retry_policy: retry_policy)
       response_stream(:permissions, :lookup_subjects, request, budget, limit: limit, mapper: method(:lookup_subject_from_proto), &)
     end
 
@@ -414,7 +417,7 @@ module SpiceDB
                                                                      optional_relationship_filter: filter && filter_to_proto(filter),
                                                                      optional_cursor: cursor_proto(cursor))
       # Export responses contain batches, unlike the per-item read API.
-      export_stream(request, page_size, limit, stream_budget(timeout, call_options, retry_policy: retry_policy), &)
+      export_stream(request, page_size, limit, paged_budget(timeout, call_options, retry_policy: retry_policy), &)
     end
 
     def experimental_register_relationship_counter(name, filter, timeout: nil, call_options: nil, retry_policy: nil)
@@ -476,7 +479,7 @@ module SpiceDB
         # grpc's fork support carries the parent's channel into this process.
         return @proto_client
       end
-      raise Error, 'client is closed' if @closed
+      raise FailedPreconditionError, 'client is closed' if @closed
 
       # A new client in a child: gRPC refuses it if an ancestor process
       # already used gRPC, whichever client did.
@@ -487,7 +490,7 @@ module SpiceDB
 
       adopt_connection(@connect.call)
     rescue ArgumentError => e
-      raise InvalidArgumentError, e.message
+      raise LocalValidationError, e.message
     rescue RuntimeError => e
       # gRPC used before the fork in a way this library could not observe
       # (another gRPC client in the parent): grpc's own refusal, typed.
@@ -511,8 +514,8 @@ module SpiceDB
     def configure(default_timeout: DEFAULT_TIMEOUT_SECONDS, default_deadline: DefaultDeadline::ENABLED, retry_policy: RetryPolicy.new,
                   retries: Retries::ENABLED, stream_retries: StreamRetries::ENABLED, operation_retry_policies: {})
       Budget.new(default_timeout)
-      raise InvalidArgumentError, 'default_timeout is required' if default_timeout.nil?
-      raise InvalidArgumentError, 'retry_policy: expected SpiceDB::RetryPolicy' unless retry_policy.is_a?(RetryPolicy)
+      raise LocalValidationError, 'default_timeout is required' if default_timeout.nil?
+      raise LocalValidationError, 'retry_policy: expected SpiceDB::RetryPolicy' unless retry_policy.is_a?(RetryPolicy)
 
       @default_timeout = default_timeout
       @default_deadline = DefaultDeadline.validate(default_deadline)

@@ -44,6 +44,7 @@ var wantExamples = []string{
 	"CallDeadlinesTest",
 	"CheckPermissionTest",
 	"ConditionalCheckTest",
+	"EndpointFormsTest",
 	"ErrorMappingTest",
 	"ExpandPermissionTreeTest",
 	"InsecureOptInTest",

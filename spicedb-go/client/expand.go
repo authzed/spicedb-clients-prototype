@@ -42,5 +42,12 @@ func (c *Client) ExpandPermissionTree(ctx context.Context, request ExpandPermiss
 	if e != nil {
 		return ExpandPermissionTreeResult{}, e
 	}
-	return ExpandPermissionTreeResult{toPermissionTree(resp.GetTreeRoot()), consistency.NewZedToken(resp.GetExpandedAt().GetToken())}, nil
+	if resp.GetTreeRoot() == nil {
+		return ExpandPermissionTreeResult{}, malformed("expand permission tree", "tree root is missing")
+	}
+	tree, e := toPermissionTree(resp.GetTreeRoot())
+	if e != nil {
+		return ExpandPermissionTreeResult{}, e
+	}
+	return ExpandPermissionTreeResult{tree, consistency.NewZedToken(resp.GetExpandedAt().GetToken())}, nil
 }

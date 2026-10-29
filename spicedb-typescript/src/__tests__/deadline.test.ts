@@ -2,7 +2,7 @@ import { TransportSecurity } from "../modes.js";
 import { describe, it, expect } from "vitest";
 import { createRouterTransport } from "@connectrpc/connect";
 import { create } from "@bufbuild/protobuf";
-import { SpiceDBProtoClient, PermissionsService, CheckBulkPermissionsResponseSchema, ReadRelationshipsResponseSchema, RelationshipSchema, ObjectReferenceSchema, SubjectReferenceSchema, ImportBulkRelationshipsResponseSchema, } from "@spicedb/proto";
+import { SpiceDBProtoClient, PermissionsService, WatchService, WatchResponseSchema, CheckBulkPermissionsResponseSchema, ReadRelationshipsResponseSchema, RelationshipSchema, ObjectReferenceSchema, SubjectReferenceSchema, ImportBulkRelationshipsResponseSchema, } from "@spicedb/proto";
 import { SpiceDBClient, createSpiceDBClient, type SpiceDBClientOptions, } from "../client.js";
 import { full } from "../consistency.js";
 import { DeadlineExceededError } from "../errors.js";
@@ -213,47 +213,53 @@ describe("call deadlines", () => {
         const elapsed = Date.now() - start;
         expect(elapsed).toBeLessThan(STALL_MS);
     });
-    it("does not cut a streaming call off at the (tiny) unary default", async () => {
+    it("does not cut a watch off at the (tiny) client default", async () => {
+        const transport = createRouterTransport((router) => {
+            router.service(WatchService, {
+                async *watch() {
+                    await sleep(STALL_MS);
+                    yield create(WatchResponseSchema, { changesThrough: { token: "t1" } });
+                }
+            });
+        });
+        // defaultTimeoutMs is far smaller than the server's stall. Watch is a
+        // long-lived stream with no default, so it yields the event instead of
+        // rejecting with DeadlineExceededError.
+        const client = clientWithTransport(transport, { defaultTimeoutMs: 100 });
+        const start = Date.now();
+        const event = await withWatchdog((async () => {
+            const iterator = client.watch();
+            const next = await iterator.next();
+            await iterator.return?.();
+            return next.value;
+        })());
+        const elapsed = Date.now() - start;
+        expect(event?.changesThrough.toString()).toBe("t1");
+        expect(elapsed).toBeGreaterThanOrEqual(STALL_MS - 50);
+        client.close();
+    });
+    it("cuts a finite paged read off at the client default per page request", async () => {
         const transport = createRouterTransport((router) => {
             router.service(PermissionsService, {
                 async *readRelationships() {
                     await sleep(STALL_MS);
                     yield create(ReadRelationshipsResponseSchema, {
                         relationship: create(RelationshipSchema, {
-                            resource: create(ObjectReferenceSchema, {
-                                objectType: "document",
-                                objectId: "a"
-                            }),
+                            resource: create(ObjectReferenceSchema, { objectType: "document", objectId: "a" }),
                             relation: "viewer",
-                            subject: create(SubjectReferenceSchema, {
-                                object: create(ObjectReferenceSchema, {
-                                    objectType: "user",
-                                    objectId: "jimmy"
-                                })
-                            })
+                            subject: create(SubjectReferenceSchema, { object: create(ObjectReferenceSchema, { objectType: "user", objectId: "jimmy" }) })
                         })
                     });
                 }
             });
         });
-        // defaultTimeoutMs is far smaller than the server's stall. If
-        // readRelationships inherited it, this would reject with
-        // DeadlineExceededError instead of yielding the item.
         const client = clientWithTransport(transport, { defaultTimeoutMs: 100 });
         const start = Date.now();
-        const items = await withWatchdog((async () => {
-            const collected = [];
-            for await (const rel of client.readRelationships({
-                filter: { resourceType: "document" },
-                consistency: full()
-            })) {
-                collected.push(rel);
-            }
-            return collected;
-        })());
-        const elapsed = Date.now() - start;
-        expect(items.map((r) => r.resource.objectId)).toEqual(["a"]);
-        expect(elapsed).toBeGreaterThanOrEqual(STALL_MS);
+        await expect(withWatchdog((async () => {
+            for await (const _ of client.readRelationships({ filter: { resourceType: "document" }, consistency: full() })) { /* drain */ }
+        })())).rejects.toBeInstanceOf(DeadlineExceededError);
+        expect(Date.now() - start).toBeLessThan(STALL_MS);
+        client.close();
     });
     describe("defaultTimeoutMs", () => {
         it("defaults to 30_000, mirroring authzed-node's DEFAULT_DEADLINE_MS", () => {

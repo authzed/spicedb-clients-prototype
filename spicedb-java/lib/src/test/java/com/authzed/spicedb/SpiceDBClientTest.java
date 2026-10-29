@@ -419,13 +419,19 @@ class SpiceDBClientTest {
   }
 
   @Test
-  void toPermissionTreeHandlesNullInput() {
-    PermissionTree tree = SpiceDBClient.toPermissionTree(null);
-    assertNull(tree.intermediate());
-    assertNull(tree.leaf());
-    assertEquals("", tree.expandedObject().objectType());
-    assertEquals("", tree.expandedObject().objectID());
-    assertEquals("", tree.expandedRelation());
+  void toPermissionTreeRejectsAMissingTreeAsMalformed() {
+    var e =
+        assertThrows(
+            com.authzed.spicedb.errors.SpiceDBException.class,
+            () -> SpiceDBClient.toPermissionTree(null));
+    assertEquals(io.grpc.Status.Code.INTERNAL, e.code());
+    var noObject =
+        assertThrows(
+            com.authzed.spicedb.errors.SpiceDBException.class,
+            () ->
+                SpiceDBClient.toPermissionTree(
+                    com.authzed.api.v1.PermissionRelationshipTree.getDefaultInstance()));
+    assertEquals(io.grpc.Status.Code.INTERNAL, noObject.code());
   }
 
   @Test

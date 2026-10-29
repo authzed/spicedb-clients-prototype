@@ -20,7 +20,7 @@ void clientImplements; void doubleImplements;
 
 // Runtime: every interface method (the record must name each key to compile).
 const interfaceMethods: Record<keyof SpiceDBClientInterface, true> = {
-    raw: true, close: true, check: true, checkBulk: true, write: true, readRelationships: true, deleteRelationships: true,
+    raw: true, close: true, ready: true, check: true, checkBulk: true, write: true, readRelationships: true, deleteRelationships: true,
     deleteAllRelationshipsNonAtomic: true, lookupResources: true, lookupSubjects: true, expandPermissionTree: true,
     importRelationships: true, exportRelationships: true, readSchema: true, writeSchema: true, reflectSchema: true,
     computablePermissions: true, dependentRelations: true, diffSchema: true, watch: true,
@@ -63,8 +63,8 @@ describe("InMemorySpiceDB covers the whole client", () => {
 
     it("has the same error class and code as a real client talking to a server without the operation", async () => {
         const client = SpiceDBClient.fromTransport(createRouterTransport(() => {}), { retryPolicy: { maxRetries: 0, retryableCodes: [], initialBackoffMs: 1 } });
-        const real = await client.diffSchema({ comparisonSchema: "", consistency: full() }).catch((e: unknown) => e);
-        const fake = await new InMemorySpiceDB().diffSchema({ comparisonSchema: "", consistency: full() }).catch((e: unknown) => e);
+        const real = await client.expandPermissionTree({ resource: { objectType: "document", objectId: "d" }, permission: "view", consistency: full() }).catch((e: unknown) => e);
+        const fake = await new InMemorySpiceDB().expandPermissionTree({ resource: { objectType: "document", objectId: "d" }, permission: "view", consistency: full() }).catch((e: unknown) => e);
         expect(fake).toBeInstanceOf((real as object).constructor);
         expect(errorCode(fake)).toBe(errorCode(real));
         expect((real as SpiceDBError).message.startsWith("[unimplemented] ")).toBe(true);

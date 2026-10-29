@@ -13,7 +13,7 @@ module SpiceDB
     def permission_tree_from_proto(t)
       return nil if t.nil?
 
-      expanded_object = t.expanded_object && object_from_proto(t.expanded_object)
+      expanded_object = t.expanded_object && object_from_proto(t.expanded_object, 'expanded_object')
 
       intermediate = nil
       leaf = nil
@@ -25,7 +25,7 @@ module SpiceDB
         )
       elsif (v = t.leaf)
         leaf = LeafNode.new(
-          subjects: v.subjects.map { |subject| subject_ref_from_proto(subject) }
+          subjects: v.subjects.map { |subject| subject_ref_from_proto(subject, 'expand leaf subject') }
         )
       end
 
@@ -37,9 +37,12 @@ module SpiceDB
       )
     end
 
-    def subject_ref_from_proto(subject)
+    def subject_ref_from_proto(subject, field = 'subject')
+      raise malformed_response("#{field} is missing") if subject.nil?
+
       relation = subject.optional_relation
-      SubjectRef.new(object: object_from_proto(subject.object), relation: relation.empty? || relation == '...' ? nil : relation)
+      object = object_from_proto(subject.object, "#{field}.object")
+      from_server(field) { SubjectRef.new(object: object, relation: relation.empty? || relation == '...' ? nil : relation) }
     end
 
     LOOKUP_PERMISSIONSHIP_MAP = {
@@ -82,6 +85,8 @@ module SpiceDB
     end
 
     def lookup_resource_from_proto(resp, cursor = nil)
+      raise malformed_response('lookup_resources: resource_object_id is missing') if resp.resource_object_id.empty?
+
       LookupResource.new(
         resource_id: resp.resource_object_id,
         permissionship: permissionship_from_proto(resp.permissionship),
@@ -112,6 +117,7 @@ module SpiceDB
           partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info)
         )
       end
+      raise malformed_response('lookup_subjects: subject is missing') if subject.subject_id.nil? || subject.subject_id.empty?
 
       LookupSubject.new(
         subject: subject,

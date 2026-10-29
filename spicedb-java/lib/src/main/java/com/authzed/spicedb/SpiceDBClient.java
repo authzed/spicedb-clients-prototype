@@ -48,6 +48,14 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   private final Channel authenticatedChannel;
 
+  /**
+   * The channel whose connectivity {@link #awaitReady} watches; null when it cannot be observed.
+   */
+  private final ManagedChannel readinessChannel;
+
+  /** The endpoint readiness errors name. */
+  private final String endpointLabel;
+
   private SpiceDBClient(ManagedChannel channel, Metadata metadata) {
     this(channel, metadata, DEFAULT_TIMEOUT);
   }
@@ -63,9 +71,21 @@ public final class SpiceDBClient implements SpiceDBApi {
    */
   private SpiceDBClient(
       Channel base, ManagedChannel owned, Metadata metadata, ClientOptions options) {
+    this(base, owned, metadata, options, base.authority());
+  }
+
+  private SpiceDBClient(
+      Channel base,
+      ManagedChannel owned,
+      Metadata metadata,
+      ClientOptions options,
+      String endpointLabel) {
     ProtobufRuntime.requireSupported();
     GrpcRuntime.requireSupported();
     this.channel = owned;
+    this.readinessChannel =
+        owned != null ? owned : base instanceof ManagedChannel managed ? managed : null;
+    this.endpointLabel = endpointLabel;
     Duration defaultTimeout = options.defaultTimeout();
     if (defaultTimeout == null || defaultTimeout.isZero() || defaultTimeout.isNegative())
       throw new InvalidArgumentException("default timeout must be positive");
@@ -165,7 +185,7 @@ public final class SpiceDBClient implements SpiceDBApi {
     var parsed = Endpoint.parse(endpoint).forTransport(true, "createSystemTls", "createPlaintext");
     requireInsecureTransportAllowed(
         parsed, true, options.remotePlaintextCredentials() == RemotePlaintextCredentials.ALLOW);
-    var builder = ManagedChannelBuilder.forTarget(parsed.target()).usePlaintext();
+    var builder = channelBuilder(parsed).usePlaintext();
     channelCustomizer.accept(builder);
     return ownedClient(parsed, builder.build(), bearerMetadata(presharedKey), options);
   }
@@ -211,7 +231,7 @@ public final class SpiceDBClient implements SpiceDBApi {
     if (channelCustomizer == null)
       throw new InvalidArgumentException("channelCustomizer must not be null");
     var parsed = Endpoint.parse(endpoint).forTransport(false, "createSystemTls", "createPlaintext");
-    var builder = io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(parsed.target());
+    var builder = nettyBuilder(parsed);
     try {
       var tls = io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts.forClient();
       if (options.caCertificate() != null) tls.trustManager(options.caCertificate().toFile());
@@ -225,6 +245,48 @@ public final class SpiceDBClient implements SpiceDBApi {
     return ownedClient(parsed, builder.build(), bearerMetadata(presharedKey), options);
   }
 
+  /**
+   * The channel builder for {@code endpoint}: gRPC's default provider, or for a {@code unix:}
+   * socket Netty's native epoll domain-socket transport (see {@link #nettyBuilder}).
+   */
+  private static ManagedChannelBuilder<?> channelBuilder(Endpoint endpoint) {
+    if (endpoint.scheme() == Endpoint.Scheme.UNIX) return nettyBuilder(endpoint);
+    return ManagedChannelBuilder.forTarget(endpoint.target());
+  }
+
+  /**
+   * A Netty channel builder for {@code endpoint}. A {@code unix:} socket needs Netty's native epoll
+   * transport (Linux); where it is unavailable (macOS, Windows, or a platform without the native
+   * library) the endpoint is rejected here, at construction, naming the accepted forms, rather than
+   * building a client whose every call fails.
+   */
+  private static io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder nettyBuilder(
+      Endpoint endpoint) {
+    var builder =
+        io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(endpoint.target());
+    if (endpoint.scheme() != Endpoint.Scheme.UNIX) return builder;
+    if (!io.grpc.netty.shaded.io.netty.channel.epoll.Epoll.isAvailable())
+      throw new InvalidArgumentException(
+          Endpoint.invalid(
+                  endpoint.raw(),
+                  "Unix domain sockets are not supported by the gRPC transport on this platform"
+                      + " (they need Netty's native epoll transport, available on Linux)")
+              .getMessage(),
+          io.grpc.netty.shaded.io.netty.channel.epoll.Epoll.unavailabilityCause());
+    return builder
+        .channelType(io.grpc.netty.shaded.io.netty.channel.epoll.EpollDomainSocketChannel.class)
+        .eventLoopGroup(DomainSockets.GROUP);
+  }
+
+  /** The event loop shared by domain-socket clients: daemon threads, created on first use. */
+  private static final class DomainSockets {
+    static final io.grpc.netty.shaded.io.netty.channel.EventLoopGroup GROUP =
+        new io.grpc.netty.shaded.io.netty.channel.epoll.EpollEventLoopGroup(
+            0,
+            new io.grpc.netty.shaded.io.netty.util.concurrent.DefaultThreadFactory(
+                "spicedb-uds", true));
+  }
+
   /** A client that owns {@code managed}, with connection failures naming {@code endpoint}. */
   private static SpiceDBClient ownedClient(
       Endpoint endpoint, ManagedChannel managed, Metadata metadata, ClientOptions options) {
@@ -232,7 +294,8 @@ public final class SpiceDBClient implements SpiceDBApi {
         ClientInterceptors.intercept(managed, endpoint.connectionErrorInterceptor()),
         managed,
         metadata,
-        options);
+        options,
+        endpoint.raw());
   }
 
   /**
@@ -275,10 +338,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                 "create(..., withInsecure())");
     requireInsecureTransportAllowed(parsed, insecureRequested, allowInsecureRemoteCredentials);
 
-    var builder =
-        testChannelBuilder != null
-            ? testChannelBuilder
-            : ManagedChannelBuilder.forTarget(parsed.target());
+    var builder = testChannelBuilder != null ? testChannelBuilder : channelBuilder(parsed);
     for (ClientOption option : options) {
       option.apply(builder);
     }
@@ -408,7 +468,9 @@ public final class SpiceDBClient implements SpiceDBApi {
    */
   private static void requireInsecureTransportAllowed(
       Endpoint endpoint, boolean insecure, boolean allowInsecureRemoteCredentials) {
-    if (insecure && !allowInsecureRemoteCredentials && !isLoopbackEndpoint(endpoint.target())) {
+    if (insecure
+        && !allowInsecureRemoteCredentials
+        && !isLoopbackEndpoint(endpoint.loopbackTarget())) {
       throw new InvalidArgumentException(remotePlaintextRefusal(endpoint.raw()));
     }
   }
@@ -509,7 +571,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                       .withDeadline(deadline)
                       .checkBulkPermissions(req));
       if (response.getPairsCount() != items.size())
-        throw new SpiceDBException(
+        throw malformed(
             "checkBulkPermissions returned "
                 + response.getPairsCount()
                 + " pair(s) for "
@@ -518,8 +580,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       for (int i = 0; i < response.getPairsCount(); i++) {
         var pair = response.getPairs(i);
         if (!pair.hasRequest() || !pair.getRequest().equals(items.get(i)))
-          throw new SpiceDBException(
-              "check item " + (offset + i) + ": missing or mismatched echoed request");
+          throw malformed("check item " + (offset + i) + ": missing or mismatched echoed request");
         if (pair.hasError()) {
           var itemError =
               ErrorMapper.toSpiceDBException(
@@ -535,7 +596,7 @@ public final class SpiceDBClient implements SpiceDBApi {
           continue;
         }
         if (!pair.hasItem())
-          throw new SpiceDBException(
+          throw malformed(
               "check item "
                   + (offset + i)
                   + ": malformed CheckBulkPermissionsPair (neither item nor error set)");
@@ -636,7 +697,9 @@ public final class SpiceDBClient implements SpiceDBApi {
                   .setRelationshipFilter(proto)
                   .setOptionalLimit(requestLimit);
           if (cursor != null) b.setOptionalCursor(cursor);
-          return stub(permissionsStub, options.transport()).readRelationships(b.build());
+          return stub(permissionsStub, options.transport())
+              .withDeadline(pageDeadline())
+              .readRelationships(b.build());
         },
         ReadRelationshipsResponse::getAfterResultCursor,
         ProtoConv::fromProto,
@@ -740,7 +803,7 @@ public final class SpiceDBClient implements SpiceDBApi {
           case DELETION_PROGRESS_COMPLETE -> true;
           case DELETION_PROGRESS_PARTIAL -> false;
           default -> {
-            var error = new SpiceDBException("invalid deletion progress in server response");
+            var error = malformed("invalid deletion progress in server response");
             error.attachDeleteProgress(
                 new DeleteProgress(
                     response.getRelationshipsDeletedCount(), token, cursor, 1, false));
@@ -859,7 +922,9 @@ public final class SpiceDBClient implements SpiceDBApi {
                   .setWithDebug(options.debug() == LookupDebug.ENABLED);
           if (cursor != null) b.setOptionalCursor(cursor);
           if (options.context() != null) b.setContext(toProtoStruct(options.context()));
-          return stub(permissionsStub, options.transport()).lookupResources(b.build());
+          return stub(permissionsStub, options.transport())
+              .withDeadline(pageDeadline())
+              .lookupResources(b.build());
         },
         LookupResourcesResponse::getAfterResultCursor,
         ProtoConv::fromProto,
@@ -906,7 +971,10 @@ public final class SpiceDBClient implements SpiceDBApi {
       builder.setOptionalSubjectRelation(options.subjectRelation());
     if (options.context() != null) builder.setContext(toProtoStruct(options.context()));
     return lazyStream(
-        () -> stub(permissionsStub, options.transport()).lookupSubjects(builder.build()),
+        () ->
+            stub(permissionsStub, options.transport())
+                .withDeadline(pageDeadline())
+                .lookupSubjects(builder.build()),
         SpiceDBClient::lookupSubjectFromProto,
         options.timeout(),
         options.limit(),
@@ -1208,6 +1276,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                             .setResource(objectProto(resource))
                             .setPermission(permission)
                             .build()));
+    if (!resp.hasTreeRoot()) throw malformed("expand response has no tree");
     return new ExpandResult(
         toPermissionTree(resp.getTreeRoot()),
         (resp.hasExpandedAt() ? new ZedToken(resp.getExpandedAt().getToken()) : null));
@@ -1366,18 +1435,23 @@ public final class SpiceDBClient implements SpiceDBApi {
       b.setOptionalCursor(Cursor.newBuilder().setToken(options.cursor()));
     return managedStream(
         () -> {
+          // One request whose responses are the server's pages: each wait for the next one is
+          // bounded by the client default, so a server that stalls mid-export fails the export.
+          var pages = new PageTimer("export");
           var responses =
-              openStreamWithRetry(
-                  retryFor(ClientOperation.EXPORT_RELATIONSHIPS, options.retryPolicy()),
+              pages.open(
                   () ->
-                      stub(permissionsStub, options.transport())
-                          .exportBulkRelationships(b.build()));
+                      openStreamWithRetry(
+                          retryFor(ClientOperation.EXPORT_RELATIONSHIPS, options.retryPolicy()),
+                          () ->
+                              stub(permissionsStub, options.transport())
+                                  .exportBulkRelationships(b.build())));
           return new Iterator<ExportedRelationship>() {
             Iterator<ExportedRelationship> batch = Collections.emptyIterator();
 
             public boolean hasNext() {
               while (!batch.hasNext()) {
-                if (!responses.hasNext()) return false;
+                if (!pages.await(responses::hasNext)) return false;
                 batch = ProtoConv.fromProto(responses.next()).iterator();
               }
               return true;
@@ -1524,6 +1598,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       return new CountResult(0, null, true);
     }
 
+    if (!resp.hasReadCounterValue()) throw malformed("counter response has no value");
     var cv = resp.getReadCounterValue();
     return new CountResult(
         cv.getRelationshipCount(),
@@ -1694,12 +1769,14 @@ public final class SpiceDBClient implements SpiceDBApi {
                         authenticatedChannel),
                     options.transport())
                 .lookupPermissionSets(b.build()),
-        r ->
-            new Materialize.LookupPermissionSet(
-                r.hasChange() ? Materialize.change(r.getChange()) : null,
-                r.hasCursor()
-                    ? Base64.getEncoder().encodeToString(r.getCursor().toByteArray())
-                    : null),
+        r -> {
+          if (!r.hasChange()) throw malformed("permission-set lookup response has no change");
+          return new Materialize.LookupPermissionSet(
+              Materialize.change(r.getChange()),
+              r.hasCursor()
+                  ? Base64.getEncoder().encodeToString(r.getCursor().toByteArray())
+                  : null);
+        },
         options.timeout(),
         options.limit(),
         retryFor(ClientOperation.LOOKUP_PERMISSION_SETS, options.retryPolicy()));
@@ -1742,6 +1819,85 @@ public final class SpiceDBClient implements SpiceDBApi {
         r.hasAtRevision() ? new ZedToken(r.getAtRevision().getToken()) : null);
   }
 
+  // -----------------------------------------------------------------------
+  // Startup readiness
+  // -----------------------------------------------------------------------
+
+  /**
+   * Connects now and waits until the connection is ready, so a wrong or unreachable endpoint fails
+   * at startup rather than on the first call. The client otherwise connects lazily, on its first
+   * call. Throws {@link com.authzed.spicedb.errors.UnavailableException} when the connection failed
+   * within {@code timeout} (unreachable or refusing connections) and {@link
+   * com.authzed.spicedb.errors.DeadlineExceededException} when it was still connecting; both name
+   * the endpoint. Over a caller-owned {@link Channel} that is not a {@link ManagedChannel}, whose
+   * connectivity cannot be observed, it waits for a schema read to reach the server instead: any
+   * answer from the server, an error included, counts as ready.
+   *
+   * @param timeout how long to wait; must be positive
+   */
+  public void awaitReady(Duration timeout) {
+    if (timeout == null || timeout.isZero() || timeout.isNegative())
+      throw new InvalidArgumentException("timeout must be positive");
+    if (closed) throw cancelled("client closed");
+    long until = System.nanoTime() + timeout.toNanos();
+    var managed = readinessChannel;
+    if (managed == null) {
+      probeReady(timeout);
+      return;
+    }
+    boolean failed = false;
+    var state = managed.getState(true);
+    while (state != io.grpc.ConnectivityState.READY) {
+      if (state == io.grpc.ConnectivityState.TRANSIENT_FAILURE) failed = true;
+      if (state == io.grpc.ConnectivityState.SHUTDOWN)
+        throw ErrorMapper.newError(
+            Status.Code.UNAVAILABLE,
+            "spicedb: the connection to \"" + endpointLabel + "\" is closed");
+      long remaining = until - System.nanoTime();
+      if (remaining <= 0) throw notReady(timeout, failed);
+      var changed = new java.util.concurrent.CountDownLatch(1);
+      managed.notifyWhenStateChanged(state, changed::countDown);
+      try {
+        changed.await(remaining, TimeUnit.NANOSECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw cancelled("interrupted while waiting for the connection");
+      }
+      state = managed.getState(true);
+    }
+  }
+
+  private SpiceDBException notReady(Duration timeout, boolean failed) {
+    if (failed)
+      return ErrorMapper.newError(
+          Status.Code.UNAVAILABLE,
+          "spicedb: could not connect to \""
+              + endpointLabel
+              + "\" within "
+              + timeout
+              + " (unreachable or refusing connections)");
+    return ErrorMapper.newError(
+        Status.Code.DEADLINE_EXCEEDED,
+        "spicedb: the connection to \"" + endpointLabel + "\" was not ready within " + timeout);
+  }
+
+  /** Readiness over an unobservable channel: a wait-for-ready schema read reaches the server. */
+  private void probeReady(Duration timeout) {
+    try {
+      schemaStub
+          .withWaitForReady()
+          .withDeadline(io.grpc.Deadline.after(timeout.toNanos(), TimeUnit.NANOSECONDS))
+          .readSchema(ReadSchemaRequest.getDefaultInstance());
+    } catch (StatusRuntimeException e) {
+      if (Thread.currentThread().isInterrupted())
+        throw cancelled("interrupted while waiting for the connection");
+      var code = e.getStatus().getCode();
+      if (code == Status.Code.DEADLINE_EXCEEDED) throw notReady(timeout, false);
+      if (code == Status.Code.UNAVAILABLE) throw ErrorMapper.toSpiceDBException(e);
+      // Any other answer came from the server, which is therefore reachable.
+    }
+  }
+
   /** Already-authenticated transport escape hatch. Closing it is not ownership transfer. */
   public Channel rawChannel() {
     return authenticatedChannel;
@@ -1781,6 +1937,66 @@ public final class SpiceDBClient implements SpiceDBApi {
     if (timeout != null) return io.grpc.Deadline.after(timeout.toNanos(), TimeUnit.NANOSECONDS);
     if (defaultDeadline == DefaultDeadline.DISABLED) return null;
     return io.grpc.Deadline.after(defaultTimeout.toNanos(), TimeUnit.NANOSECONDS);
+  }
+
+  /**
+   * The budget of one page request of a finite paged read (relationship reads, lookups): the client
+   * default, from opening the page to receiving its last item, unless {@link
+   * DefaultDeadline#DISABLED}. The read's total budget (its {@code timeout}, or the caller's gRPC
+   * {@code Context} deadline) still bounds the whole read and wins when earlier.
+   */
+  private io.grpc.Deadline pageDeadline() {
+    if (defaultDeadline == DefaultDeadline.DISABLED) return null;
+    return io.grpc.Deadline.after(defaultTimeout.toNanos(), TimeUnit.NANOSECONDS);
+  }
+
+  /**
+   * The per-page budget of a read served as one server stream whose responses are its pages
+   * (export): each wait for the server, opening included, is bounded by the client default unless
+   * {@link DefaultDeadline#DISABLED}. Expiry cancels the call with {@code DEADLINE_EXCEEDED}. The
+   * read's total budget, inherited from the stream's context, still applies.
+   */
+  private final class PageTimer {
+    final String what;
+    final Duration timeout = defaultDeadline == DefaultDeadline.DISABLED ? null : defaultTimeout;
+    final Context.CancellableContext context = Context.current().withCancellation();
+
+    PageTimer(String what) {
+      this.what = what;
+    }
+
+    /** Opens the call inside this timer's context, so expiry cancels it. */
+    <T> T open(java.util.function.Supplier<T> open) {
+      var previous = context.attach();
+      try {
+        return await(open);
+      } finally {
+        context.detach(previous);
+      }
+    }
+
+    <T> T await(java.util.function.Supplier<T> wait) {
+      if (timeout == null) return wait.get();
+      var expiry =
+          DEADLINES.schedule(
+              () ->
+                  context.cancel(
+                      Status.DEADLINE_EXCEEDED
+                          .withDescription(
+                              what
+                                  + ": no page from the server within the client default deadline"
+                                  + " ("
+                                  + timeout
+                                  + ")")
+                          .asRuntimeException()),
+              timeout.toNanos(),
+              TimeUnit.NANOSECONDS);
+      try {
+        return wait.get();
+      } finally {
+        expiry.cancel(false);
+      }
+    }
   }
 
   private static Metadata bearerMetadata(String presharedKey) {
@@ -1931,6 +2147,14 @@ public final class SpiceDBClient implements SpiceDBApi {
         backoff = Math.min(maxBackoff, backoff * 2);
       }
     }
+  }
+
+  /**
+   * A response this client cannot interpret: {@code INTERNAL}, which no retry policy retries by
+   * default. Root DESIGN.md: never skip such a response or fill its fields with empty values.
+   */
+  static SpiceDBException malformed(String detail) {
+    return ErrorMapper.newError(Status.Code.INTERNAL, "malformed response: " + detail);
   }
 
   /**

@@ -103,7 +103,8 @@ import java.util.stream.StreamSupport;
  *       honor the limit and the subject relation option, and return a stored wildcard subject as
  *       {@code *}.
  *   <li>{@link #deleteAllRelationshipsNonAtomic} deletes every match in one step after checking its
- *       preconditions and reports progress once; {@link #close} does nothing.
+ *       preconditions and reports progress once; {@link #close} does nothing and {@link
+ *       #awaitReady} returns at once.
  *   <li>Operations without in-memory semantics (expand, schema analysis, watch, counters and the
  *       other experimental operations) are recorded and consult the fault hook like any other, then
  *       throw {@code UNIMPLEMENTED} in the client's error shape. {@link #rawChannel} returns {@code
@@ -904,6 +905,16 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   /** Does nothing: the double holds no transport. */
   @Override
   public void close() {}
+
+  /**
+   * Validates {@code timeout} as the client does, then returns at once: the double is always ready.
+   * Not recorded, since it is not an operation.
+   */
+  @Override
+  public void awaitReady(java.time.Duration timeout) {
+    if (timeout == null || timeout.isZero() || timeout.isNegative())
+      throw new InvalidArgumentException("timeout must be positive");
+  }
 
   /** {@code null}: the double has no transport. */
   @Override

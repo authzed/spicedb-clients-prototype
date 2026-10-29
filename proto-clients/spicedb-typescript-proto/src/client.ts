@@ -432,10 +432,10 @@ export function createSpiceDBClient(
   // dialing a host called "unix" is not. Matched case-insensitively because
   // URL lower-cases the scheme, so "UNIX:" reaches the same place.
   if (/^unix:/i.test(endpoint)) {
-    throw new Error(
-      `spicedb: unix-domain-socket targets are not supported by this client's transport: "${endpoint}". ` +
-        `Node's http2 client would parse "unix" as a DNS hostname and connect there, not to the socket path. ` +
-        `Use a "host:port" endpoint instead.`,
+    throw new InvalidEndpointError(
+      endpoint,
+      `unix-domain-socket targets are not supported by this client's transport ` +
+        `(Node's http2 client would parse "unix" as a DNS hostname and connect there, not to the socket path)`,
     );
   }
 

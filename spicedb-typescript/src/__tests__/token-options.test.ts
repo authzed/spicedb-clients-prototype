@@ -15,7 +15,8 @@ describe("native tokens and behavioral modes", () => {
         expect(token.equals(new ZedToken("different"))).toBe(false);
         expect(JSON.stringify(token)).toBe(JSON.stringify(raw));
         expect(Object.isFrozen(token)).toBe(true);
-        expect(Object.keys(token)).toEqual([]);
+        expect(Object.keys(token)).toEqual(["token"]);
+        expect(token.token).toBe(raw);
         expect(atLeast(token)._toProto().requirement.value).toEqual(create(ZedTokenSchema, { token: raw }));
         expect(() => atLeast(raw as unknown as ZedToken)).toThrow(InvalidArgumentError);
     });

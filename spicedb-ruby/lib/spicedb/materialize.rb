@@ -36,7 +36,7 @@ module SpiceDB
                                                                                optional_at_revision: token_to_proto(at_revision),
                                                                                optional_starting_after_cursor: cursor &&
         Authzed::Api::Materialize::V0::Cursor.new(**cursor.to_h, token: token_to_proto(cursor.token)))
-      budget = stream_budget(timeout, call_options, retry_policy: retry_policy)
+      budget = paged_budget(timeout, call_options, retry_policy: retry_policy)
       response_stream(:permission_sets, :lookup_permission_sets, request, budget, mapper: lambda { |response|
         wire = response.cursor
         PermissionSetLookup.new(change: permission_set_change(response.change), cursor: wire && PermissionSetCursor.new(

@@ -42,24 +42,37 @@ func (t PermissionTree) Children() []PermissionTree {
 func (t PermissionTree) Subjects() []rel.SubjectRef {
 	return append([]rel.SubjectRef(nil), t.subjects...)
 }
-func toPermissionTree(p *v1.PermissionRelationshipTree) PermissionTree {
+
+// toPermissionTree converts a tree node. A node whose variant this client
+// does not know is Unknown; the expanded object is optional (set operations
+// nested inside one rewrite carry none). A leaf subject that is missing or
+// invalid is a malformed response, never an empty subject.
+func toPermissionTree(p *v1.PermissionRelationshipTree) (PermissionTree, error) {
 	if p == nil {
-		return PermissionTree{}
+		return PermissionTree{}, nil
 	}
 	t := PermissionTree{expandedObject: nativeObject(p.GetExpandedObject()), expandedRelation: p.GetExpandedRelation()}
 	if inner := p.GetIntermediate(); inner != nil {
 		t.kind = PermissionTreeIntermediate
 		t.operation = toTreeOperation(inner.GetOperation())
 		for _, c := range inner.GetChildren() {
-			t.children = append(t.children, toPermissionTree(c))
+			child, e := toPermissionTree(c)
+			if e != nil {
+				return PermissionTree{}, e
+			}
+			t.children = append(t.children, child)
 		}
 	} else if leaf := p.GetLeaf(); leaf != nil {
 		t.kind = PermissionTreeLeaf
 		for _, s := range leaf.GetSubjects() {
-			t.subjects = append(t.subjects, nativeSubject(s))
+			subject, e := nativeSubjectStrict("expand permission tree", "leaf subject", s)
+			if e != nil {
+				return PermissionTree{}, e
+			}
+			t.subjects = append(t.subjects, subject)
 		}
 	}
-	return t
+	return t, nil
 }
 func toTreeOperation(op v1.AlgebraicSubjectSet_Operation) TreeOperation {
 	switch op {

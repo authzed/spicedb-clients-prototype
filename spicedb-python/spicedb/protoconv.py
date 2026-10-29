@@ -273,7 +273,7 @@ def _caller_response(mapper, value):
     try:
         return mapper(value)
     except InternalError as error:
-        raise LocalValidationError(str(error).replace("malformed response", "invalid response proto")) from None
+        raise LocalValidationError(str(error).replace("client detected malformed response from server", "invalid response proto")) from None
 
 
 def check_result_from_proto(value: permission_service_pb2.CheckPermissionResponse) -> CheckResult:

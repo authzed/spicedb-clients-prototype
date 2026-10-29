@@ -322,6 +322,116 @@ def test_relation_reference_without_names_fails():
         RelationReference._from_proto(sch.ReflectionRelationReference(definition_name="document"))
 
 
+def _assert_client_detected(caught):
+    """The message says the client found the problem, so it is not mistaken
+    for an INTERNAL the server sent; the server never sent a message."""
+    assert "client detected malformed response from server" in str(caught.value)
+    assert caught.value.server_message is None
+
+
+@pytest.mark.parametrize("client_type", FLAVORS)
+async def test_unspecified_check_permissionship_is_malformed(client_type):
+    client = _client(client_type)
+    response = p.CheckPermissionResponse(checked_at=T)
+    client._rpc = AsyncMock(return_value=response) if client_type is AioClient else Mock(return_value=response)
+    client._permissions = Mock()
+    with pytest.raises(InternalError) as caught:
+        await _resolve(client.check(
+            PermissionCheck(ObjectRef("document", "a"), "view", _ALICE), consistency=full()
+        ))
+    _assert_internal(caught, "permissionship is unspecified")
+    _assert_client_detected(caught)
+
+
+@pytest.mark.parametrize("client_type", FLAVORS)
+async def test_unspecified_bulk_check_item_permissionship_is_malformed(client_type):
+    checks = [PermissionCheck(ObjectRef("document", name), "view", _ALICE) for name in ("a", "b")]
+
+    def echo(method, request, *args):
+        return p.CheckBulkPermissionsResponse(
+            checked_at=T,
+            pairs=[
+                p.CheckBulkPermissionsPair(
+                    request=item,
+                    item=p.CheckBulkPermissionsResponseItem(
+                        permissionship=p.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION if i == 0 else 0
+                    ),
+                )
+                for i, item in enumerate(request.items)
+            ],
+        )
+
+    client = _client(client_type)
+    client._rpc = AsyncMock(side_effect=echo) if client_type is AioClient else Mock(side_effect=echo)
+    client._permissions = Mock()
+    with pytest.raises(InternalError) as caught:
+        await _resolve(client.check_bulk(checks, consistency=full()))
+    _assert_internal(caught, "check item 1: permissionship is unspecified")
+    _assert_client_detected(caught)
+    assert caught.value.input_index == 1
+
+
+@pytest.mark.parametrize("client_type", FLAVORS)
+async def test_unspecified_lookup_resources_permissionship_is_malformed(client_type):
+    client = _client(client_type)
+    client._permissions = Mock(LookupResources=lambda request, **kw: _Call([
+        p.LookupResourcesResponse(looked_up_at=T, resource_object_id="a",
+                                  permissionship=p.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+                                  after_result_cursor=core.Cursor(token="1")),
+        p.LookupResourcesResponse(looked_up_at=T, resource_object_id="b",
+                                  after_result_cursor=core.Cursor(token="2")),
+    ]))
+    seen = []
+    with pytest.raises(InternalError) as caught:
+        async for item in _aiter(client.lookup_resources(
+            resource_type="document", permission="view", subject=_ALICE, consistency=full()
+        )):
+            seen.append(item)
+    _assert_internal(caught, "LookupResourcesResponse.permissionship is unspecified")
+    _assert_client_detected(caught)
+    assert [r.resource_id for r in seen] == ["a"]
+
+
+@pytest.mark.parametrize("client_type", FLAVORS)
+@pytest.mark.parametrize("deprecated", [False, True])
+async def test_unspecified_lookup_subjects_permissionship_is_malformed(client_type, deprecated):
+    good = p.LookupSubjectsResponse(
+        looked_up_at=T,
+        subject=p.ResolvedSubject(subject_object_id="a", permissionship=p.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION),
+    )
+    bad = (
+        p.LookupSubjectsResponse(looked_up_at=T, subject_object_id="b")
+        if deprecated
+        else p.LookupSubjectsResponse(looked_up_at=T, subject=p.ResolvedSubject(subject_object_id="b"))
+    )
+    client = _client(client_type)
+    client._permissions = Mock(LookupSubjects=lambda request, **kw: _Call([good, bad]))
+    seen = []
+    with pytest.raises(InternalError) as caught:
+        async for item in _aiter(client.lookup_subjects(
+            resource=ObjectRef("document", "a"), permission="view", subject_type="user", consistency=full()
+        )):
+            seen.append(item)
+    _assert_internal(caught, "LookupSubjectsResponse.subject.permissionship is unspecified")
+    _assert_client_detected(caught)
+    assert [s.subject.subject_id for s in seen] == ["a"]
+
+
+@pytest.mark.parametrize("client_type", FLAVORS)
+async def test_malformed_response_messages_say_the_client_detected_them(client_type):
+    client = _client(client_type)
+    client._permissions = Mock(
+        ReadRelationships=lambda request, **kw: _Call([p.ReadRelationshipsResponse(read_at=T)])
+    )
+    with pytest.raises(InternalError) as caught:
+        await _collect(client.read_relationships(Filter("document"), consistency=full()))
+    assert str(caught.value) == (
+        "spicedb: client detected malformed response from server: "
+        "ReadRelationshipsResponse is missing relationship"
+    )
+    _assert_client_detected(caught)
+
+
 def test_internal_is_not_retried_by_default():
     assert grpc.StatusCode.INTERNAL not in DEFAULT_RETRY_POLICY.retryable_codes
 

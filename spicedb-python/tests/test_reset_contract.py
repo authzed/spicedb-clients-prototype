@@ -153,7 +153,7 @@ def test_recursive_trace_native_values_and_absence():
     assert native.sub_problems[0].result is Permissionship.UNSPECIFIED
     assert native.sub_problems[0].permission_type is PermissionType.UNSPECIFIED
     assert native.sub_problems[0].was_cached_result is False
-    assert check_result(p.CheckPermissionResponse(checked_at=_core_tok.ZedToken(token="t"))).debug_trace is None
+    assert check_result(p.CheckPermissionResponse(checked_at=_core_tok.ZedToken(token="t"), permissionship=1)).debug_trace is None
     bulk = p.CheckBulkPermissionsResponse(
         checked_at=c.ZedToken(token="chunk"),
         pairs=[

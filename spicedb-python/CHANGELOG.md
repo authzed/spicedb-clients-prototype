@@ -1,6 +1,6 @@
 # Changelog
 
-- Endpoints accept `host:port`, `http://host:port` (plaintext) and `https://host[:port]` (TLS, port 443 by default). The URL scheme must agree with `transport_security`; an `http://` URL or a plaintext `host` without a port is rejected (no silent dial to 80 or 443), and a TLS endpoint without a port uses 443. Any other form (a path, query, fragment or userinfo, a non-numeric or out-of-range port, an unsupported scheme such as `ftp://` or `dns:///`) now fails at construction with an `InvalidArgumentError` naming the problem, instead of building a client whose every call fails. Malformed endpoints are reported before the remote-plaintext refusal, which now judges the URL's parsed host and names both options a remote plaintext host (such as a Docker Compose service) needs: `transport_security=TransportSecurity.PLAINTEXT` and `remote_credentials=RemoteCredentials.ALLOW`.
+- Endpoints accept `host:port`, `http://host:port` (plaintext) and `https://host[:port]` (TLS, port 443 by default). The URL scheme must agree with `transport_security`; an `http://` URL or a plaintext `host` without a port is rejected (no silent dial to 80 or 443), and a TLS endpoint without a port uses 443. Any other form (a path, query, fragment or userinfo, a non-numeric or out-of-range port, an unsupported scheme such as `ftp://` or `dns:///`) now fails at construction with a `LocalValidationError` naming the problem, instead of building a client whose every call fails. Malformed endpoints are reported before the remote-plaintext refusal, which now judges the URL's parsed host and names both options a remote plaintext host (such as a Docker Compose service) needs: `transport_security=TransportSecurity.PLAINTEXT` and `remote_credentials=RemoteCredentials.ALLOW`.
 
 - Generated sync/async clients now expose all native capabilities directly, including `delete_relationships`, `delete_all_relationships_non_atomic`, Watch relationship filters, bulk checks, schema operations, imports/exports, counters, and materialize methods. Schema-aware check/lookup overloads remain strict. Lookup/read methods expose native pagination and diagnostic options; typed write helpers accept metadata, and `write` accepts typed or native transactions. Native stream identity and cancellation are preserved.
 
@@ -13,6 +13,33 @@
 - Add `LookupPermissionshipFilter.ALL` / `LookupPermissionshipFilter.HAS_PERMISSION_ONLY` to LookupResources. The default preserves conditional matches; opt-in filtering yields only unconditional grants, with limits applied after filtering and pagination continuing through skipped matches.
 
 ## Unreleased
+
+### Client-detected errors say so
+
+- A malformed response's `InternalError` now reads `spicedb: client detected
+  malformed response from server: <detail>` (was `spicedb: malformed
+  response: <detail>`), so it is not mistaken for an `INTERNAL` the server
+  sent. `server_message` stays None.
+- A check, bulk-check item, lookup-resources result or looked-up subject (not
+  its excluded subjects) whose permissionship is unspecified now raises that `InternalError` (a bulk item carries its
+  `input_index`) instead of returning `Permissionship.UNSPECIFIED`. The
+  in-memory doubles never answer UNSPECIFIED: `set_check_result` with it, and
+  a check, bulk check or lookup whose resolver returns it, raise
+  `LocalValidationError`.
+
+### Endpoint validation is local validation
+
+- A malformed endpoint (for example a plaintext `"localhost"` without a port)
+  or a non-string endpoint now raises `LocalValidationError` instead of a
+  plain `InvalidArgumentError`, so `except ValueError` around construction
+  catches it like every other constructor argument error. `except
+  InvalidArgumentError` keeps matching.
+
+### Testing guide
+
+- The AI integration guide notes that projects whose permissions are all
+  computed get little from stored-relation grants on the double: model them
+  with the resolver or test against SpiceDB.
 
 ### Closing an aio stream no longer cancels the consumer's task
 

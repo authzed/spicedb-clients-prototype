@@ -15,8 +15,9 @@ at construction". A constructor accepts:
   slashless ``dns:host:port`` are rejected;
 - a gRPC ``unix:`` socket target, handed to the transport unchanged.
 
-Anything else fails here, before a channel exists, with an
-``InvalidArgumentError`` naming the actual problem and the accepted forms.
+Anything else fails here, before a channel exists, with a
+``LocalValidationError`` (an ``InvalidArgumentError`` and a ``ValueError``)
+naming the actual problem and the accepted forms.
 grpc's C-core would otherwise accept almost any string and fail every call
 with a DNS or "target uri is not valid" error.
 
@@ -44,9 +45,9 @@ _BARE_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
 
 
 def _invalid(endpoint: object, reason: str) -> Exception:
-    from spicedb.errors import InvalidArgumentError
+    from spicedb.errors import LocalValidationError
 
-    return InvalidArgumentError(
+    return LocalValidationError(
         f"spicedb: invalid endpoint {endpoint!r}: {reason}; {ENDPOINT_FORMS}"
     )
 
@@ -138,14 +139,14 @@ def _dns_target(endpoint: str, insecure: bool) -> str:
 def parse_endpoint(endpoint: str, *, insecure: bool) -> str:
     """Validate ``endpoint`` and return the gRPC target to dial.
 
-    :raises spicedb.errors.InvalidArgumentError: for a malformed endpoint, an
+    :raises spicedb.errors.LocalValidationError: for a malformed endpoint, an
         unsupported scheme, an ``http://`` URL without a port, or a scheme
         that disagrees with ``insecure``.
     """
     if not isinstance(endpoint, str):
-        from spicedb.errors import InvalidArgumentError
+        from spicedb.errors import LocalValidationError
 
-        raise InvalidArgumentError("endpoint: expected str")
+        raise LocalValidationError("endpoint: expected str")
     if not endpoint:
         raise _invalid(endpoint, "empty endpoint")
     # A unix-socket target is a gRPC target URI carrying a filesystem path,

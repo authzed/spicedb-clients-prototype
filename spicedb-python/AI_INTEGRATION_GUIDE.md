@@ -298,9 +298,12 @@ if isinstance(err, SpiceDBError):
 Errors raised by local validation, before any RPC, are `LocalValidationError`:
 an `InvalidArgumentError` and also a `ValueError`, so `except ValueError`
 around parsing input works. A server `INVALID_ARGUMENT` is a plain
-`InvalidArgumentError`. A response the client cannot interpret (a missing
-required field, a cursor that does not advance) raises `InternalError`, which
-is not retried: treat it as a server or proxy bug, not a transient error.
+`InvalidArgumentError`. A bad endpoint or constructor argument is local
+validation too. A response the client cannot interpret (a missing required
+field, an unspecified permissionship, a cursor that does not advance) raises
+`InternalError`, whose message begins "client detected malformed response
+from server" (the server sent no such status); it is not retried: treat it as
+a server or proxy bug, not a transient error.
 
 Native errors are `grpc.RpcError`s: existing `except grpc.RpcError` handlers
 and `err.code()` / `err.details()` keep working, including for local
@@ -315,7 +318,10 @@ stored relationship whose relation is named `view`, or by a check resolver
 you install; the double never derives it from `reader`, `writer` or `parent`.
 Use the double for code that consumes check and lookup results (model the
 permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
-or a container) for tests of the permission logic in the schema.
+or a container) for tests of the permission logic in the schema. Projects
+whose permissions are all computed (unions, arrows) get little from
+stored-relation grants on the double, so model them with the resolver or test
+against SpiceDB.
 
 ```python
 fake = InMemoryClient([Relationship.from_tuple("organization:acme#admin@user:alice")])

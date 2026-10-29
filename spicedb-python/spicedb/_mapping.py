@@ -49,6 +49,21 @@ from spicedb.types import (
 )
 
 
+def _check_permissionship(value: int, what: str) -> Permissionship:
+    """A check's permissionship, which the server always sets: an unspecified
+    one is a malformed response, never ``Permissionship.UNSPECIFIED``."""
+    if value == permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_UNSPECIFIED:
+        raise _wire.malformed(f"{what}.permissionship is unspecified")
+    return _check_permissionship_from_proto(value)
+
+
+def _lookup_permissionship(value: int, what: str) -> Permissionship:
+    """A lookup result's permissionship, which the server always sets."""
+    if value == permission_service_pb2.LOOKUP_PERMISSIONSHIP_UNSPECIFIED:
+        raise _wire.malformed(f"{what}.permissionship is unspecified")
+    return _permissionship_from_proto(value)
+
+
 def check_results(
     resp: permission_service_pb2.CheckBulkPermissionsResponse,
     expected_items: Sequence[permission_service_pb2.CheckBulkPermissionsRequestItem],
@@ -123,11 +138,17 @@ def check_results(
             )
             error.input_index = offset + i
             raise error
+        if (
+            pair.item.permissionship
+            == permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_UNSPECIFIED
+        ):
+            error = _wire.malformed(f"check item {offset + i}: permissionship is unspecified")
+            error.input_index = offset + i
+            raise error
+        permissionship = _check_permissionship_from_proto(pair.item.permissionship)
         results.append(
             CheckResult(
-                permissionship=_check_permissionship_from_proto(
-                    pair.item.permissionship
-                ),
+                permissionship=permissionship,
                 missing_context=list(
                     pair.item.partial_caveat_info.missing_required_context
                 ),
@@ -141,11 +162,13 @@ def check_results(
 def lookup_resource(
     resp: permission_service_pb2.LookupResourcesResponse,
 ) -> LookupResource:
+    resource_id = _wire.text(resp.resource_object_id, "LookupResourcesResponse.resource_object_id")
+    looked_up_at = _wire.token(resp, "looked_up_at", "LookupResourcesResponse")
     return LookupResource(
-        resource_id=_wire.text(resp.resource_object_id, "LookupResourcesResponse.resource_object_id"),
-        permissionship=_permissionship_from_proto(resp.permissionship),
+        resource_id=resource_id,
+        permissionship=_lookup_permissionship(resp.permissionship, "LookupResourcesResponse"),
         partial_caveat=_partial_caveat_from_proto(resp),
-        looked_up_at=_wire.token(resp, "looked_up_at", "LookupResourcesResponse"),
+        looked_up_at=looked_up_at,
         after_result_cursor=resp.after_result_cursor.token or None
         if resp.HasField("after_result_cursor")
         else None,
@@ -156,6 +179,7 @@ def lookup_subject(
     resp: permission_service_pb2.LookupSubjectsResponse,
 ) -> LookupSubject:
     subject = _resolved_subject_from_proto(resp.subject)
+    wire_permissionship = resp.subject.permissionship
     if not subject.subject_id:
         # Fall back to the deprecated top-level fields for servers that don't
         # yet populate the non-deprecated `subject` field.
@@ -164,7 +188,11 @@ def lookup_subject(
             permissionship=_permissionship_from_proto(resp.permissionship),
             partial_caveat=_partial_caveat_from_proto(resp),
         )
+        wire_permissionship = resp.permissionship
     _wire.text(subject.subject_id, "LookupSubjectsResponse.subject.subject_object_id")
+    # The found subject's permissionship is always set; excluded subjects keep
+    # their existing mapping (the deprecated ID-only form has none at all).
+    _lookup_permissionship(wire_permissionship, "LookupSubjectsResponse.subject")
 
     excluded: list[ResolvedSubject] = []
     if resp.excluded_subjects:
@@ -216,10 +244,11 @@ def watch_event(resp: watch_service_pb2.WatchResponse) -> WatchEvent:
 
 
 def check_result(resp):
+    checked_at = _wire.token(resp, "checked_at", "CheckPermissionResponse")
     return CheckResult(
-        permissionship=_check_permissionship_from_proto(resp.permissionship),
+        permissionship=_check_permissionship(resp.permissionship, "CheckPermissionResponse"),
         missing_context=list(resp.partial_caveat_info.missing_required_context),
-        checked_at=_wire.token(resp, "checked_at", "CheckPermissionResponse"),
+        checked_at=checked_at,
         debug_trace=_debug_information(resp),
         expiration=resp.optional_expires_at.ToDatetime(tzinfo=timezone.utc)
         if resp.HasField("optional_expires_at")

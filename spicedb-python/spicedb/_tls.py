@@ -79,7 +79,7 @@ def require_tls_material_usable(
        pair later, from a layer with no idea which argument the caller got
        wrong; failing here names it.
 
-    :raises spicedb.errors.InvalidArgumentError: on either condition.
+    :raises spicedb.errors.LocalValidationError: on either condition.
     """
     from spicedb.errors import LocalValidationError
 

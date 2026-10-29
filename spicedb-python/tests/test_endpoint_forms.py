@@ -21,7 +21,7 @@ from spicedb import PermissionCheck, Relationship, RemoteCredentials, TransportS
 from spicedb._endpoint import parse_endpoint
 from spicedb.aio import SpiceDBClient as AsyncSpiceDBClient
 from spicedb.consistency import full
-from spicedb.errors import InvalidArgumentError
+from spicedb.errors import InvalidArgumentError, LocalValidationError
 from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
 from tests.test_auth_headers import TOKEN, _handlers, _Recorder, _serve
 
@@ -100,6 +100,11 @@ def test_rejected_forms_fail_at_construction(client, endpoint, transport, proble
     ):
         with pytest.raises(InvalidArgumentError) as excinfo:
             client(endpoint, token=TOKEN, transport_security=transport)
+    # Local validation, so ``except ValueError`` around construction catches
+    # a bad endpoint the same way it catches every other bad argument.
+    assert isinstance(excinfo.value, LocalValidationError)
+    assert isinstance(excinfo.value, ValueError)
+    assert excinfo.value.server_message is None
     message = str(excinfo.value)
     assert problem in message
     assert "expected host:port, http://host:port" in message
@@ -107,6 +112,23 @@ def test_rejected_forms_fail_at_construction(client, endpoint, transport, proble
     assert "remote_credentials" not in message
     for channel in (sync_insecure, sync_secure, aio_insecure, aio_secure):
         channel.assert_not_called()
+
+
+@pytest.mark.parametrize("client", [SyncSpiceDBClient, AsyncSpiceDBClient])
+def test_plaintext_endpoint_without_port_is_caught_by_except_value_error(client):
+    try:
+        client("localhost", token=TOKEN, transport_security=PLAIN)
+    except ValueError as error:
+        assert isinstance(error, LocalValidationError)
+        assert "needs an explicit port" in str(error)
+    else:
+        pytest.fail("a plaintext endpoint without a port was accepted")
+
+
+@pytest.mark.parametrize("client", [SyncSpiceDBClient, AsyncSpiceDBClient])
+def test_non_string_endpoint_is_local_validation(client):
+    with pytest.raises(LocalValidationError, match="endpoint: expected str"):
+        client(50051, token=TOKEN, transport_security=PLAIN)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("client", [SyncSpiceDBClient, AsyncSpiceDBClient])

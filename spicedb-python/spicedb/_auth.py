@@ -154,7 +154,7 @@ def require_insecure_transport_allowed(
     any credential -- a rejected combination must never get far enough to
     put a bearer token on the wire.
 
-    :raises spicedb.errors.InvalidArgumentError: if ``insecure`` is True,
+    :raises spicedb.errors.LocalValidationError: if ``insecure`` is True,
         ``endpoint`` is not loopback, and ``allow_insecure_remote_credentials``
         is False.
     """

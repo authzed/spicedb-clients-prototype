@@ -427,7 +427,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     error naming the expected format: an endpoint never builds a client whose
     every call fails. The loopback check runs on the parsed host. An
     `http://` URL needs an explicit port (no client silently dials port 80);
-    an `https://` URL without one uses 443. Malformed forms (path, query,
+    an `https://` URL without one uses 443. The same holds for a bare host:
+    plaintext needs a port, TLS defaults to 443. Malformed forms (path, query,
     userinfo, non-numeric port) fail with an error naming that problem,
     checked before the remote-plaintext policy, whose message appears only
     for a well-formed remote host.

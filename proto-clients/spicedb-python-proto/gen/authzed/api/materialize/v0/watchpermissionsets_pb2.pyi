@@ -1,5 +1,3 @@
-import datetime
-
 from authzed.api.materialize.v0 import watchpermissions_pb2 as _watchpermissions_pb2
 from authzed.api.v1 import core_pb2 as _core_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
@@ -7,8 +5,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Iterable as _Iterable, Mapping as _Mapping
-from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -44,7 +41,7 @@ class Cursor(_message.Message):
     completed_members: bool
     starting_key: str
     cursor: str
-    def __init__(self, limit: _Optional[int] = ..., token: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., starting_index: _Optional[int] = ..., completed_members: _Optional[bool] = ..., starting_key: _Optional[str] = ..., cursor: _Optional[str] = ...) -> None: ...
+    def __init__(self, limit: _Optional[int] = ..., token: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., starting_index: _Optional[int] = ..., completed_members: bool = ..., starting_key: _Optional[str] = ..., cursor: _Optional[str] = ...) -> None: ...
 
 class LookupPermissionSetsRequest(_message.Message):
     __slots__ = ("limit", "optional_at_revision", "optional_starting_after_cursor")
@@ -142,4 +139,4 @@ class DownloadPermissionSetsResponse(_message.Message):
     files: _containers.RepeatedCompositeFieldContainer[File]
     timestamp: _timestamp_pb2.Timestamp
     at_revision: _core_pb2.ZedToken
-    def __init__(self, files: _Optional[_Iterable[_Union[File, _Mapping]]] = ..., timestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., at_revision: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ...) -> None: ...
+    def __init__(self, files: _Optional[_Iterable[_Union[File, _Mapping]]] = ..., timestamp: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., at_revision: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ...) -> None: ...

@@ -9,8 +9,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Iterable as _Iterable, Mapping as _Mapping
-from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -51,4 +50,4 @@ class WatchResponse(_message.Message):
     schema_updated: bool
     is_checkpoint: bool
     full_revision_metadata: _containers.RepeatedCompositeFieldContainer[_struct_pb2.Struct]
-    def __init__(self, updates: _Optional[_Iterable[_Union[_core_pb2.RelationshipUpdate, _Mapping]]] = ..., changes_through: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., optional_transaction_metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., schema_updated: _Optional[bool] = ..., is_checkpoint: _Optional[bool] = ..., full_revision_metadata: _Optional[_Iterable[_Union[_struct_pb2.Struct, _Mapping]]] = ...) -> None: ...
+    def __init__(self, updates: _Optional[_Iterable[_Union[_core_pb2.RelationshipUpdate, _Mapping]]] = ..., changes_through: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., optional_transaction_metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., schema_updated: bool = ..., is_checkpoint: bool = ..., full_revision_metadata: _Optional[_Iterable[_Union[_struct_pb2.Struct, _Mapping]]] = ...) -> None: ...

@@ -9,8 +9,7 @@ from validate import validate_pb2 as _validate_pb2_1
 from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Iterable as _Iterable, Mapping as _Mapping
-from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -38,7 +37,7 @@ class ExperimentalCountRelationshipsResponse(_message.Message):
     READ_COUNTER_VALUE_FIELD_NUMBER: _ClassVar[int]
     counter_still_calculating: bool
     read_counter_value: ReadCounterValue
-    def __init__(self, counter_still_calculating: _Optional[bool] = ..., read_counter_value: _Optional[_Union[ReadCounterValue, _Mapping]] = ...) -> None: ...
+    def __init__(self, counter_still_calculating: bool = ..., read_counter_value: _Optional[_Union[ReadCounterValue, _Mapping]] = ...) -> None: ...
 
 class ReadCounterValue(_message.Message):
     __slots__ = ("relationship_count", "read_at")
@@ -224,7 +223,7 @@ class ExpTypeReference(_message.Message):
     is_terminal_subject: bool
     optional_relation_name: str
     is_public_wildcard: bool
-    def __init__(self, subject_definition_name: _Optional[str] = ..., optional_caveat_name: _Optional[str] = ..., is_terminal_subject: _Optional[bool] = ..., optional_relation_name: _Optional[str] = ..., is_public_wildcard: _Optional[bool] = ...) -> None: ...
+    def __init__(self, subject_definition_name: _Optional[str] = ..., optional_caveat_name: _Optional[str] = ..., is_terminal_subject: bool = ..., optional_relation_name: _Optional[str] = ..., is_public_wildcard: bool = ...) -> None: ...
 
 class ExpPermission(_message.Message):
     __slots__ = ("name", "comment", "parent_definition_name")
@@ -256,7 +255,7 @@ class ExpRelationReference(_message.Message):
     definition_name: str
     relation_name: str
     is_permission: bool
-    def __init__(self, definition_name: _Optional[str] = ..., relation_name: _Optional[str] = ..., is_permission: _Optional[bool] = ...) -> None: ...
+    def __init__(self, definition_name: _Optional[str] = ..., relation_name: _Optional[str] = ..., is_permission: bool = ...) -> None: ...
 
 class ExperimentalComputablePermissionsResponse(_message.Message):
     __slots__ = ("permissions", "read_at")

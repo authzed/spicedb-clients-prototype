@@ -18,6 +18,6 @@ export { Code } from "@connectrpc/connect";
 export { DEFAULT_RETRY_POLICY, type RetryPolicy, type RetryEvent } from "./retry.js";
 /** Native <-> protocol conversions for tools that print or persist protocol-shaped data. */
 export * as protoconv from "./protoconv.js";
-export { InMemorySpiceDB, FaultStage, SchemaRevision, type CheckRegistration, type InMemoryOperation, type InMemoryCallArguments, type RecordedCall, type Fault, type FaultHook } from "./testing.js";
+export { InMemorySpiceDB, FaultStage, SchemaRevision, type CheckRegistration, type CheckResolver, type InMemoryOperation, type InMemoryCallArguments, type RecordedCall, type Fault, type FaultHook } from "./testing.js";
 
 export { SubjectRelationKind, Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, DeletePartial, Paging } from "./modes.js";

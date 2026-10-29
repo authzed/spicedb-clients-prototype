@@ -1,13 +1,13 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { Consistency } from "./consistency.js";
 import { InvalidArgumentError, SpiceDBError, type SpiceDBErrorOptions } from "./errors.js";
-import { DeletePartial, mode } from "./modes.js";
+import { DeletePartial, LookupDebug, LookupPermissionshipFilter, Paging, Wildcards, mode } from "./modes.js";
 import { OperationAbortError } from "./operation.js";
 import { mutationRetry, validRetryPolicy } from "./retry.js";
 import { ZedToken } from "./token.js";
 import type { SpiceDBClientInterface, SpiceDBProtoClient } from "./client.js";
 import {
-    CheckResult, Transaction, filterMatches, immutableSnapshot, nativeRelationshipFields, objectRefToString, positiveLimit, preconditionToString, relationshipToFilter,
+    CheckResult, Transaction, filterMatches, immutableSnapshot, jsonSnapshot, nativeRelationshipFields, objectRefToString, positiveLimit, preconditionToString, relationshipToFilter,
     relationshipToString, subjectRefToString, toProtoRelationship, toProtoRelationshipFilter,
     type CallOptions, type CheckOptions, type CheckRequest, type DeleteAllOptions, type DeleteOptions, type DeleteResult, type ExportedRelationship,
     type ExportRelationshipsRequest, type ImportOptions, type ObjectRef, type Permissionship, type Precondition, type ReadRelationship,
@@ -21,8 +21,8 @@ import {
 
 /**
  * The operations {@link InMemorySpiceDB} records, named like the client's
- * methods. Those after `checkBulk` have no in-memory semantics: they are
- * recorded, consult the fault hook, and fail with `Code.Unimplemented`.
+ * methods. Those after `lookupSubjects` have no in-memory semantics: they
+ * are recorded, consult the fault hook, and fail with `Code.Unimplemented`.
  */
 export type InMemoryOperation = "write" | "readRelationships" | "exportRelationships" | "importRelationships" | "deleteRelationships"
     | "deleteAllRelationshipsNonAtomic" | "readSchema" | "writeSchema" | "reflectSchema" | "check" | "checkBulk"
@@ -86,7 +86,7 @@ export enum FaultStage {
     ImportBatch = "importBatch",
     /** After every import batch, before the import commits. */
     ImportCommit = "importCommit",
-    /** Before a read or export yields item `Fault.item` (0-based). */
+    /** Before a read, export or lookup yields item `Fault.item` (0-based). */
     Item = "item",
 }
 
@@ -126,14 +126,25 @@ export interface CheckRegistration {
 }
 
 /**
+ * Decides a check {@link InMemorySpiceDB} has no registered result for. It
+ * receives the check with the call's default context (`CheckOptions.context`)
+ * merged in, the check's own keys winning; for a lookup, the check of one
+ * candidate object with the lookup's consistency and context. It returns a
+ * permissionship, or `undefined` to decline and fall through to the stored
+ * relationships. It never fails a call: inject failures with the fault hook.
+ */
+export type CheckResolver = (check: CheckRequest) => Permissionship | undefined;
+
+/**
  * An in-memory test double for {@link SpiceDBClient}. It implements
  * {@link SpiceDBClientInterface}, the client's full method set, so that type
  * (or a caller-defined `Pick<SpiceDBClient, "write" | "check">`) accepts both.
  * `write`, `readRelationships`, `deleteRelationships`,
  * `deleteAllRelationshipsNonAtomic`, `importRelationships`,
  * `exportRelationships`, `readSchema`, `writeSchema`, `reflectSchema`, `check`,
- * `checkBulk` and `close` work in memory. The other operations (lookups,
- * expand, schema introspection, watch and the experimental methods) are
+ * `checkBulk`, `lookupResources`, `lookupSubjects` and `close` work in memory.
+ * The other operations (expand, schema introspection, watch and the
+ * experimental methods) are
  * recorded, consult the fault hook, and then fail with `Code.Unimplemented` in
  * the client's error shape (a stream fails from iteration); `raw()` throws.
  *
@@ -142,11 +153,27 @@ export interface CheckRegistration {
  * imports (`AlreadyExistsError`), empty writes (preconditions checked, current
  * revision returned), filter matching via {@link filterMatches}, bounded and
  * all-or-nothing deletes, and expired relationships disappearing from reads.
- * It does not evaluate a schema: checks return results registered with
- * {@link InMemorySpiceDB.setCheckResult} (unregistered checks are
- * `noPermission`), `writeSchema` stores the text without compiling it, and
- * `reflectSchema` returns the result registered with
- * {@link InMemorySpiceDB.setReflectSchemaResult}.
+ * It does not evaluate a schema. A check resolves in a fixed order: the result
+ * registered for that exact check ({@link InMemorySpiceDB.setCheckResult});
+ * then the {@link CheckResolver} set with
+ * {@link InMemorySpiceDB.setCheckResolver} ({@link InMemorySpiceDB.grantAll}
+ * grants everything); then the stored relationships, where a live
+ * relationship on the resource whose relation is the permission's name and
+ * whose subject matches exactly or by wildcard grants it (`conditionalPermission`
+ * when every such relationship is caveated); anything else is `noPermission`.
+ * A subject relation of `...` means a direct subject throughout.
+ * `lookupResources` and `lookupSubjects` enumerate the objects of the
+ * requested type that appear in the stored relationships (as resource or
+ * subject), in order of first appearance among the stored relationships (in
+ * the identity order reads yield), and yield those the check resolution
+ * grants; conditional grants are `conditionalPermission` with partial-caveat
+ * info naming no missing context (caveats are not evaluated). They honor the
+ * permissionship filter, wildcard option, `limit` and `cursor` (the decimal
+ * count of granted objects before the resume point, including those the
+ * permissionship filter drops, as {@link InMemorySpiceDB.cursorAfter}
+ * builds); a stored wildcard subject is returned as `*`. `writeSchema` stores the text
+ * without compiling it, and `reflectSchema` returns the result registered
+ * with {@link InMemorySpiceDB.setReflectSchemaResult}.
  *
  * Errors have the same classes, codes and message shape as the real client's
  * for the same failure: a failure SpiceDB reports carries the server message
@@ -171,6 +198,7 @@ export interface CheckRegistration {
 export class InMemorySpiceDB implements SpiceDBClientInterface {
     #relationships = new Map<string, Relationship>();
     #checks = new Map<string, Permissionship | SpiceDBError>();
+    #resolver?: CheckResolver;
     #revision = 0;
     #closed = false;
     #schema?: string;
@@ -192,10 +220,14 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         return serverError(code, message, options);
     }
 
+    /** A {@link CheckResolver} that grants every check: `db.setCheckResolver(InMemorySpiceDB.grantAll)`. */
+    static readonly grantAll: CheckResolver = () => "hasPermission";
+
     /**
      * The cursor that resumes a read or export after the first `n` matching
-     * relationships (in identity order): the `afterResultCursor` the store puts
-     * on the `n`-th item. The format, the decimal count `n`, is stable for tests.
+     * relationships (in identity order), or a lookup after the first `n`
+     * granted objects (in order of first appearance): the `afterResultCursor` the double puts on
+     * the `n`-th item. The format, the decimal count `n`, is stable for tests.
      */
     static cursorAfter(n: number): string {
         if (!Number.isSafeInteger(n) || n < 0)
@@ -215,6 +247,13 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     setCheckResult(registration: CheckRegistration, result: Permissionship | SpiceDBError): void {
         this.#checks.set(checkKey(registration), result);
     }
+
+    /**
+     * Installs the resolver consulted for checks (and lookup candidates) with
+     * no registered result, before the stored relationships; `undefined`
+     * removes it.
+     */
+    setCheckResolver(resolver: CheckResolver | undefined): void { this.#resolver = resolver; }
 
     /** Registers the definitions and caveats `reflectSchema` returns (stamped with the current revision). */
     setReflectSchemaResult(result: Omit<ReflectSchemaResult, "revision">): void {
@@ -420,7 +459,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     async check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult> {
         this.#start("check", request, options);
         this.#begin(options);
-        return this.#check(request);
+        return this.#check(request, options?.context);
     }
 
     async checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]> {
@@ -429,7 +468,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         const results: CheckResult[] = [];
         for (const [index, request] of requests.entries()) {
             try {
-                results.push(this.#check(request));
+                results.push(this.#check(request, options?.context));
             }
             catch (error) {
                 if (!(error instanceof SpiceDBError) || options?.itemErrors !== "returned")
@@ -448,11 +487,63 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         throw SpiceDBError.fromCode(Code.Unimplemented, "InMemorySpiceDB has no protocol client");
     }
 
+    /**
+     * Yields the objects of `resourceType` known to the store (as resource or
+     * subject of a live relationship) that the check resolution grants
+     * `subject`, in order of first appearance, honoring the permissionship filter, `limit` and
+     * `cursor`; each carries its `afterResultCursor`.
+     */
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource> {
-        return this.#unimplementedStream("lookupResources", request, options);
+        const call = this.#record("lookupResources", request, options);
+        const fault = this.#faultAt(call, FaultStage.Call, 0);
+        if (fault !== undefined)
+            return failedStream(fault);
+        const filter = mode(request.permissionshipFilter, LookupPermissionshipFilter, LookupPermissionshipFilter.All, "permissionshipFilter");
+        const single = mode(request.paging, Paging, Paging.Automatic, "paging") === Paging.SingleRequest;
+        mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug");
+        const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
+        if (!single)
+            positiveLimit(request.pageSize ?? 1000, "pageSize");
+        requireConsistency(request.consistency);
+        if (request.context !== undefined)
+            jsonSnapshot(request.context);
+        this.#begin(options);
+        const lookedUpAt = new ZedToken(String(this.#revision));
+        const context = request.context === undefined ? {} : { context: request.context };
+        return streamOf(() => this.#lookup(request.resourceType, request.cursor, limit,
+            id => this.#resolve({ resource: { objectType: request.resourceType, objectId: id }, permission: request.permission, subject: request.subject, consistency: request.consistency, ...context }),
+            permissionship => filter === LookupPermissionshipFilter.All || permissionship === "hasPermission")
+            .map(([resourceId, permissionship, afterResultCursor]) => immutableSnapshot({ resourceId, afterResultCursor, permissionship, ...partialCaveat(permissionship), lookedUpAt }) as LookupResource),
+        index => this.#faultAt(call, FaultStage.Item, index));
     }
+
+    /**
+     * Yields the objects of `subjectType` known to the store (as resource or
+     * subject of a live relationship) that the check resolution grants on
+     * `resource`, in order of first appearance, honoring `subjectRelation`, `wildcards` (the
+     * `*` subject is left out only under `Wildcards.Exclude`), `limit` and
+     * `cursor`. Excluded subjects are always empty.
+     */
     lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject> {
-        return this.#unimplementedStream("lookupSubjects", request, options);
+        const call = this.#record("lookupSubjects", request, options);
+        const fault = this.#faultAt(call, FaultStage.Call, 0);
+        if (fault !== undefined)
+            return failedStream(fault);
+        const wildcards = mode(request.wildcards, Wildcards, Wildcards.Default, "wildcards");
+        const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
+        requireConsistency(request.consistency);
+        if (request.context !== undefined)
+            jsonSnapshot(request.context);
+        this.#begin(options);
+        const lookedUpAt = new ZedToken(String(this.#revision));
+        const relation = directRelation(request.subjectRelation) === undefined ? {} : { relation: request.subjectRelation };
+        const context = request.context === undefined ? {} : { context: request.context };
+        return streamOf(() => this.#lookup(request.subjectType, request.cursor, limit,
+            id => id === "*" && wildcards === Wildcards.Exclude ? "noPermission"
+                : this.#resolve({ resource: request.resource, permission: request.permission, subject: { object: { objectType: request.subjectType, objectId: id }, ...relation }, consistency: request.consistency, ...context }),
+            () => true)
+            .map(([subjectId, permissionship]) => immutableSnapshot({ subject: { subjectId, permissionship, ...partialCaveat(permissionship) }, excludedSubjects: [], lookedUpAt }) as LookupSubject),
+        index => this.#faultAt(call, FaultStage.Item, index));
     }
     async expandPermissionTree(request: ExpandPermissionTreeRequest, options?: CallOptions): Promise<ExpandResult> {
         return this.#unimplemented("expandPermissionTree", request, options);
@@ -516,12 +607,75 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         return failedStream(unimplemented(operation));
     }
 
-    #check(request: CheckRequest): CheckResult {
+    #check(request: CheckRequest, defaultContext: CheckRequest["context"]): CheckResult {
         requireConsistency(request.consistency);
+        const context = defaultContext === undefined ? request.context : { ...defaultContext, ...request.context };
+        return new CheckResult(this.#resolve(context === undefined ? request : { ...request, context }), [], new ZedToken(String(this.#revision)));
+    }
+
+    /**
+     * Check resolution: the registered result, then the resolver, then the
+     * stored relationships; otherwise no permission. Throws a registered error.
+     */
+    #resolve(request: CheckRequest): Permissionship {
         const registered = this.#checks.get(checkKey(request));
         if (registered instanceof SpiceDBError)
             throw registered;
-        return new CheckResult(registered ?? "noPermission", [], new ZedToken(String(this.#revision)));
+        return registered ?? this.#resolver?.(request) ?? this.#stored(request);
+    }
+    /**
+     * A live relationship on the resource whose relation is the permission's
+     * name and whose subject is the checked one, or its type's wildcard for a
+     * direct subject, grants; a caveated one grants conditionally.
+     */
+    #stored(request: CheckRequest): Permissionship {
+        const relation = directRelation(request.subject.relation);
+        let conditional = false;
+        for (const [, rel] of this.#live()) {
+            if (rel.resource.objectType !== request.resource.objectType || rel.resource.objectId !== request.resource.objectId || rel.relation !== request.permission)
+                continue;
+            const subject = rel.subject;
+            if (subject.object.objectType !== request.subject.object.objectType || directRelation(subject.relation) !== relation)
+                continue;
+            if (subject.object.objectId !== request.subject.object.objectId && (subject.object.objectId !== "*" || relation !== undefined))
+                continue;
+            if (rel.caveat === undefined)
+                return "hasPermission";
+            conditional = true;
+        }
+        return conditional ? "conditionalPermission" : "noPermission";
+    }
+    /**
+     * The known objects of `objectType` (in order of first appearance among the
+     * live relationships, as resource or subject) that `resolve` grants,
+     * after `cursor` and up to `limit` of those `include` keeps, each with its
+     * permissionship and cursor: its 1-based position among the granted objects.
+     */
+    #lookup(objectType: string, cursor: string | undefined, limit: number | undefined, resolve: (id: string) => Permissionship, include: (permissionship: Permissionship) => boolean): [string, Permissionship, string][] {
+        const start = cursor === undefined ? 0 : Number(cursor);
+        if (!Number.isSafeInteger(start) || start < 0 || (cursor !== undefined && cursor.trim() === ""))
+            throw serverError(Code.InvalidArgument, "invalid cursor");
+        const ids = new Set<string>();
+        for (const [, rel] of this.#live()) {
+            if (rel.resource.objectType === objectType)
+                ids.add(rel.resource.objectId);
+            if (rel.subject.object.objectType === objectType)
+                ids.add(rel.subject.object.objectId);
+        }
+        const out: [string, Permissionship, string][] = [];
+        let position = 0;
+        for (const id of ids) {
+            const permissionship = resolve(id);
+            if (permissionship !== "hasPermission" && permissionship !== "conditionalPermission")
+                continue;
+            position++;
+            if (position <= start || !include(permissionship))
+                continue;
+            if (limit !== undefined && out.length >= limit)
+                break;
+            out.push([id, permissionship, String(position)]);
+        }
+        return out;
     }
 
     /** Records a call. */
@@ -634,7 +788,22 @@ function streamOf<T>(items: () => T[], fault: (index: number) => Error | undefin
 }
 function snapshot(rel: Relationship): Relationship { return immutableSnapshot(nativeRelationshipFields(rel)); }
 function identity(rel: Relationship): string { return JSON.stringify(relationshipToFilter(rel)); }
-function checkKey(c: CheckRegistration): string { return `${objectRefToString(c.resource)}#${c.permission}@${subjectRefToString(c.subject)}`; }
+function checkKey(c: CheckRegistration): string {
+    const relation = directRelation(c.subject.relation);
+    return `${objectRefToString(c.resource)}#${c.permission}@${subjectRefToString(relation === undefined ? { object: c.subject.object } : { object: c.subject.object, relation })}`;
+}
+/**
+ * The partial-caveat info a conditional lookup result carries, as the real
+ * client's do. The double does not evaluate caveats, so it names no missing
+ * context.
+ */
+function partialCaveat(permissionship: Permissionship): { partialCaveat?: { missingRequiredContext: readonly string[] } } {
+    return permissionship === "conditionalPermission" ? { partialCaveat: { missingRequiredContext: [] } } : {};
+}
+/** A subject relation, with `...` and the empty string (direct subjects) as `undefined`. */
+function directRelation(relation: string | undefined): string | undefined {
+    return relation === undefined || relation === "" || relation === "..." ? undefined : relation;
+}
 function requireConsistency(value: Consistency): void {
     if (!(value instanceof Consistency))
         throw new InvalidArgumentError("consistency is required");

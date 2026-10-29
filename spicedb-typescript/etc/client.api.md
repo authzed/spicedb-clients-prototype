@@ -156,6 +156,9 @@ export interface CheckRequest {
 // @public
 function checkRequestToProto(request: CheckRequest, defaultContext?: CheckRequest["context"]): CheckPermissionRequest;
 
+// @public
+export type CheckResolver = (check: CheckRequest) => Permissionship | undefined;
+
 // @public (undocumented)
 export class CheckResult {
     constructor(permissionship: Permissionship, missingContext: readonly string[], checkedAt: ZedToken, debugTrace?: DebugInformation, expiration?: Date, error?: SpiceDBError);
@@ -581,10 +584,9 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent>;
     exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
     failNext(operation: InMemoryOperation, error: Error): void;
+    static readonly grantAll: CheckResolver;
     importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
-    // (undocumented)
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource>;
-    // (undocumented)
     lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject>;
     raw(): SpiceDBProtoClient;
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
@@ -592,6 +594,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
     get relationships(): readonly Relationship[];
     static serverError(code: Code, message: string, options?: Omit<SpiceDBErrorOptions, "code" | "cause" | "serverMessage">): SpiceDBError;
+    setCheckResolver(resolver: CheckResolver | undefined): void;
     setCheckResult(registration: CheckRegistration, result: Permissionship | SpiceDBError): void;
     setFaultHook(hook: FaultHook | undefined): void;
     setReadSchemaRevision(mode: SchemaRevision): void;

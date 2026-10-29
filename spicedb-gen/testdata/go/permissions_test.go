@@ -186,6 +186,14 @@ func TestLookupResources(t *testing.T) {
 		ids = append(ids, res.ResourceID)
 	}
 	assert.Contains(t, ids, "readme")
+
+	// Runtime names reach the same results against a real server.
+	var byName []string
+	for res, err := range LookupResourcesByName(ctx, tc, cs, Definitions.Document, "view", User("alice"), client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly)) {
+		require.NoError(t, err)
+		byName = append(byName, res.ResourceID)
+	}
+	assert.ElementsMatch(t, ids, byName)
 }
 
 func TestLookupSubjects(t *testing.T) {

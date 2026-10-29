@@ -61,8 +61,8 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// TypedClient
 	assert.Contains(t, output, "type TypedClient struct {")
-	assert.Contains(t, output, "type TypedClient struct { *client.Client }")
-	assert.Contains(t, output, "func NewTypedClient(c *client.Client) *TypedClient {")
+	assert.Contains(t, output, "type TypedClient struct { client.Interface }")
+	assert.Contains(t, output, "func NewTypedClient(c client.Interface) *TypedClient {")
 
 	// Caveat context types
 	assert.Contains(t, output, "type IpRangeContext struct {")
@@ -142,7 +142,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.NotContains(t, output, "(bool, error)")
 	// The CheckResult returned by the underlying client is passed through
 	// untouched, so a Conditional result (and its MissingContext) survives.
-	assert.Contains(t, output, "return tc.Client.Check(ctx, check, opts...)")
+	assert.Contains(t, output, "return tc.Interface.Check(ctx, check, opts...)")
 	assert.Contains(t, output, "func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {")
 	assert.Contains(t, output, "func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {")
 
@@ -296,7 +296,7 @@ func TestTypedClientEmbedsAllNativeCapabilities(t *testing.T) {
 	require.NoError(t, err)
 	files, err := (&Generator{}).Generate(s, nil)
 	require.NoError(t, err)
-	assert.Contains(t, string(files[0].Content), "type TypedClient struct {\n\t*client.Client\n}")
+	assert.Contains(t, string(files[0].Content), "type TypedClient struct {\n\tclient.Interface\n}")
 }
 
 // squash collapses whitespace runs so assertions ignore gofmt alignment and

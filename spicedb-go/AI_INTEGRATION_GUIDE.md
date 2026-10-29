@@ -74,7 +74,7 @@ if err != nil {
     return err
 }
 defer c.Close()
-tc := permissions.NewTypedClient(c) // tc also has every native method
+tc := permissions.NewTypedClient(c) // tc also has every native method; c may be any client.Interface
 ```
 
 `client.NewPlaintext` is for local development; a non-loopback plaintext target
@@ -111,6 +111,17 @@ perm, err := permissions.Organization(orgID).PermissionByName(name) // errors.Is
 ```
 
   At startup, verify every configured name is in `permissions.OrganizationPermissionNames()`.
+
+- Type and permission names both chosen at runtime (policy expressions, admin tools):
+
+```go
+ref, err := permissions.PermissionRefByName(resourceType, permission) // errors.Is(err, permissions.ErrNotInSchema)
+def, err := permissions.DefinitionByName(resourceType)                // def.Permission(id, permission)
+for res, err := range permissions.LookupResourcesByName(ctx, tc, cs, resourceType, permission, permissions.User(userID)) { ... }
+```
+
+  `permissions.SchemaText` is the schema the code was generated from (write it
+  at startup); `permissions.DefinitionNames()` lists every definition.
 
 ## List what a subject can access
 
@@ -207,15 +218,20 @@ including raw status errors. Forward `(*client.Error).ServerMessage`, not
 ## Test
 
 ```go
-store := clienttest.NewStore(rel.MustFromTuple("organization:acme#admin@user:alice"))
-store.SetCheckResult(rel.MustNewObject("organization", "acme"), "view",
-    rel.MustNewSubject(rel.MustNewObject("user", "alice"), ""),
+store := clienttest.NewStore(rel.MustFromTuple("organization:acme#view@user:alice")) // relation named like the permission grants it
+store.SetCheckResult(rel.MustNewObject("organization", "acme"), "admin",
+    rel.MustNewSubject(rel.MustNewObject("user", "bob"), ""),
     client.CheckResult{Permissionship: client.PermissionshipHasPermission})
+store.SetCheckResolver(clienttest.GrantAll) // or a func(client.PermissionCheck) (client.CheckResult, bool)
+tc := permissions.NewTypedClient(store)     // typed helpers over the double
 ```
 
-Depend on a small interface of the `*client.Client` methods you use; both
-`*client.Client` and `*clienttest.Store` satisfy it for `Write`,
-`ReadRelationships`, `DeleteRelationships`, `Check` and `CheckBulk`. Build
+Checks resolve in order: `SetCheckResult`, then the resolver, then stored
+relationships whose relation is the permission's name (exact or `type:*`
+subject), else NoPermission. `LookupResources`/`LookupSubjects` return the
+objects in stored relationships that check resolution grants. Depend on
+`client.Interface` or a small interface of the methods you use; both
+`*client.Client` and `*clienttest.Store` satisfy it. Build
 expected errors with `client.NewError(client.CodeFailedPrecondition, "...")`.
 For integration tests, run `authzed/spicedb serve-testing` and assert both
 granted and denied cases.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -126,4 +127,31 @@ func TestWithArticle(t *testing.T) {
 	} {
 		assert.Equal(t, want, withArticle(word), word)
 	}
+}
+
+func TestSchemaTextAndDefinitionNames(t *testing.T) {
+	zed := "definition user {}\n\n// a `quoted` comment\ndefinition doc {\n\trelation viewer: user\n\tpermission view = viewer\n}\n"
+	out, err := generate(t, zed, nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "const SchemaText = "+strconv.Quote(zed), "a backquote forces an interpreted literal holding the text verbatim")
+	flat := squash(out)
+	assert.Contains(t, flat, `var Definitions = struct { User string Doc string }{ User: "user", Doc: "doc", }`)
+	assert.Contains(t, flat, `return []string{"user", "doc"}`)
+	assert.Contains(t, flat, `"doc": {name: "doc", relations: DocRelationNames(), permissions: DocPermissionNames()},`)
+	assert.Contains(t, flat, "func PermissionRefByName(definition, permission string) (PermissionRef, error)")
+	assert.Contains(t, flat, "func LookupResourcesByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, definition, permission string, subject Subject, opts ...client.LookupResourcesOption)")
+
+	out, err = generate(t, "definition user {}", nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "const SchemaText = `definition user {}`")
+	assert.Equal(t, "`a\nb`", goStringLiteral("a\nb"))
+	assert.Equal(t, `"a\r\nb"`, goStringLiteral("a\r\nb"))
+}
+
+func TestByNameIdentifiersAreReserved(t *testing.T) {
+	_, err := generate(t, "definition definitions {}", nil)
+	require.ErrorContains(t, err, "Definitions")
+	require.ErrorContains(t, err, "--go.rename")
+	_, err = generate(t, "definition definitions {}", map[string]string{"rename": "definitions=Defs"})
+	require.NoError(t, err)
 }

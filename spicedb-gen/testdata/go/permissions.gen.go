@@ -305,15 +305,18 @@ func (t *Txn) Build() (rel.Txn, error) {
 	return out, nil
 }
 
-// TypedClient adds schema-aware helpers and exposes every native client capability.
-// The embedded client shares its connection and lifecycle; Close closes that client.
+// TypedClient adds schema-aware helpers and exposes every native client
+// capability. It wraps any client.Interface: a *client.Client, or a test double
+// such as *clienttest.Store. The embedded client shares its connection and
+// lifecycle; Close closes that client.
 type TypedClient struct {
-	*client.Client
+	client.Interface
 }
 
-// NewTypedClient creates a new TypedClient wrapping the given SpiceDB client.
-func NewTypedClient(c *client.Client) *TypedClient {
-	return &TypedClient{Client: c}
+// NewTypedClient creates a new TypedClient wrapping c, a *client.Client or any
+// other client.Interface (such as *clienttest.Store in tests).
+func NewTypedClient(c client.Interface) *TypedClient {
+	return &TypedClient{Interface: c}
 }
 
 // WriteTxn applies a typed transaction atomically. Construction errors are
@@ -323,7 +326,7 @@ func (tc *TypedClient) WriteTxn(ctx context.Context, txn *Txn, opts ...client.Wr
 	if err != nil {
 		return client.WriteResult{}, err
 	}
-	return tc.Client.Write(ctx, client.WriteRequest{Transaction: native}, opts...)
+	return tc.Interface.Write(ctx, client.WriteRequest{Transaction: native}, opts...)
 }
 
 // --- Caveat Context Types ---
@@ -1396,6 +1399,155 @@ func (d InvitationRef) InviterKey(subject InvitationInviterKeySubject) Relations
 	return RelationshipKey{r: r, err: err}
 }
 
+// --- Schema ---
+
+// SchemaText is the schema this file was generated from, for writing it at
+// startup (client.WriteSchemaRequest{Schema: SchemaText}).
+const SchemaText = `use expiration
+
+caveat ip_range(allowed_cidr string) {
+    allowed_cidr == "0.0.0.0/0"
+}
+
+caveat time_window(start string, end string) {
+    start != "" && end != ""
+}
+
+definition user {}
+
+definition team {
+    relation member: user | team#member
+}
+
+definition document {
+    relation viewer: user | user with ip_range | user with time_window | team#member
+    relation editor: user
+    relation owner: user
+    permission view = viewer + editor + owner
+    permission edit = editor + owner
+    permission delete = owner
+}
+
+definition organization {
+    relation admin: user
+    relation member: user
+    relation creator: user:*
+    relation guest: user | user:*
+    permission can_admin = admin
+    permission view = admin + member + guest
+}
+
+definition invitation {
+    relation org: organization
+    relation grant: organization#can_admin
+    relation timed_grant: organization#can_admin with expiration
+    relation inviter: user with expiration
+    permission accept = grant + timed_grant
+}
+`
+
+// Definitions names every definition in the schema.
+var Definitions = struct {
+	User         string
+	Team         string
+	Document     string
+	Organization string
+	Invitation   string
+}{
+	User:         "user",
+	Team:         "team",
+	Document:     "document",
+	Organization: "organization",
+	Invitation:   "invitation",
+}
+
+// DefinitionNames returns every definition name, in schema order.
+func DefinitionNames() []string {
+	return []string{"user", "team", "document", "organization", "invitation"}
+}
+
+// Definition describes one schema definition, for code that receives type and
+// permission names at runtime (policy expressions, admin tools). Obtain one
+// with DefinitionByName.
+type Definition struct {
+	name        string
+	relations   []string
+	permissions []string
+}
+
+var definitionsByName = map[string]Definition{
+	"user":         {name: "user", relations: UserRelationNames(), permissions: UserPermissionNames()},
+	"team":         {name: "team", relations: TeamRelationNames(), permissions: TeamPermissionNames()},
+	"document":     {name: "document", relations: DocumentRelationNames(), permissions: DocumentPermissionNames()},
+	"organization": {name: "organization", relations: OrganizationRelationNames(), permissions: OrganizationPermissionNames()},
+	"invitation":   {name: "invitation", relations: InvitationRelationNames(), permissions: InvitationPermissionNames()},
+}
+
+// DefinitionByName returns the named definition, or an error wrapping
+// ErrNotInSchema.
+func DefinitionByName(name string) (Definition, error) {
+	d, ok := definitionsByName[name]
+	if !ok {
+		return Definition{}, fmt.Errorf("%w: no definition %q", ErrNotInSchema, name)
+	}
+	return d, nil
+}
+
+// Name returns the definition's schema name.
+func (d Definition) Name() string { return d.name }
+
+// String returns the definition's schema name.
+func (d Definition) String() string { return d.name }
+
+// RelationNames returns every relation name on the definition, in schema order.
+func (d Definition) RelationNames() []string { return append([]string(nil), d.relations...) }
+
+// PermissionNames returns every permission name on the definition, in schema order.
+func (d Definition) PermissionNames() []string { return append([]string(nil), d.permissions...) }
+
+// PermissionRef returns the named permission without a resource ID, for
+// LookupResources, or an error wrapping ErrNotInSchema.
+func (d Definition) PermissionRef(permission string) (PermissionRef, error) {
+	for _, p := range d.permissions {
+		if p == permission {
+			return PermissionRef{resourceType: d.name, permission: permission}, nil
+		}
+	}
+	return PermissionRef{}, fmt.Errorf("%w: %s has no permission %q", ErrNotInSchema, d.name, permission)
+}
+
+// Permission returns the named permission on resource id, or an error
+// wrapping ErrNotInSchema. It matches the typed ref's PermissionByName.
+func (d Definition) Permission(id, permission string) (Permission, error) {
+	ref, err := d.PermissionRef(permission)
+	if err != nil {
+		return Permission{}, err
+	}
+	return Permission{resourceType: d.name, resourceID: id, permission: ref.permission}, nil
+}
+
+// Relation returns a checkable Permission for the named relation on resource
+// id, or an error wrapping ErrNotInSchema. It matches the typed ref's
+// RelationByName.
+func (d Definition) Relation(id, relation string) (Permission, error) {
+	for _, r := range d.relations {
+		if r == relation {
+			return Permission{resourceType: d.name, resourceID: id, permission: relation}, nil
+		}
+	}
+	return Permission{}, fmt.Errorf("%w: %s has no relation %q", ErrNotInSchema, d.name, relation)
+}
+
+// PermissionRefByName returns the permission named by runtime definition and
+// permission names, without a resource ID, or an error wrapping ErrNotInSchema.
+func PermissionRefByName(definition, permission string) (PermissionRef, error) {
+	d, err := DefinitionByName(definition)
+	if err != nil {
+		return PermissionRef{}, err
+	}
+	return d.PermissionRef(permission)
+}
+
 // --- Sealed Subject Interfaces ---
 
 // TeamMemberSubject is a sealed interface for subjects allowed in this position.
@@ -1639,7 +1791,7 @@ func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm P
 	if err != nil {
 		return client.CheckResult{}, err
 	}
-	return tc.Client.Check(ctx, check, opts...)
+	return tc.Interface.Check(ctx, check, opts...)
 }
 
 // TypedCheck pairs a permission with the subject to check it for.
@@ -1669,7 +1821,7 @@ func CheckBulk(ctx context.Context, tc *TypedClient, cs consistency.Strategy, ch
 		}
 		native[i] = check
 	}
-	return tc.Client.CheckBulk(ctx, native, opts...)
+	return tc.Interface.CheckBulk(ctx, native, opts...)
 }
 
 func failedStream[T any](err error) iter.Seq2[T, error] {
@@ -1684,12 +1836,25 @@ func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strate
 	if err != nil {
 		return failedStream[client.LookupResource](err)
 	}
-	return tc.Client.LookupResources(ctx, client.LookupResourcesRequest{
+	return tc.Interface.LookupResources(ctx, client.LookupResourcesRequest{
 		ResourceType: perm.resourceType, Permission: perm.permission,
 		Subject: ref, Consistency: cs,
 	}, opts...)
 }
 
+// LookupResourcesByName is LookupResources for definition and permission
+// names known only at runtime. Names the schema does not define fail the
+// stream with an error wrapping ErrNotInSchema before any RPC.
+func LookupResourcesByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, definition, permission string, subject Subject, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {
+	perm, err := PermissionRefByName(definition, permission)
+	if err != nil {
+		return failedStream[client.LookupResource](err)
+	}
+	return LookupResources(ctx, tc, cs, perm, subject, opts...)
+}
+
+// LookupSubjects preserves wildcard exclusions and native cancellation. A
+// userset type sentinel selects that subject relation.
 func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {
 	resource, err := rel.NewObject(perm.resourceType, perm.resourceID)
 	if err != nil {
@@ -1699,7 +1864,7 @@ func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strateg
 	if relation != "" {
 		opts = append([]client.LookupSubjectsOption{client.WithLookupSubjectsRelation(relation)}, opts...)
 	}
-	return tc.Client.LookupSubjects(ctx, client.LookupSubjectsRequest{
+	return tc.Interface.LookupSubjects(ctx, client.LookupSubjectsRequest{
 		Resource: resource, Permission: perm.permission,
 		SubjectType: sType, Consistency: cs,
 	}, opts...)

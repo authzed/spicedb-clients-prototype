@@ -431,4 +431,26 @@ class DeleteRelationshipsOptionsTest {
         com.authzed.spicedb.errors.InvalidArgumentException.class,
         () -> DeleteAllOptions.builder().pageSize(0).build());
   }
+
+  /**
+   * The raw request carrying only a filter is one all-or-nothing delete with the server's default
+   * limit; the one-argument overload sends exactly that.
+   */
+  @Test
+  void filterOnlyOverloadSendsOneAllOrNothingRequestWithoutLimit() throws IOException {
+    var service = new CapturingSingleCompleteService();
+    try (TestServers servers = TestServers.start(service)) {
+      var result = servers.client().deleteRelationships(FILTER);
+
+      assertEquals("rev-1", result.revision().value());
+      assertTrue(result.completed());
+      assertEquals(1, service.captured.size());
+      DeleteRelationshipsRequest req = service.captured.get(0);
+      assertEquals(0, req.getOptionalLimit());
+      assertFalse(req.getOptionalAllowPartialDeletions());
+      assertEquals(0, req.getOptionalPreconditionsCount());
+      assertFalse(req.hasOptionalCursor());
+      assertEquals("doc1", req.getRelationshipFilter().getOptionalResourceId());
+    }
+  }
 }

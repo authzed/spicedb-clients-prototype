@@ -7,6 +7,72 @@ exceptions over the same RPCs. This guide lists every behavior a migrating team
 will observe, with before/after code. Snippets assume
 `import com.authzed.spicedb.*;`.
 
+## Requirements
+
+| | Floor | Notes |
+|---|---|---|
+| Java | 17 | |
+| protobuf-java | 4.33.2 | The version the protocol classes were generated with; they refuse an older runtime. Spring Boot 4.1 manages 4.34.2, so a Spring Boot host needs no override. authzed-java 1.6.0 needed 4.33.5. |
+| gRPC (`io.grpc:*`) | 1.80.0 | One version for every `io.grpc` artifact. The client declares 1.84.0 (through `grpc-bom`); Spring Boot 4.1.0 manages 1.80.0, which works. authzed-java 1.6.0 needed 1.78.0. |
+| proto-google-common-protos | 2.65.0 | |
+| SpiceDB | 1.30 | Older-server behavior is reachable only through `TransportOptions` (see "Transport-level data"). |
+
+Coordinates: `com.authzed.spicedb:spicedb-java` (the client) and
+`com.authzed.spicedb:spicedb-java-proto` (protocol classes, pulled in by the
+client), at the same version. Until they are published, install both with
+`gradle publishToMavenLocal` (see [README.md](README.md#installation-before-publication)).
+The client's POM versions every dependency, so it is the only line a Maven or
+Gradle build needs.
+
+**Spring Boot and other dependency managers.** A BOM that pins protobuf-java
+wins over the version the client asks for. If it pins one below 4.33.2, nothing
+fails at build time, so the client checks at construction: the first
+`SpiceDBClient` factory call throws `IllegalStateException` naming the version
+found and the property to raise, `<protobuf-java.version>` in Maven or Spring
+Boot. In Gradle, require `com.google.protobuf:protobuf-java:4.33.2` or later.
+
+## Legacy-to-new member map
+
+Requests become method arguments and options; responses become records. The
+members a migration touches most:
+
+| authzed-java (`com.authzed.api.v1`) | spicedb-java |
+|---|---|
+| `ZedToken.getToken()` | `ZedToken.value()` |
+| `CheckPermissionResponse.getPermissionship() == PERMISSIONSHIP_HAS_PERMISSION` | `CheckResult.hasPermission()` (or `permissionship() == Permissionship.HAS_PERMISSION`) |
+| `CheckPermissionResponse.getCheckedAt()` | `CheckResult.checkedAt()` |
+| `CheckPermissionResponse.getPartialCaveatInfo().getMissingRequiredContextList()` | `CheckResult.missingContext()` |
+| `CheckPermissionRequest.setContext(Struct)` | `PermissionCheck.withContext(Map)` or `CheckOptions.builder().context(Map)` |
+| `WriteRelationshipsResponse.getWrittenAt()` | `WriteResult.revision()` |
+| `DeleteRelationshipsResponse.getDeletedAt()` | `DeleteResult.revision()` |
+| `DeleteRelationshipsResponse.getDeletionProgress()` | `DeleteResult.completed()` |
+| `DeleteRelationshipsRequest` with only a filter | `deleteRelationships(filter)` |
+| `DeleteRelationshipsRequest.setOptionalLimit(n).setOptionalAllowPartialDeletions(true)` | `deleteRelationships(filter, n)` |
+| `ReadRelationshipsResponse.getRelationship()` | `ReadRelationship.relationship()` |
+| `ReadRelationshipsResponse.getReadAt()` | `ReadRelationship.readAt()` |
+| `ReadRelationshipsResponse.getAfterResultCursor().getToken()` | `ReadRelationship.afterResultCursor()` |
+| `Relationship.getResource().getObjectType()` / `getObjectId()` | `Relationship.resourceType()` / `resourceId()` |
+| `Relationship.getRelation()` | `Relationship.relation()` |
+| `Relationship.getSubject().getObject().getObjectType()` / `getObjectId()` | `Relationship.subjectType()` / `subjectId()` |
+| `Relationship.getSubject().getOptionalRelation()` (`""` for direct) | `Relationship.subjectRelation()` (`null` for direct) |
+| `Relationship.getOptionalCaveat().getCaveatName()` / `getContext()` | `Relationship.caveatName()` / `caveatContext()` |
+| `Relationship.getOptionalExpiresAt()` | `Relationship.expiration()` (`Instant`) |
+| `RelationshipFilter.setResourceType(t).setOptionalResourceId(id)` | `Filter.of(t).withResourceId(id)` |
+| `RelationshipFilter...setOptionalRelation(r)` | `Filter...withRelation(r)` |
+| `SubjectFilter.setSubjectType(t).setOptionalSubjectId(id)` | `Filter...withSubjectType(t).withSubjectId(id)` |
+| `SubjectFilter.setOptionalRelation(RelationFilter...)` | `Filter...withSubjectRelation(SubjectRelationFilter.direct()/named(r))` |
+| `LookupResourcesResponse.getResourceObjectId()` | `LookupResult.LookupResource.resourceId()` |
+| `LookupResourcesResponse.getPermissionship()` | `LookupResource.permissionship()` |
+| `LookupResourcesResponse.getLookedUpAt()` | `LookupResource.lookedUpAt()` |
+| `LookupResourcesResponse.getAfterResultCursor().getToken()` | `LookupResource.afterResultCursor()` |
+| `LookupSubjectsResponse.getSubject().getSubjectObjectId()` | `LookupResult.LookupSubject.subject().subjectId()` |
+| `LookupSubjectsResponse.getExcludedSubjectsList()` | `LookupSubject.excludedSubjects()` |
+| `ReadSchemaResponse.getSchemaText()` | `SchemaResult.schema()` |
+| `ReadSchemaResponse.getReadAt()` | `SchemaResult.revision()` |
+| `WriteSchemaResponse.getWrittenAt()` | the `ZedToken` `writeSchema` returns |
+| `StatusRuntimeException.getStatus().getCode()` | `SpiceDBException.code()` (also `Status.fromThrowable(e)`) |
+| `StatusRuntimeException.getStatus().getDescription()` | `SpiceDBException.serverMessage()` |
+
 ## Running both during the migration
 
 Both libraries define `com.authzed.api.v1.*`. Never put the published
@@ -58,6 +124,11 @@ SpiceDBClient client = SpiceDBClient.createSystemTls("spicedb.example.com:443", 
   ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build())`.
 - TLS uses the JVM trust store; custom CA and client certificate/key PEM paths
   go in `ClientOptions`.
+- Keepalive and other channel settings (what a legacy `ManagedChannelBuilder`
+  configured) go in a customizer passed beside `ClientOptions`, on either
+  constructor:
+  `SpiceDBClient.createSystemTls(endpoint, token, options, b -> b.keepAliveTime(60, TimeUnit.SECONDS).keepAliveTimeout(10, TimeUnit.SECONDS).keepAliveWithoutCalls(true))`.
+  It runs after the TLS or plaintext decision and must not change it.
 - Keep an existing channel (in-process, custom transport) with
   `SpiceDBClient.fromChannel(channel)`. It sends no key itself, so attach
   credentials to the channel (for example `ClientInterceptors.intercept(channel,
@@ -137,10 +208,26 @@ try (var rels = client.readRelationships(Consistency.full(), Filter.of("document
 - Accessor paths shorten: `rel.getSubject().getObject().getObjectId()` becomes
   `rel.subjectId()` (also `resourceType()`, `resourceId()`, `subjectType()`,
   `subjectRelation()`); the nested `resource()`/`subject()` records remain.
-- `deleteRelationships(filter, limit)` is one bounded request;
+- A raw `DeleteRelationships` request carrying only a filter becomes
+  `deleteRelationships(filter)`: the same single all-or-nothing request with the
+  server's default limit (more matches than the limit fail with
+  `INVALID_ARGUMENT` and delete nothing). It is shorthand for
+  `deleteRelationships(filter, DeleteOptions.builder().partialDeletion(PartialDeletion.DISALLOWED).build())`,
+  which also takes preconditions and a timeout.
+
+  ```java
+  // Before
+  permissions.deleteRelationships(
+      DeleteRelationshipsRequest.newBuilder().setRelationshipFilter(filter).build());
+
+  // After
+  client.deleteRelationships(Filter.of("document").withResourceId("readme"));
+  ```
+
+- `deleteRelationships(filter, limit)` is one bounded request that may delete
+  part of the matches (`optional_allow_partial_deletions`);
   `deleteAllRelationshipsNonAtomic(filter)` loops to completion and reports
-  progress. Server-side all-or-nothing deletes use
-  `DeleteOptions.builder().partialDeletion(PartialDeletion.DISALLOWED)`.
+  progress.
 - Filters distinguish any, direct and named subject relations
   (`SubjectRelationFilter.any/direct/named`) instead of an optional proto field.
 
@@ -236,11 +323,8 @@ gRPC `CallOptions`. Tools that print or persist protocol-shaped data convert wit
 
 ## Dependencies
 
-spicedb-java needs Java 17, protobuf-java 4.36.2 or later (the version its
-generated code was produced with) and gRPC 1.84.0 (a single BOM version for every
-`io.grpc` artifact). authzed-java 1.6.0 required protobuf-java 4.33.5 and gRPC
-1.78.0, so adopting spicedb-java raises both. Build tooling (Spotless, mage) is
-not part of the published dependencies.
+See [Requirements](#requirements). Build tooling (Spotless, mage) is not part of
+the published dependencies.
 
 ## Testing
 
@@ -252,4 +336,16 @@ like the client's. Build expected errors with `ErrorMapper.newError(Status.Code.
 (or `InMemorySpiceDB.serverError`). Instead of a strict mock, assert on the
 recorded `calls()`/`callsOf(op)` (arguments and options), and replace stubbed
 failures with `failNext(op, error)` or a `setFaultHook` that fails at a call,
-an import batch, the import commit, or a read/export item.
+an import batch, the import commit, or a read, export or lookup item.
+
+The double answers checks without a schema, in this order: a result registered
+with `setCheckResult`/`setCheckError`; then a resolver
+(`setCheckResolver(check -> ...)`, returning a `CheckResult` or `null` to
+decline; `setCheckResolver(InMemorySpiceDB.grantAll())` grants everything, which
+suits tests over IDs generated at run time); then a stored relationship whose
+relation is the permission's name and whose subject matches (or is a `type:*`
+wildcard); otherwise no permission. `lookupResources` and `lookupSubjects` run
+the same resolution over every object of the requested type that its stored
+relationships mention. Permissions computed through arrows or other relations
+need the resolver or registered results; for full schema evaluation, test
+against `spicedb serve-testing`.

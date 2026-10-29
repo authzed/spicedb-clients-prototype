@@ -221,13 +221,9 @@ class InMemorySpiceDBTest {
     assertEquals(List.of(Consistency.full(), doc, "view"), expand.arguments());
 
     // Streams fail where the real client reports a failed call: when consumed.
-    var lookup = db.lookupResources(Consistency.full(), "document", "view", alice);
-    assertEquals(1, db.callsOf(ClientOperation.LOOKUP_RESOURCES).size());
-    try (lookup) {
-      assertEquals(
-          Status.Code.UNIMPLEMENTED, assertThrows(SpiceDBException.class, lookup::toList).code());
-    }
-    try (var s = db.updates(List.of("document"), null)) {
+    var watch = db.updates(List.of("document"), null);
+    assertEquals(1, db.callsOf(ClientOperation.WATCH).size());
+    try (var s = watch) {
       assertEquals(
           Status.Code.UNIMPLEMENTED, assertThrows(SpiceDBException.class, s::toList).code());
     }

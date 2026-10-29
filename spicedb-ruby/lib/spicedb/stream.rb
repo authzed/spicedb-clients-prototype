@@ -150,12 +150,13 @@ module SpiceDB
     def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 
-  # Bounds each page of a single-RPC paged read (export, whose server streams
-  # every page on one call, so a call deadline would bound the whole export):
+  # Bounds a finite read that streams without a size bound on one call (an
+  # export, a subject or permission-set lookup, a single-request read), where
+  # a call deadline would bound the whole read and the caller's time with it:
   # the time from asking for the next response to receiving it may not exceed
   # +timeout+. On expiry it cancels the call; #expired? then tells the reader
   # to raise DeadlineExceededError rather than the cancellation. Time the
-  # caller spends consuming a page does not count.
+  # caller spends on a response does not count.
   class PageWatchdog
     def initialize(timeout, call)
       @timeout = timeout

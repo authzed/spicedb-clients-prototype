@@ -129,7 +129,14 @@ client = SpiceDB::Client.new_system_tls('grpc.authzed.com:443', 'key')
 client = SpiceDB::Client.new_custom_tls('spicedb.internal:443', 'key', ca_cert: File.read('ca.pem'))
 ```
 
-`localhost`, loopback addresses and Unix sockets need no opt-in. If you build
+`localhost`, loopback addresses and Unix sockets need no opt-in. The endpoint
+may also be an `https://host[:port]` URL (TLS constructors, port 443 by
+default) or an `http://host:port` URL (`new_plaintext`, port required). A
+plaintext endpoint always needs a port: `new_plaintext('localhost', ...)`,
+which `authzed` sent to port 443, now raises; write `localhost:50051`;
+`authzed` passed such a URL straight to gRPC, which failed every call. Other
+schemes, paths, userinfo and non-numeric ports raise `InvalidArgumentError` at
+construction (README.md, "Endpoints"). If you build
 your own `GRPC::Core::Channel` (custom channel arguments), wrap it with
 `SpiceDB::Client.from_channel(channel, interceptors: [...])`; `close` leaves it
 open. `authzed`'s `options:` channel arguments move there.

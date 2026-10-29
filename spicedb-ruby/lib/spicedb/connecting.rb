@@ -32,7 +32,8 @@ module SpiceDB
     # DESIGN.md, "RULE: Credentials over insecure transport require an explicit
     # opt-in".
     #
-    # @param endpoint [String] the SpiceDB server address (e.g., "localhost:50051")
+    # @param endpoint [String] the SpiceDB server: "localhost:50051" or "http://localhost:50051"
+    #   (an http:// URL needs a port; https:// is refused here)
     # @param token [String] the preshared key for authentication
     # @param default_timeout [Numeric] seconds applied to every unary call that
     #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
@@ -62,7 +63,8 @@ module SpiceDB
     # so a CA an operator installed on the machine is not honoured here. Use
     # {#new_custom_tls} for that case.
     #
-    # @param endpoint [String] the SpiceDB server address (e.g., "grpc.example.com:443")
+    # @param endpoint [String] the SpiceDB server: "grpc.example.com:443" or
+    #   "https://grpc.example.com[:port]" (port 443 by default; http:// is refused here)
     # @param token [String] the preshared key for authentication
     # @param default_timeout [Numeric] seconds applied to every unary call that
     #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
@@ -94,7 +96,7 @@ module SpiceDB
     # to them; that is the C-core's behavior, and it is generally what a deployment
     # pinning a private CA wants.
     #
-    # @param endpoint [String] the SpiceDB server address (e.g., "spicedb.internal:443")
+    # @param endpoint [String] the SpiceDB server: "spicedb.internal:443" or "https://spicedb.internal[:port]"
     # @param token [String] the preshared key for authentication
     # @param ca_cert [String, nil] PEM root certificate(s) verifying SpiceDB's certificate
     # @param client_cert [String, nil] PEM certificate chain identifying this client

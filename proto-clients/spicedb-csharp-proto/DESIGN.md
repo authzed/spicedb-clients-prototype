@@ -47,6 +47,12 @@ Create a `Client.cs` file in the package root with:
      with a non-loopback `endpoint` and `allowInsecureRemoteCredentials` is false — root
      DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in".
      `unix:` targets are refused outright (this transport would dial the DNS name `unix`).
+   - Endpoint forms `host:port`, `http://host:port` (needs `insecure: true`) and
+     `https://host[:port]` (needs `insecure: false`). A plaintext endpoint without a port is
+     rejected (no silent port 80); a TLS one uses 443. Parsed by
+     `internal static string ParseEndpoint(string endpoint, bool insecure)`. Any other form
+     throws `ArgumentException` naming the problem and `EndpointForms`, before the
+     loopback guard, which then judges the parsed authority.
 
 3. **Constructor: `SpiceDBProtoClient(GrpcChannel channel, string token)`** — the escape
    hatch for a caller-built channel (behind `SpiceDBClient.CreateFromChannel`). Attaches

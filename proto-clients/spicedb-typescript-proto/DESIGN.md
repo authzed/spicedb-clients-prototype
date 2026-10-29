@@ -112,6 +112,15 @@ opening a session. This transport does not dial Unix sockets: reject Unix
 targets rather than treating a DNS hostname `unix` as loopback. TLS material
 never supplies another transport mode or bypasses these guards.
 
+Endpoints are `host:port`, `http://host:port` or `https://host[:port]` (443 by
+default). The scheme must agree with `insecure`. Paths, queries, fragments,
+userinfo, non-numeric ports, a plaintext endpoint without a port (bare or
+`http://`) and other schemes throw
+`InvalidEndpointError` naming the problem and the accepted forms, before the
+remote-plaintext guard, which judges the parsed host. Export
+`InvalidEndpointError` and `endpointScheme(endpoint)` so the idiomatic layer can
+let the scheme select the transport.
+
 All option fields and header collections are readonly inputs. Forward the
 caller's AbortSignal and remaining timeout on every RPC shape, including unary
 mutations, server streams, and client-streaming import. Already-aborted calls

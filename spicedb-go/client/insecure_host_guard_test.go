@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -104,7 +105,7 @@ func TestNewWithOpts_RefusesInsecureNonLoopbackWithoutOptIn(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, c)
 	require.Contains(t, err.Error(), "evil.example.com:1234")
-	require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+	require.Contains(t, err.Error(), "WithRemotePlaintextCredentials(RemotePlaintextAllowed)")
 
 	require.EqualValues(t, 0, dialCount.Load(), "the dialer that would carry the credential to the wire must never be invoked")
 	select {
@@ -144,7 +145,14 @@ func TestNewPlaintext_RefusesAuthorityShiftingEndpoints(t *testing.T) {
 			c, err := NewPlaintext(endpoint, "super-secret-token")
 			require.Error(t, err, "expected %q to be refused", endpoint)
 			require.Nil(t, c)
-			require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+			require.ErrorIs(t, err, ErrInvalidArgument)
+			// Userinfo forms are malformed and refused as such before the
+			// remote-plaintext guard runs; the rest reach the guard.
+			if !strings.Contains(endpoint, "@") {
+				require.Contains(t, err.Error(), "WithRemotePlaintextCredentials(RemotePlaintextAllowed)")
+			} else {
+				require.Contains(t, err.Error(), "invalid endpoint")
+			}
 		})
 	}
 }

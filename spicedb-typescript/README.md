@@ -83,6 +83,36 @@ console.log(result.hasPermission()); // true only for an unconditional grant
 client.close();
 ```
 
+### Endpoint forms
+
+The endpoint is `host:port`, `http://host:port` (plaintext) or
+`https://host[:port]` (TLS; the port defaults to 443). Without
+`transportSecurity`, a URL's scheme selects the transport; with it, the scheme
+must agree (`http://` with `TransportSecurity.Tls` is refused). A plaintext
+endpoint, bare or `http://`, needs an explicit port (`localhost:50051`, not
+`localhost`); a TLS endpoint without one uses 443. A path, query, fragment, userinfo, non-numeric
+port or other scheme (`dns:///`, `unix:`) fails at construction with an
+`InvalidArgumentError` naming the problem, before the remote-plaintext check
+runs on the parsed host. A refused or unresolvable connection fails the first
+call with an `UnavailableError` whose message carries the cause and address
+(`connect ECONNREFUSED 127.0.0.1:50051`).
+
+From another Docker Compose service, SpiceDB's service name is a remote host,
+so plaintext needs both explicit choices:
+
+```ts
+import { createSpiceDBClient, TransportSecurity, RemoteCredentials } from "@spicedb/client";
+
+const client = createSpiceDBClient("spicedb:50051", process.env.SPICEDB_TOKEN!, {
+    transportSecurity: TransportSecurity.Plaintext,
+    remoteCredentials: RemoteCredentials.AllowPlaintext, // the token crosses the compose network in cleartext
+});
+// Equivalent: createSpiceDBClient("http://spicedb:50051", token, { remoteCredentials: RemoteCredentials.AllowPlaintext })
+```
+
+Without `remoteCredentials`, construction fails with an `InvalidArgumentError`
+naming both options.
+
 In tests, use `InMemorySpiceDB` (exported from the same module) wherever a
 `SpiceDBClientInterface` is accepted, including a generated `TypedClient`.
 

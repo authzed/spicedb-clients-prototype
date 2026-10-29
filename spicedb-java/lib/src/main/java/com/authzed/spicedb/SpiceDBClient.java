@@ -124,6 +124,10 @@ public final class SpiceDBClient implements SpiceDBApi {
   /**
    * Creates an authenticated plaintext client. Remote endpoints require the explicit opt-in {@code
    * ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW)}.
+   *
+   * <p>The endpoint is {@code host:port}, {@code http://host:port} or {@code unix:/path}; any other
+   * form (including {@code https://} and a host without a port) throws {@link
+   * InvalidArgumentException} naming the problem.
    */
   public static SpiceDBClient createPlaintext(
       String endpoint, String presharedKey, ClientOptions options) {
@@ -158,18 +162,25 @@ public final class SpiceDBClient implements SpiceDBApi {
         || options.clientCertificate() != null
         || options.clientKey() != null)
       throw new InvalidArgumentException("TLS certificates cannot be used with plaintext");
+    var parsed = Endpoint.parse(endpoint).forTransport(true, "createSystemTls", "createPlaintext");
     requireInsecureTransportAllowed(
-        endpoint, true, options.remotePlaintextCredentials() == RemotePlaintextCredentials.ALLOW);
-    var builder = ManagedChannelBuilder.forTarget(endpoint).usePlaintext();
+        parsed, true, options.remotePlaintextCredentials() == RemotePlaintextCredentials.ALLOW);
+    var builder = ManagedChannelBuilder.forTarget(parsed.target()).usePlaintext();
     channelCustomizer.accept(builder);
-    var managed = builder.build();
-    return new SpiceDBClient(managed, managed, bearerMetadata(presharedKey), options);
+    return ownedClient(parsed, builder.build(), bearerMetadata(presharedKey), options);
   }
 
   public static SpiceDBClient createSystemTls(String endpoint, String presharedKey) {
     return createSystemTls(endpoint, presharedKey, ClientOptions.builder().build());
   }
 
+  /**
+   * Creates an authenticated TLS client using the JVM trust store, or the CA in {@code options}.
+   *
+   * <p>The endpoint is {@code host[:port]} or {@code https://host[:port]} (443 by default); any
+   * other form (including {@code http://}) throws {@link InvalidArgumentException} naming the
+   * problem.
+   */
   public static SpiceDBClient createSystemTls(
       String endpoint, String presharedKey, ClientOptions options) {
     return createSystemTls(endpoint, presharedKey, options, NO_CHANNEL_CUSTOMIZATION);
@@ -199,7 +210,8 @@ public final class SpiceDBClient implements SpiceDBApi {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     if (channelCustomizer == null)
       throw new InvalidArgumentException("channelCustomizer must not be null");
-    var builder = io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(endpoint);
+    var parsed = Endpoint.parse(endpoint).forTransport(false, "createSystemTls", "createPlaintext");
+    var builder = io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(parsed.target());
     try {
       var tls = io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts.forClient();
       if (options.caCertificate() != null) tls.trustManager(options.caCertificate().toFile());
@@ -210,8 +222,17 @@ public final class SpiceDBClient implements SpiceDBApi {
       throw new InvalidArgumentException("invalid TLS configuration", e);
     }
     channelCustomizer.accept(builder);
-    var managed = builder.build();
-    return new SpiceDBClient(managed, managed, bearerMetadata(presharedKey), options);
+    return ownedClient(parsed, builder.build(), bearerMetadata(presharedKey), options);
+  }
+
+  /** A client that owns {@code managed}, with connection failures naming {@code endpoint}. */
+  private static SpiceDBClient ownedClient(
+      Endpoint endpoint, ManagedChannel managed, Metadata metadata, ClientOptions options) {
+    return new SpiceDBClient(
+        ClientInterceptors.intercept(managed, endpoint.connectionErrorInterceptor()),
+        managed,
+        metadata,
+        options);
   }
 
   /**
@@ -246,14 +267,26 @@ public final class SpiceDBClient implements SpiceDBApi {
         allowInsecureRemoteCredentials = true;
       }
     }
-    requireInsecureTransportAllowed(endpoint, insecureRequested, allowInsecureRemoteCredentials);
+    var parsed =
+        Endpoint.parse(endpoint)
+            .forTransport(
+                insecureRequested,
+                "create(...) without withInsecure()",
+                "create(..., withInsecure())");
+    requireInsecureTransportAllowed(parsed, insecureRequested, allowInsecureRemoteCredentials);
 
     var builder =
-        testChannelBuilder != null ? testChannelBuilder : ManagedChannelBuilder.forTarget(endpoint);
+        testChannelBuilder != null
+            ? testChannelBuilder
+            : ManagedChannelBuilder.forTarget(parsed.target());
     for (ClientOption option : options) {
       option.apply(builder);
     }
-    return new SpiceDBClient(builder.build(), bearerMetadata(presharedKey), defaultTimeout);
+    return ownedClient(
+        parsed,
+        builder.build(),
+        bearerMetadata(presharedKey),
+        ClientOptions.builder().defaultTimeout(defaultTimeout).build());
   }
 
   static SpiceDBClient forChannel(ManagedChannel channel) {
@@ -369,18 +402,31 @@ public final class SpiceDBClient implements SpiceDBApi {
   private static final java.util.regex.Pattern IPV4_LITERAL =
       java.util.regex.Pattern.compile("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$");
 
+  /**
+   * Runs on the parsed endpoint, after {@link Endpoint#parse} has rejected malformed forms, so this
+   * message only ever describes a well-formed remote host.
+   */
   private static void requireInsecureTransportAllowed(
-      String endpoint, boolean insecure, boolean allowInsecureRemoteCredentials) {
-    if (insecure && !allowInsecureRemoteCredentials && !isLoopbackEndpoint(endpoint)) {
-      throw new InvalidArgumentException(
-          "spicedb: refusing to send credentials over an insecure (plaintext) connection to "
-              + "non-loopback endpoint \""
-              + endpoint
-              + "\": use TLS, or pass "
-              + "remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW) (or the allowInsecureRemoteCredentials() "
-              + "ClientOption) if you intend to send a bearer token in cleartext to a remote "
-              + "host");
+      Endpoint endpoint, boolean insecure, boolean allowInsecureRemoteCredentials) {
+    if (insecure && !allowInsecureRemoteCredentials && !isLoopbackEndpoint(endpoint.target())) {
+      throw new InvalidArgumentException(remotePlaintextRefusal(endpoint.raw()));
     }
+  }
+
+  /**
+   * The remote-plaintext refusal. It names every choice that allowing it takes (the plaintext
+   * transport and the credentials opt-in), spelled as a caller writes them, since a Docker Compose
+   * service name such as {@code spicedb:50051} needs both.
+   */
+  static String remotePlaintextRefusal(String endpoint) {
+    return "spicedb: refusing to send credentials over plaintext to non-loopback endpoint \""
+        + endpoint
+        + "\". To allow it, choose plaintext and opt in to remote plaintext credentials:"
+        + " SpiceDBClient.createPlaintext(endpoint, key, ClientOptions.builder()"
+        + ".remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build()),"
+        + " or SpiceDBClient.create(endpoint, key, SpiceDBClient.withInsecure(),"
+        + " SpiceDBClient.allowInsecureRemoteCredentials()). Otherwise use TLS:"
+        + " SpiceDBClient.createSystemTls(endpoint, key)";
   }
 
   // -----------------------------------------------------------------------

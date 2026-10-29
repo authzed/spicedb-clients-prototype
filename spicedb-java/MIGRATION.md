@@ -122,10 +122,20 @@ SpiceDBClient client = SpiceDBClient.createSystemTls("spicedb.example.com:443", 
 ```
 
 - The preshared key is a constructor argument, not call credentials.
+- The endpoint is `host:port` (as `forTarget` took), `http://host:port`
+  (plaintext constructor only; the port is required) or `https://host[:port]`
+  (TLS constructor only; the port defaults to 443), or `unix:/path`. A bare
+  host without a port dials 443 over TLS; `createPlaintext("localhost", ...)`
+  fails, so write `localhost:50051`. Other gRPC
+  target schemes such as `dns:///` and any path, query, fragment or userinfo
+  fail at construction with `InvalidArgumentException`; pass the `host:port`
+  instead.
 - `createPlaintext` sends the key in cleartext only to loopback by default. A
   remote plaintext host needs an explicit opt-in:
   `SpiceDBClient.createPlaintext(endpoint, token,
   ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build())`.
+  A Docker Compose service name such as `spicedb:50051` is such a host: use
+  `SpiceDBClient.createPlaintext("spicedb:50051", token, ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build())`.
 - TLS uses the JVM trust store; custom CA and client certificate/key PEM paths
   go in `ClientOptions`.
 - Keepalive and other channel settings (what a legacy `ManagedChannelBuilder`

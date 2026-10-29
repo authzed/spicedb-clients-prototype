@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Constructors accept `http://host:port` (plaintext) and
+  `https://host[:port]` (TLS, 443 by default) endpoints, and reject at
+  construction with `ErrInvalidArgument` any endpoint they cannot dial: a URL
+  whose scheme disagrees with the constructor, an `http://` URL without a
+  port, an unsupported scheme, or a path, query, fragment, userinfo or
+  non-numeric port. A bare plaintext host without a port (`localhost`,
+  `127.0.0.1`, `::1`, `[::1]`) is rejected the same way, naming the form
+  `localhost:50051`; a bare TLS host still defaults to 443. These are checked
+  before the remote-plaintext policy,
+  whose refusal now appears only for a well-formed remote host. Previously a
+  URL built a TLS client whose every call failed, and a plaintext constructor
+  reported any URL as a remote host.
+- The remote-plaintext refusal names every option that allows it, as this
+  package spells them (`NewPlaintext(endpoint, key,
+  WithRemotePlaintextCredentials(RemotePlaintextAllowed))`, or `WithInsecure()`
+  with the same opt-in under `NewWithOpts`), instead of the proto tier's
+  `WithInsecureAllowRemoteHost()`.
 - `clienttest.Store` resolves checks in a fixed order: a result registered
   with `SetCheckResult`, then a resolver set with `SetCheckResolver`
   (`SetCheckResolver(clienttest.GrantAll)` grants every check, so tests over

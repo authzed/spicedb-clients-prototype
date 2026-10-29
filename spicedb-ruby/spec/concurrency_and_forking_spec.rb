@@ -78,7 +78,7 @@ RSpec.describe SpiceDB::Client do
 
   it 'still refuses remote plaintext and bad TLS material at construction' do
     expect { described_class.new_plaintext('evil.example.com:1234', 'token') }
-      .to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
+      .to raise_error(SpiceDB::InvalidArgumentError, /RemoteCredentials::ALLOW_PLAINTEXT/)
     expect { described_class.new_custom_tls('spicedb.example.com:443', 'token', client_cert: 'pem') }
       .to raise_error(SpiceDB::InvalidArgumentError, /client_key/)
   end

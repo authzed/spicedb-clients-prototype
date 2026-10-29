@@ -24,10 +24,12 @@ internal sealed class AuthCapturingHandler : HttpMessageHandler
 {
     public int InvocationCount;
     public string? CapturedAuth;
+    public Uri? CapturedUri;
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref InvocationCount);
+        CapturedUri = request.RequestUri;
         CapturedAuth = request.Headers.TryGetValues("authorization", out var values) ? values.FirstOrDefault() : null;
 
         // The response content/framing doesn't matter -- callers only inspect
@@ -140,11 +142,16 @@ public class InsecureHostGuardTest
     {
         var handler = new AuthCapturingHandler();
 
-        var ex = Assert.Throws<InsecureRemoteHostException>(() =>
-            new SpiceDBProtoClient(endpoint, "super-secret-token", insecure: true, allowInsecureRemoteCredentials: false, httpHandler: handler));
+        // Userinfo is a malformed endpoint, refused before the loopback guard runs, so
+        // the opt-in does not buy it either.
+        foreach (var allow in new[] { false, true })
+        {
+            var ex = Assert.Throws<ArgumentException>(() =>
+                new SpiceDBProtoClient(endpoint, "super-secret-token", insecure: true, allowInsecureRemoteCredentials: allow, httpHandler: handler));
 
-        Assert.Contains(endpoint, ex.Message);
-        Assert.Contains("allowInsecureRemoteCredentials", ex.Message);
+            Assert.Contains(endpoint, ex.Message);
+            Assert.Contains("userinfo", ex.Message);
+        }
 
         Assert.Equal(0, handler.InvocationCount);
         Assert.Null(handler.CapturedAuth);
@@ -191,11 +198,9 @@ public class InsecureHostGuardTest
     /// further down, for an input the fixtures assert is supported.
     /// </summary>
     [Theory]
-    [InlineData("::1")]
-    [InlineData("[::1]")]
-    [InlineData("0:0:0:0:0:0:0:1")]
     [InlineData("[::1]:50051")]
-    [InlineData("127.0.0.1")]
+    [InlineData("[0:0:0:0:0:0:0:1]:50051")]
+    [InlineData("127.0.0.1:50051")]
     public void TestBareIpv6LoopbackConstructsAClient(string endpoint)
     {
         var handler = new AuthCapturingHandler();
@@ -292,7 +297,7 @@ public class InsecureHostGuardTest
     /// expected to fail (the fake handler doesn't speak real gRPC framing) -- these
     /// tests only care about what the handler observed, not the RPC's outcome.
     /// </summary>
-    private static async Task AttemptCall(SpiceDBProtoClient client)
+    internal static async Task AttemptCall(SpiceDBProtoClient client)
     {
         try
         {

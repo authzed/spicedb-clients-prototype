@@ -47,6 +47,13 @@ Create a `client.go` file in the package root with:
 
 2. **`NewClient(endpoint string, token string, opts ...Option) (*Client, error)`**
    — constructor that:
+   - Validates the endpoint before the remote-plaintext guard: `host:port`,
+     a registered gRPC resolver target (`unix:`, `dns:`, `passthrough:`),
+     `http://host:port` (with `WithInsecure` only) or `https://host[:port]`
+     (TLS only; 443 by default). A plaintext endpoint without a port, bare
+     host or http:// URL, is refused. Any other form, a path, query, fragment,
+     userinfo or non-numeric port returns the exported `ErrInvalidEndpoint`
+     sentinel naming the problem and the accepted forms
    - Creates a gRPC connection to the endpoint
    - Injects the bearer token via a per-RPC credential
    - Applies any additional options

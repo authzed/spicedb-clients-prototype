@@ -112,8 +112,9 @@ public class SpiceDBClientTests
     public void CreatePlaintext_RefusesEndpointWhoseUriAuthorityShiftsTheHost(string endpoint)
     {
         var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        // Userinfo is a malformed endpoint, refused before the remote-plaintext policy.
         var ex = act.Should().Throw<InvalidArgumentException>().Which;
-        ex.Message.Should().Contain("RemotePlaintextCredentials.Allow");
+        ex.Message.Should().Contain("userinfo");
     }
 
     /// <summary>
@@ -145,10 +146,8 @@ public class SpiceDBClientTests
     /// not.
     /// </summary>
     [Theory]
-    [InlineData("::1")]
-    [InlineData("[::1]")]
-    [InlineData("0:0:0:0:0:0:0:1")]
     [InlineData("[::1]:50051")]
+    [InlineData("[0:0:0:0:0:0:0:1]:50051")]
     public void CreatePlaintext_BareIpv6LoopbackWorksWithNoOptIn(string endpoint)
     {
         var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");

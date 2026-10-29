@@ -5,7 +5,8 @@
 `TypedClient` wraps a `SpiceDBApi` (the native `SpiceDBClient` or the in-memory test
 double; `client()` returns it) and adds explicit native instance overloads for every public
 `SpiceDBClient` instance method except the three schema-aware operations. Relationship write/read,
-bounded deletion (including the all-or-nothing `deleteRelationships(Filter, DeleteOptions)`),
+bounded deletion (including the all-or-nothing `deleteRelationships(Filter)` and
+`deleteRelationships(Filter, DeleteOptions)`),
 non-atomic deletion, import/export, bulk check/any/all, schema
 read/write/reflection/diff/dependencies/computable permissions, expansion, watch
 (including relationship filters), counters, materialize, and raw channel access retain
@@ -31,8 +32,10 @@ Typed additions never shadow a native method: `writeTxn(Txn[, WriteOptions])` (n
 `checkBulk(Collection<PermissionCheck>[, CheckOptions])`. Both forward `CheckOptions`
 unchanged, so tracing, context, deadlines and the bulk item-error mode apply.
 
-Connection construction is not an instance capability. Existing generated
-plaintext/system-TLS factories remain. Advanced native transport configuration (including
+Connection construction is not an instance capability. The generated plaintext/system-TLS
+factories mirror the native ones, including the `(endpoint, token, ClientOptions,
+Consumer<ManagedChannelBuilder<?>>)` overloads for keepalive and other channel settings
+(`TypedFactoryTest`). Other advanced native transport configuration (including
 `SpiceDBClient.fromChannel`) uses `new TypedClient(nativeClient, ownsClient)` rather than
 new permissive static factory overloads.
 

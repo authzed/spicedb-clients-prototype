@@ -73,14 +73,17 @@ try (var tc = TypedClient.createSystemTls("spicedb.example.com:443", System.gete
 `createPlaintext` is for local development; a non-loopback plaintext target
 additionally needs
 `ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build()`.
-Keepalive and other channel settings go beside the options on the native
-constructors: `SpiceDBClient.createSystemTls(endpoint, token, options, b ->
-b.keepAliveTime(60, TimeUnit.SECONDS))`, then `new TypedClient(client, true)`.
+Keepalive and other channel settings go beside the options:
+`TypedClient.createSystemTls(endpoint, token, options, b ->
+b.keepAliveTime(60, TimeUnit.SECONDS))` (the same overload exists for
+`createPlaintext` and on `SpiceDBClient`). The customizer must not change the
+transport security.
 Install the artifacts and check the protobuf-java floor (4.33.2; Spring Boot 4.1
 needs no override) as [README.md](README.md) describes.
 For an existing `io.grpc.Channel` (in-process, SpiceDB's test server), use
 `new TypedClient(SpiceDBClient.fromChannel(channel), true)`; `close` never shuts a
-supplied channel down.
+supplied channel down. `new TypedClient(api)` wraps any `SpiceDBApi`, including
+`InMemorySpiceDB` for unit tests.
 
 ## Check (fail closed)
 
@@ -117,6 +120,28 @@ CheckResult byName = tc.check(Consistency.minLatency(), perm.forDynamicSubject(U
 ```
 
   At startup, verify every configured name is in `OrganizationPermissions.names()`.
+
+- Type and permission names received at runtime (policy expressions such as a
+  Spring Security permission evaluator, admin tools) stay typed, with no switch over
+  definitions and no native call:
+
+```java
+var check =
+    definitionByName(type) // throws NotInSchemaException for an unknown type
+        .permissionByName(id, permission)
+        .forDynamicSubject(User(userId)); // throws SubjectNotAllowedException
+boolean allowed = tc.check(Consistency.minLatency(), check).hasPermission();
+
+try (var found =
+    tc.lookupResources(Consistency.minLatency(), type, permission, User(userId), grantedOnly)) {
+  // names and subject are validated against the schema before the call
+}
+```
+
+  `permissionRefByName(type, permission)` gives a resource-less `PermissionRef<?>`.
+  Use `Definitions.ORGANIZATION` and `Definitions.names()` instead of a hand-kept type
+  list, and `tc.writeSchema(Permissions.SCHEMA)` (the schema text the code was
+  generated from) instead of loading the `.zed` from the classpath.
 
 ## List what a subject can access
 
@@ -275,8 +300,9 @@ db.setCheckResolver(InMemorySpiceDB.grantAll());
 Depend on `PermissionsApi` (`write`, `readRelationships`, `deleteRelationships`,
 `check`, `checkBulk`, `importRelationships`, `exportRelationships`, `readSchema`,
 `writeSchema`, `reflectSchema`), or on `SpiceDBApi` for the client's full method set;
-both `SpiceDBClient` and `InMemorySpiceDB` implement both, and a `TypedClient` provides
-one through `tc.client()`. Checks resolve in order: registered result, resolver, then a
+both `SpiceDBClient` and `InMemorySpiceDB` implement both. `TypedClient` wraps either
+(`new TypedClient(new InMemorySpiceDB())`) and returns it from `tc.client()` as
+`SpiceDBApi`. Checks resolve in order: registered result, resolver, then a
 stored relationship whose relation is the permission's name (exact subject or `type:*`
 wildcard), else no permission; the double never evaluates the schema. `lookupResources`
 and `lookupSubjects` apply that resolution to every object of the requested type the

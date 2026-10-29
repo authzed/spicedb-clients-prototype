@@ -255,6 +255,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Streams and imports have no default lifetime timeout, but accept explicit
     total deadlines. Finite lookups and exports support deadlines even when
     their underlying RPC streams.
+  - Finite paged reads (relationship reads, lookups, exports) apply the client
+    default deadline to each page request, from opening it to receiving its
+    last item, so a server that stalls mid-read fails the read instead of
+    hanging it. A caller's total deadline still bounds the whole operation and
+    wins when earlier. Long-lived streams (watch) keep no default.
   - A named mode disables the client default deadline. The caller's own deadline
     or cancellation still applies. Zero or negative durations are never used as
     a magic "disabled" value.
@@ -407,6 +412,13 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     existing handlers keep catching. MIGRATION.md states the interop either
     way. The verbatim server-message field always has a value: for local
     errors it is the error's message.
+  - A response the client cannot interpret (a missing required field, a
+    cursor that does not advance) fails with `INTERNAL`, which no retry policy
+    treats as retryable by default. Clients never skip such a response or fill
+    its missing fields with empty values: a skipped item makes a full page look
+    short and silently ends a paged read early.
+  - Local cancellation surfaces as the client's cancelled error, never as the
+    platform's own abort exception, whose fields may resemble a status code.
   - Provide a public constructor for native errors from a code and message, so
     test doubles produce errors that every predicate treats like real ones.
   - Wrapper errors (bulk item, deletion progress) report their inner status

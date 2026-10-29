@@ -46,7 +46,14 @@ Create a `Client.cs` file in the package root with:
    - A refusal, before any channel/credential/handler exists, when `insecure` is combined
      with a non-loopback `endpoint` and `allowInsecureRemoteCredentials` is false — root
      DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in".
-     `unix:` targets are refused outright (this transport would dial the DNS name `unix`).
+     Plaintext `unix:/path`, `unix:///path` and `unix:relative/path` targets are dialed
+     through a `SocketsHttpHandler` `ConnectCallback` on the socket path (never as a host
+     named `unix`), skip the loopback guard because they never leave the host, and are
+     refused for TLS, with an authority, or without a path (`internal static string
+     UnixSocketPath(string endpoint, bool insecure)`). `dns:///host:port` targets use
+     Grpc.Net.Client's DNS resolver with a round-robin `ServiceConfig`; the loopback guard
+     judges their parsed host. Other target schemes (`xds:`, `ipv4:`, `dns://authority/`)
+     are refused by `ParseEndpoint`.
    - Endpoint forms `host:port`, `http://host:port` (needs `insecure: true`) and
      `https://host[:port]` (needs `insecure: false`). A plaintext endpoint without a port is
      rejected (no silent port 80); a TLS one uses 443. Parsed by
@@ -170,9 +177,9 @@ dropped. It must keep covering, at minimum:
    that a constructor threw.
 4. **Bare IPv6 loopback constructs a real client**, rather than passing the guard and then
    throwing `UriFormatException` out of `GrpcChannel.ForAddress`.
-5. **`unix:` targets are refused outright**, before either `insecure` or
-   `allowInsecureRemoteCredentials` is consulted — this transport would resolve the DNS
-   name `unix`.
+5. **Plaintext `unix:` targets construct without the remote opt-in**, and TLS, authority
+   or empty-path `unix:` targets are refused before any handler is reached. A real call
+   over a unix socket and over `dns:///` runs in `spicedb-csharp/examples/EndpointForms`.
 6. **Null arguments throw `ArgumentNullException`.**
 
 ### Deprecation Handling

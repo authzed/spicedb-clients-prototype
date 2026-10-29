@@ -42,7 +42,7 @@ fn test_check_result_from_bulk_item_missing_context_by_value() {
         }),
         debug_trace: None,
     };
-    let result = check_result_from_bulk_item(&item, "rev-1");
+    let result = check_result_from_bulk_item(&item, "rev-1").unwrap();
     assert_eq!(
         result.missing_context,
         vec!["ip_address".to_string(), "now".to_string()]
@@ -57,7 +57,7 @@ fn test_check_result_from_bulk_item_no_partial_caveat_info_yields_empty_missing_
         partial_caveat_info: None,
         debug_trace: None,
     };
-    let result = check_result_from_bulk_item(&item, "rev-1");
+    let result = check_result_from_bulk_item(&item, "rev-1").unwrap();
     assert!(result.missing_context.is_empty());
 }
 
@@ -68,7 +68,7 @@ fn test_check_result_from_bulk_item_checked_at_populated() {
         partial_caveat_info: None,
         debug_trace: None,
     };
-    let result = check_result_from_bulk_item(&item, "zedtoken-abc123");
+    let result = check_result_from_bulk_item(&item, "zedtoken-abc123").unwrap();
     assert_eq!(result.checked_at.as_ref(), "zedtoken-abc123");
 }
 
@@ -109,21 +109,13 @@ fn test_partial_caveat_from_proto_some() {
 }
 
 #[test]
-fn test_resolved_subject_from_proto_none_yields_zero_value() {
-    let subject = resolved_subject_from_proto(None);
-    assert_eq!(subject.subject_id, "");
-    assert_eq!(subject.permissionship, Permissionship::Unspecified);
-    assert_eq!(subject.partial_caveat, None);
-}
-
-#[test]
 fn test_resolved_subject_from_proto_some() {
     let proto_subject = proto::ResolvedSubject {
         subject_object_id: "alice".to_string(),
         permissionship: proto::LookupPermissionship::HasPermission as i32,
         partial_caveat_info: None,
     };
-    let subject = resolved_subject_from_proto(Some(&proto_subject));
+    let subject = resolved_subject_from_proto(&proto_subject);
     assert_eq!(subject.subject_id, "alice");
     assert_eq!(subject.permissionship, Permissionship::HasPermission);
     assert_eq!(subject.partial_caveat, None);
@@ -332,16 +324,17 @@ fn recursive_tree_variants_are_exclusive_and_unknown_is_safe() {
         tree_type: Some(proto::permission_relationship_tree::TreeType::Intermediate(
             proto::AlgebraicSubjectSet {
                 operation: 999,
-                children: vec![leaf],
+                children: vec![leaf.clone()],
             },
         )),
+        expanded_object: leaf.expanded_object.clone(),
         ..Default::default()
     };
     let PermissionTree::Intermediate {
         operation,
         children,
         ..
-    } = permission_tree_from_proto(Some(&root))
+    } = permission_tree_from_proto(&root).unwrap()
     else {
         panic!()
     };
@@ -350,7 +343,70 @@ fn recursive_tree_variants_are_exclusive_and_unknown_is_safe() {
         panic!()
     };
     assert_eq!(subjects[0].relation(), None);
-    assert_eq!(permission_tree_from_proto(None), PermissionTree::Unknown);
+    let unknown = proto::PermissionRelationshipTree {
+        tree_type: None,
+        ..leaf.clone()
+    };
+    assert_eq!(
+        permission_tree_from_proto(&unknown).unwrap(),
+        PermissionTree::Unknown
+    );
+}
+#[test]
+fn malformed_response_values_fail_as_internal_instead_of_filling_empties() {
+    let subject = proto::SubjectReference {
+        object: Some(proto::ObjectReference {
+            object_type: "user".into(),
+            object_id: "alice".into(),
+        }),
+        optional_relation: String::new(),
+    };
+    let resource = proto::ObjectReference {
+        object_type: "document".into(),
+        object_id: "one".into(),
+    };
+    let whole = proto::Relationship {
+        resource: Some(resource.clone()),
+        relation: "viewer".into(),
+        subject: Some(subject.clone()),
+        optional_caveat: None,
+        optional_expires_at: None,
+    };
+    assert!(Relationship::from_response(&whole).is_ok());
+    let broken = [
+        proto::Relationship {
+            resource: None,
+            ..whole.clone()
+        },
+        proto::Relationship {
+            subject: None,
+            ..whole.clone()
+        },
+        proto::Relationship {
+            subject: Some(proto::SubjectReference {
+                object: None,
+                ..subject.clone()
+            }),
+            ..whole.clone()
+        },
+    ];
+    for relationship in broken {
+        let err = Relationship::from_response(&relationship).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal, "{err}");
+        assert!(err.to_string().contains("missing"), "{err}");
+        assert!(!crate::RetryPolicy::new().retryable(err.code()));
+    }
+    let tree = proto::PermissionRelationshipTree {
+        expanded_object: None,
+        expanded_relation: "viewer".into(),
+        tree_type: Some(proto::permission_relationship_tree::TreeType::Leaf(
+            proto::DirectSubjectSet {
+                subjects: vec![subject],
+            },
+        )),
+    };
+    let err = permission_tree_from_proto(&tree).unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Internal, "{err}");
 }
 #[test]
 fn check_context_cannot_enter_persisted_relationships() {
@@ -374,7 +430,7 @@ fn check_context_cannot_enter_persisted_relationships() {
             .into_iter()
             .collect(),
     );
-    let roundtrip = Relationship::from_proto(&relationship.to_proto());
+    let roundtrip = Relationship::from_response(&relationship.to_proto()).unwrap();
     assert_eq!(roundtrip, relationship);
     assert!(!roundtrip
         .caveat_context()

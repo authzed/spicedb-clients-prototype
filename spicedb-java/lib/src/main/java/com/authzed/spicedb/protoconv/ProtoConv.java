@@ -43,7 +43,9 @@ import com.authzed.spicedb.SubjectRelationFilter;
 import com.authzed.spicedb.Transaction;
 import com.authzed.spicedb.WriteResult;
 import com.authzed.spicedb.ZedToken;
+import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.SpiceDBException;
 import com.google.protobuf.ListValue;
 import com.google.protobuf.NullValue;
 import com.google.protobuf.Struct;
@@ -66,6 +68,15 @@ import java.util.Map;
  */
 public final class ProtoConv {
   private ProtoConv() {}
+
+  /**
+   * A protocol message this class cannot interpret: a required field (relationship, resource,
+   * subject, object, ID) is missing. It fails with {@code INTERNAL}, which no retry policy retries
+   * by default; conversions never skip such a message or fill its fields with empty values.
+   */
+  private static SpiceDBException malformed(String detail) {
+    return ErrorMapper.newError(io.grpc.Status.Code.INTERNAL, "malformed response: " + detail);
+  }
 
   // ---------------------------------------------------------------- tokens, cursors, timestamps
 
@@ -129,7 +140,10 @@ public final class ProtoConv {
         .build();
   }
 
+  /** Fails with {@code INTERNAL} when the type or ID is missing. */
   public static ObjectRef fromProto(ObjectReference object) {
+    if (object.getObjectType().isEmpty()) throw malformed("object has no type");
+    if (object.getObjectId().isEmpty()) throw malformed("object has no ID");
     return new ObjectRef(object.getObjectType(), object.getObjectId());
   }
 
@@ -140,8 +154,12 @@ public final class ProtoConv {
         .build();
   }
 
-  /** An empty relation or {@code ...} is a direct subject. */
+  /**
+   * An empty relation or {@code ...} is a direct subject. Fails with {@code INTERNAL} when the
+   * object is missing.
+   */
   public static SubjectRef fromProto(SubjectReference subject) {
+    if (!subject.hasObject()) throw malformed("subject has no object");
     var object = fromProto(subject.getObject());
     var relation = subject.getOptionalRelation();
     return relation.isEmpty() || relation.equals("...")
@@ -234,11 +252,16 @@ public final class ProtoConv {
     return builder.build();
   }
 
+  /** Fails with {@code INTERNAL} when the resource, relation or subject is missing. */
   public static Relationship fromProto(com.authzed.api.v1.Relationship pr) {
+    if (!pr.hasResource()) throw malformed("relationship has no resource");
+    if (pr.getRelation().isEmpty()) throw malformed("relationship has no relation");
+    if (!pr.hasSubject()) throw malformed("relationship has no subject");
     String caveatName = null;
     Map<String, Object> caveatContext = null;
     if (pr.hasOptionalCaveat()) {
       caveatName = pr.getOptionalCaveat().getCaveatName();
+      if (caveatName.isEmpty()) throw malformed("relationship caveat has no name");
       if (pr.getOptionalCaveat().hasContext())
         caveatContext = fromStruct(pr.getOptionalCaveat().getContext());
     }
@@ -361,6 +384,7 @@ public final class ProtoConv {
           case OPERATION_DELETE -> SpiceDBClient.UpdateOperation.DELETE;
           default -> SpiceDBClient.UpdateOperation.UNSPECIFIED;
         };
+    if (!u.hasRelationship()) throw malformed("relationship update has no relationship");
     return new SpiceDBClient.Update(op, fromProto(u.getRelationship()));
   }
 
@@ -389,6 +413,7 @@ public final class ProtoConv {
   }
 
   public static ReadRelationship fromProto(ReadRelationshipsResponse r) {
+    if (!r.hasRelationship()) throw malformed("read response has no relationship");
     return new ReadRelationship(
         fromProto(r.getRelationship()),
         r.hasAfterResultCursor() ? r.getAfterResultCursor().getToken() : null,
@@ -432,6 +457,7 @@ public final class ProtoConv {
   }
 
   public static LookupResult.LookupResource fromProto(LookupResourcesResponse resp) {
+    if (resp.getResourceObjectId().isEmpty()) throw malformed("looked-up resource has no ID");
     return new LookupResult.LookupResource(
         resp.getResourceObjectId(),
         fromProto(resp.getPermissionship()),
@@ -452,6 +478,7 @@ public final class ProtoConv {
   }
 
   public static LookupResult.ResolvedSubject fromProto(ResolvedSubject v) {
+    if (v.getSubjectObjectId().isEmpty()) throw malformed("resolved subject has no ID");
     return new LookupResult.ResolvedSubject(
         v.getSubjectObjectId(),
         fromProto(v.getPermissionship()),
@@ -470,8 +497,12 @@ public final class ProtoConv {
   /** Reads the current fields, falling back to the deprecated top-level ones older servers send. */
   @SuppressWarnings("deprecation")
   public static LookupResult.LookupSubject fromProto(LookupSubjectsResponse resp) {
-    LookupResult.ResolvedSubject subject = resp.hasSubject() ? fromProto(resp.getSubject()) : null;
-    if (subject == null || subject.subjectId().isEmpty()) {
+    LookupResult.ResolvedSubject subject =
+        resp.hasSubject() && !resp.getSubject().getSubjectObjectId().isEmpty()
+            ? fromProto(resp.getSubject())
+            : null;
+    if (subject == null) {
+      if (resp.getSubjectObjectId().isEmpty()) throw malformed("looked-up subject has no ID");
       subject =
           new LookupResult.ResolvedSubject(
               resp.getSubjectObjectId(),
@@ -484,7 +515,11 @@ public final class ProtoConv {
     } else if (!resp.getExcludedSubjectIdsList().isEmpty()) {
       excluded =
           resp.getExcludedSubjectIdsList().stream()
-              .map(id -> new LookupResult.ResolvedSubject(id, Permissionship.UNSPECIFIED, null))
+              .map(
+                  id -> {
+                    if (id.isEmpty()) throw malformed("excluded subject has no ID");
+                    return new LookupResult.ResolvedSubject(id, Permissionship.UNSPECIFIED, null);
+                  })
               .toList();
     } else {
       excluded = List.of();
@@ -757,10 +792,13 @@ public final class ProtoConv {
 
   // ---------------------------------------------------------------- expand
 
+  /**
+   * Fails with {@code INTERNAL} when the tree, a node's expanded object or a subject is missing.
+   */
   public static PermissionTree fromProto(PermissionRelationshipTree t) {
-    if (t == null) {
-      return new PermissionTree(new PermissionTree.ObjectRef("", ""), "", null, null);
-    }
+    if (t == null) throw malformed("expand response has no tree");
+    if (!t.hasExpandedObject()) throw malformed("expanded node has no object");
+    var expanded = fromProto(t.getExpandedObject());
     PermissionTree.IntermediateNode intermediate = null;
     if (t.hasIntermediate()) {
       AlgebraicSubjectSet algebraic = t.getIntermediate();
@@ -780,6 +818,7 @@ public final class ProtoConv {
       DirectSubjectSet direct = t.getLeaf();
       var subjects = new ArrayList<PermissionTree.SubjectRef>(direct.getSubjectsCount());
       for (var subject : direct.getSubjectsList()) {
+        fromProto(subject); // validates the subject's object
         subjects.add(
             new PermissionTree.SubjectRef(
                 subject.getObject().getObjectType(),
@@ -789,8 +828,7 @@ public final class ProtoConv {
       leaf = new PermissionTree.LeafNode(List.copyOf(subjects));
     }
     return new PermissionTree(
-        new PermissionTree.ObjectRef(
-            t.getExpandedObject().getObjectType(), t.getExpandedObject().getObjectId()),
+        new PermissionTree.ObjectRef(expanded.objectType(), expanded.objectId()),
         t.getExpandedRelation(),
         intermediate,
         leaf);

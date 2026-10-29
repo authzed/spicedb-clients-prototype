@@ -31,6 +31,7 @@ type Interface interface {
 	LookupSubjects(ctx context.Context, request LookupSubjectsRequest, opts ...LookupSubjectsOption) iter.Seq2[LookupSubject, error]
 	RawProto() *proto.Client
 	ReadRelationships(ctx context.Context, request ReadRelationshipsRequest, opts ...ReadRelationshipsOption) iter.Seq2[ReadRelationship, error]
+	Ready(ctx context.Context, opts ...ReadyOption) error
 	ReadSchema(ctx context.Context, request ReadSchemaRequest, opts ...ReadSchemaOption) (ReadSchemaResult, error)
 	ReflectSchema(ctx context.Context, request ReflectSchemaRequest, opts ...ReflectSchemaOption) (ReflectSchemaResult, error)
 	RegisterRelationshipCounter(ctx context.Context, request RegisterRelationshipCounterRequest, opts ...RegisterRelationshipCounterOption) (RegisterRelationshipCounterResult, error)

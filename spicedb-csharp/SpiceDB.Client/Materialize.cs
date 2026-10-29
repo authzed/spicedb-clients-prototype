@@ -86,7 +86,7 @@ public sealed partial class SpiceDBClient
     /// <summary>Experimental explicit single-page lookup. Retain the last cursor to request the next page.</summary>
     public async IAsyncEnumerable<LookupPermissionSet> ExperimentalLookupPermissionSetsAsync(int limit, ZedToken? atRevision, PermissionSetLookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, paged: true);
         var request = new M.LookupPermissionSetsRequest { Limit = (uint)Positive(limit, nameof(limit)), OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null, OptionalStartingAfterCursor = options?.ResumeCursor?.ToProto() };
         await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.LookupPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
             yield return new(response.Change is null ? null : MapSetChange(response.Change), PermissionSetCursor.FromProto(response.Cursor));
@@ -105,8 +105,11 @@ public sealed partial class SpiceDBClient
         value.ParentSet is null ? null : MapSet(value.ParentSet), value.ChildCase switch
         {
             M.PermissionSetChange.ChildOneofCase.ChildSet => new PermissionSetChild.Set(MapSet(value.ChildSet)),
-            M.PermissionSetChange.ChildOneofCase.ChildMember => new PermissionSetChild.Member(new(new(value.ChildMember.ObjectType, value.ChildMember.ObjectId), value.ChildMember.OptionalPermissionOrRelation == "" ? null : value.ChildMember.OptionalPermissionOrRelation)),
+            M.PermissionSetChange.ChildOneofCase.ChildMember => new PermissionSetChild.Member(new(SetObject(value.ChildMember.ObjectType, value.ChildMember.ObjectId, "child member"), value.ChildMember.OptionalPermissionOrRelation == "" ? null : value.ChildMember.OptionalPermissionOrRelation)),
             _ => new PermissionSetChild.Unspecified(),
         });
-    private static PermissionSetReference MapSet(M.SetReference value) => new(new(value.ObjectType, value.ObjectId), value.PermissionOrRelation);
+    private static PermissionSetReference MapSet(M.SetReference value) => new(SetObject(value.ObjectType, value.ObjectId, "set"),
+        string.IsNullOrEmpty(value.PermissionOrRelation) ? throw Response.Malformed("PermissionSets", "set has no permission or relation") : value.PermissionOrRelation);
+    private static ObjectRef SetObject(string type, string id, string field) =>
+        string.IsNullOrEmpty(type) || string.IsNullOrEmpty(id) ? throw Response.Malformed("PermissionSets", $"{field} has no object type or id") : new(type, id);
 }

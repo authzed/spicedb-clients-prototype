@@ -19,10 +19,10 @@ module SpiceDB
     include DeepHash
 
     def initialize(resource:, relation:, subject:, caveat: nil, expiration: nil)
-      raise InvalidArgumentError, "resource: expected ObjectRef, got #{Values.received(resource)}" unless resource.is_a?(ObjectRef)
-      raise InvalidArgumentError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
-      raise InvalidArgumentError, 'caveat: expected Caveat' unless caveat.nil? || caveat.is_a?(Caveat)
-      raise InvalidArgumentError, 'expiration: expected Time' unless expiration.nil? || expiration.is_a?(Time)
+      raise LocalValidationError, "resource: expected ObjectRef, got #{Values.received(resource)}" unless resource.is_a?(ObjectRef)
+      raise LocalValidationError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
+      raise LocalValidationError, 'caveat: expected Caveat' unless caveat.nil? || caveat.is_a?(Caveat)
+      raise LocalValidationError, 'expiration: expected Time' unless expiration.nil? || expiration.is_a?(Time)
 
       super(resource: resource, relation: Values.name(relation, 'relation'), subject: subject,
             caveat: caveat, expiration: Values.snapshot(expiration))
@@ -34,7 +34,7 @@ module SpiceDB
     def self.from_tuple(tuple)
       text = tuple.to_s
       match = TupleSuffix::TUPLE.match(text)
-      raise InvalidArgumentError, 'invalid tuple: expected type:id#relation@type:id[#relation][caveat][expiration]' unless match
+      raise LocalValidationError, 'invalid tuple: expected type:id#relation@type:id[#relation][caveat][expiration]' unless match
 
       subject_relation = match[6] == '...' ? nil : match[6]
       relationship = new(resource: ObjectRef.new(object_type: match[1], object_id: match[2]), relation: match[3],
@@ -106,7 +106,7 @@ module SpiceDB
         relationship = relationship.with_caveat(name, context)
       end
       return relationship if suffix.empty?
-      raise InvalidArgumentError, "invalid tuple suffix #{suffix.inspect}" unless suffix.start_with?(EXPIRATION) && suffix.end_with?(']')
+      raise LocalValidationError, "invalid tuple suffix #{suffix.inspect}" unless suffix.start_with?(EXPIRATION) && suffix.end_with?(']')
 
       relationship.with_expiration(parse_time(suffix[EXPIRATION.length...-1]))
     end
@@ -114,23 +114,23 @@ module SpiceDB
     # Parses "[name]" or "[name:{json}]" and returns what follows. The context
     # is decoded as one JSON value, so a "]" inside a string does not end it.
     def caveat(text)
-      raise InvalidArgumentError, "invalid tuple caveat #{text.inspect}" unless text.start_with?('[')
+      raise LocalValidationError, "invalid tuple caveat #{text.inspect}" unless text.start_with?('[')
 
       match = /\A\[([^:\]\[]+)(:|\])/.match(text)
-      raise InvalidArgumentError, "invalid tuple caveat #{text.inspect}" unless match
+      raise LocalValidationError, "invalid tuple caveat #{text.inspect}" unless match
       return [match[1], nil, text[match.end(0)..]] if match[2] == ']'
 
       body = text[match.end(0)..]
       context, consumed = json_object(body)
       rest = body[consumed..]
-      raise InvalidArgumentError, "invalid tuple caveat #{text.inspect}" unless rest.start_with?(']')
+      raise LocalValidationError, "invalid tuple caveat #{text.inspect}" unless rest.start_with?(']')
 
       [match[1], context, rest[1..]]
     end
 
     # Finds the end of the leading JSON object by scanning strings and depth.
     def json_object(text)
-      raise InvalidArgumentError, 'invalid tuple caveat context: expected a JSON object' unless text.start_with?('{')
+      raise LocalValidationError, 'invalid tuple caveat context: expected a JSON object' unless text.start_with?('{')
 
       depth = 0
       in_string = false
@@ -151,17 +151,17 @@ module SpiceDB
           return [JSON.parse(text[0..index]), index + 1] if depth.zero?
         end
       end
-      raise InvalidArgumentError, 'invalid tuple caveat context: unterminated JSON'
+      raise LocalValidationError, 'invalid tuple caveat context: unterminated JSON'
     rescue JSON::ParserError => e
-      raise InvalidArgumentError, "invalid tuple caveat context: #{e.message}"
+      raise LocalValidationError, "invalid tuple caveat context: #{e.message}"
     end
 
     def parse_time(text)
-      raise InvalidArgumentError, "invalid tuple expiration #{text.inspect}" unless text.match?(/\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)\z/)
+      raise LocalValidationError, "invalid tuple expiration #{text.inspect}" unless text.match?(/\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)\z/)
 
       Time.iso8601(text).utc
     rescue ArgumentError
-      raise InvalidArgumentError, "invalid tuple expiration #{text.inspect}"
+      raise LocalValidationError, "invalid tuple expiration #{text.inspect}"
     end
 
     def format_time(time)

@@ -14,7 +14,7 @@ module SpiceDB
     def require_proto_client!
       return if @proto_client || @connect
 
-      raise SpiceDB::Error,
+      raise SpiceDB::FailedPreconditionError,
             'proto client not available — ensure the spicedb_proto gem is installed and buf-generated stubs exist'
     end
 
@@ -23,7 +23,7 @@ module SpiceDB
     end
 
     def filter_to_proto(filter)
-      raise InvalidArgumentError, 'expected Filter' unless filter.is_a?(Filter)
+      raise LocalValidationError, 'expected Filter' unless filter.is_a?(Filter)
 
       subject = filter.subject
       subject_proto = if subject
@@ -39,7 +39,7 @@ module SpiceDB
     end
 
     def relationship_to_proto(rel)
-      raise InvalidArgumentError, 'expected Relationship' unless rel.is_a?(Relationship)
+      raise LocalValidationError, 'expected Relationship' unless rel.is_a?(Relationship)
 
       caveat = rel.caveat && Authzed::Api::V1::ContextualizedCaveat.new(caveat_name: rel.caveat.name,
                                                                         context: caveat_context_to_struct(rel.caveat.context))
@@ -49,16 +49,40 @@ module SpiceDB
                                          optional_expires_at: expiration)
     end
 
-    def relationship_from_proto(rel)
-      caveat = rel.optional_caveat && Caveat.new(name: rel.optional_caveat.caveat_name,
-                                                 context: rel.optional_caveat.context && struct_to_caveat_context(rel.optional_caveat.context))
-      Relationship.new(resource: object_from_proto(rel.resource), relation: rel.relation,
-                       subject: subject_ref_from_proto(rel.subject), caveat: caveat,
-                       expiration: rel.optional_expires_at && Time.at(rel.optional_expires_at.seconds, rel.optional_expires_at.nanos, :nsec))
+    # A response this client cannot interpret (a missing required field, a
+    # cursor that does not advance, an echo that does not match): INTERNAL,
+    # which no default retry policy retries. Never skip such a response or
+    # fill its missing fields with empty values.
+    def malformed_response(message)
+      Error.new("spicedb: malformed response: #{message}", code: GRPC::Core::StatusCodes::INTERNAL)
     end
 
-    def object_from_proto(object)
-      ObjectRef.new(object_type: object.object_type, object_id: object['object_id'])
+    # Runs a conversion of server data, reporting a value the native types
+    # refuse (an empty name or ID) as a malformed response rather than as the
+    # caller's invalid argument.
+    def from_server(field)
+      yield
+    rescue InvalidArgumentError => e
+      raise malformed_response("#{field}: #{e.message}")
+    end
+
+    def relationship_from_proto(rel, field = 'relationship')
+      raise malformed_response("#{field} is missing") if rel.nil?
+
+      caveat = rel.optional_caveat && Caveat.new(name: rel.optional_caveat.caveat_name,
+                                                 context: rel.optional_caveat.context && struct_to_caveat_context(rel.optional_caveat.context))
+      resource = object_from_proto(rel.resource, "#{field}.resource")
+      subject = subject_ref_from_proto(rel.subject, "#{field}.subject")
+      from_server(field) do
+        Relationship.new(resource: resource, relation: rel.relation, subject: subject, caveat: caveat,
+                         expiration: rel.optional_expires_at && Time.at(rel.optional_expires_at.seconds, rel.optional_expires_at.nanos, :nsec))
+      end
+    end
+
+    def object_from_proto(object, field = 'object')
+      raise malformed_response("#{field} is missing") if object.nil?
+
+      from_server(field) { ObjectRef.new(object_type: object.object_type, object_id: object['object_id']) }
     end
 
     OPERATION_MAP = {

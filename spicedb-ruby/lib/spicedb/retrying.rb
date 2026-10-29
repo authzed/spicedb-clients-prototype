@@ -13,10 +13,10 @@ module SpiceDB
     # schema write). Every other mutation given a policy with retries raises
     # InvalidArgumentError, before any request is sent.
     def self.mutation_policy(policy, idempotent, operation)
-      raise InvalidArgumentError, 'retry_policy: expected SpiceDB::RetryPolicy' unless policy.nil? || policy.is_a?(RetryPolicy)
+      raise LocalValidationError, 'retry_policy: expected SpiceDB::RetryPolicy' unless policy.nil? || policy.is_a?(RetryPolicy)
       return nil if policy.nil? || policy.max_retries.zero?
       unless idempotent
-        raise InvalidArgumentError, "#{operation} cannot be retried: only touch-only writes without preconditions and schema writes are " \
+        raise LocalValidationError, "#{operation} cannot be retried: only touch-only writes without preconditions and schema writes are " \
                                     'idempotent on replay'
       end
 
@@ -29,15 +29,15 @@ module SpiceDB
     # RetryPolicy) and returns a frozen copy. Operations that are never
     # idempotent on replay accept only a policy without retries.
     def self.operation_policies(policies)
-      raise InvalidArgumentError, 'operation_retry_policies: expected a Hash of operation => RetryPolicy' unless policies.is_a?(Hash)
+      raise LocalValidationError, 'operation_retry_policies: expected a Hash of operation => RetryPolicy' unless policies.is_a?(Hash)
 
       policies.to_h do |operation, policy|
         unless Client::OPERATIONS.include?(operation)
-          raise InvalidArgumentError, "operation_retry_policies: unknown operation #{operation.inspect}; expected one of Client::OPERATIONS"
+          raise LocalValidationError, "operation_retry_policies: unknown operation #{operation.inspect}; expected one of Client::OPERATIONS"
         end
-        raise InvalidArgumentError, "operation_retry_policies: #{operation}: expected SpiceDB::RetryPolicy" unless policy.is_a?(RetryPolicy)
+        raise LocalValidationError, "operation_retry_policies: #{operation}: expected SpiceDB::RetryPolicy" unless policy.is_a?(RetryPolicy)
         if policy.max_retries.positive? && Client::NEVER_IDEMPOTENT_OPERATIONS.include?(operation)
-          raise InvalidArgumentError, "#{operation} cannot be retried: it is not idempotent on replay"
+          raise LocalValidationError, "#{operation} cannot be retried: it is not idempotent on replay"
         end
 
         [operation, policy]

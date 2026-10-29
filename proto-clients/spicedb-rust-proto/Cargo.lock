@@ -922,6 +922,7 @@ name = "spicedb-proto"
 version = "0.1.0"
 dependencies = [
  "glob",
+ "hyper-util",
  "prost",
  "prost-types",
  "protoc-bin-vendored",
@@ -930,6 +931,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tower",
 ]
 
 [[package]]

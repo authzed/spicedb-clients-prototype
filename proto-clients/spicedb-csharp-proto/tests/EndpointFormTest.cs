@@ -69,6 +69,14 @@ public class EndpointFormTest
     [InlineData("ftp://host:1", true, "unsupported scheme \"ftp\"")]
     [InlineData("ftp://host:1", false, "unsupported scheme \"ftp\"")]
     [InlineData("grpc://host:1", false, "unsupported scheme \"grpc\"")]
+    // gRPC target schemes other than dns:/// and unix: are refused, never passed through.
+    [InlineData("xds:///spicedb", true, "unsupported scheme \"xds\"")]
+    [InlineData("ipv4:127.0.0.1:50051", true, "unsupported scheme \"ipv4\"")]
+    [InlineData("dns://8.8.8.8/localhost:50051", true, "a DNS server authority is not supported")]
+    [InlineData("dns:localhost:50051", true, "must be dns:///host:port")]
+    [InlineData("dns:///localhost", true, "needs an explicit port")]
+    [InlineData("dns:///localhost:50051/x", true, "a path is not allowed")]
+    [InlineData("dns:///http://localhost:50051", true, "a dns target names host:port, not a URL")]
     public void TestMalformedFormsFailAtConstruction(string endpoint, bool insecure, string reason)
     {
         var handler = new AuthCapturingHandler();
@@ -112,5 +120,23 @@ public class EndpointFormTest
 
         using var allowed = new SpiceDBProtoClient("http://example.com:50051", "t", insecure: true, allowInsecureRemoteCredentials: true, handler);
         using var loopback = new SpiceDBProtoClient("http://localhost:50101", "t", insecure: true, allowInsecureRemoteCredentials: false, handler);
+    }
+
+    /// <summary>
+    /// A dns:/// target is accepted for plaintext and TLS, with the loopback check on its
+    /// host: a remote plaintext dns target needs the opt-in like any other. The live
+    /// example in spicedb-csharp/examples makes a real call over one.
+    /// </summary>
+    [Fact]
+    public void TestDnsTargetsAreAcceptedWithTheLoopbackCheckOnTheirHost()
+    {
+        using var loopback = new SpiceDBProtoClient("dns:///localhost:50101", "t", insecure: true, allowInsecureRemoteCredentials: false);
+        using var tls = new SpiceDBProtoClient("dns:///example.com", "t", insecure: false, allowInsecureRemoteCredentials: false);
+        using var upper = new SpiceDBProtoClient("DNS:///127.0.0.1:50101", "t", insecure: true, allowInsecureRemoteCredentials: false);
+
+        var ex = Assert.Throws<InsecureRemoteHostException>(() =>
+            new SpiceDBProtoClient("dns:///example.com:50051", "t", insecure: true, allowInsecureRemoteCredentials: false));
+        Assert.Contains("dns:///example.com:50051", ex.Message);
+        using var allowed = new SpiceDBProtoClient("dns:///example.com:50051", "t", insecure: true, allowInsecureRemoteCredentials: true);
     }
 }

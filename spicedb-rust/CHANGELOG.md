@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **Breaking:** finite paged reads (`read_relationships`, `lookup_resources`,
+  `lookup_subjects`, `export_relationships`, `lookup_permission_sets`) apply
+  the client default deadline (30 s, `default_timeout`) to each page, from
+  requesting it to its last item, so a server that stalls mid-read fails the
+  stream with `DeadlineExceeded` ("page deadline exceeded") instead of hanging
+  it. A per-call `with_timeout` still bounds the whole stream and wins when
+  earlier; `DefaultDeadline::Disabled` removes the page bound; watches keep no
+  default.
+- **Breaking:** a response the client cannot interpret fails with `Internal`
+  ("malformed response: missing ..."), which no default retry policy retries,
+  instead of being skipped or filled with empty values: a read response
+  without its relationship (previously skipped, which made a full page look
+  short and ended the read early), a watch update without its relationship
+  (previously dropped), a relationship missing its resource, subject or
+  subject object (previously empty strings), a lookup result with no resource
+  ID or subject, and an expand tree missing its root, expanded object or a
+  leaf subject's object. A tree node of a kind the client does not know is
+  still `PermissionTree::Unknown`.
+- On Unix platforms, `unix:/path/to/socket`, `unix:///path` and
+  `unix:relative/path` endpoints dial that Unix domain socket (plaintext; with
+  `builder` the scheme selects plaintext; a local socket needs no remote
+  credentials opt-in; `new_system_tls` refuses one). They were refused
+  before. `spicedb-proto` gains `EndpointScheme::Unix`.
+- gRPC resolver targets the transport cannot honor are refused at
+  construction with `InvalidArgument` naming the accepted forms:
+  `dns:///host:port` and `dns:host:port` (this client dials one address and
+  does no client-side load balancing; use `host:port`), and `ipv4:`, `ipv6:`,
+  `unix-abstract:`, `vsock:` and `xds:` targets.
 - **Breaking:** a plaintext endpoint must name its port in every form, not
   only as an `http://` URL: `localhost`, `127.0.0.1`, `::1` or `[::1]` with
   `new_plaintext` or `.plaintext()` now fails at construction with

@@ -70,6 +70,13 @@ try (var tc = TypedClient.createSystemTls("spicedb.example.com:443", System.gete
 }
 ```
 
+The client connects lazily. To fail at startup when the endpoint is wrong or
+down, call `awaitReady(Duration.ofSeconds(10))` on the client right after
+creating it: it throws `UnavailableException` or `DeadlineExceededException`
+naming the endpoint. Endpoints are `host:port`, `http://host:port`,
+`https://host[:port]`, `dns:///host:port` (client-side load balancing) or
+`unix:/path` (Linux only; refused at construction elsewhere).
+
 `createPlaintext` is for local development; a non-loopback plaintext target
 additionally needs
 `ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build()`.
@@ -269,6 +276,13 @@ including local validation errors and the client's `CancellationException`.
 `ErrorMapper.codeOf(t)` classifies any throwable, including raw
 `StatusRuntimeException`. Forward `e.serverMessage()`, not `getMessage()`, when
 relaying an error to another party.
+
+Local validation (`Relationship.fromTuple`, builders) throws
+`InvalidArgumentException`, which is not an `IllegalArgumentException`: catch
+`InvalidArgumentException` around parsing. Reads, lookups and exports put the
+client default deadline (30 s) on each page, so a stalled server ends them with
+`DeadlineExceededException`; a response missing a required field fails with
+`INTERNAL` and is not retried.
 
 ## Test
 

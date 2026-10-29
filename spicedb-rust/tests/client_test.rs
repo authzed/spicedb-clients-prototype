@@ -593,23 +593,91 @@ mod insecure_host_guard {
         }
     }
 
-    /// A unix-socket endpoint is refused, not silently turned into a DNS
-    /// lookup for the hostname `unix`. tonic cannot dial a UDS path from a URI.
+    /// A unix-socket endpoint dials the socket path (never a DNS lookup for
+    /// the hostname `unix`). The `unix:` scheme selects plaintext with
+    /// `builder`, needs no remote-credentials opt-in, and a call reaches the
+    /// server listening on that socket.
+    #[cfg(unix)]
     #[tokio::test]
-    async fn new_plaintext_refuses_unix_socket_targets() {
-        for endpoint in ["unix:/var/run/spicedb.sock", "unix:///var/run/spicedb.sock"] {
-            match SpiceDBClient::new_plaintext(
-                endpoint,
-                "super-secret-token",
+    async fn unix_socket_targets_reach_the_server_on_that_socket() {
+        let dir = std::env::temp_dir().join(format!("spicedb-rust-uds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("spicedb.sock");
+        let mock = MockPermissionsService::new();
+        let calls = mock.read_relationships_calls();
+        support::spawn_permissions_unix_server(mock, &path);
+
+        let display = path.display().to_string();
+        let clients = [
+            SpiceDBClient::builder(format!("unix:{display}"), "token")
+                .build()
+                .await
+                .unwrap(),
+            SpiceDBClient::builder(format!("unix://{display}"), "token")
+                .connect_mode(spicedb::ConnectMode::Eager)
+                .build()
+                .await
+                .unwrap(),
+            SpiceDBClient::new_plaintext(
+                format!("unix:{display}"),
+                "token",
                 spicedb::RemoteCredentialsPolicy::LoopbackOnly,
             )
             .await
-            {
-                Err(SpiceDBError::InvalidArgument(msg)) => {
-                    assert!(msg.contains("unix-domain-socket"), "{msg}");
+            .unwrap(),
+        ];
+        for client in &clients {
+            use futures::StreamExt;
+            let results: Vec<_> = client
+                .read_relationships(spicedb::ReadRelationshipsRequest::new(
+                    spicedb::Filter::new("document"),
+                    consistency::full(),
+                ))
+                .collect()
+                .await;
+            assert!(results.is_empty(), "{results:?}");
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A unix target is plaintext: the TLS constructor refuses it, naming the
+    /// accepted forms.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tls_constructor_refuses_a_unix_socket_target() {
+        match SpiceDBClient::new_system_tls("unix:/var/run/spicedb.sock", "token").await {
+            Err(SpiceDBError::InvalidArgument(msg)) => {
+                assert!(msg.contains("plaintext"), "{msg}");
+                assert!(msg.contains("unix:/path/to/socket"), "{msg}");
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected a TLS unix target to be refused"),
+        }
+    }
+
+    /// `dns:///host:port` (client-side DNS load balancing) is refused at
+    /// construction rather than silently dialed as one host.
+    #[tokio::test]
+    async fn dns_targets_are_refused_at_construction() {
+        for endpoint in ["dns:///localhost:50051", "dns:localhost:50051"] {
+            for plaintext in [true, false] {
+                let builder = SpiceDBClient::builder(endpoint, "token");
+                let builder = if plaintext {
+                    builder.plaintext()
+                } else {
+                    builder
+                };
+                match builder.build().await {
+                    Err(SpiceDBError::InvalidArgument(msg)) => {
+                        assert!(msg.contains("load balancing"), "{msg}");
+                        assert!(msg.contains("host:port"), "{msg}");
+                    }
+                    Err(other) => {
+                        panic!("expected InvalidArgument for {endpoint:?}, got {other:?}")
+                    }
+                    Ok(_) => panic!("expected {endpoint:?} to be refused"),
                 }
-                Err(other) => panic!("expected InvalidArgument for {endpoint:?}, got {other:?}"),
-                Ok(_) => panic!("expected {endpoint:?} to be refused"),
             }
         }
     }

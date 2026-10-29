@@ -1035,6 +1035,9 @@ func (s *Store) DeleteAllRelationshipsNonAtomic(_ context.Context, request clien
 // Close does nothing; the Store holds no transport.
 func (s *Store) Close() error { return nil }
 
+// Ready is a no-op: the Store is always ready. It is not recorded.
+func (s *Store) Ready(context.Context, ...client.ReadyOption) error { return nil }
+
 // RawProto returns nil; the Store has no protocol client.
 func (s *Store) RawProto() *proto.Client { return nil }
 

@@ -10,7 +10,7 @@ import (
 func TestMaterializeUsesLocalV1Messages(t *testing.T) {
 	request := &materialize.ExperimentalRoaringLookupResourcesRequest{
 		Consistency: &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
-		Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"}},
+		Subject:     &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"}},
 	}
 	if !request.GetConsistency().GetFullyConsistent() || request.GetSubject().GetObject().GetObjectId() != "alice" {
 		t.Fatal("materialize request lost local v1 values")

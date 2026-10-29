@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Per-page deadlines, malformed responses and startup readiness
+
+- Relationship reads, lookups and exports apply the client default deadline
+  (30 s unless changed) to each page, so a server that stalls mid-read fails
+  the read with `DeadlineExceededException` instead of hanging it. Reads and
+  resource lookups put it on every page request, a subject lookup on its one
+  request, and an export on each wait for the server's next page. An operation
+  `timeout` still bounds the whole read and wins when earlier;
+  `DefaultDeadline.DISABLED` removes it. Watches keep no default.
+- A response the client cannot interpret fails with `INTERNAL`
+  (`malformed response: ...`), which no retry policy retries by default,
+  instead of `UNKNOWN`, `INVALID_ARGUMENT` or empty values: a relationship
+  missing its resource, relation or subject, an object without type or ID, a
+  lookup result without an ID, a watch update without a relationship, an expand
+  response without a tree (`ProtoConv.fromProto(null)` no longer returns an
+  empty tree), a counter without a value, a permission-set change without a
+  parent set, a malformed bulk-check pair and an unknown deletion progress.
+- `SpiceDBClient.awaitReady(Duration)` (also on `SpiceDBApi`; a no-op on
+  `InMemorySpiceDB`) connects now and waits for the connection, throwing
+  `UnavailableException` or `DeadlineExceededException` naming the endpoint, so
+  a wrong endpoint can fail at startup.
+- Endpoints accept `dns:///host[:port]` (gRPC's DNS target, for client-side
+  load balancing; the loopback check runs on the host, and the port rule is the
+  `host:port` one). `unix:` sockets now work on Linux: the client selects
+  Netty's native epoll domain-socket transport (shared daemon event loop),
+  where before every platform failed with gRPC's raw `IllegalArgumentException`
+  when building the channel. Where epoll is unavailable (macOS, Windows) a
+  `unix:` endpoint fails at construction with `InvalidArgumentException`
+  naming the accepted forms; an empty `unix:` path is rejected.
+- Local validation stays `InvalidArgumentException`, which cannot also be an
+  `IllegalArgumentException` in Java; MIGRATION.md documents catching it around
+  parsing.
+
 ### Endpoint forms
 
 - `createPlaintext`, `createSystemTls` and `create` accept `http://host:port`

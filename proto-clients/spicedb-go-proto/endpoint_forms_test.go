@@ -23,6 +23,9 @@ func TestResolveEndpointAcceptedForms(t *testing.T) {
 		{"[::1]", false, "[::1]"},
 		{"unix:///var/run/spicedb.sock", true, "unix:///var/run/spicedb.sock"},
 		{"dns:///spicedb.example.com:443", false, "dns:///spicedb.example.com:443"},
+		{"dns:///localhost:50051", true, "dns:///localhost:50051"},
+		{"unix:/var/run/spicedb.sock", true, "unix:/var/run/spicedb.sock"},
+		{"passthrough:///localhost:50051", true, "passthrough:///localhost:50051"},
 		{"http://127.0.0.1:50101", true, "127.0.0.1:50101"},
 		{"HTTP://localhost:50051/", true, "localhost:50051"},
 		{"http://[::1]:50051", true, "[::1]:50051"},
@@ -57,6 +60,10 @@ func TestResolveEndpointRejectedForms(t *testing.T) {
 		{"http://:50051", true, "the host is missing"},
 		{"ftp://host:1", true, "unsupported scheme \"ftp\""},
 		{"grpc://host:1", false, "unsupported scheme \"grpc\""},
+		// Registered gRPC resolvers other than dns, unix and passthrough are
+		// refused rather than passed through unverified.
+		{"unix-abstract:spicedb.sock", true, "unsupported scheme \"unix-abstract\""},
+		{"unix-abstract:///spicedb.sock", true, "unsupported scheme \"unix-abstract\""},
 		{"https://example.com", true, "https:// selects TLS"},
 		{"http://127.0.0.1:50101", false, "http:// selects plaintext"},
 		{"localhost:abc", true, `the port "abc" is not a number`},

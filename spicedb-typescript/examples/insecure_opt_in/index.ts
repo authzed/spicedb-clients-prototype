@@ -94,11 +94,20 @@ definition document {
     // ── 4. The spoof a string split would wave through ───────────────────
     //
     // Under URL parsing the authority here is evil.com. Failing closed is what
-    // matters: the rule does not promise every client agrees on loopback
-    // spellings, but it does require that anything the guard calls loopback is
-    // somewhere the transport actually dials on loopback.
-    await refuses("127.0.0.1:443@evil.com", "an endpoint whose real host is evil.com");
-    console.log("userinfo spoof 127.0.0.1:443@evil.com: refused");
+    // matters: the endpoint form is checked before the plaintext policy, so a
+    // userinfo spoof is rejected as malformed before any host is trusted, and
+    // the token never leaves the process.
+    let malformed = false;
+    try {
+        createSpiceDBClient("127.0.0.1:443@evil.com", TOKEN, { transportSecurity: TransportSecurity.Plaintext });
+    }
+    catch (err) {
+        assert(err instanceof InvalidArgumentError, `userinfo spoof: expected InvalidArgumentError, got ${String(err)}`);
+        assert(/userinfo/i.test(err.message), `userinfo spoof: the error should name the problem, got: ${err.message}`);
+        malformed = true;
+    }
+    assert(malformed, "SECURITY: the userinfo spoof 127.0.0.1:443@evil.com was accepted");
+    console.log("userinfo spoof 127.0.0.1:443@evil.com: refused as malformed");
     console.log("insecure_opt_in: all four cases behaved as the rule requires");
 }
 main().catch((err: unknown) => {

@@ -1,6 +1,8 @@
 package client
 
 import (
+	"fmt"
+
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/internal/conv"
@@ -30,12 +32,71 @@ func contextStruct(m map[string]any) (*structpb.Struct, error) {
 func relationship(r rel.Relationship) (*v1.Relationship, error) {
 	return invalidErr(conv.Relationship(r))
 }
-func nativeRelationship(p *v1.Relationship) (rel.Relationship, error) {
-	return conv.NativeRelationship(p)
+
+// malformed reports a response the client cannot interpret: a missing
+// required field or a value no valid server response carries. It is INTERNAL,
+// which no retry policy retries by default, and the response is never skipped
+// or filled with empty values.
+func malformed(op, format string, args ...any) error {
+	return &Error{Code: CodeInternal, Message: fmt.Sprintf("spicedb: %s: malformed response: ", op) + fmt.Sprintf(format, args...)}
+}
+
+// malformedErr classifies a response conversion failure as malformed.
+func malformedErr(op string, e error) error {
+	if e == nil {
+		return nil
+	}
+	m := malformed(op, "%s", e).(*Error)
+	m.err = e
+	return m
+}
+
+func nativeRelationship(op string, p *v1.Relationship) (rel.Relationship, error) {
+	if p == nil {
+		return rel.Relationship{}, malformed(op, "relationship is missing")
+	}
+	r, e := conv.NativeRelationship(p)
+	return r, malformedErr(op, e)
+}
+
+// nativeObjectStrict converts a response object reference that must be
+// present and valid.
+func nativeObjectStrict(op, field string, p *v1.ObjectReference) (rel.ObjectRef, error) {
+	if p == nil {
+		return rel.ObjectRef{}, malformed(op, "%s is missing", field)
+	}
+	o, e := rel.NewObject(p.GetObjectType(), p.GetObjectId())
+	if e != nil {
+		return rel.ObjectRef{}, malformed(op, "%s: %s", field, e)
+	}
+	return o, nil
+}
+
+// nativeSubjectStrict converts a response subject reference that must be
+// present and valid.
+func nativeSubjectStrict(op, field string, p *v1.SubjectReference) (rel.SubjectRef, error) {
+	if p == nil {
+		return rel.SubjectRef{}, malformed(op, "%s is missing", field)
+	}
+	o, e := nativeObjectStrict(op, field+" object", p.GetObject())
+	if e != nil {
+		return rel.SubjectRef{}, e
+	}
+	s, e := rel.NewSubject(o, p.GetOptionalRelation())
+	if e != nil {
+		return rel.SubjectRef{}, malformed(op, "%s: %s", field, e)
+	}
+	return s, nil
 }
 func filter(f rel.Filter) (*v1.RelationshipFilter, error) { return invalidErr(conv.Filter(f)) }
 func preconditions(ps []rel.Precondition) ([]*v1.Precondition, error) {
 	return invalidErr(conv.Preconditions(ps))
 }
-func cursor(s string) *v1.Cursor                                { return conv.Cursor(s) }
-func nativeUpdate(p *v1.RelationshipUpdate) (rel.Update, error) { return conv.NativeUpdate(p) }
+func cursor(s string) *v1.Cursor { return conv.Cursor(s) }
+func nativeUpdate(op string, p *v1.RelationshipUpdate) (rel.Update, error) {
+	if p.GetRelationship() == nil {
+		return rel.Update{}, malformed(op, "update relationship is missing")
+	}
+	u, e := conv.NativeUpdate(p)
+	return u, malformedErr(op, e)
+}

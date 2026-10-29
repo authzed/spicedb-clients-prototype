@@ -45,7 +45,7 @@ module SpiceDB
       context.each do |k, v|
         struct.fields[k] = check_context_value(v)
       rescue SpiceDB::InvalidArgumentError => e
-        raise SpiceDB::InvalidArgumentError, "caveat context key #{k.to_s.inspect}: #{e.message}"
+        raise SpiceDB::LocalValidationError, "caveat context key #{k.to_s.inspect}: #{e.message}"
       end
       struct
     end
@@ -101,7 +101,7 @@ module SpiceDB
         list = Google::Protobuf::ListValue.new(values: value.map { |v| check_context_value(v) })
         Google::Protobuf::Value.new(list_value: list)
       else
-        raise SpiceDB::InvalidArgumentError, "unsupported caveat context value type: #{value.class}"
+        raise SpiceDB::LocalValidationError, "unsupported caveat context value type: #{value.class}"
       end
     end
 

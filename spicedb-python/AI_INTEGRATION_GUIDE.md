@@ -307,6 +307,14 @@ validation, local deadlines and errors you construct. Forward
 
 ## Test
 
+The in-memory double does not evaluate your schema. A permission such as
+`view = reader + writer + parent->read` is granted on the double only by a
+stored relationship whose relation is named `view`, or by a check resolver
+you install; the double never derives it from `reader`, `writer` or `parent`.
+Use the double for code that consumes check and lookup results (model the
+permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
+or a container) for tests of the permission logic in the schema.
+
 ```python
 fake = InMemoryClient([Relationship.from_tuple("organization:acme#admin@user:alice")])
 tc = TypedClient(fake)  # a generated TypedClient wraps the double

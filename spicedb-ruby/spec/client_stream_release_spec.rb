@@ -278,6 +278,34 @@ RSpec.describe 'SpiceDB::Client stream release' do
     worker&.join(5)
   end
 
+  # Root DESIGN.md, "Local cancellation surfaces as the client's cancelled
+  # error": closing the client cancels its open streams, and a consumer
+  # blocked in one gets CancelledError, never grpc's own GRPC::Cancelled and
+  # never an ordinary end that would make a cut-short read look complete.
+  it 'raises CancelledError in a consumer blocked in next when the client is closed' do
+    stream = client.watch(object_types: ['document'])
+    first = Queue.new
+    worker = Thread.new do
+      first << stream.next
+      stream.next
+    rescue StandardError => e # StopIteration is an IndexError, so this catches it too
+      e
+    end
+    expect(Timeout.timeout(5) { first.pop }.changes_through).to eq(SpiceDB::ZedToken.new('token-1'))
+    client.close
+    expect(worker.join(5)).not_to be_nil
+    error = worker.value
+    expect(error).to be_a(SpiceDB::CancelledError)
+    expect(error).not_to be_a(StopIteration)
+    expect(error.code).to eq(GRPC::Core::StatusCodes::CANCELLED)
+    expect(error.message).to match(/client was closed/)
+    expect { stream.next }.to raise_error(SpiceDB::CancelledError)
+    expect_released
+  ensure
+    stream&.close
+    worker&.join(5)
+  end
+
   describe 'a stream that drains a page before yielding' do
     def expect_no_further_page(before_count)
       expect(observations.open_count - before_count).to eq(

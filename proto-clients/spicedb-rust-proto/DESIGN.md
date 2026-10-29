@@ -79,9 +79,18 @@ The `src/client.rs` file provides:
 
    Per root DESIGN.md, "RULE: Credentials over insecure transport require an
    explicit opt-in": `insecure` alone only permits a plaintext connection to
-   a loopback endpoint (`localhost`, `127.0.0.0/8`, or `::1`). A
-   `unix:` target is NOT loopback here and is refused outright: tonic dials a
-   URI, so it would resolve the DNS name `unix` rather than a socket path.
+   a loopback endpoint (`localhost`, `127.0.0.0/8`, or `::1`) or a local
+   `unix:` socket. A `unix:` target (`unix:/path`, `unix:///path`,
+   `unix:relative`) is never handed to tonic as a URI, which would resolve the
+   DNS name `unix`: on Unix platforms it is dialed as a socket path through a
+   connector (`tokio::net::UnixStream`; the `tokio`, `tower` and `hyper-util`
+   lines in `Cargo.toml` only name features tonic's stack already has), is
+   plaintext only (TLS is `InvalidEndpoint`), and needs no remote-credentials
+   opt-in; elsewhere it is `UnixSocketNotSupported`. gRPC resolver schemes the
+   transport cannot honor (`dns:`, which would promise client-side load
+   balancing over every resolved address, plus `ipv4:`, `ipv6:`,
+   `unix-abstract:`, `vsock:`, `xds:`) are `InvalidEndpoint` naming the
+   accepted forms; they are never passed through.
    `SpiceDBProtoClient::new_with_options(endpoint, token, insecure,
    allow_insecure_remote_credentials)` is the opt-in entry point
    for a non-loopback endpoint; `new` delegates to it with `false`. Returns

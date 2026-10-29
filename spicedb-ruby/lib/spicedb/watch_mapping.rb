@@ -22,8 +22,8 @@ module SpiceDB
     # asking for checkpoints must also spell out relationship updates or the
     # server would stop sending them.
     def watch_request(object_types, start_revision, content, filters: [])
-      raise InvalidArgumentError, 'watch object_types and filters are mutually exclusive' unless object_types.empty? || filters.empty?
-      raise InvalidArgumentError, 'watch content must be a nonempty array' unless content.is_a?(Array) && !content.empty?
+      raise LocalValidationError, 'watch object_types and filters are mutually exclusive' unless object_types.empty? || filters.empty?
+      raise LocalValidationError, 'watch content must be a nonempty array' unless content.is_a?(Array) && !content.empty?
 
       kinds = { WatchContent::RELATIONSHIPS => :WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES,
                 WatchContent::CHECKPOINTS => :WATCH_KIND_INCLUDE_CHECKPOINTS,
@@ -63,7 +63,7 @@ module SpiceDB
            when :OPERATION_DELETE then :delete
            else :unspecified
            end
-      Update.new(operation: op, relationship: relationship_from_proto(update.relationship))
+      Update.new(operation: op, relationship: relationship_from_proto(update.relationship, 'watch update relationship'))
     end
   end
 end

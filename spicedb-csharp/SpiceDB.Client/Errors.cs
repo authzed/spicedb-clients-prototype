@@ -115,6 +115,12 @@ public class SpiceDBException : Exception
     public static SpiceDBException FromRpcException(RpcException exception) => ErrorMapper.ToSpiceDBException(exception);
 
     /// <summary>
+    /// A client-detected fault, such as a response the client cannot interpret: always
+    /// <see cref="StatusCode.Internal"/>, never <see cref="StatusCode.Unknown"/>.
+    /// </summary>
+    internal static SpiceDBException InternalError(string message) => new(StatusCode.Internal, message, null);
+
+    /// <summary>
     /// Classifies any exception as a gRPC status code: a <see cref="SpiceDBException"/> reports
     /// <see cref="StatusCode"/>, a raw <see cref="RpcException"/> reports its own code, an
     /// <see cref="OperationCanceledException"/> is <see cref="StatusCode.Cancelled"/>, and a

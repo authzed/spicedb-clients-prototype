@@ -74,8 +74,16 @@ if err != nil {
     return err
 }
 defer c.Close()
+// Constructors connect lazily: fail at startup on a wrong or unreachable endpoint.
+if err := c.Ready(ctx, client.WithReadyTimeout(10*time.Second)); err != nil {
+    return err
+}
 tc := permissions.NewTypedClient(c) // tc also has every native method; c may be any client.Interface
 ```
+
+Endpoints: `host:port`, `http://host:port` (plaintext), `https://host[:port]`,
+`dns:///host:port`, `unix:/path/to.sock` or `passthrough:///host:port`; any
+other form fails at construction with `client.ErrInvalidArgument`.
 
 `client.NewPlaintext` is for local development; a non-loopback plaintext target
 additionally needs `client.WithRemotePlaintextCredentials(client.RemotePlaintextAllowed)`.
@@ -172,6 +180,8 @@ for r, err := range tc.ReadRelationships(ctx, client.ReadRelationshipsRequest{
 
 Each item also carries `r.AfterResultCursor` and `r.ReadAt`. To resume, pass
 `client.WithReadRelationshipsCursor(cursor)` with the **same request and page size**.
+Each page request gets the client default deadline (30s); a stalled page fails
+with `client.ErrDeadlineExceeded`. Bound the whole read with the context.
 
 ## Schema-agnostic code (native tier)
 
@@ -208,6 +218,7 @@ switch {
 case errors.Is(err, client.ErrFailedPrecondition): // precondition failed
 case errors.Is(err, client.ErrOutOfRange):         // stale ZedToken: drop it, re-read fully consistent
 case errors.Is(err, client.ErrUnavailable):        // transient; reads were already retried
+case errors.Is(err, client.ErrInternal):           // malformed server response; not retried
 }
 ```
 

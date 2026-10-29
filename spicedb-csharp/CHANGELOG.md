@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Deadlines, malformed responses, readiness and target schemes
+
+- Relationship reads, lookups (resources, subjects, permission sets) and exports apply the
+  client default deadline (`ClientOptions.DefaultTimeout`, 30 seconds) to each page request,
+  from opening it to its last item, so a server that stalls mid-read fails the read with
+  `DeadlineExceededException` instead of hanging it. They still have no default total
+  deadline; a per-call `Timeout` bounds the whole read and wins when earlier.
+  `DefaultDeadline.Disabled` removes the per-page default too. Watch keeps no default.
+- A response the client cannot interpret fails with an `Internal`-status `SpiceDBException`
+  (not retried by default) instead of being mapped with empty values or failing with the
+  wrong category: a missing relationship, resource, subject or subject object in reads,
+  exports and watch; a missing resource id in LookupResources; a missing subject id in
+  LookupSubjects; an incomplete expanded tree; incomplete permission-set references.
+  Client-detected faults that reported `Unknown` (bulk check pair count or echo mismatch, a
+  missing bulk item, unknown deletion progress, an empty counter response) now report
+  `Internal`; a non-advancing cursor already did.
+- `ConnectAsync(ConnectOptions?, CancellationToken)`, on `SpiceDBClient` and
+  `ISpiceDBClient`: a startup readiness check for these lazily connecting clients. It
+  waits for the endpoint to answer an authenticated request within `ConnectOptions.Timeout`
+  (default: the client default deadline) and fails with `DeadlineExceededException` naming
+  the endpoint, `UnavailableException`, or `UnauthenticatedException` for a rejected key. The
+  in-memory double completes immediately.
+- gRPC target syntax: `dns:///host:port` (Grpc.Net.Client's DNS resolver with round-robin
+  client-side load balancing; the loopback check judges its host) and `unix:/path`,
+  `unix:///path` or `unix:relative/path` (plaintext only; dials the socket directly) are
+  accepted. `unix:` targets were previously refused. Other schemes (`xds:`, `ipv4:`, a
+  `dns://authority/` target) are rejected at construction naming the accepted forms.
+- Local cancellation is unchanged and now covered by a test: it surfaces as an
+  `OperationCanceledException` carrying the caller's token, never as a raw
+  `RpcException(Cancelled)` from the transport.
+
 ### Adoption fixes from migrating real applications
 
 - Endpoints accept `http://host:port` (plaintext) and `https://host[:port]` (TLS, port 443

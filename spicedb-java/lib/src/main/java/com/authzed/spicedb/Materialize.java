@@ -69,9 +69,15 @@ public final class Materialize {
     }
   }
 
+  /** A response object; a missing type or ID fails with {@code INTERNAL}, never an empty value. */
+  private static ObjectRef object(String type, String id) {
+    if (type.isEmpty() || id.isEmpty())
+      throw SpiceDBClient.malformed("permission-set object has no type or ID");
+    return new ObjectRef(type, id);
+  }
+
   static SetRef set(com.authzed.api.materialize.v0.SetReference s) {
-    return new SetRef(
-        new ObjectRef(s.getObjectType(), s.getObjectId()), s.getPermissionOrRelation());
+    return new SetRef(object(s.getObjectType(), s.getObjectId()), s.getPermissionOrRelation());
   }
 
   static PermissionSetChange change(com.authzed.api.materialize.v0.PermissionSetChange c) {
@@ -87,15 +93,16 @@ public final class Materialize {
       var m = c.getChildMember();
       child =
           new ChildMember(
-              new ObjectRef(m.getObjectType(), m.getObjectId()),
+              object(m.getObjectType(), m.getObjectId()),
               m.getOptionalPermissionOrRelation().isEmpty()
                   ? null
                   : m.getOptionalPermissionOrRelation());
     }
+    if (!c.hasParentSet()) throw SpiceDBClient.malformed("permission-set change has no parent set");
     return new PermissionSetChange(
         c.hasAtRevision() ? new ZedToken(c.getAtRevision().getToken()) : null,
         op,
-        c.hasParentSet() ? set(c.getParentSet()) : null,
+        set(c.getParentSet()),
         child);
   }
 

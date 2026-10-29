@@ -47,3 +47,33 @@ async def test_write_relationships(client: SpiceDBClient):
     await client.delete_all_relationships_non_atomic(
         Filter(resource_type="document", resource_id="firstdoc")
     )
+
+
+async def test_write_prebuilt_updates_from_strings(client: SpiceDBClient):
+    """Code that queues changes as data (a replayed watch, a work queue)
+    writes prebuilt ``Update`` values; bad input is an ordinary ``ValueError``."""
+    from spicedb import ObjectRef, PermissionCheck, SubjectRef, Update, UpdateOperation, full
+
+    queued = [
+        Update(UpdateOperation.TOUCH, Relationship.from_triple("document:queued", "viewer", "user:alice")),
+        Update(UpdateOperation.TOUCH, Relationship.from_triple("document:queued", "owner", "user:bob")),
+    ]
+    result = await client.write(Transaction().extend(queued))
+    check = PermissionCheck(
+        resource=ObjectRef.parse("document:queued"),
+        permission="view",
+        subject=SubjectRef.parse("user:alice"),
+    )
+    assert (await client.check(check, consistency=full())).has_permission
+    await client.write(Transaction().add(Update(UpdateOperation.DELETE, queued[0].relationship)))
+    assert not (await client.check(check, consistency=full())).has_permission
+    print(f"applied {len(queued)} queued updates at {result.revision}")
+
+    # Local validation errors are ValueErrors (and InvalidArgumentErrors).
+    with pytest.raises(ValueError):
+        Relationship.from_triple("document", "viewer", "user:alice")
+    with pytest.raises(ValueError):
+        ObjectRef.parse("document:")
+    await client.delete_all_relationships_non_atomic(
+        Filter(resource_type="document", resource_id="queued")
+    )

@@ -12,6 +12,63 @@
 
 ## Unreleased
 
+### Local validation, parsers and prebuilt updates
+
+- Client-side validation now raises `LocalValidationError`, a subclass of both
+  `InvalidArgumentError` and `ValueError`, so `except ValueError` around bad
+  input (for example `Relationship.from_triple("document", "viewer", "user:1")`)
+  catches it; `except InvalidArgumentError` and `except grpc.RpcError` still
+  do, and `code()` is still `INVALID_ARGUMENT`. A server `INVALID_ARGUMENT`
+  stays a plain `InvalidArgumentError`.
+- **Breaking:** `ObjectRef` requires a type and ID that SpiceDB's tuple syntax
+  accepts (a lowercase definition name, optionally `prefix/name`, and a
+  nonempty ID of `a-z A-Z 0-9 / _ | - = +` characters, or `*`). Before:
+  `ObjectRef("", "")` was accepted and the server rejected the request. After:
+  it raises `LocalValidationError`. Values read from the server are kept as
+  sent.
+- New `ObjectRef.parse("type:id")` and `SubjectRef.parse("type:id[#relation]")`
+  (`#...` is a direct subject). `Relationship.from_triple` also treats a
+  `#...` subject relation as direct, as `from_tuple` does.
+- New `Transaction.add(update)` and `Transaction.extend(updates)` queue
+  prebuilt `Update` values; `extend` is all-or-nothing, and an `UNSPECIFIED`
+  operation is rejected.
+- Using an aio client from a second event loop now says to create one client
+  per event loop (or use `spicedb.sync` if the code is synchronous).
+- The `UpdateOperation` docstring covers queued transaction updates, not only
+  `watch()`.
+
+### Dependency floors
+
+- The protobuf floor drops from `7.36.2` to `5.26.1`: spicedb-python-proto's
+  bindings are now generated as protobuf 5.26.1 code (pinned plugins), so
+  applications on protobuf 5.x, 6.x and 7.x install without a protobuf
+  upgrade. The suites pass on 5.26.1, 5.29.5, 6.33.2 and 7.36.2.
+
+### Generated typed clients: runtime names
+
+- `object_by_name(type, id)` and `parse_object("type:id")` return the typed
+  object (`Document("readme")`), `subject_set_by_name(type, id, relation)` the
+  typed subject set (`TeamMember("eng")`), and `relationship_from_triple(...)`
+  a `TypedRelationship` checked against the schema exactly as SpiceDB checks a
+  write (subject type, subject relation, wildcard, caveat and expiration).
+  Unknown names raise `NotInSchemaError`, inadmissible subjects
+  `SubjectNotAllowedError`, malformed text `LocalValidationError`.
+- `SchemaObject` and `SubjectSet` are the unions of every generated object
+  and subject-set class.
+- `TypedClient.check_by_name` and `check_bulk_by_name` check permissions or
+  relations named at runtime; `lookup_subjects_by_name` is the counterpart of
+  `lookup_resources_by_name`.
+- `lookup_resources_by_name` accepts relations as well as permissions, as
+  SpiceDB does. A by-name lookup whose subject type cannot reach the
+  permission returns no results without a call (SpiceDB's answer) instead of
+  raising `SubjectNotAllowedError`; unknown names still raise.
+- Generated `sync.py`/`aio.py` pass mypy, including `--strict`:
+  `__exit__`/`__aexit__` return `None` instead of a `bool` that is always
+  False.
+- `--python.names-only` writes only the name constants, name tuples and
+  `SCHEMA_TEXT` to `names.py` (or `--python.module`), importing only the
+  standard library.
+
 ### Test doubles resolve checks and serve lookups
 
 - `InMemoryClient` and `AsyncInMemoryClient` now resolve a check in a fixed

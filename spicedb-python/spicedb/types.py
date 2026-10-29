@@ -861,7 +861,7 @@ class Transaction:
         """Queue a prebuilt ``Update`` (``CREATE``, ``TOUCH`` or ``DELETE``).
 
         Equivalent to the matching ``create``/``touch``/``delete`` call, for
-        code that already holds ``Update`` values (an outbox, a replayed
+        code that already holds ``Update`` values (a work queue, a replayed
         watch event). An ``UNSPECIFIED`` operation or a non-``Update`` raises
         :class:`~spicedb.errors.LocalValidationError` and queues nothing.
         """

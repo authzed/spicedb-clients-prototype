@@ -173,3 +173,17 @@ def double_check_resolution() -> None:
     resolver: CheckResolver = registered
     AsyncInMemoryClient().set_check_resolver(resolver)
     fake.set_check_resolver("grant")  # type: ignore[arg-type]
+
+
+def parsers_prebuilt_updates_and_value_errors() -> None:
+    from spicedb import InvalidArgumentError, LocalValidationError, Update, UpdateOperation
+
+    obj: ObjectRef = ObjectRef.parse("document:readme")
+    subject: SubjectRef = SubjectRef.parse("team:eng#member")
+    rel = Relationship(obj, "viewer", subject)
+    txn: Transaction = Transaction().add(Update(UpdateOperation.TOUCH, rel)).extend([])
+    txn.add(rel)  # type: ignore[arg-type]
+    ObjectRef.parse(obj)  # type: ignore[arg-type]
+    err: ValueError = LocalValidationError("bad input")
+    invalid: InvalidArgumentError = LocalValidationError("bad input")
+    print(txn, err, invalid)

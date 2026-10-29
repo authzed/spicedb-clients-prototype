@@ -335,6 +335,20 @@ and options forwarding rather than just generated text fragments.
   relation (direct for a subject without one); `with_subject_any_relation`
   leaves it unconstrained. `TypedClient.check_dynamic` checks by-name permissions with
   runtime subject validation.
+- Schema level, for names received at runtime: `definition_by_name(name)`
+  returns the definition's class (`DefinitionClass`, a union of the classes),
+  `permission_ref_by_name(definition, permission)` returns the static
+  `PermissionRef`, and `TypedClient.lookup_resources_by_name(c, resource_type,
+  permission, subject, ...)` validates both names and the subject (each ref
+  carries its permission's admission union) before any call; unknown names
+  raise `NotInSchemaError`, unreachable subjects `SubjectNotAllowedError`.
+  `DefinitionNames.D` and `DEFINITION_NAMES` name the definitions, and
+  `SCHEMA_TEXT` holds the schema source exactly as given to the generator
+  (`schema.Schema.Text`), one literal per source line.
+- `TypedClient(client)` takes `spicedb.protocols.ClientProtocol` (sync) or
+  `AsyncClientProtocol` (aio), so it wraps the real client or a
+  `spicedb.testing` double; `connect` and `from_channel` still build the real
+  client.
 - Sync and aio clients render from one template. Any collision between
   generated identifiers fails generation naming both sources; nothing is
   silently renamed. `--python.rename=<definition>=<ClassName>`

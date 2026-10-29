@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"unicode/utf8"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
@@ -42,6 +43,11 @@ type TemplateData struct {
 	SealedUnions   []SealedUnionData
 	Checkables     []CheckableData
 	StaticPermRefs []StaticPermRefData
+
+	// SchemaText is the schema source the code was generated from.
+	SchemaText string
+	// DefinitionNameList lists every definition's schema name, in order.
+	DefinitionNameList []string
 
 	// ClientTypeImports lists the names, sorted and deduplicated, that
 	// sync.py/aio.py reference from the types module.
@@ -86,6 +92,7 @@ type CheckableData struct {
 type DefinitionData struct {
 	ClassName   string // e.g. "Document"
 	Name        string // e.g. "document"
+	ConstName   string // e.g. "DOCUMENT": its DefinitionNames member
 	WithMethods []WithMethodData
 	SubRefs     []DefSubRefData
 	Permissions []DefPermissionData
@@ -292,6 +299,10 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 	data.Module = module
+	data.SchemaText = s.Source
+	for _, def := range s.Definitions {
+		data.DefinitionNameList = append(data.DefinitionNameList, def.Name)
+	}
 
 	tmpl, err := template.New("permissions.py.tmpl").Funcs(template.FuncMap{
 		"alias":      formatAlias,
@@ -301,6 +312,9 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		"assignCall": assignCall,
 		"list":       list,
 		"quote":      quote,
+		"textConst":  textConst,
+		"typeArgs":   typeArgs,
+		"defClasses": defClasses,
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
@@ -431,6 +445,72 @@ func tuple(lhs string, items []string) string {
 	}
 	b.WriteString(")")
 	return b.String()
+}
+
+// pyStr renders s as a Python string literal the way ruff format normalizes
+// it: double quotes unless single quotes need fewer escapes.
+func pyStr(s string) string {
+	q := '"'
+	if strings.Count(s, `"`) > strings.Count(s, `'`) {
+		q = '\''
+	}
+	var b strings.Builder
+	b.WriteRune(q)
+	for _, r := range s {
+		switch {
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == q:
+			b.WriteRune('\\')
+			b.WriteRune(q)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteRune(q)
+	return b.String()
+}
+
+// textConst renders `<lhs> = <text>` at module level: one literal when it
+// fits on a line (or is a single line), else one implicitly concatenated
+// literal per source line inside parentheses.
+func textConst(lhs, text string) string {
+	one := lhs + " = " + pyStr(text)
+	parts := strings.SplitAfter(text, "\n")
+	if parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	if utf8.RuneCountInString(one) <= lineLength || len(parts) <= 1 {
+		return one
+	}
+	// ruff format joins implicitly concatenated literals that fit on one line.
+	if joined := "    " + pyStr(text); utf8.RuneCountInString(joined) <= lineLength {
+		return lhs + " = (\n" + joined + "\n)"
+	}
+	var b strings.Builder
+	b.WriteString(lhs + " = (\n")
+	for _, p := range parts {
+		b.WriteString("    " + pyStr(p) + "\n")
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// defClasses lists the definition classes, for the DefinitionClass alias.
+func defClasses(defs []DefinitionData) []string {
+	out := make([]string, len(defs))
+	for i, d := range defs {
+		out[i] = "type[" + d.ClassName + "]"
+	}
+	return out
 }
 
 func typeArgs(members []string) []string {
@@ -579,6 +659,8 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		"ClassVar", "Final", "Protocol", "TypeAlias", "Caveat", "Filter", "InvalidArgumentError",
 		"ObjectRef", "PermissionCheck", "Precondition", "Relationship", "SubjectFilter", "SubjectRef",
 		"SubjectRelationFilter", "Transaction", "Update",
+		"DefinitionNames", "DEFINITION_NAMES", "DefinitionClass", "SCHEMA_TEXT", "definition_by_name",
+		"permission_ref_by_name", "_DEFINITIONS", "_PERMISSION_REFS",
 	} {
 		n.claim("", fixed, "generated support code")
 	}
@@ -836,6 +918,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		dd := DefinitionData{
 			ClassName:        pascal,
 			Name:             def.Name,
+			ConstName:        upper,
 			WithMethods:      baseWithMethods(subjectBase{definition: def.Name}),
 			RelationsClass:   pascal + "Relations",
 			PermissionsClass: pascal + "Permissions",
@@ -994,11 +1077,12 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 // a TypedClient body (sync.py/aio.py) references.
 func clientTypeImports(data TemplateData) []string {
 	set := map[string]bool{
-		"Permission":        true,
-		"RelationshipKey":   true,
-		"Subject":           true,
-		"TypedRelationship": true,
-		"TypedTransaction":  true,
+		"Permission":             true,
+		"permission_ref_by_name": true,
+		"RelationshipKey":        true,
+		"Subject":                true,
+		"TypedRelationship":      true,
+		"TypedTransaction":       true,
 	}
 	for _, c := range data.Checkables {
 		if c.SubjectUnion == "" {

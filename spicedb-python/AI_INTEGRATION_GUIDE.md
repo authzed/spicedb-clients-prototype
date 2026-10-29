@@ -10,7 +10,7 @@ Concrete Python for the rules in the repository-wide
 | `spicedb` | `import spicedb` / `from spicedb import ...` | values, filters, `Transaction`, consistency, `ZedToken`, options, results |
 | `spicedb.sync` / `spicedb.aio` | `from spicedb.sync import SpiceDBClient` | native client, blocking or asyncio (same names and arguments) |
 | `spicedb.errors` | `from spicedb.errors import FailedPreconditionError` | typed errors (`SpiceDBError` is a `grpc.RpcError`) |
-| `spicedb.testing` | `from spicedb.testing import InMemoryClient` | in-memory test doubles (`InMemoryClient`, `AsyncInMemoryClient`; `Call`, `Fault`, `FaultStage`, `SchemaRevision`, `cursor_after`) |
+| `spicedb.testing` | `from spicedb.testing import InMemoryClient` | in-memory test doubles (`InMemoryClient`, `AsyncInMemoryClient`; `Call`, `Fault`, `FaultStage`, `SchemaRevision`, `CheckResolver`, `grant_all`, `cursor_after`) |
 | `spicedb.protocols` | `from spicedb.protocols import ClientProtocol` | full client surface (`ClientProtocol`, `AsyncClientProtocol`) satisfied by the clients and the doubles |
 | `spicedb.protoconv` | `from spicedb import protoconv` | protocol conversions (tools only) |
 
@@ -125,6 +125,22 @@ allowed = tc.check_dynamic(min_latency(), perm, User(user_id)).has_permission
 
   At startup, verify every configured name is in
   `authz.ORGANIZATION_PERMISSION_NAMES`.
+
+- Type and permission names both chosen at runtime (a policy layer, an admin
+  tool), still validated against the schema before any call:
+
+```python
+resource = authz.definition_by_name(type_name)(resource_id)  # raises NotInSchemaError
+allowed = tc.check_dynamic(min_latency(), resource.permission_by_name(perm_name), User(user_id))
+ref = authz.permission_ref_by_name(type_name, perm_name)      # resource-less, for lookups
+with tc.lookup_resources_by_name(min_latency(), type_name, perm_name, User(user_id)) as stream:
+    ids = [r.resource_id for r in stream]
+```
+
+  `authz.DefinitionNames.ORGANIZATION` and `authz.DEFINITION_NAMES` name the
+  definitions; `authz.SCHEMA_TEXT` is the schema the module was generated
+  from, so `tc.write_schema(authz.SCHEMA_TEXT)` at startup needs no `.zed`
+  file at runtime.
 
 ## List what a subject can access
 
@@ -254,18 +270,33 @@ validation, local deadlines and errors you construct. Forward
 
 ```python
 fake = InMemoryClient([Relationship.from_tuple("organization:acme#admin@user:alice")])
+tc = TypedClient(fake)  # a generated TypedClient wraps the double
+# A stored relationship grants the check of its own relation name...
+assert tc.check(full(), Organization("acme").admin_relation, User("alice")).has_permission
+# ...but the double evaluates no schema: permissions need a result or a resolver.
 fake.set_check_result(
     ObjectRef("organization", "acme"),
     "view",
     SubjectRef(ObjectRef("user", "alice")),
     Permissionship.HAS_PERMISSION,
 )
+fake.set_check_resolver(lambda c: True if c.subject.object.object_id == "root" else None)
+fake.set_check_resolver(grant_all)  # or grant everything
 err = SpiceDBError.from_code(grpc.StatusCode.FAILED_PRECONDITION, "precondition failed")
 assert isinstance(err, FailedPreconditionError)
 ```
 
+A check resolves to the result registered for that exact question, else to
+the resolver's answer (None defers), else to the stored relationships (a
+relationship whose relation is the permission's name and whose subject
+matches exactly, or a wildcard for direct subjects; caveated ones are
+conditional, expired ones absent), else to no permission. `lookup_resources`
+and `lookup_subjects` enumerate the objects the double knows (from its
+relationships) and return those that check resolution grants, honoring
+`permissionship_filter`, `limit`, `cursor` and `wildcards`.
+
 `InMemoryClient` (and `AsyncInMemoryClient`) implement `write`, `check`,
-`check_bulk`, `read_relationships`, `delete_relationships`,
+`check_bulk`, `lookup_resources`, `lookup_subjects`, `read_relationships`, `delete_relationships`,
 `delete_all_relationships_non_atomic`, `import_relationships`,
 `export_relationships`, `read_schema`, `write_schema` and `reflect_schema`
 (`set_reflect_schema_result`) with the real clients' signatures, SpiceDB's
@@ -285,11 +316,11 @@ print(last_read.request, last_read.options["cursor"])
 ```
 
 `FaultStage` is `CALL`, `IMPORT_BATCH` (`f.batch` holds that batch's
-relationships), `IMPORT_COMMIT` or `ITEM` (before each read or export item).
+relationships), `IMPORT_COMMIT` or `ITEM` (before each read, export or lookup item).
 `cursor_after(n)` builds the double's resume cursor after `n` items, and
 `fake.set_read_schema_revision(SchemaRevision.OMITTED)` makes `read_schema`
 report no revision. The doubles implement every client method; the ones
-without in-memory semantics (lookups, expand, watch, ...) are recorded and
+without in-memory semantics (expand, watch, ...) are recorded and
 raise `UNIMPLEMENTED`, so script them with the fault hook.
 
 Type your code against `spicedb.protocols.ClientProtocol` (or

@@ -56,6 +56,7 @@ from spicedb import (
 from spicedb.{{.Flavor}} import {{$stream}}, SpiceDBClient
 from spicedb.consistency import Consistency
 from spicedb.options import DEFAULT_RETRY_POLICY
+from spicedb.protocols import {{if .Async}}AsyncClientProtocol{{else}}ClientProtocol{{end}}
 from spicedb.raw import RawGrpc
 
 from .{{.Module}} import (
@@ -72,11 +73,14 @@ class TypedClient:
     create, delete, write_txn) take generated values. Every other native
     operation, including write and check_bulk, is forwarded unchanged with its
     native signature.
+
+    It wraps anything satisfying spicedb.protocols.{{if .Async}}AsyncClientProtocol{{else}}ClientProtocol{{end}}: the
+    real client, or the spicedb.testing {{if .Async}}AsyncInMemoryClient{{else}}InMemoryClient{{end}} double in tests.
     """
 
-    client: SpiceDBClient
+    client: {{if .Async}}AsyncClientProtocol{{else}}ClientProtocol{{end}}
 
-    def __init__(self, client: SpiceDBClient) -> None:
+    def __init__(self, client: {{if .Async}}AsyncClientProtocol{{else}}ClientProtocol{{end}}) -> None:
         self.client = client
 
     @classmethod
@@ -331,6 +335,46 @@ class TypedClient:
             resource_type=p._resource_type,
             permission=p._permission,
             subject=SubjectRef(ObjectRef(sub_type, sub_id), sub_rel or None),
+            consistency=c,
+            context=context,
+            permissionship_filter=permissionship_filter,
+            limit=limit,
+            page_size=page_size,
+            debug=debug,
+            cursor=cursor,
+            paging=paging,
+            timeout=timeout,
+            call_options=call_options,
+        )
+
+    def lookup_resources_by_name(
+        self,
+        c: Consistency,
+        resource_type: str,
+        permission: str,
+        s: Subject,
+        *,
+        context: JSONObject | None = None,
+        permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
+        limit: int | None = None,
+        page_size: int = 1000,
+        debug: LookupDebug = LookupDebug.DISABLED,
+        cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> {{$stream}}[LookupResource]:
+        """Look up resources by a definition and permission named at runtime.
+
+        The names and the subject are validated against the schema before any
+        RPC: NotInSchemaError for an unknown definition or permission,
+        SubjectNotAllowedError for a subject the permission cannot reach.
+        """
+        p = permission_ref_by_name(resource_type, permission)
+        return self.client.lookup_resources(
+            resource_type=p.resource_type,
+            permission=p.name,
+            subject=p._admit(s),
             consistency=c,
             context=context,
             permissionship_filter=permissionship_filter,

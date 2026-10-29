@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from spicedb import Transaction, at_least, full
+from spicedb import ObjectRef, SubjectRef, Transaction, at_least, full
+from spicedb.testing import AsyncInMemoryClient, InMemoryClient
 
 from testdata.permissions import (
     DOCUMENT_VIEW,
@@ -22,7 +23,10 @@ from testdata.permissions import (
     TypedTransaction,
     User,
     UserWildcard,
+    definition_by_name,
+    permission_ref_by_name,
 )
+from testdata.aio import TypedClient as AsyncTypedClient
 from testdata.sync import TypedClient
 
 # Team (the resource) is not a document viewer; only the TeamMember userset is.
@@ -78,3 +82,15 @@ def invalid_mode(client: TypedClient) -> None:
     # write_txn does not shadow the native write: write takes only a native Transaction.
     client.write(TypedTransaction())  # should not type-check
     client.write_txn(Transaction())  # should not type-check
+
+    # Runtime-name lookups take names and a generated subject.
+    client.lookup_resources_by_name(full(), "document", "view", SubjectRef(ObjectRef("user", "a")))  # should not type-check
+    client.lookup_resources_by_name(full(), Document, "view", User("alice"))  # should not type-check
+
+
+# The typed client wraps a client of its own flavor only.
+TypedClient(AsyncInMemoryClient())  # should not type-check
+AsyncTypedClient(InMemoryClient())  # should not type-check
+# Schema-level lookups take names.
+definition_by_name(Document)  # should not type-check
+permission_ref_by_name("document", DOCUMENT_VIEW)  # should not type-check

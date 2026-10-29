@@ -78,11 +78,20 @@ threads 5, 5
 preload_app!
 
 on_worker_boot do
-  # The first SpiceDB call happens here, in the worker. An optional startup
-  # check, e.g. that the schema has been written:
-  SPICEDB.read_schema
+  # The first SpiceDB call happens here, in the worker: fail the worker's
+  # startup if SpiceDB is unreachable, rather than its first request.
+  SPICEDB.connect!(timeout: 10)
 end
 ```
+
+`connect!` is the startup readiness check: it opens the connection in the
+calling process and waits until the channel is ready, raising
+`SpiceDB::UnavailableError` (unreachable or refusing connections) or
+`SpiceDB::DeadlineExceededError` (still connecting) when the timeout passes.
+It checks the transport, not the token. Call it in each worker, **never in the
+master**: connecting in the master counts as the parent using gRPC, and every
+worker's calls would then raise `ForkedClientError`. Without a forking server,
+call it once after building the client.
 
 Unicorn's `after_fork` is the same place. With a single-process server (Puma
 without `workers`), nothing forks and no hook is needed. Application code then

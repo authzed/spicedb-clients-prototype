@@ -43,6 +43,7 @@ module SpiceDB
     DEFAULT_IMPORT_BATCH_SIZE = 1000
     DEFAULT_CHECK_BATCH_SIZE = 1000
     DEFAULT_TIMEOUT_SECONDS = 30
+    DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
 
     # Every operation's name, as accepted by +operation_retry_policies:+.
     OPERATIONS = %i[
@@ -132,6 +133,44 @@ module SpiceDB
       return connection if connection && @connected_pid == Process.pid
 
       @mutex.synchronize { connection_for_process }
+    end
+
+    # Startup readiness check: opens the connection in the calling process
+    # (a client otherwise connects on first use) and waits until its channel
+    # is ready, so a wrong or unreachable endpoint fails at startup rather
+    # than on the first request. It checks the transport, not the token: a
+    # rejected token surfaces as UnauthenticatedError on the first call.
+    #
+    # Under a forking server call it in each worker (Puma's +on_worker_boot+),
+    # never in the master: connecting there counts as the parent using gRPC
+    # (see "Concurrency and forking" in README.md).
+    #
+    # @param timeout [Numeric] seconds to wait for the channel
+    # @return [self]
+    # @raise [UnavailableError] the endpoint could not be reached (the channel
+    #   failed to connect) within +timeout+
+    # @raise [DeadlineExceededError] the channel was still connecting when
+    #   +timeout+ passed
+    # @raise [ForkedClientError] see #proto_client
+    def connect!(timeout: DEFAULT_CONNECT_TIMEOUT_SECONDS)
+      raise InvalidArgumentError, "timeout: expected a positive number of seconds, got #{Values.received(timeout)}" unless
+        timeout.is_a?(Numeric) && timeout.positive?
+
+      channel = proto_client.channel
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      failed = false
+      state = channel.connectivity_state(true)
+      until state == GRPC::Core::ConnectivityStates::READY
+        failed ||= state == GRPC::Core::ConnectivityStates::TRANSIENT_FAILURE
+        raise UnavailableError, "spicedb: the connection to #{channel.target} is closed" if state == GRPC::Core::ConnectivityStates::FATAL_FAILURE
+
+        remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        raise not_ready(channel.target, timeout, failed) unless remaining.positive?
+
+        channel.watch_connectivity_state(state, Time.now + remaining)
+        state = channel.connectivity_state(true)
+      end
+      self
     end
 
     def check(check, consistency:, context: nil, timeout: nil, tracing: Tracing::DISABLED, call_options: nil, retry_policy: nil)
@@ -427,6 +466,12 @@ module SpiceDB
       adopt_connection(@connect.call)
     rescue ArgumentError => e
       raise InvalidArgumentError, e.message
+    end
+
+    def not_ready(target, timeout, failed)
+      return UnavailableError.new("spicedb: could not connect to #{target} within #{timeout}s (unreachable or refusing connections)") if failed
+
+      DeadlineExceededError.new("spicedb: the connection to #{target} was not ready within #{timeout}s")
     end
 
     def adopt_connection(connection)

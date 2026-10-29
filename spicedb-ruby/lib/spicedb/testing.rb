@@ -483,6 +483,9 @@ module SpiceDB
       # Does nothing: the store holds no transport.
       def close = nil
 
+      # Does nothing and returns the store: there is no connection to wait for.
+      def connect!(timeout: Client::DEFAULT_CONNECT_TIMEOUT_SECONDS) = self # rubocop:disable Lint/UnusedMethodArgument -- the client's signature
+
       # nil: the store has no protocol client.
       def proto_client = nil
 

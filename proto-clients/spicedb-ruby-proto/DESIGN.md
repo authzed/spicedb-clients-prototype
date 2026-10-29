@@ -123,6 +123,9 @@ Create a `lib/spicedb_proto/client.rb` file with:
    are passed to every stub (call credentials on a plaintext channel). Raises
    `ArgumentError` for anything but a `GRPC::Core::Channel`.
 
+2d. **`#channel`** -- the `GRPC::Core::Channel` every stub shares, so a caller
+   can wait for readiness (`connectivity_state`, `watch_connectivity_state`).
+
 3. **`#close`** -- closes the underlying gRPC channel when this client created
    it; a channel supplied to `.from_channel` stays open
 

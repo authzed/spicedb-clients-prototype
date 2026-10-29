@@ -54,6 +54,10 @@ module SpiceDBProto
     #   own stub class, not another RPC on Authzed::Api::V1::ExperimentalService::Stub.
     attr_reader :materialize, :materialize_relationships, :permission_sets
 
+    # @return [GRPC::Core::Channel] the channel every stub shares, for readiness
+    #   checks (+connectivity_state+, +watch_connectivity_state+)
+    attr_reader :channel
+
     # Creates a new SpiceDB proto client.
     #
     # @param endpoint [String] host:port of the SpiceDB server

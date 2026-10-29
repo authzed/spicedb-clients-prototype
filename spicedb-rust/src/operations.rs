@@ -173,6 +173,26 @@ async fn within_page<T>(
     }
 }
 
+/// Receives a whole page within its deadline, before any item reaches the
+/// caller, so the page deadline bounds only waiting on the server: the time
+/// the caller then spends on each item never counts against it. A page holds
+/// at most the page size, so the buffer is bounded. A failure part-way
+/// through is returned with the items received before it, which the caller
+/// gets first.
+async fn receive_page<T>(
+    page_end: Option<Instant>,
+    stream: &mut tonic::Streaming<T>,
+) -> (Vec<T>, Option<SpiceDBError>) {
+    let mut page = Vec::new();
+    loop {
+        match within_page(page_end, next_message(stream)).await {
+            Ok(Some(message)) => page.push(message),
+            Ok(None) => return (page, None),
+            Err(e) => return (page, Some(e)),
+        }
+    }
+}
+
 /// [`wire`] for a page request: the timeout sent is the earlier of the
 /// operation's remaining budget and the page's.
 fn wire_page<T>(value: T, page_end: Option<Instant>) -> tonic::Request<T> {
@@ -1064,7 +1084,8 @@ impl SpiceDBClient {
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
+                    let (page, failure) = receive_page(page_end, &mut stream).await;
+                    for response in page {
                         cursor = response.after_result_cursor.clone();
                         count += 1;
                         // A response without its relationship is not skipped:
@@ -1085,6 +1106,9 @@ impl SpiceDBClient {
                         if remaining == 0 {
                             break;
                         }
+                    }
+                    if let Some(e) = failure.filter(|_| remaining > 0) {
+                        Err(e)?;
                     }
                     if single || remaining == 0 || count < page_size {
                         break;
@@ -1142,7 +1166,8 @@ impl SpiceDBClient {
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
+                    let (page, failure) = receive_page(page_end, &mut stream).await;
+                    for response in page {
                         let revision: ZedToken = response
                             .looked_up_at
                             .map(|t| t.token.into())
@@ -1167,6 +1192,9 @@ impl SpiceDBClient {
                         if remaining == 0 {
                             break;
                         }
+                    }
+                    if let Some(e) = failure.filter(|_| remaining > 0) {
+                        Err(e)?;
                     }
                     if single || remaining == 0 || count < page_size {
                         break;
@@ -1198,13 +1226,15 @@ impl SpiceDBClient {
                 if let Some(r) = &request.options.subject_relation {
                     required("subject_relation", r)?;
                 }
-                // One request returns every subject: its single page is
-                // bounded by the client default deadline.
-                let page_end = page_deadline(page_timeout);
-                let response = within_page(page_end, open_stream(|| async {
+                // One unpaged request returns every subject, so the default
+                // deadline bounds opening the stream and each wait for the
+                // server's next message, never the time the caller spends on
+                // an item. It is not sent as the request's timeout, which
+                // would end the stream while the caller works.
+                let response = within_page(page_deadline(page_timeout), open_stream(|| async {
                     permissions
                         .clone()
-                        .lookup_subjects(wire_page(proto::LookupSubjectsRequest {
+                        .lookup_subjects(wire(proto::LookupSubjectsRequest {
                             consistency: Some(request.consistency.to_proto()),
                             resource: Some(request.resource.to_proto()),
                             permission: request.permission.clone(),
@@ -1221,12 +1251,14 @@ impl SpiceDBClient {
                                 WildcardOption::Include => 1,
                                 WildcardOption::Exclude => 2,
                             },
-                        }, page_end))
+                        }))
                         .await
                 }))
                 .await?;
                 let mut stream = response.into_inner();
-                while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
+                while let Some(response) =
+                    within_page(page_deadline(page_timeout), next_message(&mut stream)).await?
+                {
                     // Servers that predate `subject` send the deprecated
                     // response-level fields instead; with neither, the
                     // response names no subject and is not skipped.
@@ -1312,7 +1344,8 @@ impl SpiceDBClient {
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
+                    let (page, failure) = receive_page(page_end, &mut stream).await;
+                    for response in page {
                         cursor = response.after_result_cursor.clone();
                         let after = response.after_result_cursor.map(|c| c.token);
                         for relationship in response.relationships {
@@ -1329,6 +1362,9 @@ impl SpiceDBClient {
                         if remaining == 0 {
                             break;
                         }
+                    }
+                    if let Some(e) = failure.filter(|_| remaining > 0) {
+                        Err(e)?;
                     }
                     if remaining == 0 || count < page_size {
                         break;
@@ -1673,11 +1709,15 @@ impl SpiceDBClient {
                 }))
                 .await?
                 .into_inner();
-                while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
+                let (page, failure) = receive_page(page_end, &mut stream).await;
+                for response in page {
                     yield LookupPermissionSetsResult {
                         change: response.change.map(set_change),
                         cursor: response.cursor.map(PermissionSetCursor::from_proto),
                     };
+                }
+                if let Some(e) = failure {
+                    Err(e)?;
                 }
             },
         )

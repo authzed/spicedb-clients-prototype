@@ -82,6 +82,49 @@ func TestSubjectSetByName(t *testing.T) {
 	require.ErrorIs(t, err, rel.ErrInvalidResource)
 }
 
+func TestParseSubject(t *testing.T) {
+	for text, want := range map[string]Subject{
+		"user:alice":                  User("alice"),
+		"user:alice#...":              User("alice"),
+		"team:eng#member":             Team("eng").Member(),
+		"organization:acme#can_admin": Organization("acme").CanAdminSubject(),
+		"user:*":                      UserWildcard(),
+	} {
+		s, err := ParseSubject(text)
+		require.NoError(t, err, text)
+		require.Equal(t, want, s, text)
+	}
+
+	// The result is admitted wherever the typed ref is.
+	s, err := ParseSubject("team:eng#member")
+	require.NoError(t, err)
+	r, err := Document("readme").RelationshipByName("viewer", s)
+	require.NoError(t, err)
+	require.Equal(t, Document("readme").Viewer(Team("eng").Member()), r)
+
+	for _, bad := range []string{
+		"folder:x",          // unknown definition
+		"folder:x#member",   // unknown definition
+		"team:eng#owner",    // unknown relation
+		"document:x#viewer", // a relation no relation admits as a subject
+		"team:*",            // a wildcard the schema never allows
+		"folder:*",          // unknown definition
+	} {
+		_, err := ParseSubject(bad)
+		require.ErrorIs(t, err, ErrNotInSchema, bad)
+		// A schema rejection is local validation: an invalid argument.
+		require.ErrorIs(t, err, client.ErrInvalidArgument, bad)
+	}
+	_, err = CheckByName(context.Background(), NewTypedClient(clienttest.NewStore()), consistency.Full(),
+		"document", "readme", "view", Team("eng"))
+	require.ErrorIs(t, err, ErrSubjectNotAllowed)
+	require.ErrorIs(t, err, client.ErrInvalidArgument)
+	for _, bad := range []string{"user", "user:", ":x", "team:eng#", "user:*#member", "#member"} {
+		_, err := ParseSubject(bad)
+		require.ErrorIs(t, err, rel.ErrInvalidSubject, bad)
+	}
+}
+
 func mustSubjectSet(t *testing.T, definition, id, relation string) Subject {
 	t.Helper()
 	s, err := SubjectSetByName(definition, id, relation)

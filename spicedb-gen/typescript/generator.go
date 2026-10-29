@@ -477,7 +477,7 @@ var reservedModuleNames = []string{
 	"ReadRelationshipsRequest", "SpiceDBClientOptions", "JSONObject", "JSONValue", "WriteResult", "RelationshipUpdate", "Precondition",
 	"Consistency", "SpiceDBClientInterface", "SchemaText", "Definitions", "DefinitionNames", "DefinitionName", "DefinitionInfo",
 	"AnyResourceRef", "definitionByName", "permissionRefByName", "subjectSetByName", "reachingSubjects", "reaches",
-	"resolveByName", "subjectPosition", "subjectSetMakers", "noResults", "objectByName", "parseObject", "AnySubjectSet",
+	"resolveByName", "subjectPosition", "subjectSetMakers", "noResults", "objectByName", "parseObject", "parseSubject", "AnySubjectSet",
 	"subjectRules", "TripleOptions", "relationshipFromTriple", "NamedCheck", "checkTarget", "objectText", "requireId", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
 	"Promise", "Function", "RegExp", "BigInt", "Math", "Reflect", "Proxy", "Intl", "Record", "Readonly", "Partial",
 }

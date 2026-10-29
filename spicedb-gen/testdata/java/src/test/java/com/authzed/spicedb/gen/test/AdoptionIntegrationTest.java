@@ -97,7 +97,7 @@ class AdoptionIntegrationTest {
                   com.authzed.spicedb.LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
               .build();
       try (var found =
-          tc.lookupResources(Consistency.full(), "organization", "view", User("carol"), options)) {
+          tc.lookupResourcesByName(Consistency.full(), "organization", "view", User("carol"), options)) {
         assertEquals(
             java.util.Set.of("acme-runtime", "beta-runtime"),
             found

@@ -11,6 +11,7 @@ import com.authzed.spicedb.LookupResult.LookupSubject;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.SpiceDBClient;
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import com.authzed.spicedb.testing.InMemorySpiceDB;
 import java.time.Instant;
 import java.util.List;
@@ -60,6 +61,45 @@ class RuntimeEntryPointsTest {
         assertThrows(NotInSchemaException.class, () -> subjectSetByName("document", "x", "viewer"));
     assertTrue(e.getMessage().contains("not a subject anywhere"), e.getMessage());
     assertThrows(InvalidArgumentException.class, () -> subjectSetByName("team", "", "member"));
+  }
+
+  @Test
+  void subjectsFromText() {
+    assertEquals(User("alice"), parseSubject("user:alice"));
+    assertEquals(User("alice"), parseSubject("user:alice#..."));
+    assertEquals(Team("eng").member(), parseSubject("team:eng#member"));
+    assertEquals(Organization("acme").canAdminSubject(), parseSubject("organization:acme#can_admin"));
+    assertEquals(UserWildcard(), parseSubject("user:*"));
+    // The result is admitted wherever the typed ref is.
+    assertEquals(
+        Document("d").viewer(Team("eng").member()),
+        Document("d").relationshipByName("viewer", parseSubject("team:eng#member")));
+    for (var unknown :
+        List.of("folder:x", "folder:x#member", "team:eng#owner", "document:x#viewer", "team:*")) {
+      var e = assertThrows(NotInSchemaException.class, () -> parseSubject(unknown), unknown);
+      // A schema rejection is local validation, before any call.
+      assertInstanceOf(LocalValidationException.class, e, unknown);
+    }
+    for (var bad : List.of("user", "user:", ":x", "team:eng#", "user:*#member", "#member")) {
+      assertThrows(LocalValidationException.class, () -> parseSubject(bad), bad);
+    }
+  }
+
+  @Test
+  void schemaErrorsAreLocalValidation() {
+    var db = new InMemorySpiceDB();
+    try (var typed = new TypedClient(db)) {
+      LocalValidationException e =
+          assertThrows(
+              LocalValidationException.class,
+              () -> typed.checkByName(Consistency.full(), "folder", "x", "view", User("alice")));
+      assertInstanceOf(NotInSchemaException.class, e);
+      e =
+          assertThrows(
+              LocalValidationException.class,
+              () -> typed.checkByName(Consistency.full(), "document", "x", "view", Team("eng")));
+      assertInstanceOf(SubjectNotAllowedException.class, e);
+    }
   }
 
   @Test
@@ -176,46 +216,46 @@ class RuntimeEntryPointsTest {
       var c = Consistency.full();
       assertEquals(
           List.of("readme"),
-          drain(typed.lookupResources(c, "document", "viewer", User("alice")))
+          drain(typed.lookupResourcesByName(c, "document", "viewer", User("alice")))
               .stream()
               .map(LookupResource::resourceId)
               .toList());
-      assertEquals(List.of(), drain(typed.lookupResources(c, "document", "view", Team("eng"))));
+      assertEquals(List.of(), drain(typed.lookupResourcesByName(c, "document", "view", Team("eng"))));
       assertEquals(1, db.callsOf(ClientOperation.LOOKUP_RESOURCES).size());
 
       assertEquals(
           List.of("alice"),
-          drain(typed.lookupSubjects(c, "document", "readme", "viewer", "user")).stream()
+          drain(typed.lookupSubjectsByName(c, "document", "readme", "viewer", "user")).stream()
               .map(s -> s.subject().subjectId())
               .toList());
-      drain(typed.lookupSubjects(c, "document", "readme", "viewer", "user", "..."));
+      drain(typed.lookupSubjectsByName(c, "document", "readme", "viewer", "user", "..."));
       assertEquals(2, db.callsOf(ClientOperation.LOOKUP_SUBJECTS).size());
       for (var st : List.of(new String[] {"organization", null}, new String[] {"team", null})) {
         assertEquals(
             List.<LookupSubject>of(),
-            drain(typed.lookupSubjects(c, "document", "readme", "view", st[0], st[1])));
+            drain(typed.lookupSubjectsByName(c, "document", "readme", "view", st[0], st[1])));
       }
       assertEquals(
           List.<LookupSubject>of(),
-          drain(typed.lookupSubjects(c, "document", "readme", "view", "organization", "member")));
+          drain(typed.lookupSubjectsByName(c, "document", "readme", "view", "organization", "member")));
       assertEquals(2, db.callsOf(ClientOperation.LOOKUP_SUBJECTS).size());
 
       assertThrows(
           NotInSchemaException.class,
-          () -> typed.lookupSubjects(c, "folder", "readme", "view", "user"));
+          () -> typed.lookupSubjectsByName(c, "folder", "readme", "view", "user"));
       assertThrows(
           NotInSchemaException.class,
-          () -> typed.lookupSubjects(c, "document", "readme", "share", "user"));
+          () -> typed.lookupSubjectsByName(c, "document", "readme", "share", "user"));
       assertThrows(
           NotInSchemaException.class,
-          () -> typed.lookupSubjects(c, "document", "readme", "view", "folder"));
+          () -> typed.lookupSubjectsByName(c, "document", "readme", "view", "folder"));
       assertThrows(
           NotInSchemaException.class,
-          () -> typed.lookupSubjects(c, "document", "readme", "view", "team", "owner"));
+          () -> typed.lookupSubjectsByName(c, "document", "readme", "view", "team", "owner"));
       assertThrows(
           InvalidArgumentException.class,
           () ->
-              typed.lookupSubjects(
+              typed.lookupSubjectsByName(
                   c,
                   "document",
                   "readme",
@@ -255,24 +295,24 @@ class RuntimeEntryPointsTest {
               .toList());
       assertEquals(
           List.of("rn-doc"),
-          drain(tc.lookupResources(c, "document", "viewer", eng)).stream()
+          drain(tc.lookupResourcesByName(c, "document", "viewer", eng)).stream()
               .map(LookupResource::resourceId)
               .toList());
       assertEquals(
           List.of("rn-eng"),
-          drain(tc.lookupSubjects(c, "document", "rn-doc", "viewer", "team", "member")).stream()
+          drain(tc.lookupSubjectsByName(c, "document", "rn-doc", "viewer", "team", "member")).stream()
               .map(s -> s.subject().subjectId())
               .distinct() // SpiceDB may report a subject once per path
               .toList());
       assertEquals(
           List.of("rn-alice"),
-          drain(tc.lookupSubjects(c, "document", "rn-doc", "view", "user")).stream()
+          drain(tc.lookupSubjectsByName(c, "document", "rn-doc", "view", "user")).stream()
               .map(s -> s.subject().subjectId())
               .toList());
       assertEquals(
-          List.of(), drain(tc.lookupSubjects(c, "document", "rn-doc", "view", "organization")));
+          List.of(), drain(tc.lookupSubjectsByName(c, "document", "rn-doc", "view", "organization")));
       assertEquals(
-          List.of(), drain(tc.lookupResources(c, "document", "view", Organization("rn-org"))));
+          List.of(), drain(tc.lookupResourcesByName(c, "document", "view", Organization("rn-org"))));
     }
   }
 }

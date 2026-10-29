@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from spicedb import (
     Caveat,
     InvalidArgumentError,
+    LocalValidationError,
     LookupPermissionshipFilter,
     ObjectRef,
     Operation,
@@ -40,6 +41,7 @@ from testdata.permissions import (
     OrganizationCanAdmin,
     PermissionRef,
     SchemaObject,
+    SchemaSubject,
     SubjectSet,
     SubjectNotAllowedError,
     Team,
@@ -50,6 +52,7 @@ from testdata.permissions import (
     definition_by_name,
     object_by_name,
     parse_object,
+    parse_subject,
     permission_ref_by_name,
     relationship_from_triple,
     subject_set_by_name,
@@ -262,6 +265,34 @@ def test_parse_object():
     for bad in ("document", "document:", ":readme", "Document:readme"):
         with pytest.raises(ValueError):
             parse_object(bad)
+
+
+def test_parse_subject():
+    cases: dict[str, SchemaSubject] = {
+        "user:alice": User("alice"),
+        "user:alice#...": User("alice"),
+        "team:eng#member": TeamMember("eng"),
+        "organization:acme#can_admin": OrganizationCanAdmin("acme"),
+        "user:*": UserWildcard(),
+    }
+    for text, want in cases.items():
+        assert parse_subject(text) == want, text
+    # The result is admitted wherever the typed subject is.
+    assert Document("readme").relationship_by_name("viewer", parse_subject("team:eng#member")) == (
+        Document("readme").viewer(TeamMember("eng"))
+    )
+    for unknown in (
+        "folder:x",  # unknown definition
+        "folder:x#member",  # unknown definition
+        "team:eng#owner",  # unknown relation
+        "document:x#viewer",  # a relation no relation admits as a subject
+        "team:*",  # a wildcard the schema never allows
+    ):
+        with pytest.raises(NotInSchemaError):
+            parse_subject(unknown)
+    for bad in ("user", "user:", ":x", "team:eng#", "user:*#member", "Team:eng#member"):
+        with pytest.raises(LocalValidationError):
+            parse_subject(bad)
 
 
 def test_relationship_from_triple_is_schema_checked():

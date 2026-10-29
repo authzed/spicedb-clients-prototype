@@ -33,6 +33,11 @@ func (g *Generator) Language() string {
 // DefaultPackage is the generated package name when --go.package is not set.
 const DefaultPackage = "permissions"
 
+// DefaultNamesOnlyPackage is the package name --go.names-only uses when
+// --go.package is not set. It differs from DefaultPackage, so a file that
+// imports both the names-only package and the full one needs no import alias.
+const DefaultNamesOnlyPackage = "permissionnames"
+
 // TemplateData holds all pre-computed data needed by the Go template.
 type TemplateData struct {
 	Package            string
@@ -214,7 +219,7 @@ func parseRenames(v string) (map[string]string, error) {
 // into names.gen.go, which imports nothing, so a shared API package can use
 // the names without depending on the client library.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
-	pkg := DefaultPackage
+	pkg, pkgSet := DefaultPackage, false
 	renames := map[string]string{}
 	namesOnly := false
 	for k, v := range opts {
@@ -229,7 +234,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 			if !token.IsIdentifier(v) || token.IsKeyword(v) {
 				return nil, fmt.Errorf("--go.package=%q is not a valid Go package name", v)
 			}
-			pkg = v
+			pkg, pkgSet = v, true
 		case "rename":
 			r, err := parseRenames(v)
 			if err != nil {
@@ -253,6 +258,9 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	data, err := buildTemplateData(s, renamer(renames))
 	if err != nil {
 		return nil, err
+	}
+	if namesOnly && !pkgSet {
+		pkg = DefaultNamesOnlyPackage
 	}
 	data.Package = pkg
 	data.SchemaLiteral = goStringLiteral(s.Source)
@@ -692,10 +700,10 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 	for _, fixed := range []string{"Subject", "Permission", "PermissionRef", "TypedRelationship", "RelationshipKey",
 		"Deletable", "TypedClient", "NewTypedClient", "Txn", "TypedCheck", "ChecksFor", "Check", "CheckBulk",
 		"LookupResources", "LookupSubjects", "FromRelationship", "ErrRelationship", "WithSubject", "WithSubjectAnyRelation",
-		"ErrNotInSchema", "ErrSubjectNotAllowed", "SchemaText", "Definitions", "DefinitionNames", "Definition",
+		"ErrNotInSchema", "ErrSubjectNotAllowed", "schemaError", "SchemaText", "Definitions", "DefinitionNames", "Definition",
 		"DefinitionByName", "PermissionRefByName", "LookupResourcesByName", "definitionsByName",
 		"DefinitionRef", "SubjectSetByName", "LookupSubjectsByName", "reachingSubjects", "reaches",
-		"resolveByName", "schemaPosition", "emptyStream", "failedStream", "ObjectByName", "ParseObject",
+		"resolveByName", "schemaPosition", "emptyStream", "failedStream", "ObjectByName", "ParseObject", "ParseSubject",
 		"subjectRules", "TripleOption", "TripleCaveat", "TripleExpiration", "RelationshipFromTriple", "target",
 		"checkTarget", "CheckByName", "NamedCheck", "CheckBulkByName"} {
 		n.claim("", fixed, "generated support code")
@@ -868,7 +876,7 @@ func celTypeToGoType(celType string) string {
 // Options lists the options this generator accepts, for the CLI's help.
 func (g *Generator) Options() []generator.Option {
 	return []generator.Option{
-		{Name: "package", Value: "<name>", Description: `Go package name of the generated file (default "permissions").`},
+		{Name: "package", Value: "<name>", Description: `Go package name of the generated file (default "` + DefaultPackage + `", or "` + DefaultNamesOnlyPackage + `" with --go.names-only so the two never share a name).`},
 		{Name: "rename", Value: "<definition>=<GoName>[,...]", Description: `Go identifier stem for a definition whose generated names collide; schema names on the wire are unchanged.`},
 		generator.NamesOnlyOptionDescription,
 	}

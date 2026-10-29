@@ -361,10 +361,10 @@ const javaGenerated = "testdata/java/src/main/java/com/authzed/spicedb/gen/test/
 
 // javaNamesOnlyGenerated is the --java.names-only output, which the
 // compileNamesOnly task compiles with an empty classpath.
-const javaNamesOnlyGenerated = "testdata/java/names_only/com/authzed/spicedb/gen/names/Permissions.java"
+const javaNamesOnlyGenerated = "testdata/java/names_only/com/authzed/spicedb/gen/names/PermissionNames.java"
 
 // generateJava builds the CLI and generates Permissions.java from sample.zed,
-// plus the names-only Permissions.java.
+// plus the names-only PermissionNames.java.
 func generateJava() error {
 	fmt.Println("==> Building spicedb-gen...")
 	if err := Build(); err != nil {

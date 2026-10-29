@@ -219,6 +219,15 @@ func TestNamesOnly(t *testing.T) {
 
 	_, err = generate(t, zed, map[string]string{"names-only": "yes please"})
 	require.ErrorContains(t, err, "--go.names-only")
+
+	// The default package differs from the full output's, so a file can import
+	// both without an alias.
+	out, err = generate(t, zed, map[string]string{"names-only": "true"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "package permissionnames\n")
+	out, err = generate(t, zed, nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "package permissions\n")
 }
 
 // testdata/go-names is a module with no requirements holding names-only

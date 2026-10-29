@@ -45,6 +45,9 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// Package and imports
 	assert.Contains(t, output, "package permissions")
+	assert.Contains(t, output, "func ParseSubject(text string) (Subject, error) {")
+	assert.Contains(t, output, `case "user": return UserWildcard(), nil`)
+	assert.Contains(t, output, "func (e *schemaError) Is(target error) bool { return target == client.ErrInvalidArgument }")
 	assert.Contains(t, output, `"github.com/authzed/spicedb-clients/spicedb-go/client"`)
 	assert.Contains(t, output, `"github.com/authzed/spicedb-clients/spicedb-go/consistency"`)
 	assert.Contains(t, output, `"github.com/authzed/spicedb-clients/spicedb-go/rel"`)

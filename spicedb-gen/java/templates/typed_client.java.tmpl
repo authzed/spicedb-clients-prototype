@@ -155,7 +155,7 @@ public final class Permissions {
 
   /**
    * A permission on a resource type, for lookups. {@code subjectType} is the subjects it admits,
-   * which {@link TypedClient#lookupResources(Consistency, String, String, Subject)} validates
+   * which {@link TypedClient#lookupResourcesByName(Consistency, String, String, Subject)} validates
    * against.
    */
   public record PermissionRef<S extends Subject>(
@@ -249,7 +249,7 @@ public final class Permissions {
         String resourceType, String resourceId, String relation, Subject subject) {
       try {
         if (subject == null) {
-          throw new com.authzed.spicedb.errors.InvalidArgumentException("subject is required");
+          throw new com.authzed.spicedb.errors.LocalValidationException("subject is required");
         }
         var r =
             Relationship.of(new ObjectRef(resourceType, resourceId), relation, subjectRef(subject));
@@ -260,7 +260,7 @@ public final class Permissions {
           r = r.withExpiration(subject.expiration());
         }
         return new TypedRelationship(r, null);
-      } catch (com.authzed.spicedb.errors.InvalidArgumentException e) {
+      } catch (com.authzed.spicedb.errors.LocalValidationException e) {
         return new TypedRelationship(null, e);
       }
     }
@@ -269,7 +269,7 @@ public final class Permissions {
     public static TypedRelationship fromRelationship(Relationship relationship) {
       if (relationship == null) {
         return ofError(
-            new com.authzed.spicedb.errors.InvalidArgumentException("relationship is required"));
+            new com.authzed.spicedb.errors.LocalValidationException("relationship is required"));
       }
       return new TypedRelationship(relationship, null);
     }
@@ -421,7 +421,7 @@ public final class Permissions {
         java.util.function.BiConsumer<Transaction, Relationship> apply) {
       descriptions.add(operation + "(" + value + ")");
       if (value == null) {
-        fail(new com.authzed.spicedb.errors.InvalidArgumentException("relationship is required"));
+        fail(new com.authzed.spicedb.errors.LocalValidationException("relationship is required"));
         return this;
       }
       try {
@@ -438,7 +438,7 @@ public final class Permissions {
         String operation, Filter filter, java.util.function.BiConsumer<Transaction, Filter> apply) {
       descriptions.add(operation + "(" + filter + ")");
       if (filter == null) {
-        fail(new com.authzed.spicedb.errors.InvalidArgumentException("filter is required"));
+        fail(new com.authzed.spicedb.errors.LocalValidationException("filter is required"));
       } else {
         steps.add(txn -> apply.accept(txn, filter));
       }
@@ -518,7 +518,7 @@ public final class Permissions {
 
   /** A name that is not a permission or relation of the definition in the schema. */
   public static final class NotInSchemaException
-      extends com.authzed.spicedb.errors.InvalidArgumentException {
+      extends com.authzed.spicedb.errors.LocalValidationException {
     private static final long serialVersionUID = 1L;
 
     public NotInSchemaException(String message) {
@@ -528,7 +528,7 @@ public final class Permissions {
 
   /** A subject the schema does not admit in that position. */
   public static final class SubjectNotAllowedException
-      extends com.authzed.spicedb.errors.InvalidArgumentException {
+      extends com.authzed.spicedb.errors.LocalValidationException {
     private static final long serialVersionUID = 1L;
 
     public SubjectNotAllowedException(String message) {
@@ -614,7 +614,7 @@ public final class Permissions {
   private static ObjectRef objectText(String text, String what) {
     var i = Objects.requireNonNull(text, what).indexOf(':');
     if (i < 1 || i == text.length() - 1) {
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+      throw new com.authzed.spicedb.errors.LocalValidationException(
           "invalid " + what + " (want type:id): " + text);
     }
     return new ObjectRef(text.substring(0, i), text.substring(i + 1));
@@ -650,7 +650,7 @@ public final class Permissions {
     var hash = Objects.requireNonNull(subject, "subject").indexOf('#');
     var rawRelation = hash < 0 ? null : subject.substring(hash + 1);
     if (rawRelation != null && rawRelation.isEmpty()) {
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+      throw new com.authzed.spicedb.errors.LocalValidationException(
           "invalid subject (empty relation): " + subject);
     }
     var subjectRelation = "...".equals(rawRelation) ? null : rawRelation;
@@ -723,7 +723,7 @@ public final class Permissions {
 
   private static Filter resourceFilter(String resourceType, String resourceId, String relation) {
     if (resourceId == null || resourceId.isEmpty()) {
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+      throw new com.authzed.spicedb.errors.LocalValidationException(
           resourceType + " filter requires a resource ID; use the type-level filter instead");
     }
     var filter = Filter.of(resourceType).withResourceId(resourceId);
@@ -1131,12 +1131,13 @@ public final class Permissions {
      * @throws NotInSchemaException if the schema has no such definition, permission or relation
      * @throws SubjectNotAllowedException for a wildcard subject of a type that reaches it
      */
-    public Stream<LookupResult.LookupResource> lookupResources(
+    public Stream<LookupResult.LookupResource> lookupResourcesByName(
         Consistency c, String definition, String permission, Subject subject) {
-      return lookupResources(c, definition, permission, subject, LookupOptions.builder().build());
+      return lookupResourcesByName(
+          c, definition, permission, subject, LookupOptions.builder().build());
     }
 
-    public Stream<LookupResult.LookupResource> lookupResources(
+    public Stream<LookupResult.LookupResource> lookupResourcesByName(
         Consistency c,
         String definition,
         String permission,
@@ -1159,7 +1160,7 @@ public final class Permissions {
       var relation = subject.subRelation().isEmpty() ? null : subject.subRelation();
       if (options.subjectRelation() != null
           && !Objects.equals(options.subjectRelation(), relation)) {
-        throw new com.authzed.spicedb.errors.InvalidArgumentException(
+        throw new com.authzed.spicedb.errors.LocalValidationException(
             "subjectRelation conflicts with the schema-derived subject");
       }
       return client.lookupSubjects(
@@ -1172,21 +1173,21 @@ public final class Permissions {
 
     /**
      * Looks up direct subjects of a type by names received at run time; see {@link
-     * #lookupSubjects(Consistency, String, String, String, String, String, LookupOptions)}.
+     * #lookupSubjectsByName(Consistency, String, String, String, String, String, LookupOptions)}.
      */
-    public Stream<LookupResult.LookupSubject> lookupSubjects(
+    public Stream<LookupResult.LookupSubject> lookupSubjectsByName(
         Consistency c, String definition, String id, String permission, String subjectType) {
-      return lookupSubjects(c, definition, id, permission, subjectType, null);
+      return lookupSubjectsByName(c, definition, id, permission, subjectType, null);
     }
 
-    public Stream<LookupResult.LookupSubject> lookupSubjects(
+    public Stream<LookupResult.LookupSubject> lookupSubjectsByName(
         Consistency c,
         String definition,
         String id,
         String permission,
         String subjectType,
         String subjectRelation) {
-      return lookupSubjects(
+      return lookupSubjectsByName(
           c,
           definition,
           id,
@@ -1206,7 +1207,7 @@ public final class Permissions {
      * @throws NotInSchemaException if the schema has no such definition, permission, relation or
      *     subject type
      */
-    public Stream<LookupResult.LookupSubject> lookupSubjects(
+    public Stream<LookupResult.LookupSubject> lookupSubjectsByName(
         Consistency c,
         String definition,
         String id,
@@ -1228,7 +1229,7 @@ public final class Permissions {
       }
       if (options.subjectRelation() != null
           && !Objects.equals(options.subjectRelation(), relation)) {
-        throw new com.authzed.spicedb.errors.InvalidArgumentException(
+        throw new com.authzed.spicedb.errors.LocalValidationException(
             "options.subjectRelation conflicts with subjectRelation " + subjectRelation);
       }
       var position = relation == null ? subjectType : subjectType + "#" + relation;

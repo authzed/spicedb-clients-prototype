@@ -61,6 +61,11 @@ type TemplateData struct {
 	// SubjectSets lists the base userset subject classes (no caveat or
 	// expiration), for subject_set_by_name and the SubjectSet alias.
 	SubjectSets []SubjectSetData
+	// Wildcards lists the base wildcard subject classes, keyed by definition
+	// name, for parse_subject.
+	Wildcards []SubjectSetData
+	// SchemaSubjectMembers are the members of the SchemaSubject alias.
+	SchemaSubjectMembers []string
 
 	// ClientTypeImports lists the names, sorted and deduplicated, that
 	// sync.py/aio.py reference from the types module.
@@ -754,7 +759,8 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		"permission_ref_by_name", "_DEFINITIONS", "_PERMISSION_REFS", "LocalValidationError",
 		"SchemaObject", "object_by_name", "parse_object", "relationship_from_triple",
 		"_RELATIONS", "_SUBJECT_RULES", "_subject_rule", "SubjectSet", "subject_set_by_name",
-		"_SUBJECT_SETS", "_lookup_target", "_reaches", "get_args",
+		"_SUBJECT_SETS", "_lookup_target", "_reaches", "get_args", "SchemaSubject", "parse_subject",
+		"_WILDCARDS",
 	} {
 		n.claim("", fixed, "generated support code")
 	}
@@ -1151,6 +1157,13 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 				ClassName: sr.ClassName,
 			})
 		}
+		if sr.Wildcard && !sr.HasCaveat && !sr.HasExpiration {
+			data.Wildcards = append(data.Wildcards, SubjectSetData{Key: sr.DefinitionName, ClassName: sr.ClassName})
+		}
+	}
+	data.SchemaSubjectMembers = []string{"SchemaObject", "SubjectSet"}
+	for _, w := range data.Wildcards {
+		data.SchemaSubjectMembers = append(data.SchemaSubjectMembers, w.ClassName)
 	}
 	for _, c := range checkables {
 		if c.SubjectUnion != "" {

@@ -127,7 +127,7 @@ class RuntimeNamesTest {
             .permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
             .build();
     try (var typed = new TypedClient(db)) {
-      drain(() -> typed.lookupResources(Consistency.full(), "document", "view", User("alice"), options));
+      drain(() -> typed.lookupResourcesByName(Consistency.full(), "document", "view", User("alice"), options));
     }
     var call = db.callsOf(ClientOperation.LOOKUP_RESOURCES).get(0);
     assertEquals(
@@ -146,22 +146,22 @@ class RuntimeNamesTest {
     try (var typed = new TypedClient(db)) {
       assertThrows(
           NotInSchemaException.class,
-          () -> typed.lookupResources(Consistency.full(), "folder", "view", User("alice")));
+          () -> typed.lookupResourcesByName(Consistency.full(), "folder", "view", User("alice")));
       assertThrows(
           NotInSchemaException.class,
-          () -> typed.lookupResources(Consistency.full(), "document", "share", User("alice")));
+          () -> typed.lookupResourcesByName(Consistency.full(), "document", "share", User("alice")));
       // A wildcard of a type that reaches the permission is not a lookup subject.
       assertThrows(
           SubjectNotAllowedException.class,
-          () -> typed.lookupResources(Consistency.full(), "organization", "view", UserWildcard()));
+          () -> typed.lookupResourcesByName(Consistency.full(), "organization", "view", UserWildcard()));
       // document#delete is reached by users only, so team members find nothing, without a call.
       try (var none =
-          typed.lookupResources(Consistency.full(), "document", "delete", Team("eng").member())) {
+          typed.lookupResourcesByName(Consistency.full(), "document", "delete", Team("eng").member())) {
         assertEquals(0, none.count());
       }
       assertThrows(
           NullPointerException.class,
-          () -> typed.lookupResources(Consistency.full(), "document", "view", null));
+          () -> typed.lookupResourcesByName(Consistency.full(), "document", "view", null));
     }
     assertTrue(db.callsOf(ClientOperation.LOOKUP_RESOURCES).isEmpty());
   }
@@ -209,7 +209,7 @@ class RuntimeNamesTest {
               .permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
               .build();
       try (var found =
-          spiceDb.lookupResources(Consistency.full(), type, permission, User(userId), options)) {
+          spiceDb.lookupResourcesByName(Consistency.full(), type, permission, User(userId), options)) {
         return found.map(LookupResource::resourceId).collect(Collectors.toSet());
       }
     }

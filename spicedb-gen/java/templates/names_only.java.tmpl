@@ -7,8 +7,8 @@ import java.util.List;
  * The schema's name constants and text, generated with --java.names-only. It depends on nothing
  * beyond the JDK, so a shared API package can use the names without the SpiceDB client.
  */
-public final class Permissions {
-  private Permissions() {}
+public final class {{.ClassName}} {
+  private {{.ClassName}}() {}
 {{range .SchemaBlocks}}
 {{.}}
 {{end -}}

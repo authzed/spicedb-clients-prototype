@@ -486,7 +486,9 @@ func TestRuntimeNameSurface(t *testing.T) {
 		`case "document#view":`,
 		"return Document_View;",
 		"public sealed interface DefinitionRef extends Subject",
-		"Stream<LookupResult.LookupResource> lookupResources(\n        Consistency c, String definition, String permission, Subject subject)",
+		"Stream<LookupResult.LookupResource> lookupResourcesByName(\n        Consistency c, String definition, String permission, Subject subject)",
+		"public static Subject parseSubject(String text) {",
+		"extends com.authzed.spicedb.errors.LocalValidationException {",
 		// Refs carry their admitted subjects, for runtime validation.
 		`new PermissionRef<>("document", "view", DocumentViewSubject.class)`,
 		"public record PermissionRef<S extends Subject>(\n      String resourceType, String permission, Class<S> subjectType)",

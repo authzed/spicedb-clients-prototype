@@ -1,4 +1,4 @@
 src/main/java/com/authzed/spicedb/gen/test/Permissions.java
 .gradle/
 build/
-names_only/com/authzed/spicedb/gen/names/Permissions.java
+names_only/com/authzed/spicedb/gen/names/PermissionNames.java

@@ -213,6 +213,8 @@ func TestSchemaLevelNameLookups(t *testing.T) {
 	assert.Contains(t, output, `export function relationshipFromTriple(resource: string, relation: string, subject: string, options?: TripleOptions): TypedRelationship {`)
 	assert.Contains(t, output, `"invitation#inviter@user[expiration]"`)
 	assert.Contains(t, output, `export function parseObject(text: string): AnyResourceRef {`)
+	assert.Contains(t, output, `export function parseSubject(text: string): AnyResourceRef | AnySubjectSet | UserWildcardRef {`)
+	assert.Contains(t, output, "        case \"user\":\n            return UserWildcard();")
 	assert.Contains(t, output, `"team#member": (id: string) => makeTeamMemberRef(id),`)
 	assert.Contains(t, output, `"organization#can_admin": (id: string) => makeOrganizationCanAdminRef(id),`)
 	assert.Contains(t, output, `"document#view": ["team#member", "user"],`)

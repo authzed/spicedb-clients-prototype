@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import { InMemorySpiceDB, InvalidArgumentError, LookupPermissionshipFilter, full, relationship, type SpiceDBClientInterface } from "@spicedb/client";
 import {
     TypedClient, Document, User, Team, Organization, Invitation, UserWildcard, NotInSchemaError, SubjectNotAllowedError, PermissionRef, SchemaText,
-    Definitions, DefinitionNames, definitionByName, permissionRefByName, subjectSetByName, checksFor, objectByName, parseObject, relationshipFromTriple,
+    Definitions, DefinitionNames, definitionByName, permissionRefByName, subjectSetByName, checksFor, objectByName, parseObject, parseSubject, relationshipFromTriple,
     type DefinitionName, type AnyResourceRef, type AnySubject,
 } from "./permissions";
 
@@ -115,6 +115,28 @@ describe("runtime names: subject sets, any object, checks and lookups", () => {
         expect(() => objectByName("document", "")).toThrow(InvalidArgumentError);
         for (const bad of ["document", "document:", ":x"]) expect(() => parseObject(bad)).toThrow(InvalidArgumentError);
         expect(() => subjectSetByName("team", "", "member")).toThrow(InvalidArgumentError);
+    });
+
+    it("parses subjects from type:id[#relation] text", () => {
+        for (const [text, want] of [
+            ["user:alice", User("alice")],
+            ["user:alice#...", User("alice")],
+            ["team:eng#member", Team("eng").member()],
+            ["organization:acme#can_admin", Organization("acme").canAdminSubject()],
+            ["user:*", UserWildcard()],
+        ] as const) {
+            const got = parseSubject(text);
+            expect(got._ref, text).toBe(want._ref);
+            expect(String(got), text).toBe(String(want));
+        }
+        // The result is admitted wherever the typed ref is.
+        expect(String(Document("readme").relationshipByName("viewer", parseSubject("team:eng#member")))).toBe(
+            String(Document("readme").viewer(Team("eng").member())),
+        );
+        for (const unknown of ["folder:x", "folder:x#member", "team:eng#owner", "document:x#viewer", "team:*"])
+            expect(() => parseSubject(unknown), unknown).toThrow(NotInSchemaError);
+        for (const bad of ["user", "user:", ":x", "team:eng#", "user:*#member", "#member"])
+            expect(() => parseSubject(bad), bad).toThrow(InvalidArgumentError);
     });
 
     it("builds schema-checked relationships from tuple text", () => {

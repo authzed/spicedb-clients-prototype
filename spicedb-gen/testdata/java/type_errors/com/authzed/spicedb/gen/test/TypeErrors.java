@@ -58,7 +58,7 @@ class TypeErrors {
 
   void runtimeNames(TypedClient tc) {
     // Runtime-name lookups take a generated Subject, never a native SubjectRef.
-    tc.lookupResources(full(), "document", "view", SubjectRef.direct(new ObjectRef("user", "a"))); // should not compile
+    tc.lookupResourcesByName(full(), "document", "view", SubjectRef.direct(new ObjectRef("user", "a"))); // should not compile
     // A runtime-resolved ref is PermissionRef<?>: the static typed lookup cannot take it.
     tc.lookupResources(full(), permissionRefByName("document", "view"), User("a")); // should not compile
     // The static typed lookup still rejects a subject its permission does not admit.

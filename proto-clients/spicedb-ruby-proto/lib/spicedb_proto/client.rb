@@ -96,20 +96,9 @@ module SpiceDBProto
     #   rejected combination.
     def initialize(endpoint, token, insecure: false, allow_insecure_remote_credentials: false,
                    ca_cert: nil, client_cert: nil, client_key: nil)
-      # See root DESIGN.md, "RULE: Credentials over insecure transport require an
-      # explicit opt-in". This is the guard for the BearerTokenInterceptor bypass just
-      # below (and the raw call-credentials proc a few lines further down) -- both exist
-      # because channel credentials can't carry call credentials over a plaintext
-      # channel, so nothing else here stops a bearer token from reaching an arbitrary
-      # insecure host.
-      if insecure && !allow_insecure_remote_credentials && !self.class.loopback_endpoint?(endpoint)
-        raise InsecureRemoteHostError,
-          "spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint #{endpoint.inspect}: " \
-          "use TLS (pass insecure: false), or pass allow_insecure_remote_credentials: true if you intend to send a bearer token in cleartext to a remote host"
-      end
-
-      self.class.validate_tls_material!(
-        insecure: insecure, ca_cert: ca_cert, client_cert: client_cert, client_key: client_key
+      self.class.validate_connection!(
+        endpoint, insecure: insecure, allow_insecure_remote_credentials: allow_insecure_remote_credentials,
+        ca_cert: ca_cert, client_cert: client_cert, client_key: client_key
       )
 
       # Build final credentials BEFORE constructing the channel, so exactly
@@ -148,6 +137,32 @@ module SpiceDBProto
       @channel = GRPC::Core::Channel.new(endpoint, {}, credentials)
       @owns_channel = true
       build_stubs(endpoint, stub_opts)
+    end
+
+    # Runs every refusal #initialize applies, in the same order, without
+    # creating any gRPC object (no channel, no credentials), so a caller that
+    # connects later -- the idiomatic client opens its channel on first use, so
+    # a client built before a fork works in the forked children -- can still
+    # fail at construction.
+    #
+    # @raise [InsecureRemoteHostError] plaintext to a non-loopback endpoint
+    #   without +allow_insecure_remote_credentials+
+    # @raise [ArgumentError] see .validate_tls_material!
+    def self.validate_connection!(endpoint, insecure: false, allow_insecure_remote_credentials: false,
+                                  ca_cert: nil, client_cert: nil, client_key: nil)
+      # See root DESIGN.md, "RULE: Credentials over insecure transport require an
+      # explicit opt-in". This is the guard for the BearerTokenInterceptor bypass in
+      # #initialize (and the raw call-credentials proc beside it) -- both exist
+      # because channel credentials can't carry call credentials over a plaintext
+      # channel, so nothing else stops a bearer token from reaching an arbitrary
+      # insecure host.
+      if insecure && !allow_insecure_remote_credentials && !loopback_endpoint?(endpoint)
+        raise InsecureRemoteHostError,
+          "spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint #{endpoint.inspect}: " \
+          "use TLS (pass insecure: false), or pass allow_insecure_remote_credentials: true if you intend to send a bearer token in cleartext to a remote host"
+      end
+
+      validate_tls_material!(insecure: insecure, ca_cert: ca_cert, client_cert: client_cert, client_key: client_key)
     end
 
     # Wraps an existing, caller-owned GRPC::Core::Channel (root DESIGN.md:

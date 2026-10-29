@@ -2,11 +2,13 @@
 
 module SpiceDB
   SubjectRelationFilter = Data.define(:kind, :name) do
+    include DeepHash
+
     def initialize(kind:, name: nil)
       raise InvalidArgumentError, 'relation filter: invalid kind' unless %i[any direct named].include?(kind)
       raise InvalidArgumentError, 'relation filter: name requires named kind' if kind != :named && name
 
-      super(kind: kind, name: kind == :named ? Values.text(name, 'relation.name') : nil)
+      super(kind: kind, name: kind == :named ? Values.name(name, 'relation.name') : nil)
     end
 
     def self.any = new(kind: :any)
@@ -25,11 +27,14 @@ module SpiceDB
     end
   end
 
+  # +subject_type+ may be a Symbol and +subject_id+ an Integer.
   SubjectFilter = Data.define(:subject_type, :subject_id, :relation) do
+    include DeepHash
+
     def initialize(subject_type:, subject_id: nil, relation: SubjectRelationFilter.any)
       raise InvalidArgumentError, 'subject.relation: expected SubjectRelationFilter' unless relation.is_a?(SubjectRelationFilter)
 
-      super(subject_type: Values.text(subject_type, 'subject_type'), subject_id: Values.snapshot(subject_id), relation: relation)
+      super(subject_type: Values.name(subject_type, 'subject_type'), subject_id: Values.snapshot(Values.loose_id(subject_id)), relation: relation)
     end
 
     def matches?(subject)
@@ -38,13 +43,18 @@ module SpiceDB
     end
   end
 
+  # Names (+resource_type+, +relation+) may be Symbols and IDs
+  # (+resource_id+, +resource_id_prefix+) Integers; they are stored as Strings.
   Filter = Data.define(:resource_type, :resource_id, :resource_id_prefix, :relation, :subject) do
+    include DeepHash
+
     def initialize(resource_type:, resource_id: nil, resource_id_prefix: nil, relation: nil, subject: nil)
       raise InvalidArgumentError, 'resource_id and resource_id_prefix are mutually exclusive' if resource_id && resource_id_prefix
       raise InvalidArgumentError, 'subject: expected SubjectFilter' unless subject.nil? || subject.is_a?(SubjectFilter)
 
-      super(**Values.snapshot({ resource_type: resource_type, resource_id: resource_id,
-                                resource_id_prefix: resource_id_prefix, relation: relation, subject: subject }))
+      super(**Values.snapshot({ resource_type: Values.loose_name(resource_type), resource_id: Values.loose_id(resource_id),
+                                resource_id_prefix: Values.loose_id(resource_id_prefix), relation: Values.loose_name(relation),
+                                subject: subject }))
     end
 
     def with_resource_id(value) = with(resource_id: value)
@@ -93,9 +103,11 @@ module SpiceDB
   end
 
   SchemaFilter = Data.define(:definition_name, :caveat_name, :relation_name, :permission_name) do
+    include DeepHash
+
     def initialize(definition_name: nil, caveat_name: nil, relation_name: nil, permission_name: nil)
-      super(**Values.snapshot({ definition_name: definition_name, caveat_name: caveat_name,
-                                relation_name: relation_name, permission_name: permission_name }))
+      super(**Values.snapshot({ definition_name: Values.loose_name(definition_name), caveat_name: Values.loose_name(caveat_name),
+                                relation_name: Values.loose_name(relation_name), permission_name: Values.loose_name(permission_name) }))
     end
   end
 end

@@ -29,7 +29,8 @@ module SpiceDB
                 WatchContent::CHECKPOINTS => :WATCH_KIND_INCLUDE_CHECKPOINTS,
                 WatchContent::SCHEMA => :WATCH_KIND_INCLUDE_SCHEMA_UPDATES }
       Authzed::Api::V1::WatchRequest.new(
-        optional_object_types: object_types, optional_relationship_filters: filters.map { |filter| filter_to_proto(filter) },
+        optional_object_types: object_types.map { |type| Values.name(type, 'object_types') },
+        optional_relationship_filters: filters.map { |filter| filter_to_proto(filter) },
         optional_start_cursor: token_to_proto(start_revision),
         optional_update_kinds: content.map { |choice| kinds.fetch(WatchContent.validate(choice)) }.uniq
       )

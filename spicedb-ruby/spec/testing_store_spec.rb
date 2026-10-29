@@ -31,9 +31,9 @@ RSpec.describe SpiceDB::Testing::Store do
     end
   end
 
-  it 'raises local validation like the client: InvalidArgumentError without a server message' do
+  it 'raises local validation like the client: InvalidArgumentError whose server message is its own message' do
     expect { store.read_relationships(SpiceDB::Filter.new(resource_type: 'org'), consistency: full, limit: 0) }
-      .to raise_error(SpiceDB::InvalidArgumentError) { |error| expect(error.server_message).to be_nil }
+      .to raise_error(SpiceDB::InvalidArgumentError) { |error| expect(error.server_message).to eq('limit must be a positive integer') }
     expect { store.delete_relationships(SpiceDB::Filter.new(resource_type: 'org')) }.to raise_error(SpiceDB::InvalidArgumentError, /limit/)
     retry_once = SpiceDB::RetryPolicy.new(max_retries: 1)
     expect { store.write(SpiceDB::Transaction.new.create(rel('org:acme#admin@user:alice')), retry_policy: retry_once) }

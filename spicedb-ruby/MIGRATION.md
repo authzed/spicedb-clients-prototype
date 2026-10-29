@@ -4,6 +4,87 @@ This guide covers moving from the official [`authzed`](https://github.com/authze
 gem to `spicedb`. Each section lists a behavior change you will observe,
 followed by a before/after.
 
+## Requirements
+
+| Dependency | Floor | Notes |
+|---|---|---|
+| Ruby | >= 3.2 | Ruby 3.4+ moved `logger`, `mutex_m` and `base64` out of the default gems: use Rails >= 7.1, or add those gems explicitly. |
+| `grpc` | >= 1.73 | A security floor: older grpc resolves `UNIX://host/...` as a DNS target. |
+| `google-protobuf` | >= 3.25 | Works from 3.25 through 4.36. The `authzed` gem's generated files use the old descriptor DSL and fail to load on google-protobuf 4.x (`undefined method 'build' for ... DescriptorPool`), so moving to `spicedb` also unblocks protobuf 4. |
+| `googleapis-common-protos-types` | >= 1.11 | Pulled in by grpc. |
+
+`spicedb` and `spicedb-proto` are not published yet; see
+[README.md](README.md#installation) for the path-gem setup. The side-by-side
+bridge below was verified against `authzed` 1.5.0. One `SpiceDB::Client` per
+process is shared by all threads; for Puma, Unicorn and other forking servers
+see [README.md, "Concurrency and forking"](README.md#concurrency-and-forking).
+
+## Renamed members
+
+Request and response messages become native values. The common members map
+as follows (requests now take keyword arguments on the client method):
+
+| `authzed` (protobuf) | `spicedb` |
+|---|---|
+| `client.permissions_service.check_permission(CheckPermissionRequest)` | `client.check(PermissionCheck, consistency:)` |
+| `check_bulk_permissions(...)` `.pairs[i].item` / `.error` | `client.check_bulk(checks, consistency:)[i]` / `[i].error` (with `item_errors: BulkItemErrors::RETURNED`) |
+| `resp.permissionship == :PERMISSIONSHIP_HAS_PERMISSION` | `result.has_permission?` (or `result.permissionship == :has_permission`) |
+| `resp.partial_caveat_info.missing_required_context` | `result.missing_context` |
+| `resp.checked_at.token` | `result.checked_at.to_s` |
+| `WriteRelationshipsResponse#written_at` | `WriteResult#revision` (a `ZedToken`) |
+| `ReadRelationshipsResponse#relationship` / `#read_at` / `#after_result_cursor.token` | `ReadRelationship#relationship` / `#read_at` / `#cursor` |
+| `ObjectReference(object_type:, object_id:)` | `ObjectRef(object_type:, object_id:)` |
+| `SubjectReference(object:, optional_relation:)` (`''` for direct) | `SubjectRef(object:, relation:)` (`nil` for direct) |
+| `rel.resource.object_type` / `.object_id` | `rel.resource_type` / `rel.resource_id` (or `rel.resource.object_type`) |
+| `rel.subject.object.object_type` / `.object_id` | `rel.subject_type` / `rel.subject_id` |
+| `rel.subject.optional_relation` | `rel.subject_relation` |
+| `rel.optional_caveat.caveat_name` / `.context` (a `Struct`) | `rel.caveat.name` / `rel.caveat.context` (a `Hash`) |
+| `rel.optional_expires_at` (a `Timestamp`) | `rel.expiration` (a `Time`) |
+| `RelationshipFilter(optional_resource_id:, optional_relation:, optional_subject_filter:)` | `Filter(resource_id:, relation:, subject: SubjectFilter)` |
+| `SubjectFilter(optional_subject_id:, optional_relation:)` | `SubjectFilter(subject_id:, relation: SubjectRelationFilter.direct / .named(name))` |
+| `LookupResourcesRequest(resource_object_type:, ...)` | `client.lookup_resources(resource_type:, permission:, subject:, consistency:)` |
+| `LookupResourcesResponse#resource_object_id` | `LookupResource#resource_id` |
+| `LookupSubjectsRequest(subject_object_type:, optional_subject_relation:)` | `client.lookup_subjects(subject_type:, subject_relation:)` |
+| `LookupSubjectsResponse#subject.subject_object_id` | `LookupSubject#subject.subject_id` |
+| `ReadSchemaResponse#schema_text` / `#read_at` | `SchemaResult#schema` / `#revision` |
+| `WriteSchemaResponse#written_at` | the `ZedToken` `write_schema` returns |
+| `ExpandPermissionTreeResponse#tree_root` / `#expanded_at` | `ExpandResult#tree` / `#revision` |
+| `DeleteRelationshipsResponse#deleted_at` / `#relationships_deleted_count` / `#deletion_progress` | `DeleteResult#revision` / `#deleted_count` / `#progress` (`:complete`, `:partial`) |
+| `Consistency.new(fully_consistent: true)` / `minimize_latency:` / `at_least_as_fresh:` / `at_exact_snapshot:` | `Consistency.full` / `.min_latency` / `.at_least(token)` / `.snapshot(token)` |
+
+Names may be passed as Symbols (`permission: :view`) and object IDs as
+Integers (`object_id: user.id`), as the protobuf messages accepted; they are
+stored as Strings. Any other type raises `SpiceDB::InvalidArgumentError`
+naming the class received.
+
+## Hashes from `to_h`
+
+Code that converted responses with `to_h` and indexed the nested hash keeps
+working for native values: `to_h` is deep, and the member names along the
+common paths are the protobuf ones.
+
+```ruby
+# authzed
+item.to_h[:relationship][:subject][:object][:object_id]
+
+# spicedb: the same path, or the short reader
+item.to_h[:relationship][:subject][:object][:object_id]
+item.subject_id
+```
+
+The native shape differs where members were renamed (see the table above):
+`[:subject][:relation]` instead of `[:subject][:optional_relation]`,
+`[:caveat]` instead of `[:optional_caveat]`, and revisions are `ZedToken`
+values (`item.to_h[:read_at].to_s`), not `{ token: ... }` hashes. When the
+exact protobuf shape is needed, convert first:
+
+```ruby
+SpiceDB::ProtoConv.read_relationship_to_proto(item).to_h
+# => { read_at: { token: "..." }, relationship: { resource: {...}, relation: "viewer", subject: {...} }, after_result_cursor: {...} }
+```
+
+`ProtoConv` works right after `require 'spicedb'`, without a client.
+
 ## Loading both during the migration
 
 `spicedb` uses `spicedb-proto`, the canonical Ruby binding for
@@ -183,11 +264,39 @@ rescue SpiceDB::FailedPreconditionError
 rescue SpiceDB::UnavailableError
 ```
 
-Rescues of grpc's per-code classes (`rescue GRPC::FailedPrecondition`) do
-**not** catch native errors; switch them to the `SpiceDB::*Error` classes or
-compare `e.code`. `e.server_message` is the server's message verbatim;
-`e.reason` and `e.reason_metadata` carry SpiceDB's structured reason.
-`SpiceDB.code_of(err)` classifies raw grpc errors too.
+Rescues of grpc's per-code classes keep catching too: `rescue
+GRPC::AlreadyExists` catches `SpiceDB::AlreadyExistsError`, and every grpc
+per-code class (`GRPC::FailedPrecondition`, `GRPC::Unavailable`,
+`GRPC::Aborted`, ...) matches a native error with its code, in `rescue` and
+`case` alike. Ruby has single inheritance, so this is done by extending those
+classes' `===`; the native classes are not grpc's subclasses, so
+`e.is_a?(GRPC::AlreadyExists)` is false and `e.class` is the `SpiceDB` class.
+Code that tests `is_a?`/`kind_of?` on grpc's per-code classes needs the
+`SpiceDB::*Error` classes or `e.code` instead.
+
+| grpc class | native class |
+|---|---|
+| `GRPC::Cancelled` | `SpiceDB::CancelledError` |
+| `GRPC::InvalidArgument` | `SpiceDB::InvalidArgumentError` |
+| `GRPC::DeadlineExceeded` | `SpiceDB::DeadlineExceededError` |
+| `GRPC::NotFound` | `SpiceDB::NotFoundError` |
+| `GRPC::AlreadyExists` | `SpiceDB::AlreadyExistsError` |
+| `GRPC::PermissionDenied` | `SpiceDB::PermissionDeniedError` |
+| `GRPC::ResourceExhausted` | `SpiceDB::ResourceExhaustedError` |
+| `GRPC::FailedPrecondition` | `SpiceDB::FailedPreconditionError` |
+| `GRPC::OutOfRange` | `SpiceDB::OutOfRangeError` |
+| `GRPC::Unavailable` | `SpiceDB::UnavailableError` |
+| `GRPC::Unauthenticated` | `SpiceDB::UnauthenticatedError` |
+| others (`GRPC::Aborted`, `GRPC::Internal`, ...) | `SpiceDB::Error` with that `code` |
+
+Local errors match by their code as well: local validation is
+INVALID_ARGUMENT, so `rescue GRPC::InvalidArgument` also catches a
+`SpiceDB::InvalidArgumentError` raised before any request.
+
+`e.server_message` is the server's message verbatim, and always has a value:
+for an error raised locally it is the error's message. `e.reason` and
+`e.reason_metadata` carry SpiceDB's structured reason. `SpiceDB.code_of(err)`
+classifies raw grpc errors too.
 
 ## Transport data and protocol output
 
@@ -210,10 +319,14 @@ Data SpiceDB versions before 1.30 sent only in trailers is reachable this way;
 ## Testing
 
 `require 'spicedb/testing'` and use `SpiceDB::Testing::Store`: an in-memory
-double with the client's `write`, `read_relationships`, `delete_relationships`,
-`import_relationships`, `export_relationships`, `read_schema`, `write_schema`,
-`reflect_schema`, `check` and `check_bulk` signatures, raising the errors the
-client would. Options are plain keyword arguments, and the store records
+double with every client method, raising the errors the client would. Writes,
+reads, deletes, imports, exports, schema reads and writes, checks and both
+lookups work in memory. Checks resolve from a result registered with
+`set_check_result`, then a resolver callback
+(`store.check_resolver = ->(check) { ... }`, or
+`SpiceDB::Testing::Store::GRANT_ALL`), then the stored relationships named
+like the permission (wildcards included); `lookup_resources` and
+`lookup_subjects` return the stored objects that resolution grants. Options are plain keyword arguments, and the store records
 every call with them (`store.calls_of(:check).first.options`). Inject failures
 with `store.fail_next(:write, SpiceDB::Testing::Store.server_error(code, msg))`
 or a `store.fault_hook = ->(fault) { ... }` that sees each call, import batch,

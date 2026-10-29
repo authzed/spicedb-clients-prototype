@@ -70,7 +70,7 @@ module SpiceDB
                                                                  optional_preconditions: build_preconditions(preconditions), optional_limit: limit || 0,
                                                                  optional_allow_partial_deletions: partial == DeletePartial::ALLOWED,
                                                                  optional_cursor: cursor_proto(cursor))
-      response = rpc(@proto_client.permissions, :delete_relationships, request, budget, retryable: false)
+      response = rpc(proto_client.permissions, :delete_relationships, request, budget, retryable: false)
       progress = { DELETION_PROGRESS_COMPLETE: :complete, DELETION_PROGRESS_PARTIAL: :partial }.fetch(response.deletion_progress, :unspecified)
       result = DeleteResult.new(revision: ZedToken.from_proto(response.deleted_at), deleted_count: response.relationships_deleted_count,
                                 progress: progress, cursor: response.after_result_cursor&.token)
@@ -115,7 +115,7 @@ module SpiceDB
       produced = 0
       attempt = 0
       begin
-        call = @proto_client.public_send(service).public_send(operation, request, **stub_kwargs(budget), return_op: true)
+        call = proto_client.public_send(service).public_send(operation, request, **stub_kwargs(budget), return_op: true)
         stream.attach(call)
         call.execute.each do |response|
           budget.remaining

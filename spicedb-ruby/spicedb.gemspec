@@ -19,7 +19,7 @@ Gem::Specification.new do |spec|
   spec.metadata['changelog_uri']   = 'https://github.com/authzed/spicedb-clients/blob/main/spicedb-ruby/DESIGN.md'
   spec.metadata['rubygems_mfa_required'] = 'true'
 
-  spec.files         = Dir['lib/**/*.rb', 'DESIGN.md', 'MIGRATION.md', 'AI_INTEGRATION_GUIDE.md', 'CLAUDE.md', 'LICENSE']
+  spec.files         = Dir['lib/**/*.rb', 'README.md', 'DESIGN.md', 'MIGRATION.md', 'AI_INTEGRATION_GUIDE.md', 'CLAUDE.md', 'LICENSE']
   spec.require_paths = ['lib']
 
   # Lowest versions that work; development tools stay development dependencies.

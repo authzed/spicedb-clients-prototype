@@ -1,5 +1,10 @@
 # frozen_string_literal: true
 
+# The protocol bindings are a hard runtime dependency. Load them with this
+# file, so every ProtoConv function (several name Authzed::Api::V1 classes
+# directly) works right after `require 'spicedb'`, before any client exists.
+require 'spicedb_proto'
+
 module SpiceDB
   # Exported native<->protocol conversions, for tools that print or persist
   # protocol-shaped data (JSON for scripts, backup files, debug traces). These
@@ -32,7 +37,6 @@ module SpiceDB
     module_function
 
     def converter
-      require 'spicedb_proto'
       @converter ||= Converter.new
     end
 

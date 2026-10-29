@@ -37,6 +37,17 @@ client = SpiceDB::Client.from_channel(channel, interceptors: [SpiceDBProto::Bear
 
 Every constructor yields and closes the client when given a block.
 
+One client per process, shared by every thread: it is safe for concurrent
+use. Build it in a Rails initializer (a constant), not per request or per
+policy object. It opens its channel on first use, so under Puma
+`preload_app!` (or Unicorn) it works in each worker as long as the master
+makes **no SpiceDB call**; put boot-time calls in `on_worker_boot`. A call in
+a child whose parent already connected raises `SpiceDB::ForkedClientError`.
+See [README.md, "Concurrency and forking"](README.md#concurrency-and-forking).
+
+Names may be Symbols (`permission: :view`) and object IDs Integers
+(`object_id: record.id`); they are converted with `to_s`.
+
 ## Check (fail closed)
 
 ```ruby
@@ -153,7 +164,9 @@ that overrides the client's for that call, including stream establishment
 on the constructor sets one operation's policy for every call (a per-call
 policy still wins); a `:write` entry retries only `txn.idempotent?` writes,
 and deletes, imports and counter registration reject one with retries.
-Protocol-shaped output: `SpiceDB::ProtoConv.relationship_to_proto(relationship).to_json`;
+Native values' `to_h` is deep (`item.to_h[:relationship][:subject][:object][:object_id]`).
+Protocol-shaped output (works right after `require 'spicedb'`):
+`SpiceDB::ProtoConv.relationship_to_proto(relationship).to_json`;
 `ProtoConv.check_bulk_to_proto(checks, results)` rebuilds a whole bulk-check
 response, per-item errors included.
 `import_relationships(rels, batch_size:)` is one transaction per call;
@@ -171,10 +184,14 @@ end
 ```
 
 Every `SpiceDB::Error` is a `GRPC::BadStatus`, so `rescue GRPC::BadStatus => e`
-and `e.code == GRPC::Core::StatusCodes::FAILED_PRECONDITION` also work.
-`SpiceDB.code_of(err)` classifies any error, including a raw
+and `e.code == GRPC::Core::StatusCodes::FAILED_PRECONDITION` also work, and
+grpc's per-code classes match native errors with their code
+(`rescue GRPC::AlreadyExists` catches `SpiceDB::AlreadyExistsError`), though
+`is_a?(GRPC::AlreadyExists)` is false. Prefer the `SpiceDB::*Error` classes in
+new code. `SpiceDB.code_of(err)` classifies any error, including a raw
 `GRPC::BadStatus`. Forward `e.server_message`, not `e.message`, when relaying
-an error to another party.
+an error to another party; it always has a value (a local error's is its
+message).
 
 ## Test
 
@@ -191,10 +208,16 @@ Inject the client into your code; `SpiceDB::Testing::Store` has every client
 method with the same parameters. `write`, `read_relationships`,
 `delete_relationships`, `delete_all_relationships_non_atomic`,
 `import_relationships`, `export_relationships`, `read_schema`, `write_schema`,
-`reflect_schema`, `check` and `check_bulk` return the client's results, applying
-preconditions, create conflicts, cursors, limits and filter semantics
-(`Filter#matches?`); the other operations are recorded and raise a
-`SpiceDB::Error` with code `UNIMPLEMENTED`.
+`reflect_schema`, `check`, `check_bulk`, `lookup_resources` and
+`lookup_subjects` return the client's results, applying preconditions, create
+conflicts, cursors, limits and filter semantics (`Filter#matches?`); the other
+operations are recorded and raise a `SpiceDB::Error` with code
+`UNIMPLEMENTED`. Checks resolve from `set_check_result`, then
+`store.check_resolver` (for generated IDs:
+`store.check_resolver = SpiceDB::Testing::Store::GRANT_ALL`, or a lambda
+returning a permissionship, `true`/`false`, or `nil` to defer), then stored
+relationships named like the permission (`doc:1#view@user:*` grants every
+user `view`); lookups return the stored objects that resolution grants.
 Its errors have the client's classes, codes and messages (the server's message
 for server failures). `set_reflect_schema_result` and `set_response_metadata`
 register what reflection and `call_options:` capture return. `store.calls_of(:write)`

@@ -109,6 +109,14 @@ Create a `lib/spicedb_proto/client.rb` file with:
    TLS were configured), and on `client_cert` without `client_key` or the
    reverse.
 
+2c. **`.validate_connection!(endpoint, insecure:, allow_insecure_remote_credentials:,
+   ca_cert:, client_cert:, client_key:)`** -- every refusal `#initialize` applies
+   (non-loopback plaintext without the opt-in, then `.validate_tls_material!`), in
+   that order, creating no gRPC object. `#initialize` calls it first. It lets a
+   caller that opens its channel later (the idiomatic client connects on first
+   use, so a client built before a fork works in forked children) still fail at
+   construction.
+
 2b. **`.from_channel(channel, interceptors: [])`** -- wraps a caller-owned
    `GRPC::Core::Channel` (root DESIGN.md: every client has a constructor from an
    existing connection). No credential or TLS argument applies; `interceptors`

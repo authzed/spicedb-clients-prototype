@@ -3,6 +3,23 @@
 module SpiceDB
   # Native requests, deterministic streams and one total deadline per operation.
   #
+  # One client is safe for concurrent use from many threads: share one per
+  # process (a Rails initializer constant, for example) rather than building
+  # one per request. Each operation is an independent gRPC call on one
+  # channel, and the client's own bookkeeping (open streams, the lazily
+  # opened connection) is guarded by a Mutex. A Stream returned by a
+  # streaming operation belongs to the thread that iterates it.
+  #
+  # The client opens its gRPC channel on first use, in the process making
+  # that call. A client built before a fork (Puma or Unicorn with
+  # +preload_app!+) therefore works in every forked worker, as long as the
+  # parent made no call with it. gRPC cannot carry a connection across a
+  # fork, so a call in a child process whose client was already connected in
+  # the parent raises ForkedClientError naming the fix, unless grpc's own fork
+  # support is enabled (GRPC_ENABLE_FORK_SUPPORT=1 on Linux, with
+  # GRPC.prefork and GRPC.postfork_child around the fork). See README.md,
+  # "Concurrency and forking".
+  #
   # Every operation accepts +call_options:+ (a SpiceDB::CallOptions): request
   # metadata, call credentials and response header/trailer capture, applied to
   # every attempt, page and chunk.
@@ -44,7 +61,7 @@ module SpiceDB
       experimental_register_relationship_counter experimental_unregister_relationship_counter
     ].freeze
 
-    attr_reader :proto_client, :retry_policy, :operation_retry_policies
+    attr_reader :retry_policy, :operation_retry_policies
 
     # Operation options shared by every constructor:
     #
@@ -67,10 +84,12 @@ module SpiceDB
     def initialize(endpoint:, token:, transport: TransportSecurity::TLS, remote_credentials: RemoteCredentials::LOOPBACK_ONLY,
                    ca_cert: nil, client_cert: nil, client_key: nil, **)
       configure(**)
-      require 'spicedb_proto'
-      @proto_client = SpiceDBProto::Client.new(endpoint, token, insecure: TransportSecurity.validate(transport) == TransportSecurity::PLAINTEXT,
-                                                                allow_insecure_remote_credentials: RemoteCredentials.validate(remote_credentials) == RemoteCredentials::ALLOW_PLAINTEXT,
-                                                                ca_cert: ca_cert, client_cert: client_cert, client_key: client_key)
+      options = { insecure: TransportSecurity.validate(transport) == TransportSecurity::PLAINTEXT,
+                  allow_insecure_remote_credentials: RemoteCredentials.validate(remote_credentials) == RemoteCredentials::ALLOW_PLAINTEXT,
+                  ca_cert: ca_cert, client_cert: client_cert, client_key: client_key }
+      # Every construction refusal runs now; the channel opens on first use.
+      SpiceDBProto::Client.validate_connection!(endpoint, **options)
+      @connect = -> { SpiceDBProto::Client.new(endpoint, token, **options) }
     rescue SpiceDBProto::InsecureRemoteHostError, ArgumentError => e
       raise InvalidArgumentError, e.message
     end
@@ -84,8 +103,7 @@ module SpiceDB
     def self.from_channel(channel, interceptors: [], **)
       client = allocate
       client.send(:configure, **)
-      require 'spicedb_proto'
-      client.instance_variable_set(:@proto_client, SpiceDBProto::Client.from_channel(channel, interceptors: interceptors))
+      client.send(:adopt_connection, SpiceDBProto::Client.from_channel(channel, interceptors: interceptors))
       client
     rescue ArgumentError => e
       raise InvalidArgumentError, e.message
@@ -99,7 +117,21 @@ module SpiceDB
         @streams.dup
       end
       streams.each(&:close)
-      @proto_client.close
+      # A connection opened in another process (before a fork) belongs to it.
+      @proto_client&.close if @connected_pid.nil? || @connected_pid == Process.pid
+    end
+
+    # The protocol client (a SpiceDBProto::Client) over this client's
+    # authenticated connection: a secondary escape hatch. The connection
+    # opens on first use (this call or any operation) in the calling process.
+    #
+    # @raise [ForkedClientError] the connection was opened in the process
+    #   this one forked from (see the class documentation)
+    def proto_client
+      connection = @proto_client
+      return connection if connection && @connected_pid == Process.pid
+
+      @mutex.synchronize { connection_for_process }
     end
 
     def check(check, consistency:, context: nil, timeout: nil, tracing: Tracing::DISABLED, call_options: nil, retry_policy: nil)
@@ -108,7 +140,7 @@ module SpiceDB
       item = check_request(check, context)
       request = Authzed::Api::V1::CheckPermissionRequest.new(**item,
         consistency: build_consistency(consistency), with_tracing: Tracing.validate(tracing) == Tracing::ENABLED)
-      response = rpc(@proto_client.permissions, :check_permission, request, budget)
+      response = rpc(proto_client.permissions, :check_permission, request, budget)
       check_result(response, ZedToken.from_proto(response.checked_at))
     end
 
@@ -124,7 +156,7 @@ module SpiceDB
       cs = build_consistency(consistency)
       items.each_slice(DEFAULT_CHECK_BATCH_SIZE).with_index.flat_map do |chunk, chunk_index|
         request = Authzed::Api::V1::CheckBulkPermissionsRequest.new(consistency: cs, items: chunk, with_tracing: tracing == Tracing::ENABLED)
-        response = rpc(@proto_client.permissions, :check_bulk_permissions, request, budget)
+        response = rpc(proto_client.permissions, :check_bulk_permissions, request, budget)
         raise Error, "check_bulk returned #{response.pairs.length} pair(s) for #{chunk.length} request item(s)" unless response.pairs.length == chunk.length
 
         token = ZedToken.from_proto(response.checked_at)
@@ -167,7 +199,7 @@ module SpiceDB
       request = Authzed::Api::V1::WriteRelationshipsRequest.new(updates: updates,
                                                                 optional_preconditions: build_preconditions(transaction.preconditions),
                                                                 optional_transaction_metadata: check_context_to_struct(Values.context(metadata)))
-      response = rpc(@proto_client.permissions, :write_relationships, request, budget, retryable: !policy.nil?)
+      response = rpc(proto_client.permissions, :write_relationships, request, budget, retryable: !policy.nil?)
       WriteResult.new(revision: ZedToken.from_proto(response.written_at))
     end
 
@@ -232,7 +264,8 @@ module SpiceDB
       retry_policy = operation_retry_policy(:lookup_resources, retry_policy)
       LookupPermissionshipFilter.validate(permissionship_filter)
       request = Authzed::Api::V1::LookupResourcesRequest.new(consistency: build_consistency(consistency),
-                                                             resource_object_type: resource_type, permission: permission, subject: subject_to_proto(subject),
+                                                             resource_object_type: Values.name(resource_type, 'resource_type'),
+                                                             permission: Values.name(permission, 'permission'), subject: subject_to_proto(subject),
                                                              context: check_context_to_struct(Values.context(context)))
       include_result = (->(result) { result.permissionship == :has_permission } if permissionship_filter == LookupPermissionshipFilter::HAS_PERMISSION_ONLY)
       paged_stream(:permissions, :lookup_resources, request, page_size, limit, stream_budget(timeout, call_options, retry_policy: retry_policy),
@@ -243,8 +276,9 @@ module SpiceDB
                         context: nil, timeout: nil, limit: nil, call_options: nil, retry_policy: nil, &)
       retry_policy = operation_retry_policy(:lookup_subjects, retry_policy)
       request = Authzed::Api::V1::LookupSubjectsRequest.new(consistency: build_consistency(consistency),
-                                                            resource: object_to_proto(resource), permission: permission, subject_object_type: subject_type,
-                                                            optional_subject_relation: subject_relation || '',
+                                                            resource: object_to_proto(resource), permission: Values.name(permission, 'permission'),
+                                                            subject_object_type: Values.name(subject_type, 'subject_type'),
+                                                            optional_subject_relation: Values.optional_name(subject_relation, 'subject_relation') || '',
                                                             context: check_context_to_struct(Values.context(context)))
       budget = stream_budget(timeout, call_options, retry_policy: retry_policy)
       response_stream(:permissions, :lookup_subjects, request, budget, limit: limit, mapper: method(:lookup_subject_from_proto), &)
@@ -364,15 +398,41 @@ module SpiceDB
       retry_policy = operation_retry_policy(:experimental_roaring_lookup_resources, retry_policy)
       budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       request = Authzed::Api::Materialize::V0::ExperimentalRoaringLookupResourcesRequest.new(
-        consistency: build_consistency(consistency), resource_object_type: resource_type,
-        permission: permission, subject: subject_to_proto(subject)
+        consistency: build_consistency(consistency), resource_object_type: Values.name(resource_type, 'resource_type'),
+        permission: Values.name(permission, 'permission'), subject: subject_to_proto(subject)
       )
-      response = rpc(@proto_client.materialize, :experimental_roaring_lookup_resources, request, budget)
+      response = rpc(proto_client.materialize, :experimental_roaring_lookup_resources, request, budget)
       RoaringLookupResourcesResult.new(bitmap: response.bitmap, cardinality: response.cardinality,
                                        at_revision: ZedToken.from_proto(response.at_revision))
     end
 
     private
+
+    # Called under @mutex. Opens the connection in this process, or explains
+    # why a connection opened before a fork cannot be used here.
+    def connection_for_process
+      pid = Process.pid
+      # @connected_pid is nil only for a protocol client installed directly
+      # (test fakes), which is used as is.
+      return @proto_client if @proto_client && (@connected_pid.nil? || @connected_pid == pid)
+
+      if @proto_client
+        raise ForkedClientError.new(connected_pid: @connected_pid, current_pid: pid) unless SpiceDB.grpc_fork_support?
+
+        # grpc's fork support carries the parent's channel into this process.
+        return @proto_client
+      end
+      raise Error, 'client is closed' if @closed
+
+      adopt_connection(@connect.call)
+    rescue ArgumentError => e
+      raise InvalidArgumentError, e.message
+    end
+
+    def adopt_connection(connection)
+      @connected_pid = Process.pid
+      @proto_client = connection
+    end
 
     def configure(default_timeout: DEFAULT_TIMEOUT_SECONDS, default_deadline: DefaultDeadline::ENABLED, retry_policy: RetryPolicy.new,
                   retries: Retries::ENABLED, stream_retries: StreamRetries::ENABLED, operation_retry_policies: {})

@@ -18,13 +18,11 @@ pub enum SpiceDBProtoClientError {
     /// is created, so the token can never reach the wire for a rejected
     /// combination.
     InsecureRemoteHostNotAllowed(String),
-    /// Refused because `endpoint` names a unix domain socket, which this
-    /// client's transport cannot dial. tonic's `Channel` takes a URI, and
-    /// `"http://unix:/var/run/spicedb.sock".parse::<Uri>()` has host `"unix"`
-    /// -- so accepting such an endpoint would resolve the DNS name `unix` and
-    /// connect there, not to the socket path. Raised unconditionally, before
-    /// the credential guard and regardless of TLS, since no combination of
-    /// options makes that the thing the caller asked for.
+    /// Refused because `endpoint` names a unix domain socket on a platform
+    /// without them (Unix platforms dial the socket path). The target is
+    /// never handed to tonic as a URI: `"http://unix:/var/run/spicedb.sock"`
+    /// has host `"unix"`, so it would resolve the DNS name `unix` and connect
+    /// there, not to the socket path.
     UnixSocketNotSupported(String),
     /// Refused because `token` cannot be carried in an HTTP header. A gRPC
     /// `authorization` metadata value is an ASCII header value, so a control
@@ -53,6 +51,8 @@ pub enum EndpointScheme {
     Http,
     /// `https://`: TLS.
     Https,
+    /// `unix:/path` or `unix:///path`: a Unix domain socket, plaintext.
+    Unix,
 }
 
 /// When a constructor dials the endpoint.
@@ -71,8 +71,65 @@ pub enum ConnectMode {
     Eager,
 }
 
+#[cfg(unix)]
+const ENDPOINT_FORMS: &str =
+    "expected host:port, http://host:port (plaintext, for example http://host:50051), https://host[:port] (TLS, port 443 by default) or unix:/path/to/socket (plaintext)";
+#[cfg(not(unix))]
 const ENDPOINT_FORMS: &str =
     "expected host:port, http://host:port (plaintext, for example http://host:50051) or https://host[:port] (TLS, port 443 by default)";
+
+/// gRPC name-resolver schemes this transport does not implement. tonic dials
+/// one address per channel and has no resolver registry, so a `dns:///` target
+/// (client-side load balancing over every resolved address) cannot be honored;
+/// it is refused rather than silently dialed as a single host.
+const UNSUPPORTED_RESOLVER_SCHEMES: [&str; 6] =
+    ["dns", "ipv4", "ipv6", "unix-abstract", "vsock", "xds"];
+
+/// Refuses an endpoint written with a gRPC resolver scheme other than `unix:`.
+fn reject_grpc_resolver_scheme(endpoint: &str) -> Result<(), SpiceDBProtoClientError> {
+    let Some((scheme, _)) = endpoint.split_once(':') else {
+        return Ok(());
+    };
+    if !UNSUPPORTED_RESOLVER_SCHEMES
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(scheme))
+    {
+        return Ok(());
+    }
+    let reason = if scheme.eq_ignore_ascii_case("dns") {
+        "dns: targets (client-side DNS load balancing) are not supported by this client's \
+         transport, which dials a single address; use host:port (DNS is still resolved, without \
+         per-address load balancing)"
+            .to_string()
+    } else {
+        format!("the gRPC target scheme \"{scheme}:\" is not supported by this client's transport")
+    };
+    Err(invalid_endpoint(endpoint, &reason))
+}
+
+/// The socket path of a `unix:` target: `unix:/abs/path`, `unix:///abs/path`
+/// or `unix:relative/path`. `unix://host/...` (an authority) and an empty
+/// path are refused.
+fn unix_socket_path(endpoint: &str) -> Result<String, SpiceDBProtoClientError> {
+    let rest = &endpoint[5..];
+    let path = match rest.strip_prefix("//") {
+        Some(after) if after.starts_with('/') => after,
+        Some(_) => {
+            return Err(invalid_endpoint(
+                endpoint,
+                "a unix:// target needs an absolute path, as in unix:///var/run/spicedb.sock",
+            ))
+        }
+        None => rest,
+    };
+    if path.is_empty() {
+        return Err(invalid_endpoint(
+            endpoint,
+            "a unix: target needs a socket path",
+        ));
+    }
+    Ok(path.to_string())
+}
 
 fn invalid_endpoint(endpoint: &str, reason: &str) -> SpiceDBProtoClientError {
     SpiceDBProtoClientError::InvalidEndpoint(format!(
@@ -200,10 +257,17 @@ fn validate_form<'a>(
     Ok(authority)
 }
 
-/// The scheme of an endpoint written as an `http://` or `https://` URL, or
-/// `None` for the `host:port` form (and for anything construction rejects).
-/// The idiomatic client uses it to let the scheme select plaintext or TLS.
+/// The scheme of an endpoint written as an `http://` or `https://` URL or a
+/// `unix:` socket target, or `None` for the `host:port` form (and for anything
+/// construction rejects). The idiomatic client uses it to let the scheme
+/// select plaintext or TLS.
 pub fn endpoint_scheme(endpoint: &str) -> Option<EndpointScheme> {
+    if endpoint
+        .get(..5)
+        .is_some_and(|p| p.eq_ignore_ascii_case("unix:"))
+    {
+        return Some(EndpointScheme::Unix);
+    }
     split_scheme(endpoint)
         .ok()
         .flatten()
@@ -289,14 +353,13 @@ fn transport_authority(endpoint: &str) -> String {
 /// `endpoint` terminates on a loopback destination: the literal hostname
 /// "localhost", an IP in 127.0.0.0/8, or the IPv6 loopback ::1.
 ///
-/// Unix-domain-socket targets are NOT in that list, unlike the equivalent
-/// guard in the Go, Python and Ruby clients. Those clients' transports
-/// genuinely dial a UDS path; this one cannot.
+/// Unix-domain-socket targets are NOT in that list: they have no host, and
 /// `"http://unix:/var/run/spicedb.sock".parse::<Uri>()` has host `"unix"`, so
-/// a "unix:" endpoint here would resolve that DNS name instead.
-/// [`SpiceDBProtoClient::new_with_options`] refuses such an endpoint outright
-/// with [`SpiceDBProtoClientError::UnixSocketNotSupported`], rather than
-/// letting this function call it loopback.
+/// a URI parse would judge a DNS name instead. [`SpiceDBProtoClient::new_with_options`]
+/// never consults this function for one: it dials the socket path through a
+/// connector on Unix platforms (a local socket, so no remote-credentials
+/// opt-in applies) and refuses it with
+/// [`SpiceDBProtoClientError::UnixSocketNotSupported`] elsewhere.
 ///
 /// That wording is deliberate. This function does not answer "does this
 /// string look like it names a loopback host"; it answers "will the
@@ -466,9 +529,8 @@ impl SpiceDBProtoClient {
     /// * `token` - Bearer token for authentication
     /// * `insecure` - If true, disables TLS (for local testing). By itself,
     ///   this only permits a plaintext connection to a loopback endpoint
-    ///   (localhost, 127.0.0.0/8, or ::1; a `unix:` target is NOT loopback
-    ///   here and is refused outright, since tonic would resolve the DNS
-    ///   name `unix` instead of a socket path) -- see
+    ///   (localhost, 127.0.0.0/8, or ::1) or a `unix:` socket target (dialed
+    ///   as a socket path on Unix platforms, refused elsewhere) -- see
     ///   [`new_with_options`](Self::new_with_options) for a non-loopback
     ///   endpoint.
     pub async fn new(
@@ -530,13 +592,13 @@ impl SpiceDBProtoClient {
         allow_insecure_remote_credentials: bool,
         connect: ConnectMode,
     ) -> Result<Self, SpiceDBProtoClientError> {
-        // Refused unconditionally -- ahead of the credential guard below, and
-        // regardless of TLS or of allow_insecure_remote_credentials -- because
-        // this transport cannot do what such an endpoint asks for. tonic's
-        // Channel takes a URI, and "http://unix:/var/run/spicedb.sock" parses
-        // with host "unix", so the endpoint that looks local would resolve
-        // that DNS name and ship the bearer token there. Failing loudly is the
-        // only honest answer; silently dialing a host called "unix" is not.
+        // A unix: target is handled ahead of the host:port parsing and the
+        // credential guard below. It is never handed to tonic as a URI:
+        // "http://unix:/var/run/spicedb.sock" parses with host "unix", so the
+        // endpoint that looks local would resolve that DNS name and ship the
+        // bearer token there. On Unix platforms it is dialed as a socket path
+        // through a connector instead (a local socket, so the remote-plaintext
+        // policy does not apply); elsewhere it is refused outright.
         // Matched case-insensitively because a URI scheme is case-insensitive.
         //
         // endpoint.get(..5), not endpoint[..5]: the latter is a BYTE slice on a
@@ -549,12 +611,16 @@ impl SpiceDBProtoClient {
             .get(..5)
             .is_some_and(|p| p.eq_ignore_ascii_case("unix:"))
         {
-            return Err(SpiceDBProtoClientError::UnixSocketNotSupported(format!(
-                "spicedb: unix-domain-socket targets are not supported by this client's \
-                 transport: \"{endpoint}\". tonic would parse \"unix\" as a DNS hostname and \
-                 connect there, not to the socket path. Use a \"host:port\" endpoint instead."
-            )));
+            let path = unix_socket_path(endpoint)?;
+            if !insecure {
+                return Err(invalid_endpoint(
+                    endpoint,
+                    "a unix: socket target is plaintext, but this client was configured for TLS",
+                ));
+            }
+            return Self::connect_unix(endpoint, path, token, connect).await;
         }
+        reject_grpc_resolver_scheme(endpoint)?;
 
         // See root DESIGN.md, "RULE: Credentials over insecure transport
         // require an explicit opt-in". This is the guard for
@@ -639,6 +705,48 @@ impl SpiceDBProtoClient {
 
         let bearer = bearer_token(token)?;
         Ok(Self::from_parts(channel, Some(bearer)))
+    }
+
+    /// Dials a Unix domain socket. tonic needs a URI for the request
+    /// authority; the connector ignores it and opens `path`. Plaintext
+    /// connects lazily unless [`ConnectMode::Eager`].
+    #[cfg(unix)]
+    async fn connect_unix(
+        _endpoint: &str,
+        path: String,
+        token: &str,
+        connect: ConnectMode,
+    ) -> Result<Self, SpiceDBProtoClientError> {
+        let bearer = bearer_token(token)?;
+        let ep = Endpoint::from_static("http://localhost");
+        let connector = tower::service_fn(move |_: Uri| {
+            let path = path.clone();
+            async move {
+                let stream = tokio::net::UnixStream::connect(path).await?;
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+            }
+        });
+        let channel = match connect {
+            ConnectMode::Eager => ep.connect_with_connector(connector).await?,
+            ConnectMode::Lazy | ConnectMode::TransportDefault => {
+                ep.connect_with_connector_lazy(connector)
+            }
+        };
+        Ok(Self::from_parts(channel, Some(bearer)))
+    }
+
+    /// This platform has no Unix domain sockets.
+    #[cfg(not(unix))]
+    async fn connect_unix(
+        endpoint: &str,
+        _path: String,
+        _token: &str,
+        _connect: ConnectMode,
+    ) -> Result<Self, SpiceDBProtoClientError> {
+        Err(SpiceDBProtoClientError::UnixSocketNotSupported(format!(
+            "spicedb: unix-domain-socket targets are not supported on this platform: \
+             \"{endpoint}\"; {ENDPOINT_FORMS}"
+        )))
     }
 
     /// Wraps an existing tonic [`Channel`] without dialing anything.

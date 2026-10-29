@@ -161,16 +161,13 @@ async fn per_call_timeout_overrides_a_much_larger_client_default() {
     );
 }
 
-#[tokio::test]
-async fn streaming_call_does_not_inherit_the_unary_default() {
-    let mock = MockPermissionsService::new();
-    mock.stall_read_relationships(STALL);
-    mock.push_read_relationships_page(vec![proto::ReadRelationshipsResponse {
+fn read_row(id: &str, cursor: Option<&str>) -> proto::ReadRelationshipsResponse {
+    proto::ReadRelationshipsResponse {
         read_at: None,
         relationship: Some(proto::Relationship {
             resource: Some(proto::ObjectReference {
                 object_type: "document".to_string(),
-                object_id: "a".to_string(),
+                object_id: id.to_string(),
             }),
             relation: "viewer".to_string(),
             subject: Some(proto::SubjectReference {
@@ -183,50 +180,211 @@ async fn streaming_call_does_not_inherit_the_unary_default() {
             optional_caveat: None,
             optional_expires_at: None,
         }),
-        after_result_cursor: None,
-    }]);
+        after_result_cursor: cursor.map(|token| proto::Cursor {
+            token: token.to_string(),
+        }),
+    }
+}
 
+fn lookup_row(id: &str) -> proto::LookupResourcesResponse {
+    proto::LookupResourcesResponse {
+        resource_object_id: id.into(),
+        permissionship: proto::LookupPermissionship::HasPermission as i32,
+        after_result_cursor: Some(proto::Cursor {
+            token: format!("after-{id}"),
+        }),
+        ..Default::default()
+    }
+}
+
+fn lookup_request() -> spicedb::LookupResourcesRequest {
+    spicedb::LookupResourcesRequest::new(
+        "document",
+        "view",
+        spicedb::SubjectRef::direct(spicedb::ObjectRef::new("user", "alice").unwrap()),
+        consistency::full(),
+    )
+}
+
+/// Three full pages of two items, then an empty one.
+fn mock_with_lookup_pages() -> MockPermissionsService {
+    let mock = MockPermissionsService::new();
+    mock.push_lookup_resources_page(vec![lookup_row("a"), lookup_row("b")]);
+    mock.push_lookup_resources_page(vec![lookup_row("c"), lookup_row("d")]);
+    mock.push_lookup_resources_page(vec![lookup_row("e"), lookup_row("f")]);
+    mock
+}
+
+/// Drains a stream, returning the items yielded before its error.
+async fn drain_until_error<T>(
+    stream: impl futures::Stream<Item = Result<T, SpiceDBError>>,
+) -> (usize, SpiceDBError) {
+    tokio::pin!(stream);
+    let mut items = 0;
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(_) => items += 1,
+            Err(e) => return (items, e),
+        }
+    }
+    panic!("stream ended without an error after {items} item(s)");
+}
+
+#[tokio::test]
+async fn lookup_stalling_mid_page_fails_after_the_per_page_default_with_no_caller_option() {
+    let mock = mock_with_lookup_pages();
+    // Page 3 streams its first item, then stalls far past the default.
+    mock.stall_lookup_resources_page(3, STALL);
+    let calls = mock.lookup_resources_calls();
     let addr = spawn_permissions_server(mock).await;
-    // default_timeout is far smaller than the server's stall. If
-    // read_relationships inherited it, this would fail with
-    // DeadlineExceeded instead of yielding the item.
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
-        .default_timeout(Duration::from_millis(100))
+        .default_timeout(Duration::from_millis(300))
         .build()
         .await
         .expect("client should connect to mock server");
 
-    let filter = Filter::new("document");
     let start = std::time::Instant::now();
-    let items: Vec<_> = tokio::time::timeout(WATCHDOG, async {
-        let stream = client.read_relationships(spicedb::ReadRelationshipsRequest::new(
-            (filter).clone(),
-            (consistency::full()).clone(),
-        ));
-        tokio::pin!(stream);
-        stream.collect::<Vec<_>>().await
-    })
+    let request = lookup_request().with_options(
+        spicedb::LookupResourcesOptions::new()
+            .with_page_size(std::num::NonZeroU32::new(2).unwrap()),
+    );
+    let (items, err) = tokio::time::timeout(
+        WATCHDOG,
+        drain_until_error(client.lookup_resources(request)),
+    )
     .await
-    .expect("stream did not complete within the watchdog -- deadline enforcement regressed");
+    .expect("a page stalling mid-read must not hang the lookup");
     let elapsed = start.elapsed();
 
-    let resource_ids: Vec<String> = items
+    assert!(
+        matches!(err, SpiceDBError::DeadlineExceeded(_)),
+        "expected DeadlineExceeded, got {err:?}"
+    );
+    assert!(err.to_string().contains("page deadline"), "{err}");
+    assert_eq!(
+        items, 5,
+        "pages 1 and 2 and page 3's first item are delivered"
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert!(
+        elapsed < STALL,
+        "the per-page default must fail the stalled page (elapsed={elapsed:?})"
+    );
+}
+
+#[tokio::test]
+async fn the_per_page_default_bounds_each_page_not_the_whole_read() {
+    // Every page stalls 250 ms before streaming; three pages take ~750 ms,
+    // longer than the 400 ms default, but each page finishes within it.
+    let mock = MockPermissionsService::new();
+    mock.stall_read_relationships(Duration::from_millis(250));
+    mock.push_read_relationships_page(vec![read_row("a", Some("c1")), read_row("b", Some("c2"))]);
+    mock.push_read_relationships_page(vec![read_row("c", Some("c3")), read_row("d", Some("c4"))]);
+    mock.push_read_relationships_page(vec![read_row("e", Some("c5"))]);
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::builder(addr.to_string(), "token")
+        .plaintext()
+        .default_timeout(Duration::from_millis(400))
+        .build()
+        .await
+        .expect("client should connect to mock server");
+
+    let start = std::time::Instant::now();
+    let request =
+        spicedb::ReadRelationshipsRequest::new(Filter::new("document"), consistency::full())
+            .with_options(
+                spicedb::ReadRelationshipsOptions::new()
+                    .with_page_size(std::num::NonZeroU32::new(2).unwrap()),
+            );
+    let items: Vec<_> = tokio::time::timeout(
+        WATCHDOG,
+        client.read_relationships(request).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("watchdog");
+    let elapsed = start.elapsed();
+    let ids: Vec<String> = items
         .into_iter()
         .map(|r| {
-            r.expect("stream must not fail")
+            r.expect("no page exceeded the default")
                 .relationship
                 .resource()
                 .object_id()
                 .to_owned()
         })
         .collect();
-    assert_eq!(resource_ids, vec!["a".to_string()]);
+    assert_eq!(ids, ["a", "b", "c", "d", "e"]);
     assert!(
-        elapsed >= STALL,
-        "the stream must outlive the tiny unary default -- it should have waited out the \
-         server's {STALL:?} stall (elapsed={elapsed:?})"
+        elapsed > Duration::from_millis(400),
+        "the whole read outlived one default deadline (elapsed={elapsed:?})"
     );
+}
+
+#[tokio::test]
+async fn an_earlier_caller_total_deadline_wins_over_the_per_page_default() {
+    let mock = mock_with_lookup_pages();
+    mock.stall_lookup_resources_page(3, STALL);
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::builder(addr.to_string(), "token")
+        .plaintext()
+        .default_timeout(Duration::from_secs(60))
+        .build()
+        .await
+        .expect("client should connect to mock server");
+
+    let start = std::time::Instant::now();
+    let request = lookup_request().with_options(
+        spicedb::LookupResourcesOptions::new()
+            .with_page_size(std::num::NonZeroU32::new(2).unwrap())
+            .with_timeout(Duration::from_millis(300)),
+    );
+    let (_, err) = tokio::time::timeout(
+        WATCHDOG,
+        drain_until_error(client.lookup_resources(request)),
+    )
+    .await
+    .expect("watchdog");
+    assert!(
+        matches!(err, SpiceDBError::DeadlineExceeded(_)),
+        "expected DeadlineExceeded, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("total operation deadline"),
+        "{err}"
+    );
+    assert!(start.elapsed() < STALL);
+}
+
+#[tokio::test]
+async fn disabling_the_default_deadline_lets_a_slow_page_finish() {
+    let mock = MockPermissionsService::new();
+    mock.stall_read_relationships(STALL);
+    mock.push_read_relationships_page(vec![read_row("a", None)]);
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::builder(addr.to_string(), "token")
+        .plaintext()
+        .default_timeout(Duration::from_millis(100))
+        .default_deadline(spicedb::DefaultDeadline::Disabled)
+        .build()
+        .await
+        .expect("client should connect to mock server");
+
+    let start = std::time::Instant::now();
+    let items: Vec<_> = tokio::time::timeout(
+        WATCHDOG,
+        client
+            .read_relationships(spicedb::ReadRelationshipsRequest::new(
+                Filter::new("document"),
+                consistency::full(),
+            ))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .expect("watchdog");
+    assert_eq!(items.len(), 1);
+    assert!(items[0].is_ok(), "{:?}", items[0]);
+    assert!(start.elapsed() >= STALL);
 }
 
 #[tokio::test]

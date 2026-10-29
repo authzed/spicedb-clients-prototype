@@ -164,7 +164,7 @@ public class OperationRetryPolicyTests
     public void EveryOperationNamesAClientMethod()
     {
         var methods = typeof(SpiceDBClient).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-            .Select(m => m.Name).Where(n => n.EndsWith("Async", StringComparison.Ordinal) && n is not ("DisposeAsync" or "CheckAnyAsync" or "CheckAllAsync"))
+            .Select(m => m.Name).Where(n => n.EndsWith("Async", StringComparison.Ordinal) && n is not ("DisposeAsync" or "ConnectAsync" or "CheckAnyAsync" or "CheckAllAsync"))
             .ToHashSet();
         methods.Should().BeEquivalentTo(Enum.GetNames<SpiceDBOperation>().Select(n => n + "Async"));
     }

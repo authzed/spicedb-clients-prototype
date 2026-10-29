@@ -160,16 +160,17 @@ pub enum RetryMode {
     Disabled,
 }
 
-/// Whether opening a server stream (reads, lookups, exports, watch) is
-/// retried before any item is exposed. A partially consumed stream is never
-/// restarted.
+/// Whether opening a server stream (reads, lookups, exports) is retried
+/// before any item is exposed. A partially consumed stream is never
+/// restarted. Watches are never reopened under the client-wide policy,
+/// whatever this mode; a per-call or per-operation policy opts one in.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StreamRetryMode {
     /// Retry establishment with the retry policy.
     #[default]
     Enabled,
-    /// Open each stream once, e.g. for a watch the caller supervises.
+    /// Open each stream once, e.g. for reads the caller supervises.
     Disabled,
 }
 

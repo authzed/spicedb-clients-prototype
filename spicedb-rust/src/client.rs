@@ -137,22 +137,24 @@ macro_rules! exec_settings_methods {
         }
 
         /// `StreamRetryMode::Disabled` opens each server stream (reads,
-        /// lookups, exports, watch) once.
+        /// lookups, exports) once. Watches are opened once under the
+        /// client-wide policy whatever this mode; only a per-call or
+        /// per-operation policy reopens one.
         pub fn stream_retries(mut self, mode: StreamRetryMode) -> Self {
             self.exec.stream_retries = mode;
             self
         }
 
         /// Sets the retry policy for every call of one operation, for
-        /// example a client that never reopens watches while it keeps
-        /// retrying everything else:
+        /// example a client that reopens a watch that fails before its
+        /// first event (the client-wide policy never does):
         ///
         /// ```no_run
         /// # async fn demo() -> Result<(), spicedb::SpiceDBError> {
         /// use spicedb::{Operation, RetryPolicy, SpiceDBClient};
         /// let client = SpiceDBClient::builder("localhost:50051", "key")
         ///     .plaintext()
-        ///     .operation_retry_policy(Operation::Updates, RetryPolicy::new().with_max_retries(0))
+        ///     .operation_retry_policy(Operation::Updates, RetryPolicy::new())
         ///     .build()
         ///     .await?;
         /// # Ok(()) }

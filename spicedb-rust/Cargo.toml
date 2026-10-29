@@ -58,3 +58,7 @@ serde = { version = "1", features = ["derive"] }
 [[test]]
 name = "testing_double_test"
 required-features = ["testing"]
+
+[[test]]
+name = "watch_reopen_test"
+required-features = ["testing"]

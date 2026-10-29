@@ -1,7 +1,7 @@
-/// Integration tests for the SpiceDB Rust proto client.
-///
-/// These tests verify that the client can be constructed and configured
-/// correctly. Full integration tests require a running SpiceDB instance.
+//! Integration tests for the SpiceDB Rust proto client.
+//!
+//! These tests verify that the client can be constructed and configured
+//! correctly. Full integration tests require a running SpiceDB instance.
 
 #[cfg(test)]
 mod tests {

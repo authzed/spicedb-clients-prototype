@@ -116,6 +116,16 @@ RSpec.describe 'per-call retry policy, empty writes and single-request paging' d
       expect(calls[:watch]).to eq(2)
     end
 
+    it 'never reopens a permission-set watch unless the call passes a policy' do
+      stream = ->(*, **) { FixtureOperation.new([]) }
+      calls = flaky(permission_sets: { watch_permission_sets: stream })
+      expect { client.experimental_watch_permission_sets.to_a }.to raise_error(SpiceDB::UnavailableError)
+      expect(calls[:watch_permission_sets]).to eq(1)
+      calls = flaky(permission_sets: { watch_permission_sets: stream })
+      expect(client.experimental_watch_permission_sets(retry_policy: retry_once).to_a).to eq([])
+      expect(calls[:watch_permission_sets]).to eq(2)
+    end
+
     it 'gives every public operation a retry_policy keyword' do
       operations = SpiceDB::Client.public_instance_methods(false) - %i[close proto_client retry_policy operation_retry_policies]
       missing = operations.reject { |name| SpiceDB::Client.instance_method(name).parameters.include?(%i[key retry_policy]) }

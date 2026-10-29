@@ -466,6 +466,15 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     eager-connect option or an awaitable connect/ready call), so a wrong or
     unreachable endpoint can still fail at startup.
 
+- **Reject unusable credentials and trust material at construction.**
+  - An empty or whitespace-only token is a local validation error, not a
+    bare `Bearer` header the server rejects later (a blank environment
+    variable is the usual cause).
+  - Custom CA, client certificate and key material is parsed when the client
+    is built; material that does not parse fails with a local validation
+    error naming which input is wrong, never as an unexplained transport
+    failure on the first call.
+
 - **Require an explicit decision before sending credentials over remote plaintext.**
   - Every client library must expose a documented, named opt-in that permits
     authenticated plaintext connections to non-loopback hosts, including remote

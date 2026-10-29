@@ -117,11 +117,11 @@ async fn exercise(client: &SpiceDBClient, operation: Operation) -> Outcome {
         }
         Operation::LookupResources => {
             let request = LookupResourcesRequest::new("document", "view", subject, full());
-            outcome(op, false, first(client.lookup_resources(request)).await)
+            outcome(op, true, first(client.lookup_resources(request)).await)
         }
         Operation::LookupSubjects => {
             let request = LookupSubjectsRequest::new(resource, "view", "user", full());
-            outcome(op, false, first(client.lookup_subjects(request)).await)
+            outcome(op, true, first(client.lookup_subjects(request)).await)
         }
         Operation::ExpandPermissionTree => {
             let request = ExpandPermissionTreeRequest::new(resource, "view", full());

@@ -279,7 +279,7 @@ pub enum ConnectMode {
     /// down or the endpoint is wrong, and calls fail until it is reachable.
     Lazy,
     /// Connect during `build`, so an unreachable or wrong endpoint fails
-    /// there with [`SpiceDBError::Transport`](crate::SpiceDBError::Transport)
+    /// there with [`SpiceDBError::Transport`]
     /// and a service can refuse to start.
     Eager,
 }

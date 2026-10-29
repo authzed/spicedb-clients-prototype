@@ -4,7 +4,7 @@
 
 | Requirement | Floor | Notes |
 |---|---|---|
-| Node.js | 20.19 | The package is ESM; 20.19 is the first Node 20 release where CommonJS code can `require()` ESM without a flag. While unreleased, run it through a TypeScript-aware loader or bundler (see [README.md](README.md#installation)). |
+| Node.js | 20.19 | The package is ESM; 20.19 is the first Node 20 release where CommonJS code can `require()` ESM without a flag. |
 | SpiceDB | 1.30 | Older servers' trailer-only data is reachable through `onTrailer`. |
 | `@bufbuild/protobuf` | ^2.11.0 | Protobuf runtime, matching the code generator the protocol stubs were built with. Installed as a dependency. |
 | `@connectrpc/connect` | ^2.0.0 | RPC runtime. Installed as a dependency. |

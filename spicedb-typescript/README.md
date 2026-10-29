@@ -47,10 +47,8 @@ npm install /tmp/spicedb-ts/spicedb-proto-0.1.0.tgz /tmp/spicedb-ts/spicedb-clie
 Inside a pnpm workspace that contains this repository, depend on
 `"@spicedb/client": "workspace:*"` instead.
 
-Known limitation while unreleased: the generated `@spicedb/proto` modules use
-extensionless relative imports, so Node's own ESM loader cannot load them yet.
-Run through a TypeScript-aware loader or bundler (`tsx`, `vite`, `vitest`,
-`esbuild`, `webpack`); this repository's examples run with `tsx`.
+Both packages are ESM and load with Node's own loader, as well as through
+bundlers and TypeScript-aware loaders such as `tsx`.
 
 ## First call
 

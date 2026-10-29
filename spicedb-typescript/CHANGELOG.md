@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Plain Node loading
+
+- The packages load under plain Node ESM: generated proto modules use `.js`
+  relative imports.
+
 ### Test double check resolution and lookups
 
 - `InMemorySpiceDB` resolves a check in a fixed order: the result registered

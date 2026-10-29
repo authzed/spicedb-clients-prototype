@@ -206,6 +206,15 @@ func TestSchemaLevelNameLookups(t *testing.T) {
 	assert.Contains(t, output, `export function permissionRefByName(definition: string, permission: string): PermissionRef<DefinitionName, string> {`)
 	// Lookup of resources by runtime names on the typed client.
 	assert.Contains(t, output, `lookupResourcesByName(c: Consistency, definition: string, permission: string, s: AnySubject, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource> {`)
+	// Subject sets, checks and subject lookups by runtime names, with the
+	// reachability table that short-circuits unreachable subject types.
+	assert.Contains(t, output, `export function subjectSetByName(definition: string, id: string, relation: string): AnySubject {`)
+	assert.Contains(t, output, `"team#member": (id: string) => makeTeamMemberRef(id),`)
+	assert.Contains(t, output, `"organization#can_admin": (id: string) => makeOrganizationCanAdminRef(id),`)
+	assert.Contains(t, output, `"document#view": ["team#member", "user"],`)
+	assert.Contains(t, output, `"invitation#accept": ["organization#can_admin", "user"],`)
+	assert.Contains(t, output, `async checkByName(c: Consistency, definition: string, id: string, permission: string, s: AnySubject, options?: CheckOptions): Promise<CheckResult> {`)
+	assert.Contains(t, output, `lookupSubjectsByName(c: Consistency, definition: string, id: string, permission: string, subjectType: string, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject> {`)
 }
 
 func TestSchemaTextConstant(t *testing.T) {

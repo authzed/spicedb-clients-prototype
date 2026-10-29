@@ -1,5 +1,5 @@
 import { full, atLeast, TransportSecurity } from "@spicedb/client";
-import { TypedClient, TypedTransaction, Document, User, Team, Organization, Invitation, UserWildcard, Permission } from "./permissions";
+import { TypedClient, TypedTransaction, Document, User, Team, Organization, Invitation, UserWildcard, Permission, subjectSetByName, type TeamMemberRef, type AnyResourceRef } from "./permissions";
 
 declare const tc: TypedClient;
 
@@ -80,3 +80,11 @@ Organization("x").memberRelation(User("alice"));
 const wrongType: Permission<"document", "view"> = Organization("x").view;
 // @ts-expect-error relation and permission names are constants
 const wrongName: "viewer" = Document("x").view.name;
+// @ts-expect-error a subject set built by name is a validated AnySubject, not a specific ref type
+const byNameSet: TeamMemberRef = subjectSetByName("team", "eng", "member");
+// @ts-expect-error a subject set is not an object of any definition
+const notAnObject: AnyResourceRef = Team("eng").member();
+// @ts-expect-error lookupSubjectsByName takes a runtime subject type name, not a factory
+tc.lookupSubjectsByName(full(), "document", "x", "view", User);
+// @ts-expect-error checkByName takes a generated subject, not a tuple string
+tc.checkByName(full(), "document", "x", "view", "user:alice");

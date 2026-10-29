@@ -542,6 +542,30 @@ public final class Permissions {
         definition + "#" + relation + " does not admit subject " + subject);
   }
 
+  private static NotInSchemaException notASubjectSet(Definition definition, String relation) {
+    if (!definition.relationNames().contains(relation)
+        && !definition.permissionNames().contains(relation)) {
+      return new NotInSchemaException(definition + " has no relation or permission " + relation);
+    }
+    return new NotInSchemaException(
+        definition + "#" + relation + " is not a subject anywhere in the schema");
+  }
+
+  /** Validates a definition and one of its relation or permission names. */
+  private static void resolveByName(String definition, String name) {
+    var d = definitionByName(definition);
+    if (!d.relationNames().contains(Objects.requireNonNull(name, "name"))
+        && !d.permissionNames().contains(name)) {
+      throw new NotInSchemaException(definition + " has no permission or relation " + name);
+    }
+  }
+
+  private static String subjectPosition(Subject subject) {
+    return subject.subRelation().isEmpty()
+        ? subject.definitionName()
+        : subject.definitionName() + "#" + subject.subRelation();
+  }
+
   // --- Helpers ---
 
   /**
@@ -970,12 +994,12 @@ public final class Permissions {
     }
 
     /**
-     * Looks up resources by definition and permission names received at run time. The names and the
-     * subject are validated against the schema, as {@link Permissions#permissionRefByName} and
-     * {@link PermissionRef#admits} do, before any call is made.
+     * Looks up resources by definition and permission (or relation) names received at run time. The
+     * names are validated against the schema before any call is made. When the subject's type cannot
+     * reach the permission in the schema, the stream is empty and no call is made, as SpiceDB would
+     * find nothing.
      *
-     * @throws NotInSchemaException if the schema has no such definition or permission
-     * @throws SubjectNotAllowedException if the permission does not admit the subject
+     * @throws NotInSchemaException if the schema has no such definition, permission or relation
      */
     public Stream<LookupResult.LookupResource> lookupResources(
         Consistency c, String definition, String permission, Subject subject) {
@@ -988,12 +1012,13 @@ public final class Permissions {
         String permission,
         Subject subject,
         LookupOptions options) {
-      var ref = permissionRefByName(definition, permission);
-      if (!ref.admits(Objects.requireNonNull(subject, "subject"))) {
-        throw notAllowed(definition, permission, subject);
+      resolveByName(definition, permission);
+      if (!reaches(
+          definition + "#" + permission,
+          subjectPosition(Objects.requireNonNull(subject, "subject")))) {
+        return Stream.empty();
       }
-      return client.lookupResources(
-          c, ref.resourceType(), ref.permission(), subjectRef(subject), options);
+      return client.lookupResources(c, definition, permission, subjectRef(subject), options);
     }
 
     public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(
@@ -1015,6 +1040,55 @@ public final class Permissions {
           new ObjectRef(perm.resourceType(), perm.resourceId()),
           perm.permission(),
           subject.definitionName(),
+          options.toBuilder().subjectRelation(relation).build());
+    }
+
+    /**
+     * Looks up subjects by names received at run time: a definition, resource ID, permission (or
+     * relation) and a subject type written {@code "type"} or {@code "type#relation"} (such as {@code
+     * "team#member"}). The names are validated against the schema before any call is made. When the
+     * subject type cannot reach the permission in the schema, the stream is empty and no call is made.
+     *
+     * @throws NotInSchemaException if the schema has no such definition, permission, relation or
+     *     subject type
+     */
+    public Stream<LookupResult.LookupSubject> lookupSubjects(
+        Consistency c, String definition, String id, String permission, String subjectType) {
+      return lookupSubjects(
+          c, definition, id, permission, subjectType, LookupOptions.builder().build());
+    }
+
+    public Stream<LookupResult.LookupSubject> lookupSubjects(
+        Consistency c,
+        String definition,
+        String id,
+        String permission,
+        String subjectType,
+        LookupOptions options) {
+      Objects.requireNonNull(options, "options");
+      resolveByName(definition, permission);
+      var hash = Objects.requireNonNull(subjectType, "subjectType").indexOf('#');
+      var type = hash < 0 ? subjectType : subjectType.substring(0, hash);
+      var relation = hash < 0 ? null : subjectType.substring(hash + 1);
+      var subjectDefinition = definitionByName(type);
+      if (relation != null
+          && !subjectDefinition.relationNames().contains(relation)
+          && !subjectDefinition.permissionNames().contains(relation)) {
+        throw new NotInSchemaException(type + " has no relation or permission " + relation);
+      }
+      if (options.subjectRelation() != null
+          && !Objects.equals(options.subjectRelation(), relation)) {
+        throw new com.authzed.spicedb.errors.InvalidArgumentException(
+            "subjectRelation conflicts with the subject type " + subjectType);
+      }
+      if (!reaches(definition + "#" + permission, subjectType)) {
+        return Stream.empty();
+      }
+      return client.lookupSubjects(
+          c,
+          new ObjectRef(definition, Objects.requireNonNull(id, "id")),
+          permission,
+          type,
           options.toBuilder().subjectRelation(relation).build());
     }
 

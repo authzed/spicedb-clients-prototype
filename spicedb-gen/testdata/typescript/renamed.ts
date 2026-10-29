@@ -179,8 +179,8 @@ function deferred(build: () => Relationship): { value?: Relationship; error?: Er
  * `relationship()`, so a `TypedTransaction` can defer it to `build()`.
  */
 export class TypedRelationship {
-    readonly #value?: Relationship;
-    readonly #error?: Error;
+    readonly #value: Relationship | undefined;
+    readonly #error: Error | undefined;
     /** @internal Use generated writers, fromRelationship or errRelationship. */
     constructor(build: () => Relationship) {
         const { value, error } = deferred(build);
@@ -218,8 +218,8 @@ export class TypedRelationship {
 
 /** A relationship identified by tuple identity alone, for deletes and exact filters. */
 export class RelationshipKey {
-    readonly #value?: Relationship;
-    readonly #error?: Error;
+    readonly #value: Relationship | undefined;
+    readonly #error: Error | undefined;
     /** @internal Use generated key builders or TypedRelationship.key(). */
     constructor(build: () => Relationship) {
         const { value, error } = deferred(build);
@@ -265,7 +265,12 @@ function nativeRelationship(
     const caveat =
         identityOnly || subject._caveat === undefined
             ? {}
-            : { caveat: { name: subject._caveat, context: subject._caveatContext } };
+            : {
+                  caveat: {
+                      name: subject._caveat,
+                      ...(subject._caveatContext === undefined ? {} : { context: subject._caveatContext }),
+                  },
+              };
     const expiration = identityOnly || subject._expiration === undefined ? {} : { expiration: subject._expiration };
     return {
         resource: { objectType: type, objectId: id },
@@ -654,7 +659,11 @@ export const Definitions = Object.freeze({
 } as const);
 /** Every definition name, in schema order, for startup verification. */
 export const DefinitionNames: readonly DefinitionName[] = Object.freeze(["subject", "resource"]);
-/** Any generated definition ref. */
+/**
+ * Any generated definition ref: the one type for code that handles an object
+ * of any definition, such as the result of `definitionByName(name).ref(id)`.
+ * Every member is also an {@link AnySubject}.
+ */
 export type AnyResourceRef = SubjectDefRef | ResourceRef;
 
 /** A schema definition found by name at runtime, e.g. from a policy expression or an admin tool. */
@@ -705,6 +714,49 @@ export function definitionByName(name: string): DefinitionInfo {
 export function permissionRefByName(definition: string, permission: string): PermissionRef<DefinitionName, string> {
     return definitionByName(definition).permissionRef(permission);
 }
+
+const subjectSetMakers: Readonly<Record<string, (id: string) => AnySubject>> = Object.freeze({});
+
+/**
+ * The subject set `definition:id#relation` (such as `team:eng#member`) for
+ * names received at runtime. Throws NotInSchemaError for an unknown
+ * definition or relation, and for a relation or permission that no relation in
+ * the schema admits as a subject.
+ */
+export function subjectSetByName(definition: string, id: string, relation: string): AnySubject {
+    const info = definitionByName(definition);
+    const key = `${definition}#${relation}`;
+    const make = Object.prototype.hasOwnProperty.call(subjectSetMakers, key) ? subjectSetMakers[key] : undefined;
+    if (make !== undefined) return make(id);
+    if (!info.relationNames.includes(relation) && !info.permissionNames.includes(relation))
+        throw new NotInSchemaError(`${definition} has no relation or permission named "${relation}"`);
+    throw new NotInSchemaError(`${key} is not a subject anywhere in the schema`);
+}
+
+/** For each relation and permission, the subject positions ("type" or "type#relation") that can reach it. */
+const reachingSubjects: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    "resource#viewer": ["subject"],
+    "resource#view": ["subject"],
+});
+
+function reaches(definition: string, name: string, subject: string): boolean {
+    const key = `${definition}#${name}`;
+    const subjects = Object.prototype.hasOwnProperty.call(reachingSubjects, key) ? reachingSubjects[key] : undefined;
+    return subjects !== undefined && subjects.includes(subject);
+}
+
+function subjectPosition(subject: AnySubject): string {
+    return subject._relation === undefined ? subject._type : `${subject._type}#${subject._relation}`;
+}
+
+/** Validates a definition and one of its relation or permission names. */
+function resolveByName(definition: string, name: string): void {
+    const info = definitionByName(definition);
+    if (!info.relationNames.includes(name) && !info.permissionNames.includes(name))
+        throw new NotInSchemaError(`${definition} has no permission or relation named "${name}"`);
+}
+
+async function* noResults<T>(): AsyncGenerator<T, void, undefined> {}
 
 // --- TypedClient ---
 /**
@@ -815,9 +867,34 @@ export class TypedClient {
     }
 
     /**
-     * Looks up resources by runtime definition and permission names, as a
-     * policy layer that receives type names at runtime does. Both names, and
-     * the subject's type, must be in the schema (NotInSchemaError otherwise).
+     * Checks a permission or relation named at runtime, as a policy layer that
+     * receives type names at runtime does. The names, and the subject's type,
+     * must be in the schema (NotInSchemaError otherwise); a subject whose type
+     * cannot reach the permission throws SubjectNotAllowedError before any
+     * call. For several checks, pass `permissionByName` results to
+     * `checkBulkTyped`.
+     */
+    async checkByName(
+        c: Consistency,
+        definition: string,
+        id: string,
+        permission: string,
+        s: AnySubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult> {
+        resolveByName(definition, permission);
+        definitionByName(s._type);
+        if (!reaches(definition, permission, subjectPosition(s)))
+            throw new SubjectNotAllowedError(`${definition}#${permission} cannot be reached by ${subjectString(s)}`);
+        return this.client.check(new Permission(definition, id, permission).checkRequest(s, c), options);
+    }
+
+    /**
+     * Looks up resources by runtime definition and permission (or relation)
+     * names, as a policy layer that receives type names at runtime does. Both
+     * names, and the subject's type, must be in the schema (NotInSchemaError
+     * otherwise). When the subject's type cannot reach the permission, the
+     * result is empty and no call is made, as SpiceDB would find nothing.
      */
     lookupResourcesByName(
         c: Consistency,
@@ -826,15 +903,55 @@ export class TypedClient {
         s: AnySubject,
         options?: LookupResourcesOptions,
     ): AsyncIterableIterator<LookupResource> {
-        const p = permissionRefByName(definition, permission);
+        resolveByName(definition, permission);
         definitionByName(s._type);
+        if (!reaches(definition, permission, subjectPosition(s))) return noResults<LookupResource>();
         const requestOptions = requestFields(options);
         return this.client.lookupResources(
+            { ...requestOptions, resourceType: definition, permission, subject: subjectRef(s), consistency: c },
+            options,
+        );
+    }
+
+    /**
+     * Looks up subjects by runtime names: a definition, resource ID, permission
+     * (or relation) and subject type written `"type"` or `"type#relation"`
+     * (such as `"team#member"`). Names not in the schema throw
+     * NotInSchemaError before any call. When the subject type cannot reach the
+     * permission, the result is empty and no call is made.
+     */
+    lookupSubjectsByName(
+        c: Consistency,
+        definition: string,
+        id: string,
+        permission: string,
+        subjectType: string,
+        options?: LookupSubjectsOptions,
+    ): AsyncIterableIterator<LookupSubject> {
+        resolveByName(definition, permission);
+        const hash = subjectType.indexOf("#");
+        const type = hash < 0 ? subjectType : subjectType.slice(0, hash);
+        const relation = hash < 0 ? undefined : subjectType.slice(hash + 1);
+        const info = definitionByName(type);
+        if (
+            relation !== undefined &&
+            !info.relationNames.includes(relation) &&
+            !info.permissionNames.includes(relation)
+        )
+            throw new NotInSchemaError(`${type} has no relation or permission named "${relation}"`);
+        if (options?.subjectRelation !== undefined && options.subjectRelation !== relation)
+            throw new InvalidArgumentError(
+                `subjectRelation "${options.subjectRelation}" conflicts with subject type "${subjectType}"`,
+            );
+        if (!reaches(definition, permission, subjectType)) return noResults<LookupSubject>();
+        const requestOptions = requestFields(options);
+        return this.client.lookupSubjects(
             {
                 ...requestOptions,
-                resourceType: p._type,
-                permission: p._permission,
-                subject: subjectRef(s),
+                ...(relation === undefined ? {} : { subjectRelation: relation }),
+                subjectType: type,
+                permission,
+                resource: { objectType: definition, objectId: id },
                 consistency: c,
             },
             options,
@@ -872,7 +989,11 @@ export class TypedClient {
                 filter:
                     "resourceType" in filter
                         ? filter
-                        : { resourceType: filter._type, resourceId: filter._id, relation: filter._relation },
+                        : {
+                              resourceType: filter._type,
+                              ...(filter._id === undefined ? {} : { resourceId: filter._id }),
+                              ...(filter._relation === undefined ? {} : { relation: filter._relation }),
+                          },
                 consistency: c,
             },
             options,

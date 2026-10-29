@@ -666,7 +666,40 @@ func GoTypeErrors() error {
 	if err := verifyGoTypeErrors("testdata/go", "type_errors_test.go"); err != nil {
 		return err
 	}
-	return verifyGoNamesOnly()
+	if err := verifyGoNamesOnly(); err != nil {
+		return err
+	}
+	return verifyGoStrict()
+}
+
+// staticcheckVersion pins the staticcheck release used on generated Go.
+const staticcheckVersion = "honnef.co/go/tools/cmd/staticcheck@v0.7.0"
+
+// verifyGoStrict holds the generated Go (full and names-only) to the strictest
+// standard checks: go vet, then staticcheck with every check enabled
+// (including the style checks). Generated code must pass both unmodified.
+func verifyGoStrict() error {
+	fmt.Println("==> Vetting and linting the generated Go (go vet, staticcheck -checks all)...")
+	for _, dir := range []string{"testdata/go", "testdata/go-names"} {
+		env := []string{}
+		if dir == "testdata/go-names" {
+			env = []string{"GOWORK=off", "GOFLAGS=-mod=readonly"}
+		}
+		for _, args := range [][]string{
+			{"vet", "./..."},
+			{"run", staticcheckVersion, "-checks", "all", "./..."},
+		} {
+			cmd := exec.Command("go", args...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), env...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("generated Go in %s fails go %s: %w", dir, args[0], err)
+			}
+		}
+	}
+	return nil
 }
 
 // verifyGoNamesOnly builds and tests the --go.names-only fixture

@@ -139,7 +139,7 @@ func TestSchemaTextAndDefinitionNames(t *testing.T) {
 	flat := squash(out)
 	assert.Contains(t, flat, `var Definitions = struct { User string Doc string }{ User: "user", Doc: "doc", }`)
 	assert.Contains(t, flat, `return []string{"user", "doc"}`)
-	assert.Contains(t, flat, `"doc": {name: "doc", relations: DocRelationNames(), permissions: DocPermissionNames()},`)
+	assert.Contains(t, flat, `"doc": {name: "doc", relations: DocRelationNames(), permissions: DocPermissionNames(), ref: func(id string) DefinitionRef { return Doc(id) }},`)
 	assert.Contains(t, flat, "func PermissionRefByName(definition, permission string) (PermissionRef, error)")
 	assert.Contains(t, flat, "func LookupResourcesByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, definition, permission string, subject Subject, opts ...client.LookupResourcesOption)")
 
@@ -156,6 +156,29 @@ func TestByNameIdentifiersAreReserved(t *testing.T) {
 	require.ErrorContains(t, err, "--go.rename")
 	_, err = generate(t, "definition definitions {}", map[string]string{"rename": "definitions=Defs"})
 	require.NoError(t, err)
+	_, err = generate(t, "definition definition_ref {}", nil)
+	require.ErrorContains(t, err, "DefinitionRef")
+	_, err = generate(t, "definition user {}\ndefinition doc {\n\trelation viewer: user\n\tpermission definition_name = viewer\n}", nil)
+	require.ErrorContains(t, err, "DefinitionName", "every ref has DefinitionName, so a permission cannot take it")
+}
+
+func TestRuntimeNameTables(t *testing.T) {
+	zed := `definition user {}
+definition group {
+	relation member: user | group#member
+}
+definition doc {
+	relation viewer: user | group#member
+	relation parent: group
+	permission view = viewer
+}`
+	out, err := generate(t, zed, nil)
+	require.NoError(t, err)
+	flat := squash(out)
+	assert.Contains(t, flat, `"doc#view": {"group#member", "user"},`, "subject sets expand to their members")
+	assert.Contains(t, flat, `"doc#parent": {"group"},`)
+	assert.Contains(t, flat, `case "group#member": return GroupMemberRef{id: id}, nil`)
+	assert.NotContains(t, flat, `case "doc#viewer":`, "a relation never used as a subject set has no subject set")
 }
 
 func TestNamesOnly(t *testing.T) {

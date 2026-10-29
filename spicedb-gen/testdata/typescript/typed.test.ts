@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { LookupPermissionshipFilter, Tracing, TransportSecurity, RemoteCredentials, ZedToken, InvalidArgumentError } from "@spicedb/client";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { full, type Relationship } from "@spicedb/client";
-import { TypedClient, Document, User, Team } from "./permissions";
+import { TypedClient, Document, User, Team, Organization, definitionByName, subjectSetByName } from "./permissions";
 
 // The full sample schema, shared with adoption.test.ts: test files run in
 // parallel against one SpiceDB, so they must all write the same schema.
@@ -162,6 +162,34 @@ describe("TypedClient", () => {
                 rels.push(rel);
             }
             expect(rels.length).toBeGreaterThan(0);
+        });
+    });
+
+    describe("runtime names", () => {
+        it("writes, checks and looks up by name against the server", async () => {
+            const eng = subjectSetByName("team", "rn-eng", "member");
+            await tc.touch([
+                definitionByName("document").ref("rn-doc").relationshipByName("viewer", eng),
+                definitionByName("team").ref("rn-eng").relationshipByName("member", User("rn-alice")),
+            ]);
+            expect((await tc.checkByName(full(), "document", "rn-doc", "view", User("rn-alice"))).hasPermission()).toBe(true);
+            expect((await tc.checkByName(full(), "document", "rn-doc", "viewer", eng)).hasPermission()).toBe(true);
+
+            const docs: string[] = [];
+            for await (const r of tc.lookupResourcesByName(full(), "document", "viewer", eng)) docs.push(r.resourceId);
+            expect(docs).toEqual(["rn-doc"]);
+
+            const sets: string[] = [];
+            for await (const s of tc.lookupSubjectsByName(full(), "document", "rn-doc", "viewer", "team#member")) sets.push(s.subject.subjectId);
+            expect(sets).toEqual(["rn-eng"]);
+            const users: string[] = [];
+            for await (const s of tc.lookupSubjectsByName(full(), "document", "rn-doc", "view", "user")) users.push(s.subject.subjectId);
+            expect(users).toEqual(["rn-alice"]);
+
+            const none: string[] = [];
+            for await (const s of tc.lookupSubjectsByName(full(), "document", "rn-doc", "view", "organization")) none.push(s.subject.subjectId);
+            for await (const r of tc.lookupResourcesByName(full(), "document", "view", Organization("rn-org"))) none.push(r.resourceId);
+            expect(none).toEqual([]);
         });
     });
 });

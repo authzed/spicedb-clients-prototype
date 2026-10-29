@@ -233,7 +233,8 @@ func GoIntegrationTest() error {
 	); err != nil {
 		return fmt.Errorf("code generation failed: %w", err)
 	}
-	defer os.Remove("testdata/go/permissions.gen.go")
+	// permissions.gen.go is tracked (other targets and the fixture-is-current
+	// test read it), so regeneration leaves it in place rather than deleting it.
 
 	// 3. Verify generated code compiles
 	fmt.Println("==> Verifying generated code compiles...")

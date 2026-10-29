@@ -163,7 +163,8 @@ so `catch (ArgumentException)` does not catch it. Endpoints are `host:port`, `ht
 `https://`, `dns:///host:port` or `unix:/path` (plaintext). The client connects lazily: call
 `await client.ConnectAsync(new ConnectOptions { Timeout = TimeSpan.FromSeconds(5) }, ct)` at
 startup to fail fast on a wrong endpoint or key. Reads, lookups and exports apply the client
-default deadline to each page; pass a per-call `Timeout` to bound the whole read. Tools with
+default deadline to each page (time spent processing items does not count); pass a per-call
+`Timeout` to bound the whole read. Tools with
 their own policies configure the client once:
 
 ```csharp

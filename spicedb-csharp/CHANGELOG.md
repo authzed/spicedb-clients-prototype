@@ -10,6 +10,11 @@
   `DeadlineExceededException` instead of hanging it. They still have no default total
   deadline; a per-call `Timeout` bounds the whole read and wins when earlier.
   `DefaultDeadline.Disabled` removes the per-page default too. Watch keeps no default.
+- The per-page default bounds only waiting on the server, never the caller's processing:
+  its clock runs while the client waits for the next message and stops while the caller
+  holds an item, and LookupSubjects and `Paging.SingleRequest` reads (not bounded by a page
+  size) give each wait for a message the whole default. Items still stream as they arrive.
+  A slow consumer of a healthy read no longer fails with `DeadlineExceededException`.
 - A response the client cannot interpret fails with an `Internal`-status `SpiceDBException`
   (not retried by default) instead of being mapped with empty values or failing with the
   wrong category: a missing relationship, resource, subject or subject object in reads,

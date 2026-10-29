@@ -85,7 +85,11 @@
     Streams/imports have no default timeout but accept an explicit total timeout.
     Finite paged reads (reads, lookups, permission-set lookup, exports) apply the client
     default to each page request, from opening it to its last item; a per-call `Timeout`
-    still bounds the whole read and wins when earlier. Watches keep no default.
+    still bounds the whole read and wins when earlier. Watches keep no default. The
+    deadline never counts the caller's processing: it is a watchdog on waiting for the next
+    message, stopped while the caller holds an item (items still stream as they arrive), and
+    only the total budget goes on the wire as the call deadline. Unpaged streams
+    (LookupSubjects, `Paging.SingleRequest`) give each wait for a message the whole default.
   - A response the client cannot interpret (a missing relationship, resource, subject,
     object or id, an incomplete tree, a non-advancing cursor) fails with an
     `Internal`-status `SpiceDBException`, never skipped and never filled with empty values.

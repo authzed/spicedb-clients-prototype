@@ -45,6 +45,13 @@ public class PageDeadlineTests
 
         public override async Task ReadRelationships(ReadRelationshipsRequest request, IServerStreamWriter<ReadRelationshipsResponse> stream, ServerCallContext context) =>
             await Stall(StallMs, context.CancellationToken);
+
+        /// <summary>An unpaged stream: one subject, then a stall before the second.</summary>
+        public override async Task LookupSubjects(LookupSubjectsRequest request, IServerStreamWriter<LookupSubjectsResponse> stream, ServerCallContext context)
+        {
+            await stream.WriteAsync(new() { Subject = new() { SubjectObjectId = "alice", Permissionship = LookupPermissionship.HasPermission } });
+            await Stall(StallMs, context.CancellationToken);
+        }
     }
 
     private sealed class SlowWatchService : WatchService.WatchServiceBase
@@ -135,6 +142,27 @@ public class PageDeadlineTests
                 return 0;
             }));
             (await act.Should().ThrowAsync<DeadlineExceededException>()).Which.Message.Should().Contain("Page request deadline");
+            clock.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(StallMs));
+        }
+        finally { await client.DisposeAsync(); await app.DisposeAsync(); }
+    }
+
+    [Fact]
+    public async Task UnpagedLookupSubjectsStalledBetweenMessagesFailsAfterThePerMessageDefault()
+    {
+        var (app, client) = await StartAsync(new ClientOptions { DefaultTimeout = Default });
+        try
+        {
+            var seen = new List<string>();
+            var clock = Stopwatch.StartNew();
+            Func<Task> act = () => Watchdog(Task.Run(async () =>
+            {
+                await foreach (var s in client.LookupSubjectsAsync(Consistency.Full(), new ObjectRef("document", "1"), "view", "user"))
+                    seen.Add(s.Subject.SubjectId);
+                return 0;
+            }));
+            (await act.Should().ThrowAsync<DeadlineExceededException>()).Which.Message.Should().Contain("Page request deadline");
+            seen.Should().Equal("alice");
             clock.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(StallMs));
         }
         finally { await client.DisposeAsync(); await app.DisposeAsync(); }

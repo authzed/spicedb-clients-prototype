@@ -107,7 +107,12 @@ Endpoints take one of these forms; anything else fails at construction with
 | `host` (no port) | TLS (`createSystemTls`) only | dials 443; `createPlaintext` rejects it |
 | `http://host:port` | plaintext (`createPlaintext`) | port required: nothing silently dials 80 |
 | `https://host[:port]` | TLS (`createSystemTls`) | port defaults to 443 |
-| `unix:/path/to.sock` | plaintext | Unix domain socket |
+| `dns:///host:port` | the constructor's | gRPC DNS target (client-side load balancing); port rule as `host:port`, loopback check on the host |
+| `unix:/path/to.sock` | plaintext | Unix domain socket; Linux only (Netty epoll), rejected at construction elsewhere |
+
+The client connects lazily; `client.awaitReady(Duration.ofSeconds(10))` fails at
+startup with `UnavailableException` or `DeadlineExceededException` when the
+endpoint is unreachable.
 
 A URL's scheme must agree with the constructor (`createPlaintext` rejects
 `https://`, `createSystemTls` rejects `http://`). A path, query, fragment,

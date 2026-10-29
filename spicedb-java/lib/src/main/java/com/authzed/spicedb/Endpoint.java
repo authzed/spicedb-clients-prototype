@@ -24,7 +24,11 @@ import java.util.Locale;
  *       rejects it, so nothing silently dials a default plaintext port;
  *   <li>{@code http://host:port} -- plaintext; the port is required, so nothing silently dials 80;
  *   <li>{@code https://host[:port]} -- TLS; the port defaults to 443;
- *   <li>{@code unix:path} -- a Unix domain socket, passed through to gRPC.
+ *   <li>{@code dns:///host[:port]} -- gRPC's DNS target, which resolves every address of the host
+ *       for client-side load balancing; the port rule is that of {@code host:port}, and the
+ *       loopback check runs on the host;
+ *   <li>{@code unix:path} or {@code unix:///absolute/path} -- a Unix domain socket, passed through
+ *       to gRPC (it needs a native Netty transport: epoll on Linux).
  * </ul>
  *
  * <p>Anything else (another scheme, a path, query, fragment or userinfo, a non-numeric or
@@ -41,11 +45,16 @@ record Endpoint(String raw, String target, Scheme scheme, boolean portless) {
     /** {@code https://}: TLS. */
     HTTPS,
     /** {@code unix:}: a Unix domain socket. */
-    UNIX
+    UNIX,
+    /** {@code dns:///}: gRPC's DNS target; the constructor chooses plaintext or TLS. */
+    DNS
   }
 
   static final String FORMS =
-      "expected host:port, http://host:port (plaintext) or https://host[:port] (TLS)";
+      "expected host:port, http://host:port (plaintext), https://host[:port] (TLS),"
+          + " dns:///host:port or unix:/path/to/socket";
+
+  private static final String DNS_PREFIX = "dns:///";
 
   static InvalidArgumentException invalid(String endpoint, String reason) {
     return new InvalidArgumentException(
@@ -55,7 +64,22 @@ record Endpoint(String raw, String target, Scheme scheme, boolean portless) {
   static Endpoint parse(String endpoint) {
     if (endpoint == null || endpoint.isEmpty())
       throw new InvalidArgumentException("spicedb: endpoint must not be empty; " + FORMS);
-    if (endpoint.startsWith("unix:")) return new Endpoint(endpoint, endpoint, Scheme.UNIX, false);
+    if (endpoint.startsWith("unix:")) {
+      if (endpoint.length() == "unix:".length()) throw invalid(endpoint, "missing socket path");
+      return new Endpoint(endpoint, endpoint, Scheme.UNIX, false);
+    }
+    if (endpoint.regionMatches(true, 0, "dns:", 0, 4)) {
+      if (!endpoint.regionMatches(true, 0, DNS_PREFIX, 0, DNS_PREFIX.length()))
+        throw invalid(
+            endpoint,
+            "a dns: target must be dns:///host:port (a DNS server authority is not supported)");
+      HostPort hp = checkAuthority(endpoint, endpoint.substring(DNS_PREFIX.length()));
+      if (hp.host.indexOf(':') >= 0 && !hp.bracketed)
+        throw invalid(endpoint, "an IPv6 address in a dns: target must be bracketed, as in [::1]");
+      String host = hp.bracketed ? "[" + hp.host + "]" : hp.host;
+      if (hp.port == null) return new Endpoint(endpoint, DNS_PREFIX + host, Scheme.DNS, true);
+      return new Endpoint(endpoint, DNS_PREFIX + host + ":" + hp.port, Scheme.DNS, false);
+    }
 
     int sep = endpoint.indexOf("://");
     if (sep < 0) {
@@ -87,6 +111,14 @@ record Endpoint(String raw, String target, Scheme scheme, boolean portless) {
     }
     String host = hp.bracketed ? "[" + hp.host + "]" : hp.host;
     return new Endpoint(endpoint, host + ":" + port, scheme, false);
+  }
+
+  /**
+   * What the loopback check judges: {@code host:port} without a {@code dns:///} prefix, or the
+   * target itself.
+   */
+  String loopbackTarget() {
+    return scheme == Scheme.DNS ? target.substring(DNS_PREFIX.length()) : target;
   }
 
   private record HostPort(String host, String port, boolean bracketed) {}

@@ -4,7 +4,10 @@ import { LookupResourcesResponseSchema, LookupPermissionship } from "@spicedb/pr
 import { SpiceDBClient, TransportSecurity, full, LookupPermissionshipFilter, InvalidArgumentError } from "../index.js";
 
 const request = { resourceType: "document", permission: "view", subject: { object: { objectType: "user", objectId: "alice" } }, consistency: full() };
-const states = [LookupPermissionship.CONDITIONAL_PERMISSION, LookupPermissionship.UNSPECIFIED, LookupPermissionship.HAS_PERMISSION, 99 as LookupPermissionship, LookupPermissionship.HAS_PERMISSION];
+// Unknown (newer-than-client) values are retained and never grant. The wire
+// UNSPECIFIED value is not among them: SpiceDB always sets permissionship, so
+// the client fails it as malformed (see double-resume-and-permissionship.test.ts).
+const states = [LookupPermissionship.CONDITIONAL_PERMISSION, 98 as LookupPermissionship, LookupPermissionship.HAS_PERMISSION, 99 as LookupPermissionship, LookupPermissionship.HAS_PERMISSION];
 function setup() {
     const client = new SpiceDBClient({ endpoint: "localhost:1", token: "secret", transportSecurity: TransportSecurity.Plaintext });
     let closed = 0;

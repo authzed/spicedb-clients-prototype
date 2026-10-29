@@ -87,7 +87,13 @@ export enum FaultStage {
     ImportBatch = "importBatch",
     /** After every import batch, before the import commits. */
     ImportCommit = "importCommit",
-    /** Before a read, export or lookup yields item `Fault.item` (0-based). */
+    /**
+     * Before a read, export or lookup yields item `Fault.item` (0-based). On
+     * `readRelationships`, `exportRelationships` and `lookupResources` the
+     * injected error carries `resumeCursor` as the real client's does (the
+     * last delivered item's `afterResultCursor`, else the request's cursor),
+     * so resume logic can be tested on the double.
+     */
     Item = "item",
 }
 
@@ -133,6 +139,8 @@ export interface CheckRegistration {
  * candidate object with the lookup's consistency and context. It returns a
  * permissionship, or `undefined` to decline and fall through to the stored
  * relationships. It never fails a call: inject failures with the fault hook.
+ * Returning `"unspecified"` is a test bug, rejected with `InvalidArgumentError`:
+ * SpiceDB never answers with it.
  */
 export type CheckResolver = (check: CheckRequest) => Permissionship | undefined;
 
@@ -245,8 +253,15 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     /** Every live relationship, in identity order. */
     get relationships(): readonly Relationship[] { return Object.freeze([...this.#live()].map(([, rel]) => rel)); }
 
-    /** Registers the result (or error) a check of `registration` returns. */
+    /**
+     * Registers the result (or error) a check of `registration` returns.
+     * `"unspecified"` is rejected (`InvalidArgumentError`): SpiceDB never
+     * answers a check with it, and the real client fails such a response
+     * with `Internal`.
+     */
     setCheckResult(registration: CheckRegistration, result: Permissionship | SpiceDBError): void {
+        if (result === "unspecified")
+            throw new InvalidArgumentError("setCheckResult: \"unspecified\" is not a check result SpiceDB returns; register a specified permissionship or an error");
         this.#checks.set(checkKey(registration), result);
     }
 
@@ -329,14 +344,14 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         const call = this.#record("readRelationships", request, options);
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
-            return failedStream(fault);
+            return failedStream(withResumeCursor(fault, request.cursor));
         requireConsistency(request.consistency);
         toProtoRelationshipFilter(request.filter);
         const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
         this.#begin(options);
         const readAt = new ZedToken(String(this.#revision));
         return streamOf(() => this.#page(rel => filterMatches(request.filter, rel), request.cursor, limit)
-            .map(([rel, afterResultCursor]) => immutableSnapshot({ ...rel, afterResultCursor, readAt }) as ReadRelationship), index => this.#faultAt(call, FaultStage.Item, index));
+            .map(([rel, afterResultCursor]) => immutableSnapshot({ ...rel, afterResultCursor, readAt }) as ReadRelationship), index => this.#faultAt(call, FaultStage.Item, index), { cursor: request.cursor });
     }
 
     /** Yields every relationship (or those matching `filter`) after `cursor`; each carries its `afterResultCursor`. */
@@ -344,7 +359,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         const call = this.#record("exportRelationships", request, options);
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
-            return failedStream(fault);
+            return failedStream(withResumeCursor(fault, request.cursor));
         requireConsistency(request.consistency);
         if (request.filter !== undefined)
             toProtoRelationshipFilter(request.filter);
@@ -352,7 +367,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         this.#begin(options);
         const filter = request.filter;
         return streamOf(() => this.#page(rel => filter === undefined || filterMatches(filter, rel), request.cursor, undefined)
-            .map(([rel, afterResultCursor]) => immutableSnapshot({ ...rel, afterResultCursor }) as ExportedRelationship), index => this.#faultAt(call, FaultStage.Item, index));
+            .map(([rel, afterResultCursor]) => immutableSnapshot({ ...rel, afterResultCursor }) as ExportedRelationship), index => this.#faultAt(call, FaultStage.Item, index), { cursor: request.cursor });
     }
 
     /** Adds every relationship in one transaction, as SpiceDB does: if any already exists (or repeats), nothing is added (`AlreadyExistsError`). */
@@ -502,7 +517,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         const call = this.#record("lookupResources", request, options);
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
-            return failedStream(fault);
+            return failedStream(withResumeCursor(fault, request.cursor));
         const filter = mode(request.permissionshipFilter, LookupPermissionshipFilter, LookupPermissionshipFilter.All, "permissionshipFilter");
         const single = mode(request.paging, Paging, Paging.Automatic, "paging") === Paging.SingleRequest;
         mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug");
@@ -519,7 +534,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
             id => this.#resolve({ resource: { objectType: request.resourceType, objectId: id }, permission: request.permission, subject: request.subject, consistency: request.consistency, ...context }),
             permissionship => filter === LookupPermissionshipFilter.All || permissionship === "hasPermission")
             .map(([resourceId, permissionship, afterResultCursor]) => immutableSnapshot({ resourceId, afterResultCursor, permissionship, ...partialCaveat(permissionship), lookedUpAt }) as LookupResource),
-        index => this.#faultAt(call, FaultStage.Item, index));
+        index => this.#faultAt(call, FaultStage.Item, index), { cursor: request.cursor });
     }
 
     /**
@@ -651,7 +666,11 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         const registered = this.#checks.get(checkKey(request));
         if (registered instanceof SpiceDBError)
             throw registered;
-        return registered ?? this.#resolver?.(request) ?? this.#stored(request);
+        const resolved = registered ?? this.#resolver?.(request);
+        // SpiceDB never answers with an unspecified permissionship, so neither does the double.
+        if (resolved === "unspecified")
+            throw new InvalidArgumentError("check resolver returned \"unspecified\"; return a specified permissionship, or undefined to fall through to the stored relationships");
+        return resolved ?? this.#stored(request);
     }
     /**
      * A live relationship on the resource whose relation is the permission's
@@ -793,10 +812,33 @@ function failedStream<T>(error: Error): AsyncIterableIterator<T> {
     return (async function* (): AsyncGenerator<T> { throw error; })();
 }
 /**
+ * Sets (or clears) the `resumeCursor` a failed resumable read reports, as the
+ * real client does: the cursor after the last delivered item, the request's
+ * own cursor when nothing was delivered yet, and absent when the read should
+ * restart from the beginning.
+ */
+function withResumeCursor<E>(error: E, cursor: string | undefined): E {
+    if (!(error instanceof Error))
+        return error;
+    try {
+        if (cursor !== undefined)
+            Object.defineProperty(error, "resumeCursor", { value: cursor, enumerable: true, configurable: true });
+        else if (Object.prototype.hasOwnProperty.call(error, "resumeCursor"))
+            Reflect.deleteProperty(error, "resumeCursor");
+    }
+    catch {
+        // A frozen caller-owned error keeps whatever it had.
+    }
+    return error;
+}
+/**
  * Snapshots the items now; a server error (such as an invalid cursor) surfaces
  * from iteration, as the real client's does. `fault` is consulted before each item.
+ * With `resume` (a resumable paged read), every error from iteration carries
+ * the `resumeCursor` the real client would report: starting from the
+ * request's cursor, advanced to each delivered item's `afterResultCursor`.
  */
-function streamOf<T>(items: () => T[], fault: (index: number) => Error | undefined): AsyncIterableIterator<T> {
+function streamOf<T>(items: () => T[], fault: (index: number) => Error | undefined, resume?: { cursor: string | undefined }): AsyncIterableIterator<T> {
     let snapshot: T[] | undefined;
     let failure: unknown;
     try {
@@ -805,14 +847,19 @@ function streamOf<T>(items: () => T[], fault: (index: number) => Error | undefin
     catch (error) {
         failure = error;
     }
+    let cursor = resume?.cursor;
+    const fail = (error: unknown): unknown => resume === undefined ? error : withResumeCursor(error, cursor);
     return (async function* () {
         if (snapshot === undefined)
-            throw failure;
+            throw fail(failure);
         for (const [index, item] of snapshot.entries()) {
             const error = fault(index);
             if (error !== undefined)
-                throw error;
+                throw fail(error);
             yield item;
+            const after = (item as { afterResultCursor?: string }).afterResultCursor;
+            if (after)
+                cursor = after;
         }
     })();
 }

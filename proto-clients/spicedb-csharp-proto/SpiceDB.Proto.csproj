@@ -22,10 +22,10 @@
     Test frameworks live in tests/, never here.
   -->
   <ItemGroup>
-    <PackageReference Include="Google.Protobuf" Version="3.34.1" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
     <PackageReference Include="Google.Api.CommonProtos" Version="2.17.0" />
-    <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
-    <PackageReference Include="Grpc.Core.Api" Version="2.80.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
+    <PackageReference Include="Grpc.Core.Api" Version="2.84.0" />
   </ItemGroup>
 
   <ItemGroup>

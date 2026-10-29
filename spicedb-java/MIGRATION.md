@@ -264,7 +264,8 @@ authzed-java stubs have no deadline and no retries. spicedb-java:
 - applies that default to each page of a finite paged read (relationship
   reads, lookups, exports), so a server that stalls mid-read fails the read
   with `DeadlineExceededException` instead of hanging it. A legacy blocking
-  iterator over a stalled stream waited forever. An operation `timeout` still
+  iterator over a stalled stream waited forever. Only waiting on the server
+  counts, never the time your code spends on items. An operation `timeout` still
   bounds the whole read and wins when earlier; `DefaultDeadline.DISABLED`
   removes the per-page budget too.
 - retries idempotent reads on `UNAVAILABLE`/`ABORTED` up to three times with

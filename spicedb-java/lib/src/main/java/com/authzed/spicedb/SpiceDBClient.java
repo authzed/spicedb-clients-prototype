@@ -698,9 +698,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                   .setRelationshipFilter(proto)
                   .setOptionalLimit(requestLimit);
           if (cursor != null) b.setOptionalCursor(cursor);
-          return stub(permissionsStub, options.transport())
-              .withDeadline(pageDeadline())
-              .readRelationships(b.build());
+          return stub(permissionsStub, options.transport()).readRelationships(b.build());
         },
         ReadRelationshipsResponse::getAfterResultCursor,
         ProtoConv::fromProto,
@@ -923,9 +921,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                   .setWithDebug(options.debug() == LookupDebug.ENABLED);
           if (cursor != null) b.setOptionalCursor(cursor);
           if (options.context() != null) b.setContext(toProtoStruct(options.context()));
-          return stub(permissionsStub, options.transport())
-              .withDeadline(pageDeadline())
-              .lookupResources(b.build());
+          return stub(permissionsStub, options.transport()).lookupResources(b.build());
         },
         LookupResourcesResponse::getAfterResultCursor,
         ProtoConv::fromProto,
@@ -972,11 +968,9 @@ public final class SpiceDBClient implements SpiceDBApi {
       builder.setOptionalSubjectRelation(options.subjectRelation());
     if (options.context() != null) builder.setContext(toProtoStruct(options.context()));
     return lazyStream(
-        () ->
-            stub(permissionsStub, options.transport())
-                .withDeadline(pageDeadline())
-                .lookupSubjects(builder.build()),
+        () -> stub(permissionsStub, options.transport()).lookupSubjects(builder.build()),
         SpiceDBClient::lookupSubjectFromProto,
+        "lookup subjects",
         options.timeout(),
         options.limit(),
         retryFor(ClientOperation.LOOKUP_SUBJECTS, options.retryPolicy()));
@@ -1540,6 +1534,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                 (r.hasChangesThrough() ? new ZedToken(r.getChangesThrough().getToken()) : null),
                 r.getIsCheckpoint(),
                 r.getSchemaUpdated()),
+        null,
         options.timeout(),
         0,
         watchRetry(ClientOperation.WATCH, options.retryPolicy()));
@@ -1735,6 +1730,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                     options.transport())
                 .watchPermissionSets(b.build()),
         Materialize::event,
+        null,
         options.timeout(),
         0,
         watchRetry(ClientOperation.WATCH_PERMISSION_SETS, options.retryPolicy()));
@@ -1778,6 +1774,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                   ? Base64.getEncoder().encodeToString(r.getCursor().toByteArray())
                   : null);
         },
+        "permission-set lookup",
         options.timeout(),
         options.limit(),
         retryFor(ClientOperation.LOOKUP_PERMISSION_SETS, options.retryPolicy()));
@@ -1941,21 +1938,12 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
-   * The budget of one page request of a finite paged read (relationship reads, lookups): the client
-   * default, from opening the page to receiving its last item, unless {@link
-   * DefaultDeadline#DISABLED}. The read's total budget (its {@code timeout}, or the caller's gRPC
-   * {@code Context} deadline) still bounds the whole read and wins when earlier.
-   */
-  private io.grpc.Deadline pageDeadline() {
-    if (defaultDeadline == DefaultDeadline.DISABLED) return null;
-    return io.grpc.Deadline.after(defaultTimeout.toNanos(), TimeUnit.NANOSECONDS);
-  }
-
-  /**
-   * The per-page budget of a read served as one server stream whose responses are its pages
-   * (export): each wait for the server, opening included, is bounded by the client default unless
-   * {@link DefaultDeadline#DISABLED}. Expiry cancels the call with {@code DEADLINE_EXCEEDED}. The
-   * read's total budget, inherited from the stream's context, still applies.
+   * The per-page budget of a finite read served as one server stream (an export, whose responses
+   * are the server's pages; a subject or permission-set lookup; a single-request read or lookup):
+   * each wait for the server's next message, opening included, is bounded by the client default
+   * unless {@link DefaultDeadline#DISABLED}. Time the caller spends between items never counts.
+   * Expiry cancels the call with {@code DEADLINE_EXCEEDED}. The read's total budget, inherited from
+   * the stream's context, still applies.
    */
   private final class PageTimer {
     final String what;
@@ -2308,18 +2296,27 @@ public final class SpiceDBClient implements SpiceDBApi {
         .onClose(scope::close);
   }
 
+  /**
+   * A single server stream. {@code timed} names a finite read whose waits for the server get the
+   * per-page default ({@link PageTimer}); {@code null} for a long-lived stream (watch).
+   */
   private <P, T> Stream<T> lazyStream(
       RetryableCall<Iterator<P>> open,
       java.util.function.Function<P, T> convert,
+      String timed,
       Duration timeout,
       long limit,
       RetryPolicy perCall) {
     return managedStream(
         () -> {
-          var source = openStreamWithRetry(perCall, open);
+          var timer = timed == null ? null : new PageTimer(timed);
+          var source =
+              timer == null
+                  ? openStreamWithRetry(perCall, open)
+                  : timer.open(() -> openStreamWithRetry(perCall, open));
           return new Iterator<T>() {
             public boolean hasNext() {
-              return source.hasNext();
+              return timer == null ? source.hasNext() : timer.await(source::hasNext);
             }
 
             public T next() {
@@ -2383,7 +2380,11 @@ public final class SpiceDBClient implements SpiceDBApi {
                         Status.Code.INTERNAL, what + " page did not advance cursor");
                   }
                   sentToken = cursor == null ? "" : cursor.getToken();
-                  page = openStreamWithRetry(perCall, () -> open.apply(cursor));
+                  var sent = cursor;
+                  page =
+                      singleRequest
+                          ? timedPage(what, perCall, () -> open.apply(sent))
+                          : bufferedPage(perCall, () -> open.apply(sent));
                   opened = true;
                   count = 0;
                 }
@@ -2399,6 +2400,68 @@ public final class SpiceDBClient implements SpiceDBApi {
             },
         timeout,
         limit);
+  }
+
+  /**
+   * One page of an automatically paged read, received whole under the client default deadline
+   * (unless {@link DefaultDeadline#DISABLED}) before any of it is yielded, so the deadline bounds
+   * waiting on the server and never the time the caller spends on items. A page holds at most the
+   * page size. A failure partway through yields the items received first, then the failure.
+   */
+  private <P> Iterator<P> bufferedPage(RetryPolicy perCall, RetryableCall<Iterator<P>> open) {
+    var page =
+        defaultDeadline == DefaultDeadline.DISABLED
+            ? Context.current().withCancellation()
+            : Context.current()
+                .withDeadlineAfter(defaultTimeout.toNanos(), TimeUnit.NANOSECONDS, DEADLINES);
+    var items = new ArrayList<P>();
+    StatusRuntimeException failure = null;
+    var previous = page.attach();
+    try {
+      var source = openStreamWithRetry(perCall, open);
+      try {
+        while (source.hasNext()) items.add(source.next());
+      } catch (StatusRuntimeException e) {
+        failure = e;
+      }
+    } finally {
+      page.detach(previous);
+      page.cancel(null);
+    }
+    if (failure == null) return items.iterator();
+    var rest = items.iterator();
+    var error = failure;
+    return new Iterator<P>() {
+      public boolean hasNext() {
+        if (rest.hasNext()) return true;
+        throw error;
+      }
+
+      public P next() {
+        if (!hasNext()) throw new NoSuchElementException();
+        return rest.next();
+      }
+    };
+  }
+
+  /**
+   * The one request of a single-request read or lookup, whose size the caller's limit alone bounds:
+   * each wait for the server gets the per-page default ({@link PageTimer}) instead of buffering it.
+   */
+  private <P> Iterator<P> timedPage(
+      String what, RetryPolicy perCall, RetryableCall<Iterator<P>> open) {
+    var timer = new PageTimer(what);
+    var source = timer.open(() -> openStreamWithRetry(perCall, open));
+    return new Iterator<P>() {
+      public boolean hasNext() {
+        return timer.await(source::hasNext);
+      }
+
+      public P next() {
+        if (!hasNext()) throw new NoSuchElementException();
+        return source.next();
+      }
+    };
   }
 
   /**

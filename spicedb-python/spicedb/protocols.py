@@ -73,6 +73,10 @@ class ClientProtocol(Protocol):
         """Return this client's authenticated channel; raw calls own their options."""
         ...
 
+    def connect(self, *, timeout: float | None = None) -> None:
+        """Wait until the channel is connected, as a startup readiness check."""
+        ...
+
     def close(self) -> None:
         """Close streams and, unless it was supplied by the caller, the channel."""
         ...
@@ -386,6 +390,10 @@ class AsyncClientProtocol(Protocol):
 
     async def raw_grpc(self) -> RawGrpc:
         """Return this client's authenticated channel; raw calls own their options."""
+        ...
+
+    async def connect(self, *, timeout: float | None = None) -> None:
+        """Wait until the channel is connected, as a startup readiness check."""
         ...
 
     async def close(self) -> None:

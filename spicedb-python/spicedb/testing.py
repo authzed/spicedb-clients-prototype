@@ -989,6 +989,14 @@ class InMemoryClient:
                 raise SpiceDBError.from_code(grpc.StatusCode.NOT_FOUND, _NO_SCHEMA)
             return replace(self._store.reflection, revision=self._store.token())
 
+    def connect(self, *, timeout: float | None = None) -> None:
+        """Do nothing beyond validating ``timeout``: the double is always ready.
+
+        Not recorded and never faulted, like ``close()``: it is lifecycle,
+        not an operation.
+        """
+        Budget(timeout)
+
     def close(self) -> None:
         """Do nothing; the double holds no transport and stays usable."""
 
@@ -1557,6 +1565,10 @@ class AsyncInMemoryClient:
         return self._sync.reflect_schema(
             consistency=consistency, filters=filters, timeout=timeout, call_options=call_options
         )
+
+    async def connect(self, *, timeout: float | None = None) -> None:
+        """Do nothing beyond validating ``timeout``: the double is always ready."""
+        self._sync.connect(timeout=timeout)
 
     async def close(self) -> None:
         """Do nothing; the double holds no transport and stays usable."""

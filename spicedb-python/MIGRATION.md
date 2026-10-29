@@ -80,12 +80,15 @@ client = SpiceDBClient("spicedb:50051", token="key",
   non-loopback host (anything but `localhost`, `127.0.0.0/8`, `::1` or a unix
   socket) is refused unless you pass `remote_credentials=RemoteCredentials.ALLOW`.
 - The endpoint is `host:port`, `http://host:port` or `https://host[:port]`,
-  plus `unix:` socket targets. A plaintext endpoint must name its port
-  (`localhost:50051`; a bare `localhost` used to dial 443); a TLS endpoint
-  without one uses 443. The scheme must agree with `transport_security`. Other gRPC
-  target URIs (`dns:///host:port`, `ipv4:...`) and URLs with a path, query or
-  userinfo are rejected at construction with `InvalidArgumentError`; authzed-py
-  passed them to grpc unchecked. Use `host:port` instead of `dns:///host:port`.
+  plus `dns:///host:port` and `unix:` socket targets. A plaintext endpoint
+  must name its port (`localhost:50051`; a bare `localhost` used to dial
+  443); a TLS endpoint without one uses 443. The scheme must agree with
+  `transport_security`. Other gRPC target URIs (`dns://8.8.8.8/host:port`,
+  `dns:host:port`, `ipv4:...`) and URLs with a path, query or userinfo are
+  rejected at construction with `InvalidArgumentError`; authzed-py passed
+  them to grpc unchecked.
+- authzed-py had no readiness check either; a client that should fail at
+  startup calls `client.connect(timeout=...)` (`await` it on `aio`).
 - `bearer_token_credentials(token, certChain)` → `ca_cert=certChain`; mTLS uses
   `client_cert=` and `client_key=`.
 - Close the client (`close()`, `with`, `async with`); it owns its channel.

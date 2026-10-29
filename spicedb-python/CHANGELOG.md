@@ -14,6 +14,28 @@
 
 ## Unreleased
 
+### Startup readiness and gRPC DNS targets
+
+- New `connect(timeout=None)` on `spicedb.sync.SpiceDBClient` and
+  `await connect(timeout=None)` on `spicedb.aio.SpiceDBClient` (and on
+  `ClientProtocol`/`AsyncClientProtocol`). Both clients still connect lazily;
+  call it once at startup so a wrong or unreachable endpoint fails there. It
+  waits for the channel to become ready within `timeout` (default: the
+  client's `default_timeout`) and raises `UnavailableError` naming the
+  endpoint and the transport's cause (refused, DNS, TLS), or
+  `DeadlineExceededError` if the connection was still in progress. It sends
+  no credentials, so it does not check the token. The in-memory doubles
+  accept it as a no-op (it validates `timeout` and is not recorded).
+- Endpoints now accept grpc's `dns:///host:port` target, for client-side
+  load balancing over every address a name resolves to. The port rule
+  matches `host:port` (plaintext must name it; TLS defaults to 443), and the
+  loopback check runs on the host after `dns:///`, so
+  `dns:///localhost:50051` is loopback and `dns:///spicedb:50051` needs
+  `remote_credentials=RemoteCredentials.ALLOW` over plaintext. A DNS-server
+  authority (`dns://8.8.8.8/host:port`) and the slashless `dns:host:port`
+  are still rejected at construction, and the error now lists every
+  accepted form, `dns:///host:port` and `unix:` sockets included.
+
 ### Local validation, parsers and prebuilt updates
 
 - Client-side validation now raises `LocalValidationError`, a subclass of both

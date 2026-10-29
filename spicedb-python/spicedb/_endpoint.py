@@ -8,6 +8,11 @@ at construction". A constructor accepts:
 - ``http://host:port`` -- plaintext; the port is required, so no client
   silently dials port 80;
 - ``https://host[:port]`` -- TLS; the port defaults to 443;
+- ``dns:///host:port`` -- grpc's DNS resolver, for client-side load
+  balancing across every address the name resolves to; the port follows the
+  same rule as ``host:port`` (TLS defaults to 443, plaintext must name it).
+  An explicit DNS-server authority (``dns://8.8.8.8/host:port``) and the
+  slashless ``dns:host:port`` are rejected;
 - a gRPC ``unix:`` socket target, handed to the transport unchanged.
 
 Anything else fails here, before a channel exists, with an
@@ -27,7 +32,8 @@ import ipaddress
 import re
 
 ENDPOINT_FORMS = (
-    "expected host:port, http://host:port (plaintext) or https://host[:port] (TLS)"
+    "expected host:port, http://host:port (plaintext), https://host[:port] (TLS), "
+    "dns:///host:port or unix:/path/to/socket"
 )
 
 _SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://(.*)$", re.DOTALL)
@@ -102,6 +108,33 @@ def _split_authority(endpoint: str, authority: str) -> tuple[str, str | None]:
     return host, None
 
 
+def _dns_target(endpoint: str, insecure: bool) -> str:
+    """Validate a ``dns:///host[:port]`` target and return it with a port.
+
+    The host and port are checked exactly as a bare ``host:port`` is, so the
+    remote-plaintext policy sees the same host the resolver will look up.
+    """
+    if endpoint[4:7] != "///":
+        if endpoint[4:6] == "//":
+            reason = "a DNS server authority (dns://server/...) is not supported"
+        else:
+            reason = "a dns target needs three slashes (dns:///host:port)"
+        raise _invalid(endpoint, reason)
+    rest = endpoint[7:]
+    if not rest:
+        raise _invalid(endpoint, "missing host")
+    host, port = _split_authority(endpoint, rest)
+    if port is None:
+        if insecure:
+            raise _invalid(
+                endpoint,
+                "a plaintext endpoint needs an explicit port, e.g. "
+                f"dns:///{host}:50051",
+            )
+        port = "443"
+    return f"dns:///{host}:{port}"
+
+
 def parse_endpoint(endpoint: str, *, insecure: bool) -> str:
     """Validate ``endpoint`` and return the gRPC target to dial.
 
@@ -120,6 +153,8 @@ def parse_endpoint(endpoint: str, *, insecure: bool) -> str:
     # one), and it never leaves the host.
     if endpoint[:5].lower() == "unix:":
         return endpoint
+    if endpoint[:4].lower() == "dns:":
+        return _dns_target(endpoint, insecure)
 
     url = _SCHEME.match(endpoint)
     if url is None:

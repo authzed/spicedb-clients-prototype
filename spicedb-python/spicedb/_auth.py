@@ -44,10 +44,11 @@ def is_loopback_endpoint(endpoint: str) -> bool:
     """Report whether the connection this client would open for ``endpoint``
     terminates on a loopback destination.
 
-    True for the literal hostname "localhost", an IP in 127.0.0.0/8, the
-    IPv6 loopback ::1, or a unix domain socket target (a "unix:" prefix). A
-    unix socket never leaves the host's kernel, so it is loopback for this
-    check even though it has no IP at all.
+    True for the literal hostname "localhost", an IP in 127.0.0.0/8 or the
+    IPv6 loopback ::1 (each bare or as a ``dns:///`` target), or a unix
+    domain socket target (a "unix:" prefix). A unix socket never leaves the
+    host's kernel, so it is loopback for this check even though it has no IP
+    at all.
 
     That wording is deliberate. This does not answer "does this string look
     like it names a loopback host"; it answers "will the transport dial
@@ -102,6 +103,12 @@ def is_loopback_endpoint(endpoint: str) -> bool:
     # refuse a target the transport happily treats as local.
     if endpoint[:5].lower() == "unix:":
         return True
+
+    # A "dns:///" target resolves the host that follows the empty authority;
+    # the check below runs on that host. Anything left that could move the
+    # authority ("dns:////x", "dns:///a@b") still fails closed below.
+    if endpoint[:7].lower() == "dns:///":
+        endpoint = endpoint[7:]
 
     if _AUTHORITY_SHIFTING.search(endpoint):
         return False

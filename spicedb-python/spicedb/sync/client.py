@@ -55,7 +55,16 @@ from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
 from spicedb._endpoint import parse_endpoint
 from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._budget import Budget
-from spicedb._client_base import ClientConfig, _positive, write_is_idempotent, capture_sync, response_target
+from spicedb._client_base import (
+    PROBE_METHOD,
+    PROBE_TIMEOUT,
+    ClientConfig,
+    _positive,
+    capture_sync,
+    not_ready_error,
+    response_target,
+    write_is_idempotent,
+)
 from spicedb._streams import Stream
 from spicedb.consistency import Consistency
 from spicedb.errors import (
@@ -230,6 +239,44 @@ class SpiceDBClient(ClientConfig):
         """Return this client's authenticated channel; raw calls own their options."""
         self._ensure_channel()
         return RawGrpc(channel=self._channel, metadata=tuple(self._metadata))
+
+    def connect(self, *, timeout: float | None = None) -> None:
+        """Wait until the channel is connected, as a startup readiness check.
+
+        The client otherwise connects lazily on its first call, so a wrong or
+        unreachable endpoint would only show up then. ``timeout`` defaults to
+        the client's default deadline. Raises ``UnavailableError`` naming the
+        endpoint and the transport's cause (refused, DNS, TLS) when the
+        connection failed, or ``DeadlineExceededError`` when it was still
+        connecting at the deadline. Sends no credentials and calls no SpiceDB
+        API, so it does not check the token.
+        """
+        budget = self._budget(timeout)
+        self._ensure_channel()
+        channel = self._channel
+        waited = budget.remaining()
+        states: list[grpc.ChannelConnectivity] = []
+        channel.subscribe(states.append, try_to_connect=True)
+        ready = grpc.channel_ready_future(channel)
+        try:
+            ready.result(timeout=waited)
+            return
+        except grpc.FutureTimeoutError:
+            ready.cancel()
+        finally:
+            channel.unsubscribe(states.append)
+        probe_error = None
+        if states and states[-1] is grpc.ChannelConnectivity.TRANSIENT_FAILURE:
+            try:
+                channel.unary_unary(PROBE_METHOD)(b"", timeout=PROBE_TIMEOUT)
+            except grpc.RpcError as error:
+                probe_error = error
+            else:
+                return
+        limit = self._default_timeout if timeout is None else timeout
+        failure = not_ready_error(self._endpoint, limit, probe_error)
+        if failure is not None:
+            raise failure
 
     def close(self) -> None:
         """Close streams and, unless it was supplied by the caller, the channel."""

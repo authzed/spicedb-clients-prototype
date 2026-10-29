@@ -100,6 +100,26 @@ class _Recorder:
         return psp.ImportBulkRelationshipsResponse(num_loaded=total).SerializeToString()
 
 
+def _handlers(recorder: _Recorder):
+    """The real SpiceDB method paths, served from ``recorder``."""
+    return (
+        grpc.method_handlers_generic_handler(
+            "authzed.api.v1.PermissionsService",
+            {
+                "CheckBulkPermissions": grpc.unary_unary_rpc_method_handler(
+                    recorder.check_bulk, lambda b: b, lambda b: b
+                ),
+                "ReadRelationships": grpc.unary_stream_rpc_method_handler(
+                    recorder.read_relationships, lambda b: b, lambda b: b
+                ),
+                "ImportBulkRelationships": grpc.stream_unary_rpc_method_handler(
+                    recorder.import_bulk, lambda b: b, lambda b: b
+                ),
+            },
+        ),
+    )
+
+
 def _serve(recorder: _Recorder, tls: tuple[bytes, bytes] | None):
     """Serve the real SpiceDB method paths so a real client can drive them.
 
@@ -107,24 +127,7 @@ def _serve(recorder: _Recorder, tls: tuple[bytes, bytes] | None):
     deserializes the returned bytes as the proper response proto.
     """
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
-    server.add_generic_rpc_handlers(
-        (
-            grpc.method_handlers_generic_handler(
-                "authzed.api.v1.PermissionsService",
-                {
-                    "CheckBulkPermissions": grpc.unary_unary_rpc_method_handler(
-                        recorder.check_bulk, lambda b: b, lambda b: b
-                    ),
-                    "ReadRelationships": grpc.unary_stream_rpc_method_handler(
-                        recorder.read_relationships, lambda b: b, lambda b: b
-                    ),
-                    "ImportBulkRelationships": grpc.stream_unary_rpc_method_handler(
-                        recorder.import_bulk, lambda b: b, lambda b: b
-                    ),
-                },
-            ),
-        )
-    )
+    server.add_generic_rpc_handlers(_handlers(recorder))
     if tls is None:
         port = server.add_insecure_port("localhost:0")
     else:

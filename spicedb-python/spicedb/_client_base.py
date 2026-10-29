@@ -83,6 +83,44 @@ async def capture_async(target: ResponseMetadata | None, call) -> None:
             setattr(target, name, _pairs(value))
 
 
+# The readiness probe sent after ``connect()`` times out on a channel in
+# TRANSIENT_FAILURE. A fail-fast call on such a channel returns at once with
+# the transport's own UNAVAILABLE detail (refused, DNS, TLS), which the
+# connectivity state alone does not carry. Any status other than UNAVAILABLE
+# or DEADLINE_EXCEEDED means a server answered, so the channel is usable.
+PROBE_METHOD = "/grpc.health.v1.Health/Check"
+PROBE_TIMEOUT = 0.5
+
+
+def describe_target(endpoint: str | None) -> str:
+    return f"endpoint {endpoint!r}" if endpoint is not None else "the supplied channel"
+
+
+def not_ready_error(
+    endpoint: str | None, waited: float | None, probe_error: grpc.RpcError | None
+) -> SpiceDBError | None:
+    """The error ``connect()`` raises when the channel is not ready in time,
+    or None when the probe shows a server did answer.
+
+    UNAVAILABLE when the transport reported a connection failure (its detail
+    names the cause); DEADLINE_EXCEEDED while it was still connecting.
+    """
+    from spicedb.errors import DeadlineExceededError, UnavailableError
+
+    within = f" within {waited:g}s" if waited is not None else ""
+    where = describe_target(endpoint)
+    if probe_error is None:
+        return DeadlineExceededError(f"spicedb: {where} not ready{within}: still connecting")
+    code = probe_error.code()
+    if code == grpc.StatusCode.UNAVAILABLE:
+        error = UnavailableError(f"spicedb: {where} not ready{within}: {probe_error.details()}")
+        error.status = probe_error
+        return error
+    if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+        return DeadlineExceededError(f"spicedb: {where} not ready{within}: still connecting")
+    return None
+
+
 class ClientConfig:
     """Operation settings shared by both client flavors and both constructors."""
 

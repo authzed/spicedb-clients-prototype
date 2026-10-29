@@ -18,6 +18,7 @@ tell a verified chain from a disabled one.
 """
 
 from __future__ import annotations
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import TransportSecurity, Retries
 from spicedb import PermissionCheck
 import pathlib
@@ -144,7 +145,7 @@ def certs() -> Certs:
 def _check_bulk(request: bytes, context) -> bytes:
     req = psp.CheckBulkPermissionsRequest()
     req.ParseFromString(request)
-    return psp.CheckBulkPermissionsResponse(
+    return psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
         pairs=[
             psp.CheckBulkPermissionsPair(
                 request=item,

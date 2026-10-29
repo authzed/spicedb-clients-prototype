@@ -71,9 +71,15 @@ For a local `spicedb serve-testing` on `localhost:50051`, pass
 `transport_security=TransportSecurity.PLAINTEXT`. The endpoint is
 `host:port`, `http://host:port` or `https://host:port`. Plaintext endpoints
 must name their port (`localhost:50051`, not `localhost`); TLS endpoints
-without one use 443. A `unix:` socket target is also accepted. A URL's scheme must agree with `transport_security`, and any
-other form fails in the constructor with `InvalidArgumentError` naming the
-problem.
+without one use 443. grpc's `dns:///host:port` (client-side load balancing
+over every resolved address) and `unix:` socket targets are also accepted. A
+URL's scheme must agree with `transport_security`, and any other form fails in
+the constructor with `InvalidArgumentError` naming the problem.
+
+The client connects lazily, on its first call. To fail at startup instead,
+call `client.ready(timeout=5.0)` (`await client.ready(...)` for `aio`):
+it raises `UnavailableError` naming the endpoint and the cause, or
+`DeadlineExceededError` if the connection is still in progress.
 
 From another Docker Compose service, SpiceDB is a remote host (for example
 `spicedb:50051`), so plaintext there takes two explicit choices:

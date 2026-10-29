@@ -74,7 +74,12 @@ asyncio client binds to the event loop it is first used on: create one
 `aio` client **per event loop** (in each loop's startup or lifespan hook, e.g.
 one for the web server and one for a worker that runs its own loop), never
 one shared at import time; another loop gets `EventLoopBindingError`.
-Plaintext is
+The client connects lazily: to fail at startup on a wrong or unreachable
+endpoint, call `tc.ready(timeout=5.0)` (`await` it on `aio`), which raises
+`UnavailableError` or
+`DeadlineExceededError`. The endpoint is `host:port`, `https://host`,
+`http://host:port`, `dns:///host:port` (client-side load balancing) or
+`unix:/path`. Plaintext is
 `transport_security=TransportSecurity.PLAINTEXT`, for loopback and unix
 sockets; a non-loopback plaintext host additionally needs
 `remote_credentials=RemoteCredentials.ALLOW`. Custom trust and mTLS:
@@ -293,7 +298,9 @@ if isinstance(err, SpiceDBError):
 Errors raised by local validation, before any RPC, are `LocalValidationError`:
 an `InvalidArgumentError` and also a `ValueError`, so `except ValueError`
 around parsing input works. A server `INVALID_ARGUMENT` is a plain
-`InvalidArgumentError`.
+`InvalidArgumentError`. A response the client cannot interpret (a missing
+required field, a cursor that does not advance) raises `InternalError`, which
+is not retried: treat it as a server or proxy bug, not a transient error.
 
 Native errors are `grpc.RpcError`s: existing `except grpc.RpcError` handlers
 and `err.code()` / `err.details()` keep working, including for local

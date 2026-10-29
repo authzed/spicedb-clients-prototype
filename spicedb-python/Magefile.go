@@ -55,6 +55,7 @@ var wantExamples = []string{
 	"read_your_writes",
 	"retry_policy",
 	"schema_management",
+	"startup_readiness",
 	"sync_check_permission",
 	"sync_read_relationships",
 	"sync_watch_changes",

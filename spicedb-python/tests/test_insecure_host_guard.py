@@ -34,6 +34,9 @@ LOOPBACK_ENDPOINTS = [
     "unix:///var/run/spicedb.sock",
     "UNIX:/var/run/spicedb.sock",
     "Unix:///var/run/spicedb.sock",
+    "dns:///localhost:50051",
+    "DNS:///127.0.0.1:50051",
+    "dns:///[::1]:50051",
 ]
 NON_LOOPBACK_ENDPOINTS = [
     "example.com:443",
@@ -44,6 +47,8 @@ NON_LOOPBACK_ENDPOINTS = [
     "localhost.evil.com:443",
     "127.0.0.1.evil.com:443",
     "evil-localhost:443",
+    "dns:///example.com:443",
+    "dns:///10.0.0.5:50051",
 ]
 AUTHORITY_SHIFTING_ENDPOINTS = [
     "127.0.0.1:443@evil.com",
@@ -61,6 +66,9 @@ AUTHORITY_SHIFTING_ENDPOINTS = [
     "127.0.0.1:٤٤٣",
     "127.0.0.1:４４３",
     "127.0.0.1:²",
+    "dns:///127.0.0.1:443@evil.com",
+    "dns:////localhost:50051",
+    "dns://evil.com/localhost:50051",
 ]
 
 

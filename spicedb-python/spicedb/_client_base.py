@@ -83,6 +83,67 @@ async def capture_async(target: ResponseMetadata | None, call) -> None:
             setattr(target, name, _pairs(value))
 
 
+# The readiness probe sent after ``ready()`` times out on a channel in
+# TRANSIENT_FAILURE. A fail-fast call on such a channel returns at once with
+# the transport's own UNAVAILABLE detail (refused, DNS, TLS), which the
+# connectivity state alone does not carry. Any status other than UNAVAILABLE
+# or DEADLINE_EXCEEDED means a server answered, so the channel is usable.
+PROBE_METHOD = "/grpc.health.v1.Health/Check"
+PROBE_TIMEOUT = 0.5
+
+
+def describe_target(endpoint: str | None) -> str:
+    return f"endpoint {endpoint!r}" if endpoint is not None else "the supplied channel"
+
+
+def not_ready_error(
+    endpoint: str | None, waited: float | None, probe_error: grpc.RpcError | None
+) -> SpiceDBError | None:
+    """The error ``ready()`` raises when the channel is not ready in time,
+    or None when the probe shows a server did answer.
+
+    UNAVAILABLE when the transport reported a connection failure (its detail
+    names the cause); DEADLINE_EXCEEDED while it was still connecting.
+    """
+    from spicedb.errors import DeadlineExceededError, UnavailableError
+
+    within = f" within {waited:g}s" if waited is not None else ""
+    where = describe_target(endpoint)
+    if probe_error is None:
+        return DeadlineExceededError(f"spicedb: {where} not ready{within}: still connecting")
+    code = probe_error.code()
+    if code == grpc.StatusCode.UNAVAILABLE:
+        error = UnavailableError(f"spicedb: {where} not ready{within}: {probe_error.details()}")
+        error.status = probe_error
+        return error
+    if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+        return DeadlineExceededError(f"spicedb: {where} not ready{within}: still connecting")
+    return None
+
+
+# How a streaming read applies the client default deadline (root DESIGN.md,
+# "Treat a deadline as a budget"). It bounds only time spent waiting on the
+# server, never the caller's processing between items:
+# - PAGE: a cursor-paged read gives each page request the default as a
+#   budget of server-wait time, from opening it to its last item;
+# - MESSAGE: an unpaged or single-request read, which may be arbitrarily
+#   long, bounds each wait for the server's next message by the default;
+# - None: a long-lived stream (watch) has no default.
+# The caller's total timeout still bounds the whole read as the call deadline.
+PAGE = "page"
+MESSAGE = "message"
+
+
+def stalled_error(seconds: float, per_page: bool) -> SpiceDBError:
+    from spicedb.errors import DeadlineExceededError
+
+    what = "a page" if per_page else "the next message"
+    return DeadlineExceededError(
+        f"spicedb: the server did not send {what} within {seconds:g}s "
+        "(the client default deadline; time spent processing items does not count)"
+    )
+
+
 class ClientConfig:
     """Operation settings shared by both client flavors and both constructors."""
 

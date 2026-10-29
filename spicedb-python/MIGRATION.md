@@ -80,12 +80,15 @@ client = SpiceDBClient("spicedb:50051", token="key",
   non-loopback host (anything but `localhost`, `127.0.0.0/8`, `::1` or a unix
   socket) is refused unless you pass `remote_credentials=RemoteCredentials.ALLOW`.
 - The endpoint is `host:port`, `http://host:port` or `https://host[:port]`,
-  plus `unix:` socket targets. A plaintext endpoint must name its port
-  (`localhost:50051`; a bare `localhost` used to dial 443); a TLS endpoint
-  without one uses 443. The scheme must agree with `transport_security`. Other gRPC
-  target URIs (`dns:///host:port`, `ipv4:...`) and URLs with a path, query or
-  userinfo are rejected at construction with `InvalidArgumentError`; authzed-py
-  passed them to grpc unchecked. Use `host:port` instead of `dns:///host:port`.
+  plus `dns:///host:port` and `unix:` socket targets. A plaintext endpoint
+  must name its port (`localhost:50051`; a bare `localhost` used to dial
+  443); a TLS endpoint without one uses 443. The scheme must agree with
+  `transport_security`. Other gRPC target URIs (`dns://8.8.8.8/host:port`,
+  `dns:host:port`, `ipv4:...`) and URLs with a path, query or userinfo are
+  rejected at construction with `InvalidArgumentError`; authzed-py passed
+  them to grpc unchecked.
+- authzed-py had no readiness check either; a client that should fail at
+  startup calls `client.ready(timeout=...)` (`await` it on `aio`).
 - `bearer_token_credentials(token, certChain)` → `ca_cert=certChain`; mTLS uses
   `client_cert=` and `client_key=`.
 - Close the client (`close()`, `with`, `async with`); it owns its channel.
@@ -255,8 +258,11 @@ authzed-py had no default deadline and no retries.
 
 - Every unary call (including bulk chunks and auto-fetched pages) has a
   30-second budget; per call `timeout=`, client-wide `default_timeout=`, or
-  `default_timeout=DefaultDeadline.DISABLED` for none. Streams have no default
-  lifetime.
+  `default_timeout=DefaultDeadline.DISABLED` for none. Finite paged reads
+  (relationship reads, lookups, exports, permission-set lookups) apply the
+  default to each page's wait on the server (to each wait for the next
+  message on an unpaged read), so a stalled server fails the read; time your
+  code spends between items never counts. Watch has no default lifetime.
 - Reads retry `UNAVAILABLE`/`ABORTED` up to three times with backoff, and
   stream establishment retries before the first item. If you have your own
   policy: `retry_policy=Retries.DISABLED` (or a `RetryPolicy(...)`) and
@@ -326,6 +332,17 @@ reaching the server. `ObjectRef.parse("document:readme")` and
 also classifies raw `grpc.RpcError`, `asyncio.CancelledError` and
 `TimeoutError`. Tests construct errors with
 `SpiceDBError.from_code(grpc.StatusCode.FAILED_PRECONDITION, "...")`.
+
+Closing a stream while another thread or task waits on it raises
+`spicedb.errors.CancelledError` (code `CANCELLED`) in the waiter; cancelling
+an asyncio task still raises `asyncio.CancelledError`, and `code_of` reports
+both as `CANCELLED`.
+
+A response the client cannot interpret (a missing relationship, object, ID or
+revision, an expand node with neither children nor subjects, a cursor that
+does not advance) raises `InternalError` (code `INTERNAL`, not retried by
+default). authzed-py passed such responses through with empty values; this
+client never skips them or fills them in.
 
 ## Metadata and call options
 

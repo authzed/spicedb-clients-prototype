@@ -16,6 +16,7 @@ along with it) if a regression reintroduces an unbounded call.
 """
 
 from __future__ import annotations
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import TransportSecurity
 from spicedb import PermissionCheck
 import asyncio
@@ -28,7 +29,7 @@ import grpc
 import grpc.aio
 import pytest
 from authzed.api.v1 import permission_service_pb2 as psp
-from spicedb import Filter, Relationship
+from spicedb import DefaultDeadline, Filter, Relationship
 from spicedb.aio import SpiceDBClient as AioSpiceDBClient
 from spicedb.consistency import full
 from spicedb.errors import DeadlineExceededError
@@ -82,15 +83,15 @@ class _StallingHandlers:
 
     def check_bulk(self, request: bytes, context: grpc.ServicerContext) -> bytes:
         time.sleep(_STALL_SECONDS)
-        return psp.CheckBulkPermissionsResponse().SerializeToString()
+        return psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t")).SerializeToString()
 
     def write(self, request: bytes, context: grpc.ServicerContext) -> bytes:
         time.sleep(_STALL_SECONDS)
-        return psp.WriteRelationshipsResponse().SerializeToString()
+        return psp.WriteRelationshipsResponse(written_at=_core_tok.ZedToken(token="t")).SerializeToString()
 
     def read_relationships(self, request: bytes, context: grpc.ServicerContext):
         time.sleep(_STALL_SECONDS)
-        yield psp.ReadRelationshipsResponse(
+        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
             relationship=Relationship.from_triple(
                 "document:a", "viewer", "user:jimmy"
             )._to_proto()
@@ -187,29 +188,42 @@ def test_sync_per_call_timeout_overrides_client_default():
     )
 
 
-def test_sync_streaming_call_does_not_inherit_unary_default():
-    """A streaming call must not be cut off by the (tiny) unary default."""
+def test_sync_stalled_page_fails_after_the_per_page_default():
+    """A paged read applies the client default to each page's server wait,
+    so a server that stalls fails the read instead of hanging it."""
     server, port = _serve(_StallingHandlers())
     try:
         client = SyncSpiceDBClient(
             f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
         start = time.monotonic()
-        got = _run_with_watchdog(
-            lambda: list(
-                client.read_relationships(
-                    Filter(resource_type="document"), consistency=full()
-                )
+        with pytest.raises(DeadlineExceededError, match="did not send a page within 0.1s"):
+            _run_with_watchdog(
+                lambda: list(client.read_relationships(Filter(resource_type="document"), consistency=full()))
             )
-        )
         elapsed = time.monotonic() - start
         client.close()
     finally:
         server.stop(0)
+    assert elapsed < _STALL_SECONDS
+
+
+def test_sync_disabled_default_lets_a_slow_page_finish():
+    server, port = _serve(_StallingHandlers())
+    try:
+        client = SyncSpiceDBClient(
+            f"localhost:{port}",
+            token=TOKEN,
+            transport_security=TransportSecurity.PLAINTEXT,
+            default_timeout=DefaultDeadline.DISABLED,
+        )
+        got = _run_with_watchdog(
+            lambda: list(client.read_relationships(Filter(resource_type="document"), consistency=full()))
+        )
+        client.close()
+    finally:
+        server.stop(0)
     assert [r.relationship.resource.object_id for r in got] == ["a"]
-    assert elapsed >= _STALL_SECONDS, (
-        f"the stream must outlive the tiny unary default -- it should have waited out the server's {_STALL_SECONDS}s stall (elapsed={elapsed:.2f}s)"
-    )
 
 
 def test_sync_import_relationships_does_not_inherit_unary_default():
@@ -298,29 +312,46 @@ async def test_aio_per_call_timeout_overrides_client_default():
     assert elapsed < _STALL_SECONDS
 
 
-async def test_aio_streaming_call_does_not_inherit_unary_default():
+async def test_aio_stalled_page_fails_after_the_per_page_default():
     server, port = _serve(_StallingHandlers())
     try:
         client = AioSpiceDBClient(
             f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
 
-        async def _collect() -> list[Relationship]:
-            return [
-                r
-                async for r in client.read_relationships(
-                    Filter(resource_type="document"), consistency=full()
-                )
-            ]
+        async def _collect() -> list[Any]:
+            return [r async for r in client.read_relationships(Filter(resource_type="document"), consistency=full())]
 
         start = time.monotonic()
-        got = await asyncio.wait_for(_collect(), timeout=_WATCHDOG_SECONDS)
+        with pytest.raises(DeadlineExceededError, match="did not send a page within 0.1s"):
+            await asyncio.wait_for(_collect(), timeout=_WATCHDOG_SECONDS)
         elapsed = time.monotonic() - start
         await client.close()
     finally:
         server.stop(0)
+    assert elapsed < _STALL_SECONDS
+
+
+async def test_aio_disabled_default_lets_a_slow_page_finish():
+    server, port = _serve(_StallingHandlers())
+    try:
+        client = AioSpiceDBClient(
+            f"localhost:{port}",
+            token=TOKEN,
+            transport_security=TransportSecurity.PLAINTEXT,
+            default_timeout=DefaultDeadline.DISABLED,
+        )
+        got = await asyncio.wait_for(
+            _collect_rels(client), timeout=_WATCHDOG_SECONDS
+        )
+        await client.close()
+    finally:
+        server.stop(0)
     assert [r.relationship.resource.object_id for r in got] == ["a"]
-    assert elapsed >= _STALL_SECONDS
+
+
+async def _collect_rels(client) -> list[Any]:
+    return [r async for r in client.read_relationships(Filter(resource_type="document"), consistency=full())]
 
 
 async def test_aio_import_relationships_does_not_inherit_unary_default():

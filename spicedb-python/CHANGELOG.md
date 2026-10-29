@@ -14,6 +14,72 @@
 
 ## Unreleased
 
+### Closing an aio stream no longer cancels the consumer's task
+
+- `AsyncStream.aclose()` from another task, while a consumer awaits the
+  stream's next item, now raises `spicedb.errors.CancelledError` (code
+  `CANCELLED`) in that consumer, as closing a sync `Stream` from another
+  thread already did. Before, it cancelled the consumer's whole task, which
+  surfaced as `asyncio.CancelledError` and ended the task. Cancelling the
+  consumer's task yourself still propagates `asyncio.CancelledError`.
+
+### Malformed responses fail with INTERNAL
+
+- New `InternalError` (code `INTERNAL`, not retryable by default); a server
+  `INTERNAL` status now maps to it too. A response the client cannot
+  interpret raises it: a missing relationship, resource, subject or object,
+  an empty object ID or relation, a missing revision (`read_at`,
+  `looked_up_at`, `checked_at`, `written_at`, `deleted_at`, `expanded_at`,
+  `changes_through`, and the counter, roaring and permission-set revisions),
+  an expand node with neither children nor subjects, a counter response with
+  neither a value nor `counter_still_calculating`, a permission-set change
+  without its parent, child or revision, a permission-set lookup without its
+  change or cursor, and a full page whose cursor does not advance. Such a
+  response is never skipped (which would make a full page look short and
+  end a paged read early) and never filled with empty values: a missing
+  revision used to become `ZedToken("")`.
+- Client-detected errors (a bulk-check pair count or echo mismatch, a pair
+  with neither item nor error, unspecified delete progress) now report
+  `INTERNAL` instead of `UNKNOWN`.
+- `protoconv.*_from_proto` reports a response proto missing a required field
+  as `LocalValidationError`, since the caller supplied it.
+
+### Per-page default deadlines
+
+- Finite paged reads (`read_relationships`, `lookup_resources`,
+  `lookup_subjects`, `export_relationships`, `lookup_permission_sets`) now
+  apply the client `default_timeout` to each page, so a server that stalls
+  mid-read fails it with `DeadlineExceededError` instead of hanging. The
+  deadline counts only time spent waiting on the server: time your code
+  spends between items never counts, so a slow consumer of a healthy server
+  always finishes. A paged read gives each page request the default; an
+  unpaged subject lookup, an export, a permission-set lookup or a
+  `Paging.SINGLE_REQUEST` read bounds each wait for the next message. A
+  per-call `timeout` still bounds the whole read and wins when earlier;
+  `watch` keeps no default; `DefaultDeadline.DISABLED` turns it off.
+
+### Startup readiness and gRPC DNS targets
+
+- New `ready(timeout=None)` on `spicedb.sync.SpiceDBClient` and
+  `await ready(timeout=None)` on `spicedb.aio.SpiceDBClient` (and on
+  `ClientProtocol`/`AsyncClientProtocol` and the generated `TypedClient`). Both clients still connect lazily;
+  call it once at startup so a wrong or unreachable endpoint fails there. It
+  waits for the channel to become ready within `timeout` (default: the
+  client's `default_timeout`) and raises `UnavailableError` naming the
+  endpoint and the transport's cause (refused, DNS, TLS), or
+  `DeadlineExceededError` if the connection was still in progress. It sends
+  no credentials, so it does not check the token. The in-memory doubles
+  accept it as a no-op (it validates `timeout` and is not recorded).
+- Endpoints now accept grpc's `dns:///host:port` target, for client-side
+  load balancing over every address a name resolves to. The port rule
+  matches `host:port` (plaintext must name it; TLS defaults to 443), and the
+  loopback check runs on the host after `dns:///`, so
+  `dns:///localhost:50051` is loopback and `dns:///spicedb:50051` needs
+  `remote_credentials=RemoteCredentials.ALLOW` over plaintext. A DNS-server
+  authority (`dns://8.8.8.8/host:port`) and the slashless `dns:host:port`
+  are still rejected at construction, and the error now lists every
+  accepted form, `dns:///host:port` and `unix:` sockets included.
+
 ### Local validation, parsers and prebuilt updates
 
 - Client-side validation now raises `LocalValidationError`, a subclass of both

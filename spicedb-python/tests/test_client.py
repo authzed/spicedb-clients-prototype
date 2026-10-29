@@ -1,4 +1,5 @@
 """Unit tests for SpiceDBClient construction — no SpiceDB instance needed."""
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import ZedToken
 from spicedb import TransportSecurity, WatchContent, RetryPolicy
 
@@ -384,7 +385,7 @@ class TestBulkCheckPerItemErrorFidelity:
         pair = permission_service_pb2.CheckBulkPermissionsPair(
             error=status_pb2.Status(code=3, message="bad item")
         )
-        response = permission_service_pb2.CheckBulkPermissionsResponse(pairs=[pair])
+        response = permission_service_pb2.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), pairs=[pair])
         client._permissions.CheckBulkPermissions = AsyncMock(
             side_effect=lambda request, **kwargs: _echo_response(response, request)
         )
@@ -407,11 +408,11 @@ class TestLookupResourcesYieldsPermissionshipAndPartialCaveat:
     async def test_maps_has_and_conditional_results(self, make_client):
         client = make_client()
         client._permissions.LookupResources = _async_stream(
-            permission_service_pb2.LookupResourcesResponse(
+            permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 resource_object_id="doc1",
                 permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
             ),
-            permission_service_pb2.LookupResourcesResponse(
+            permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 resource_object_id="doc2",
                 permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
                 partial_caveat_info=core_pb2.PartialCaveatInfo(
@@ -433,6 +434,7 @@ class TestLookupResourcesYieldsPermissionshipAndPartialCaveat:
             resource_id="doc1",
             permissionship=Permissionship.HAS_PERMISSION,
             partial_caveat=None,
+            looked_up_at=ZedToken("t"),
         )
         assert got[1].resource_id == "doc2"
         assert got[1].permissionship == Permissionship.CONDITIONAL_PERMISSION
@@ -450,7 +452,7 @@ class TestLookupSubjectsWildcardSubjectExposesExcludedSubjects:
     async def test_wildcard_excluded_subjects_surfaced(self, make_client):
         client = make_client()
         client._permissions.LookupSubjects = _async_stream(
-            permission_service_pb2.LookupSubjectsResponse(
+            permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 subject=permission_service_pb2.ResolvedSubject(
                     subject_object_id="*",
                     permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
@@ -494,7 +496,7 @@ class TestLookupSubjectsNonWildcardHasNoExcludedSubjects:
     async def test_no_excluded_subjects(self, make_client):
         client = make_client()
         client._permissions.LookupSubjects = _async_stream(
-            permission_service_pb2.LookupSubjectsResponse(
+            permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 subject=permission_service_pb2.ResolvedSubject(
                     subject_object_id="alice",
                     permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
@@ -690,7 +692,7 @@ class TestDeleteRelationships:
 
 
 def _rel_response(doc_id: str, cursor_token: str):
-    return permission_service_pb2.ReadRelationshipsResponse(
+    return permission_service_pb2.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
         relationship=core_pb2.Relationship(
             resource=core_pb2.ObjectReference(object_type="document", object_id=doc_id),
             relation="viewer",
@@ -736,7 +738,7 @@ class TestReadRelationshipsEstablishmentRetry:
 
 class TestLookupResourcesEstablishmentRetry:
     def _response(self, doc_id: str, cursor_token: str):
-        return permission_service_pb2.LookupResourcesResponse(
+        return permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             resource_object_id=doc_id,
             permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
             after_result_cursor=core_pb2.Cursor(token=cursor_token),
@@ -781,7 +783,7 @@ class TestLookupResourcesEstablishmentRetry:
 
 class TestLookupSubjectsEstablishmentRetry:
     def _response(self, subject_id: str):
-        return permission_service_pb2.LookupSubjectsResponse(
+        return permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             subject=permission_service_pb2.ResolvedSubject(
                 subject_object_id=subject_id,
                 permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
@@ -938,7 +940,7 @@ async def test_read_transient_error_is_retried_then_succeeds(make_client):
     from authzed.api.v1 import schema_service_pb2 as ssp
 
     client = make_client(retry_policy=RetryPolicy(max_retries=2))
-    ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
+    ok = ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t"), schema_text="definition user {}")
     client._schema.ReadSchema = AsyncMock(side_effect=[_transient_error(), ok])
     result = await client.read_schema()
     assert result.schema == "definition user {}"

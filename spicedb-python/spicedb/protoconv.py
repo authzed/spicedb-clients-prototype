@@ -265,8 +265,19 @@ def check_result_to_proto(value: CheckResult) -> permission_service_pb2.CheckPer
     )
 
 
+def _caller_response(mapper, value):
+    """Map a response proto the caller supplies; a missing required field is
+    the caller's input error here, not a malformed server response."""
+    from spicedb.errors import InternalError
+
+    try:
+        return mapper(value)
+    except InternalError as error:
+        raise LocalValidationError(str(error).replace("malformed response", "invalid response proto")) from None
+
+
 def check_result_from_proto(value: permission_service_pb2.CheckPermissionResponse) -> CheckResult:
-    return _check_result(value)
+    return _caller_response(_check_result, value)
 
 
 def check_request_to_proto(
@@ -410,7 +421,7 @@ def lookup_resource_to_proto(value: LookupResource) -> permission_service_pb2.Lo
 
 
 def lookup_resource_from_proto(value: permission_service_pb2.LookupResourcesResponse) -> LookupResource:
-    return _lookup_resource(value)
+    return _caller_response(_lookup_resource, value)
 
 
 def _resolved(value: ResolvedSubject) -> permission_service_pb2.ResolvedSubject:
@@ -442,7 +453,7 @@ def lookup_subject_to_proto(value: LookupSubject) -> permission_service_pb2.Look
 
 
 def lookup_subject_from_proto(value: permission_service_pb2.LookupSubjectsResponse) -> LookupSubject:
-    return _lookup_subject(value)
+    return _caller_response(_lookup_subject, value)
 
 
 def read_relationship_to_proto(value: ReadRelationship) -> permission_service_pb2.ReadRelationshipsResponse:

@@ -30,6 +30,7 @@ verified rather than assumed:
   assume -- writing a credential-refresh branch on ``UnauthenticatedError`` for
   that case would leave it unreachable.
 """
+from authzed.api.v1 import core_pb2 as core_pb2_revision
 from spicedb import TransportSecurity
 
 from spicedb import ObjectRef, SubjectRef, PermissionCheck
@@ -64,7 +65,7 @@ class _StandIn(permission_service_pb2_grpc.PermissionsServiceServicer):
                 grpc.StatusCode.OUT_OF_RANGE,
                 "the specified revision has expired or been garbage collected",
             )
-        return permission_service_pb2.CheckPermissionResponse(
+        return permission_service_pb2.CheckPermissionResponse(checked_at=core_pb2_revision.ZedToken(token="t"),
             permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
         )
 

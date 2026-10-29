@@ -461,9 +461,11 @@ public final class ProtoConv {
 
   public static LookupResult.LookupResource fromProto(LookupResourcesResponse resp) {
     if (resp.getResourceObjectId().isEmpty()) throw malformed("looked-up resource has no ID");
-    var permissionship = fromProto(resp.getPermissionship());
-    if (permissionship == Permissionship.UNSPECIFIED)
+    // Only an unset permissionship is malformed; a newer value maps to UNSPECIFIED and never
+    // grants.
+    if (resp.getPermissionship() == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
       throw malformed("looked-up resource has no permissionship");
+    var permissionship = fromProto(resp.getPermissionship());
     return new LookupResult.LookupResource(
         resp.getResourceObjectId(),
         permissionship,
@@ -515,7 +517,11 @@ public final class ProtoConv {
               fromProto(resp.getPermissionship()),
               resp.hasPartialCaveatInfo() ? partialFromProto(resp.getPartialCaveatInfo()) : null);
     }
-    if (subject.permissionship() == Permissionship.UNSPECIFIED)
+    var rawPermissionship =
+        resp.hasSubject() && !resp.getSubject().getSubjectObjectId().isEmpty()
+            ? resp.getSubject().getPermissionship()
+            : resp.getPermissionship();
+    if (rawPermissionship == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
       throw malformed("looked-up subject has no permissionship");
     List<LookupResult.ResolvedSubject> excluded;
     if (!resp.getExcludedSubjectsList().isEmpty()) {

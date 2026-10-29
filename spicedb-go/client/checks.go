@@ -92,7 +92,10 @@ func (c *Client) Check(ctx context.Context, request PermissionCheck, opts ...Che
 		return CheckResult{}, e
 	}
 	result := checkResultFromProto(resp)
-	if result.Permissionship == PermissionshipUnspecified {
+	// Only an unset permissionship is malformed. A value newer than this
+	// client maps to PermissionshipUnspecified, which never grants, so a
+	// SpiceDB upgrade cannot turn into a client-side failure.
+	if resp.GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED {
 		return CheckResult{}, malformed("check", "permissionship is unspecified")
 	}
 	return result, nil
@@ -172,7 +175,7 @@ func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1
 			return nil, &BulkCheckError{indices[i], malformed("check bulk", "response pair has neither result nor error")}
 		}
 		out[i] = checkResultFromBulkItem(pair.GetItem(), resp.GetCheckedAt().GetToken())
-		if out[i].Permissionship == PermissionshipUnspecified {
+		if pair.GetItem().GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED {
 			return nil, &BulkCheckError{indices[i], malformed("check bulk", "item permissionship is unspecified")}
 		}
 	}

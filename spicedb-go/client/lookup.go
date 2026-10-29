@@ -73,7 +73,7 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 					yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
 					return
 				}
-				if permissionshipFromProto(resp.GetPermissionship()) == PermissionshipUnspecified {
+				if resp.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
 					pageCancel()
 					yield(LookupResource{}, malformed("lookup resources", "permissionship is unspecified"))
 					return
@@ -181,7 +181,7 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 					excluded = append(excluded, ResolvedSubject{SubjectID: id})
 				}
 			}
-			if s.Permissionship == PermissionshipUnspecified {
+			if rawSubjectPermissionship(resp) == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
 				yield(LookupSubject{}, malformed("lookup subjects", "permissionship is unspecified"))
 				return
 			}
@@ -195,4 +195,13 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 			}
 		}
 	}
+}
+
+// rawSubjectPermissionship is the wire permissionship of a lookup-subjects
+// response's main subject, from the current field or the older one.
+func rawSubjectPermissionship(resp *v1.LookupSubjectsResponse) v1.LookupPermissionship {
+	if resp.GetSubject() != nil {
+		return resp.GetSubject().GetPermissionship()
+	}
+	return resp.GetPermissionship() //nolint:staticcheck // Support older server response fields.
 }

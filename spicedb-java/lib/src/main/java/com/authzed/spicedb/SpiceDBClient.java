@@ -933,7 +933,8 @@ public final class SpiceDBClient implements SpiceDBApi {
         response -> {
           // Checked before the filter, so an unspecified result fails the read rather than being
           // skipped as "not HAS_PERMISSION".
-          if (ProtoConv.fromProto(response.getPermissionship()) == Permissionship.UNSPECIFIED)
+          if (response.getPermissionship()
+              == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
             throw malformed("looked-up resource has no permissionship");
           return options.permissionshipFilter() == LookupPermissionshipFilter.ALL
               || response.getPermissionship()
@@ -2643,14 +2644,16 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
-   * The server always sets a check's permissionship, so an unspecified (or unknown) one is a
-   * malformed response, never a result the caller has to handle.
+   * The server always sets a check's permissionship, so an unset one is a malformed response, never
+   * a result the caller has to handle. A value newer than this client (UNRECOGNIZED) is not
+   * malformed: it maps to UNSPECIFIED, which never grants, so upgrading SpiceDB cannot make the
+   * client fail.
    */
   private static Permissionship checkPermissionshipFromProto(
       CheckPermissionResponse.Permissionship v, String where) {
-    var p = ProtoConv.fromProto(v);
-    if (p == Permissionship.UNSPECIFIED) throw malformed(where + " has no permissionship");
-    return p;
+    if (v == CheckPermissionResponse.Permissionship.PERMISSIONSHIP_UNSPECIFIED)
+      throw malformed(where + " has no permissionship");
+    return ProtoConv.fromProto(v);
   }
 
   private static LookupResult.LookupSubject lookupSubjectFromProto(LookupSubjectsResponse resp) {

@@ -11,26 +11,35 @@ import (
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 )
 
-// A server always sets a permissionship, so an unspecified (or unknown) one
-// is a malformed response the client detects: INTERNAL, never a result with
-// PermissionshipUnspecified, and never silently dropped by a filter.
+// A server always sets a permissionship, so an unset one is a malformed
+// response the client detects: INTERNAL, never a result with
+// PermissionshipUnspecified, and never silently dropped by a filter. A value
+// newer than this client is not malformed: it maps to
+// PermissionshipUnspecified, which never grants, so upgrading SpiceDB cannot
+// make the client fail.
 func TestUnspecifiedPermissionshipIsMalformed(t *testing.T) {
 	ctx := context.Background()
-	for _, p := range []v1.CheckPermissionResponse_Permissionship{v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED, 99} {
+	check := func(p v1.CheckPermissionResponse_Permissionship) (CheckResult, error) {
 		c := checkClient(t, &checkServer{single: func(context.Context, *v1.CheckPermissionRequest) (*v1.CheckPermissionResponse, error) {
 			return &v1.CheckPermissionResponse{Permissionship: p, CheckedAt: &v1.ZedToken{Token: "r"}}, nil
 		}})
-		_, err := c.Check(ctx, testRequest("a"))
-		requireMalformed(t, err, "permissionship is unspecified")
-		require.ErrorContains(t, err, "client detected malformed response from server")
+		return c.Check(ctx, testRequest("a"))
 	}
+	_, err := check(v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED)
+	requireMalformed(t, err, "permissionship is unspecified")
+	require.ErrorContains(t, err, "client detected malformed response from server")
+
+	future, err := check(99)
+	require.NoError(t, err, "a permissionship newer than the client must not fail the call")
+	require.Equal(t, PermissionshipUnspecified, future.Permissionship)
+	require.False(t, future.HasPermission(), "an unknown permissionship never grants")
 
 	bulk := checkClient(t, &checkServer{bulk: func(_ context.Context, r *v1.CheckBulkPermissionsRequest) (*v1.CheckBulkPermissionsResponse, error) {
 		out := successfulBulk(r)
 		out.Pairs[1].GetItem().Permissionship = v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED
 		return out, nil
 	}})
-	_, err := bulk.CheckBulk(ctx, []PermissionCheck{testRequest("a"), testRequest("b")})
+	_, err = bulk.CheckBulk(ctx, []PermissionCheck{testRequest("a"), testRequest("b")})
 	requireMalformed(t, err, "item permissionship is unspecified")
 	var be *BulkCheckError
 	require.True(t, errors.As(err, &be))

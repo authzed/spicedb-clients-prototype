@@ -455,16 +455,66 @@ mod insecure_host_guard {
     /// passed the guard and then failed to construct at all -- while the
     /// fixture list above and the CHANGELOG both claimed it was supported.
     /// Both now go through `transport_authority`.
+    ///
+    /// A plaintext endpoint must name its port, so the portless forms are
+    /// exercised over TLS (port 443, lazily), and plaintext uses `[::1]:port`.
     #[tokio::test]
     async fn bare_ipv6_loopback_constructs_a_client() {
         for endpoint in ["::1", "[::1]", "0:0:0:0:0:0:0:1"] {
-            let result = SpiceDBProtoClient::new_with_options(endpoint, "t", true, false).await;
+            let result = SpiceDBProtoClient::new_with_connect_mode(
+                endpoint,
+                "t",
+                false,
+                false,
+                spicedb_proto::ConnectMode::Lazy,
+            )
+            .await;
             assert!(
                 result.is_ok(),
                 "bare IPv6 loopback {endpoint:?} must construct a client, got {:?}",
                 result.err()
             );
         }
+        let result = SpiceDBProtoClient::new_with_options("[::1]:50051", "t", true, false).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    /// A plaintext endpoint without a port fails at construction naming
+    /// `host:50051`, whatever its form, rather than silently dialing port 80.
+    /// A TLS endpoint without one uses 443.
+    #[tokio::test]
+    async fn plaintext_endpoints_need_a_port() {
+        for endpoint in [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "[::1]",
+            "spicedb.example.com",
+        ] {
+            for allow_remote in [false, true] {
+                match SpiceDBProtoClient::new_with_options(endpoint, "t", true, allow_remote).await
+                {
+                    Err(SpiceDBProtoClientError::InvalidEndpoint(msg)) => {
+                        assert!(msg.contains("host:50051"), "{endpoint:?}: {msg}");
+                        assert!(!msg.contains("allow_insecure_remote_credentials"), "{msg}");
+                    }
+                    other => panic!(
+                        "expected InvalidEndpoint for {endpoint:?} (allow_remote={allow_remote}), \
+                         got {:?}",
+                        other.err()
+                    ),
+                }
+            }
+        }
+        let tls = SpiceDBProtoClient::new_with_connect_mode(
+            "spicedb.example.com",
+            "t",
+            false,
+            false,
+            spicedb_proto::ConnectMode::Lazy,
+        )
+        .await;
+        assert!(tls.is_ok(), "{:?}", tls.err());
     }
 
     /// A multi-byte character straddling byte 5 must return `Err`, not panic.

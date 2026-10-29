@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Breaking:** a plaintext endpoint must name its port in every form, not
+  only as an `http://` URL: `localhost`, `127.0.0.1`, `::1` or `[::1]` with
+  `new_plaintext` or `.plaintext()` now fails at construction with
+  `InvalidArgument` naming `host:50051`, instead of silently dialing port 80.
+  A TLS endpoint without a port (bare host or `https://` URL) still uses 443.
 - Endpoint errors name the actual problem. The form (scheme, path, query,
   fragment, userinfo, port, host) is validated before the remote credentials
   policy, so `http://127.0.0.1:50066/x` reports "a path is not supported" and

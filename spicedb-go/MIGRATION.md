@@ -46,14 +46,26 @@ plaintext constructor and the credentials opt-in, as above. Without the opt-in
 `NewPlaintext(endpoint, key, WithRemotePlaintextCredentials(RemotePlaintextAllowed))`
 and, for `NewWithOpts`, `WithInsecure()` with the same opt-in.
 
-Endpoints are `host:port`, a gRPC resolver target such as
-`unix:///path/to.sock`, `http://host:port` (plaintext constructors only; the
-port is required) or `https://host[:port]` (TLS only; 443 when the port is
-omitted). Plaintext always needs an explicit port: a bare `localhost` is
-refused (write `localhost:50051`), while a bare TLS host uses 443. A URL whose scheme disagrees with the constructor, an unsupported
-scheme, or an endpoint with a path, query, fragment, userinfo or non-numeric
+Endpoints are `host:port`, `http://host:port` (plaintext constructors only;
+the port is required), `https://host[:port]` (TLS only; 443 when the port is
+omitted), or one of the gRPC targets `dns:///host:port` (client-side DNS
+resolution), `unix:/path/to.sock` / `unix:///path/to.sock` and
+`passthrough:///host:port`. Plaintext always needs an explicit port: a bare
+`localhost` is refused (write `localhost:50051`), while a bare TLS host uses
+443. A URL whose scheme disagrees with the constructor, any other scheme
+(including gRPC resolvers such as `unix-abstract:` that authzed-go passed
+through), or an endpoint with a path, query, fragment, userinfo or non-numeric
 port fails at construction with `ErrInvalidArgument` naming the problem, so a
 wrong endpoint never builds a client whose every call fails.
+
+Like authzed-go, constructors connect lazily. Where you relied on
+`grpc.WithBlock()` to fail at startup, call `Ready` instead:
+
+```go
+if err := c.Ready(ctx, client.WithReadyTimeout(10*time.Second)); err != nil {
+    return err // CodeDeadlineExceeded, naming the endpoint and the connection error
+}
+```
 
 `NewSystemTLS` uses the system trust store. `NewWithOpts` with
 `WithDialOptions` covers custom trust and mTLS. Remove any
@@ -71,12 +83,19 @@ c, err := client.NewFromConn(conn) // conn stays yours; c.Close() leaves it open
 
 ## Deadlines and retries
 
-Every unary call (including bulk checks and paged reads) gets a 30-second
-budget unless the context already has an earlier deadline, or you pass a
-per-call `With<Operation>Timeout` or a client-wide `WithDefaultTimeout`.
+Every unary call (including bulk checks) gets a 30-second budget unless the
+context already has an earlier deadline, or you pass a per-call
+`With<Operation>Timeout` or a client-wide `WithDefaultTimeout`. Paged reads
+(relationship reads, lookups, exports) apply that default to each page
+request instead, so a long read is not cut off but a stalled page fails; a
+context deadline or `With<Operation>Timeout` still bounds the whole read.
 Idempotent reads retry `Unavailable` and `Aborted` up to three times with
-jittered backoff, and writes are never retried. Streams have no default
-deadline.
+jittered backoff, and writes are never retried. Watches and imports have no
+default deadline.
+
+A response the client cannot interpret (for example a relationship without a
+subject) fails with `ErrInternal`; authzed-go handed you the empty message
+fields.
 
 Tools with their own policy should not stack it on the client's:
 

@@ -182,7 +182,7 @@ func TestJSONSnapshotRejectsLossAndPreservesTypedContainers(t *testing.T) {
 		require.Contains(t, e.Error(), "large")
 	}
 	ctx, _ := structpb.NewStruct(map[string]any{"null": nil})
-	r2, e := nativeRelationship(&v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "document", ObjectId: "d"}, Relation: "viewer", Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "a"}}, OptionalCaveat: &v1.ContextualizedCaveat{CaveatName: "c", Context: ctx}})
+	r2, e := nativeRelationship("test", &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "document", ObjectId: "d"}, Relation: "viewer", Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "a"}}, OptionalCaveat: &v1.ContextualizedCaveat{CaveatName: "c", Context: ctx}})
 	require.NoError(t, e)
 	require.Contains(t, r2.CaveatContext(), "null")
 }
@@ -195,7 +195,7 @@ func TestRelationshipConversionPreservesEveryPersistedField(t *testing.T) {
 	r = r.WithExpiration(time.Unix(123, 456).UTC())
 	wire, e := relationship(r)
 	require.NoError(t, e)
-	back, e := nativeRelationship(wire)
+	back, e := nativeRelationship("test", wire)
 	require.NoError(t, e)
 	require.Equal(t, r.String(), back.String())
 	require.Equal(t, r.CaveatName(), back.CaveatName())
@@ -210,7 +210,7 @@ func TestRelationshipConversionPreservesEveryPersistedField(t *testing.T) {
 	require.Equal(t, "prefix", protoFilter.OptionalResourceIdPrefix)
 	require.Equal(t, "member", protoFilter.OptionalSubjectFilter.OptionalRelation.Relation)
 	for _, op := range []v1.RelationshipUpdate_Operation{v1.RelationshipUpdate_OPERATION_UNSPECIFIED, v1.RelationshipUpdate_Operation(999)} {
-		update, e := nativeUpdate(&v1.RelationshipUpdate{Operation: op, Relationship: wire})
+		update, e := nativeUpdate("test", &v1.RelationshipUpdate{Operation: op, Relationship: wire})
 		require.NoError(t, e)
 		require.Equal(t, rel.UpdateOperationUnspecified, update.Operation)
 	}

@@ -108,6 +108,20 @@ const perm = Organization(orgId).permissionByName(name); // throws NotInSchemaEr
 
   At startup, verify every configured name is in `OrganizationPermissionNames`.
 
+- Type names chosen at runtime too (policy expressions, admin tools) stay
+  validated against the schema:
+
+```ts
+const def = definitionByName(typeName);              // throws NotInSchemaError
+const perm = def.ref(id).permissionByName(permName); // a checkable Permission
+const ref = permissionRefByName(typeName, permName); // resource-less, for lookups
+for await (const res of tc.lookupResourcesByName(minLatency(), typeName, permName, User(userId))) { ... }
+```
+
+  `DefinitionNames` (and the `Definitions` constants) list every definition,
+  and `SchemaText` is the schema the module was generated from, so startup
+  code can `writeSchema(SchemaText)` without shipping the `.zed` file.
+
 ## List what a subject can access
 
 ```ts
@@ -214,21 +228,35 @@ when relaying an error to another party.
 ## Test
 
 ```ts
-const db = new InMemorySpiceDB([relationshipFromTuple("organization:acme#admin@user:alice")]);
-db.setCheckResult({ resource: { objectType: "organization", objectId: "acme" }, permission: "view",
+const db = new InMemorySpiceDB([relationshipFromTuple("organization:acme#view@user:alice")]);
+const tc = new TypedClient(db); // the typed client wraps the double
+db.setCheckResult({ resource: { objectType: "organization", objectId: "acme" }, permission: "can_admin",
     subject: { object: { objectType: "user", objectId: "alice" } } }, "hasPermission");
+db.setCheckResolver(check => check.resource.objectId.startsWith("tmp-") ? "hasPermission" : undefined);
+// or grant everything: db.setCheckResolver(InMemorySpiceDB.grantAll);
 const authz: Pick<SpiceDBClient, "write" | "check" | "readRelationships"> = db; // or a real client
 ```
 
 Depend on `SpiceDBClientInterface` (the client's full method set) or a
 `Pick<SpiceDBClient, ...>` of the methods you use; both `SpiceDBClient` and
-`InMemorySpiceDB` implement it. The double works in memory for `write`,
-`readRelationships`, `deleteRelationships`, `deleteAllRelationshipsNonAtomic`,
-`importRelationships`, `exportRelationships`, `readSchema`, `writeSchema`,
-`reflectSchema` (register its result with `setReflectSchemaResult`), `check`,
-`checkBulk` and `close`; its other methods are recorded and fail with
-`Code.Unimplemented`. `InMemorySpiceDB.cursorAfter(n)` builds a resume cursor
-after n matching items, and `db.setReadSchemaRevision(SchemaRevision.Omitted)`
+`InMemorySpiceDB` implement it, and a generated `TypedClient` accepts either.
+The double does not evaluate a schema. It resolves a check in this order: the
+result registered with `setCheckResult` for that exact check; then the
+resolver set with `setCheckResolver` (it sees the call's default context merged
+in; return `undefined` to fall through; inject failures with the fault hook); then
+a stored relationship on the resource whose relation is the permission's name
+and whose subject matches exactly or by wildcard (caveated:
+`conditionalPermission`); otherwise `noPermission`. `lookupResources` and
+`lookupSubjects` enumerate the objects of the requested type found in stored
+relationships and yield those that resolution grants, honoring the
+permissionship filter, wildcards, `limit` and `cursor`. The double also works
+in memory for `write`, `readRelationships`, `deleteRelationships`,
+`deleteAllRelationshipsNonAtomic`, `importRelationships`,
+`exportRelationships`, `readSchema`, `writeSchema`, `reflectSchema` (register
+its result with `setReflectSchemaResult`), `checkBulk` and `close`; its other
+methods are recorded and fail with `Code.Unimplemented`.
+`InMemorySpiceDB.cursorAfter(n)` builds a resume cursor after n matching (or,
+for lookups, granted) items, and `db.setReadSchemaRevision(SchemaRevision.Omitted)`
 emulates servers whose schema reads report no revision. Its errors have the real client's classes, codes and
 message shape; it honors cursors, limits, the export filter and
 `onHeader`/`onTrailer` (see `setResponseMetadata`). Build expected errors with
@@ -238,7 +266,7 @@ failure. It records every call (`db.calls`, `db.callsOf("write")`: operation,
 index, request, options) and injects faults: `db.failNext("check", err)` fails
 one call; `db.setFaultHook(f => ...)` is consulted at `FaultStage.Call`,
 `ImportBatch` (`f.item` is the batch index, `f.batch` its relationships), `ImportCommit` and `Item` (each
-read or export item), and a failed write or import applies nothing.
+read, export or lookup item), and a failed write or import applies nothing.
 
 ```ts
 db.setFaultHook(f => f.call.operation === "importRelationships" && f.stage === FaultStage.ImportBatch && f.item === 2

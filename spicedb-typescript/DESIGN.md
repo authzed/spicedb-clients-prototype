@@ -197,6 +197,11 @@ and its generated schema facade.
     transport and remote-credential enums. Return native `ZedToken`/check results.
   - Collection writes and directly returned async iterators retain ownership and
     cancellation behavior. Generated caveat contexts use native JSON types.
+  - `TypedClient` takes `SpiceDBClientInterface`, so it wraps a real client or
+    `InMemorySpiceDB`. Generated `SchemaText`, `Definitions`/`DefinitionNames`,
+    `definitionByName`, `permissionRefByName` and
+    `TypedClient.lookupResourcesByName` serve code that receives type and
+    permission names at runtime, validated against the schema.
   - `TypedTransaction` exposes `updates`, `preconditions` and `error`;
     `withSubject` always constrains the subject relation and
     `withSubjectAnyRelation` does not. `--typescript.rename` keeps schemas
@@ -271,9 +276,30 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   (one transaction; duplicates fail), `exportRelationships` (filter and
   cursor), `readSchema`, `writeSchema`, `reflectSchema` (result registered with
   `setReflectSchemaResult`), `check`, `checkBulk` (including
-  `BulkItemErrors.Returned`) and `close` with the client's signatures, so
-  `Pick<SpiceDBClient, ...>` accepts both. Checks return results or errors
-  registered with `setCheckResult`; unregistered checks deny. Its errors have
+  `BulkItemErrors.Returned`), `lookupResources`, `lookupSubjects` and `close`
+  with the client's signatures, so `Pick<SpiceDBClient, ...>` accepts both.
+  A check resolves in the root design's order: the result or error registered
+  with `setCheckResult` for that exact check; then the `CheckResolver` set with
+  `setCheckResolver` (it receives the `CheckRequest` with the call's default
+  `CheckOptions.context` merged under the check's own keys, and returns a
+  permissionship or `undefined` to decline and fall through; it never fails a
+  call, which is the fault hook's job; `InMemorySpiceDB.grantAll` grants
+  everything); then the live stored
+  relationships, where one on the resource whose relation is the permission's
+  name and whose subject is the checked one (or, for a direct subject, its
+  type's wildcard) grants, conditionally when caveated; otherwise
+  `noPermission`. A subject relation of `...` is direct throughout. Lookups
+  enumerate the objects of the requested type appearing in live relationships
+  (as resource or subject), in order of first appearance (the identity order
+  reads yield), resolve each candidate through the same order (with the
+  lookup's consistency and context), and yield granted and conditional
+  results, conditional ones with `partialCaveat` naming no missing context
+  (caveats are not evaluated); a stored wildcard subject is returned as `*`.
+  They honor the permissionship filter, wildcard option (`*` is left out only
+  under `Wildcards.Exclude`), `limit` and `cursor` (the decimal count of
+  granted candidates, including those the filter drops, so a filtered
+  lookup's cursor resumes past skipped results). Expired relationships never
+  grant. Its errors have
   the real client's classes, codes and message shape (server failures carry
   Connect's `[code]` prefix and `serverMessage`; local validation does not),
   it rejects the same retry opt-ins, and it reports `setResponseMetadata`
@@ -287,13 +313,14 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   record one call. `SpiceDBClientInterface` lists the client's full public
   method set (a compile-time test in `full-client-double.test.ts` keeps it
   identical to `SpiceDBClient`'s), and both `SpiceDBClient` and
-  `InMemorySpiceDB` implement it. The double's remaining operations (lookups,
-  expand, schema introspection, `watch`, the experimental methods) are
+  `InMemorySpiceDB` implement it. The double's remaining operations (expand,
+  schema introspection, `watch`, the experimental methods) are
   recorded, consult the fault hook, apply the client's option checks, and fail
   with `Code.Unimplemented` in the client's error shape (`[unimplemented]
   <operation> is not implemented by InMemorySpiceDB`; streams fail from
   iteration); `raw()` throws Unimplemented. An `ImportBatch` fault fires once
-  each batch is full (or the input ends) and carries it as `Fault.batch`.
+  each batch is full (or the input ends) and carries it as `Fault.batch`;
+  `Item` fires before each read, export and lookup item.
   `InMemorySpiceDB.cursorAfter(n)` builds the cursor the double puts on the
   n-th matching item (the decimal count `n`, stable for tests), and
   `setReadSchemaRevision(SchemaRevision.Omitted)` makes `readSchema` report an
@@ -328,7 +355,12 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   batch size, paging state, watch schema changes, all-or-nothing delete and
   delete-all progress.** See the sections above.
 - **MIGRATION.md and dependency floors.** `MIGRATION.md` covers
-  `@authzed/authzed-node`. Dependencies declare the lowest versions verified to
+  `@authzed/authzed-node`; it opens with a Requirements table (Node 20.19,
+  SpiceDB 1.30, the protobuf and Connect runtimes, `@grpc/grpc-js` no longer
+  needed) and has a legacy-to-new table of renamed request and response
+  members. `package.json` declares `engines.node` >=20.19.0. `README.md`
+  covers installation (including from tarballs before publication), a first
+  call and links. Dependencies declare the lowest versions verified to
   work (`@bufbuild/protobuf` ^2.11.0, matching the pinned protoc-gen-es;
   `@connectrpc/connect` ^2.0.0); `@types/node` is an optional peer (>=20.19.0).
   Build and test tools stay in devDependencies.

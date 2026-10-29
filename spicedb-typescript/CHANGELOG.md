@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Test double check resolution and lookups
+
+- `InMemorySpiceDB` resolves a check in a fixed order: the result registered
+  with `setCheckResult`; then a `CheckResolver` installed with
+  `setCheckResolver` (a callback receiving the `CheckRequest`, with the call's
+  default `CheckOptions.context` merged under the check's own keys, and
+  returning a permissionship or `undefined` to decline; it never fails a call:
+  use the fault hook for that), with
+  `InMemorySpiceDB.grantAll` granting everything; then the stored
+  relationships (one on the resource whose relation is the permission's name,
+  with the checked subject or its type's wildcard, grants; caveated ones grant
+  conditionally); otherwise no permission. Previously an unregistered check
+  always denied; now a stored `document:d1#view@user:alice` grants
+  `document:d1#view` to `user:alice`.
+- `InMemorySpiceDB.lookupResources` and `lookupSubjects` work in memory instead
+  of failing with `Code.Unimplemented`: they enumerate the objects of the
+  requested type found in stored relationships and yield those the check
+  resolution grants, in order of first appearance (conditional results
+  reported as conditional, with `partialCaveat`; a stored wildcard subject as
+  `*`), honoring
+  the permissionship filter, wildcard option, `limit` and `cursor`
+  (`InMemorySpiceDB.cursorAfter(n)`). They are recorded and consult the fault
+  hook at `FaultStage.Call` and before each item (`FaultStage.Item`).
+- A subject relation of `...` is a direct subject in the double's checks and
+  registrations.
+
+### Generated typed client (`spicedb-gen --lang typescript`)
+
+- `TypedClient` takes (and exposes as `client`) a `SpiceDBClientInterface`
+  rather than a `SpiceDBClient`, so it wraps `InMemorySpiceDB` in tests.
+- For code that receives type and permission names at runtime: `SchemaText`
+  (the schema the module was generated from), `Definitions`,
+  `DefinitionNames`, `DefinitionName`, `AnyResourceRef`,
+  `definitionByName(name)` (names, `ref(id)`, `permissionRef(permission)`),
+  `permissionRefByName(definition, permission)` and
+  `TypedClient.lookupResourcesByName(c, definition, permission, subject,
+  options?)`. Unknown names throw `NotInSchemaError` before any call. A schema
+  definition whose generated names collide with these now fails generation
+  (use `--typescript.rename`).
+
+### Documentation
+
+- `README.md`: installation (including from tarballs before publication), a
+  first call, and links.
+- `MIGRATION.md` opens with a Requirements table (Node 20.19, SpiceDB 1.30,
+  runtime dependency floors; `@grpc/grpc-js` is not needed) and lists renamed
+  request and response members. `package.json` declares `engines.node`
+  `>=20.19.0`.
+
 ### Full-client test double
 
 - `SpiceDBClientInterface` lists `SpiceDBClient`'s full public method set; the

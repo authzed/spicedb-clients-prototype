@@ -73,7 +73,7 @@ public class TransactionTests
 
         txn.Preconditions.Should().HaveCount(1);
         txn.Preconditions[0].Operation.Should().Be(
-            Authzed.Api.V1.Precondition.Types.Operation.MustNotMatch);
+            PreconditionOperation.MustNotMatch);
         txn.Preconditions[0].Filter.ResourceType.Should().Be("document");
     }
 
@@ -86,7 +86,7 @@ public class TransactionTests
 
         txn.Preconditions.Should().HaveCount(1);
         txn.Preconditions[0].Operation.Should().Be(
-            Authzed.Api.V1.Precondition.Types.Operation.MustMatch);
+            PreconditionOperation.MustMatch);
     }
 
     [Fact]
@@ -149,5 +149,19 @@ public class TransactionTests
 
         txn.V1Updates.Should().HaveCount(2);
         txn.Preconditions.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void IsIdempotentOnlyForTouchesWithoutPreconditions()
+    {
+        new Transaction().IsIdempotent.Should().BeTrue();
+        var touch = new Transaction(); touch.Touch(TestRel());
+        touch.IsIdempotent.Should().BeTrue();
+        var create = new Transaction(); create.Touch(TestRel()); create.Create(TestRel("doc2"));
+        create.IsIdempotent.Should().BeFalse();
+        var delete = new Transaction(); delete.Delete(TestRel());
+        delete.IsIdempotent.Should().BeFalse();
+        var guarded = new Transaction(); guarded.Touch(TestRel()); guarded.MustMatch(new Filter("document"));
+        guarded.IsIdempotent.Should().BeFalse();
     }
 }

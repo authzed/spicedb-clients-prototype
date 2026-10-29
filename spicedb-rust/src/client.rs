@@ -1,12 +1,17 @@
 #[path = "operations.rs"]
 mod operations;
-use operations::remaining_timeout;
+use operations::wire;
+pub(crate) use operations::{call_once, retry_call};
+use operations::{mutation_call, mutation_policy};
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
+use crate::options::{DefaultDeadline, Operation, RetryMode, RetryPolicy, StreamRetryMode};
 use crate::types::*;
+use std::collections::BTreeMap;
 
 use futures::Stream;
 
@@ -15,11 +20,7 @@ use spicedb_proto::authzed::api::v1 as proto;
 use spicedb_proto::SpiceDBProtoClient;
 
 const DEFAULT_CHECK_BATCH_SIZE: usize = 1_000;
-const DEFAULT_IMPORT_BATCH_SIZE: usize = 1_000;
-
-const MAX_RETRIES: u32 = 3;
-
-const BASE_RETRY_DELAY_MS: u64 = 100;
+const DEFAULT_IMPORT_BATCH_SIZE: u32 = 1_000;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -28,9 +29,153 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct SpiceDBClient {
     // The proto client holds the gRPC channel and bearer-token interceptor.
     proto: SpiceDBProtoClient,
-    // Applied to any unary call that doesn't specify its own timeout. See
-    // [`DEFAULT_TIMEOUT`].
+    // Applied to any unary call that doesn't specify its own timeout. `None`
+    // when the default deadline is disabled.
+    default_timeout: Option<Duration>,
+    // `None` when retries are disabled.
+    retry: Option<Arc<RetryPolicy>>,
+    stream_retries: StreamRetryMode,
+    // Client-wide per-operation policies; a per-call policy still wins.
+    operation_retry: Arc<BTreeMap<Operation, Arc<RetryPolicy>>>,
+}
+
+/// Execution settings shared by both builders.
+#[derive(Debug, Clone)]
+struct ExecSettings {
     default_timeout: Duration,
+    default_deadline: DefaultDeadline,
+    retry_policy: RetryPolicy,
+    retries: RetryMode,
+    stream_retries: StreamRetryMode,
+    operation_retry: BTreeMap<Operation, RetryPolicy>,
+}
+
+impl Default for ExecSettings {
+    fn default() -> Self {
+        Self {
+            default_timeout: DEFAULT_TIMEOUT,
+            default_deadline: DefaultDeadline::Enabled,
+            retry_policy: RetryPolicy::default(),
+            retries: RetryMode::Enabled,
+            stream_retries: StreamRetryMode::Enabled,
+            operation_retry: BTreeMap::new(),
+        }
+    }
+}
+
+impl ExecSettings {
+    fn validate(&self) -> Result<(), SpiceDBError> {
+        if self.default_timeout.is_zero() {
+            return Err(invalid("default_timeout", "must be positive"));
+        }
+        self.retry_policy.validate()?;
+        for (operation, policy) in &self.operation_retry {
+            policy.validate()?;
+            if operation.never_replayable() && policy.max_retries > 0 {
+                return Err(invalid(
+                    "operation_retry_policy",
+                    &format!("{operation} cannot be retried: it is not idempotent on replay"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn into_client(self, proto: SpiceDBProtoClient) -> Result<SpiceDBClient, SpiceDBError> {
+        self.validate()?;
+        Ok(SpiceDBClient {
+            proto,
+            default_timeout: match self.default_deadline {
+                DefaultDeadline::Enabled => Some(self.default_timeout),
+                DefaultDeadline::Disabled => None,
+            },
+            retry: match self.retries {
+                RetryMode::Enabled => Some(Arc::new(self.retry_policy)),
+                RetryMode::Disabled => None,
+            },
+            stream_retries: self.stream_retries,
+            operation_retry: Arc::new(
+                self.operation_retry
+                    .into_iter()
+                    .map(|(operation, policy)| (operation, Arc::new(policy)))
+                    .collect(),
+            ),
+        })
+    }
+}
+
+/// Builder methods shared by [`SpiceDBClientBuilder`] and
+/// [`SpiceDBChannelBuilder`].
+macro_rules! exec_settings_methods {
+    () => {
+        /// The default deadline for unary operations without their own timeout
+        /// (30 seconds by default). Must be positive; use
+        /// [`default_deadline`](Self::default_deadline) to disable it.
+        pub fn default_timeout(mut self, timeout: Duration) -> Self {
+            self.exec.default_timeout = timeout;
+            self
+        }
+
+        /// `DefaultDeadline::Disabled` removes the client default deadline.
+        /// Per-call timeouts, and dropping the future, still bound operations.
+        pub fn default_deadline(mut self, mode: DefaultDeadline) -> Self {
+            self.exec.default_deadline = mode;
+            self
+        }
+
+        /// Replaces the retry policy for idempotent reads and stream
+        /// establishment. Mutations are never retried under any policy.
+        pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+            self.exec.retry_policy = policy;
+            self
+        }
+
+        /// `RetryMode::Disabled` makes every operation a single attempt.
+        pub fn retries(mut self, mode: RetryMode) -> Self {
+            self.exec.retries = mode;
+            self
+        }
+
+        /// `StreamRetryMode::Disabled` opens each server stream (reads,
+        /// lookups, exports) once. Watches are opened once under the
+        /// client-wide policy whatever this mode; only a per-call or
+        /// per-operation policy reopens one.
+        pub fn stream_retries(mut self, mode: StreamRetryMode) -> Self {
+            self.exec.stream_retries = mode;
+            self
+        }
+
+        /// Sets the retry policy for every call of one operation, for
+        /// example a client that reopens a watch that fails before its
+        /// first event (the client-wide policy never does):
+        ///
+        /// ```no_run
+        /// # async fn demo() -> Result<(), spicedb::SpiceDBError> {
+        /// use spicedb::{Operation, RetryPolicy, SpiceDBClient};
+        /// let client = SpiceDBClient::builder("localhost:50051", "key")
+        ///     .plaintext()
+        ///     .operation_retry_policy(Operation::Updates, RetryPolicy::new())
+        ///     .build()
+        ///     .await?;
+        /// # Ok(()) }
+        /// ```
+        ///
+        /// Precedence is the per-call
+        /// [`CallOptions::with_retry_policy`](crate::CallOptions::with_retry_policy),
+        /// then this policy, then the client-wide policy and retry modes; like
+        /// a per-call policy it also governs stream establishment. For
+        /// [`Operation::Write`] it retries only writes that are idempotent on
+        /// replay ([`Transaction::is_idempotent`]); other writes are sent once,
+        /// without error. Operations that are never idempotent (deletes,
+        /// delete-all, imports, counter registration and unregistration)
+        /// reject a policy with retries when the client is built
+        /// (`InvalidArgument`); a zero-retry policy is allowed for any
+        /// operation. Setting an operation again replaces its policy.
+        pub fn operation_retry_policy(mut self, operation: Operation, policy: RetryPolicy) -> Self {
+            self.exec.operation_retry.insert(operation, policy);
+            self
+        }
+    };
 }
 
 #[non_exhaustive]
@@ -39,7 +184,7 @@ pub struct SpiceDBClientBuilder {
     token: String,
     plaintext: bool,
     remote_credentials_policy: RemoteCredentialsPolicy,
-    default_timeout: Duration,
+    exec: ExecSettings,
 }
 
 impl SpiceDBClientBuilder {
@@ -54,15 +199,10 @@ impl SpiceDBClientBuilder {
         self
     }
 
-    pub fn default_timeout(mut self, timeout: Duration) -> Self {
-        self.default_timeout = timeout;
-        self
-    }
+    exec_settings_methods!();
 
     pub async fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
-        if self.default_timeout.is_zero() {
-            return Err(invalid("default_timeout", "must be positive"));
-        }
+        self.exec.validate()?;
         let proto = SpiceDBProtoClient::new_with_options(
             &self.endpoint,
             &self.token,
@@ -70,34 +210,59 @@ impl SpiceDBClientBuilder {
             self.remote_credentials_policy == RemoteCredentialsPolicy::AllowInsecureRemote,
         )
         .await
-        .map_err(|e| match e {
-            spicedb_proto::SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_) => invalid(
-                "remote_credentials_policy",
-                "remote plaintext credentials require RemoteCredentialsPolicy::AllowInsecureRemote",
-            ),
-            spicedb_proto::SpiceDBProtoClientError::UnixSocketNotSupported(msg)
-            | spicedb_proto::SpiceDBProtoClientError::InvalidToken(msg) => {
-                SpiceDBError::InvalidArgument(msg.into())
-            }
-            transport @ spicedb_proto::SpiceDBProtoClientError::Transport(_) => {
-                // Keep the transport failure itself as the error's source, not
-                // just its rendered text. `SpiceDBProtoClientError` implements
-                // `source()` down to the `tonic::transport::Error`, so a caller
-                // can walk from `SpiceDBError::Transport` to the underlying
-                // connection or TLS failure -- the class of error where the
-                // cause chain is most diagnostic, and previously the only one
-                // in this hierarchy with no chain at all.
-                SpiceDBError::Transport(error::ErrorPayload::with_cause(
-                    transport.to_string(),
-                    transport,
-                ))
-            }
-        })?;
+        .map_err(proto_client_error)?;
+        self.exec.into_client(proto)
+    }
+}
 
-        Ok(SpiceDBClient {
-            proto,
-            default_timeout: self.default_timeout,
-        })
+fn proto_client_error(e: spicedb_proto::SpiceDBProtoClientError) -> SpiceDBError {
+    match e {
+        spicedb_proto::SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_) => invalid(
+            "remote_credentials_policy",
+            "remote plaintext credentials require RemoteCredentialsPolicy::AllowInsecureRemote",
+        ),
+        spicedb_proto::SpiceDBProtoClientError::UnixSocketNotSupported(msg)
+        | spicedb_proto::SpiceDBProtoClientError::InvalidToken(msg) => {
+            SpiceDBError::InvalidArgument(msg.into())
+        }
+        transport @ spicedb_proto::SpiceDBProtoClientError::Transport(_) => {
+            // Keep the transport failure itself as the error's source, not
+            // just its rendered text, so a caller can walk from
+            // `SpiceDBError::Transport` to the underlying connection or TLS
+            // failure.
+            SpiceDBError::Transport(error::ErrorPayload::with_cause(
+                transport.to_string(),
+                transport,
+            ))
+        }
+    }
+}
+
+/// Builds a [`SpiceDBClient`] over a caller-supplied tonic channel. See
+/// [`SpiceDBClient::from_channel`].
+#[non_exhaustive]
+pub struct SpiceDBChannelBuilder {
+    channel: tonic::transport::Channel,
+    token: Option<String>,
+    exec: ExecSettings,
+}
+
+impl SpiceDBChannelBuilder {
+    /// Sends `Bearer <token>` on every call. Without it no `authorization`
+    /// header is added (a caller may still send one through
+    /// [`CallOptions`](crate::CallOptions)).
+    pub fn token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
+        self
+    }
+
+    exec_settings_methods!();
+
+    /// Builds the client. Nothing is dialed: the channel is used as supplied.
+    pub fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
+        let proto = SpiceDBProtoClient::from_channel(self.channel, self.token.as_deref())
+            .map_err(proto_client_error)?;
+        self.exec.into_client(proto)
     }
 }
 
@@ -128,7 +293,34 @@ impl SpiceDBClient {
             token: token.into(),
             plaintext: false,
             remote_credentials_policy: RemoteCredentialsPolicy::LoopbackOnly,
-            default_timeout: DEFAULT_TIMEOUT,
+            exec: ExecSettings::default(),
+        }
+    }
+
+    /// Builds a client over an existing tonic [`Channel`](tonic::transport::Channel):
+    /// an in-memory channel (`Endpoint::connect_with_connector` over a
+    /// `tokio::io::duplex`), an embedded SpiceDB, or a connection the caller
+    /// configured itself.
+    ///
+    /// The connection stays caller-owned. `Channel` is a cheap handle onto a
+    /// shared connection; the client keeps its own clone and dropping the
+    /// client never closes the caller's. Deadline and retry settings apply;
+    /// endpoint, TLS and remote-credential settings do not, because the caller
+    /// chose the transport.
+    ///
+    /// ```no_run
+    /// # async fn demo(channel: tonic::transport::Channel) -> Result<(), spicedb::SpiceDBError> {
+    /// let client = spicedb::SpiceDBClient::from_channel(channel.clone())
+    ///     .token("preshared-key")
+    ///     .build()?;
+    /// drop(client); // `channel` remains usable.
+    /// # Ok(()) }
+    /// ```
+    pub fn from_channel(channel: tonic::transport::Channel) -> SpiceDBChannelBuilder {
+        SpiceDBChannelBuilder {
+            channel,
+            token: None,
+            exec: ExecSettings::default(),
         }
     }
 
@@ -139,8 +331,8 @@ impl SpiceDBClient {
         &self.proto
     }
 
-    fn effective_timeout(&self, timeout: Option<Duration>) -> Duration {
-        timeout.unwrap_or(self.default_timeout)
+    fn effective_timeout(&self, timeout: Option<Duration>) -> Option<Duration> {
+        timeout.or(self.default_timeout)
     }
 
     // -----------------------------------------------------------------------
@@ -150,10 +342,8 @@ impl SpiceDBClient {
     async fn write_impl(
         &self,
         txn: &Transaction,
-        timeout: Option<Duration>,
         metadata: Option<&Context>,
     ) -> Result<String, SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let updates: Vec<proto::RelationshipUpdate> = txn
             .updates()
             .iter()
@@ -179,22 +369,28 @@ impl SpiceDBClient {
             .collect();
 
         let preconditions = preconditions_to_proto(txn.preconditions())?;
+        // An empty transaction is sent as is: SpiceDB accepts it, evaluates
+        // any preconditions, and returns the current revision. Only a
+        // touch-only write without preconditions is idempotent on replay
+        // (Transaction::is_idempotent).
+        let policy = mutation_policy(txn.is_idempotent(), "write")?;
 
-        let resp = self
-            .call_once(|| async {
-                let mut request = tonic::Request::new(proto::WriteRelationshipsRequest {
+        let resp = mutation_call(
+            || async {
+                let request = wire(proto::WriteRelationshipsRequest {
                     updates: updates.clone(),
                     optional_preconditions: preconditions.clone(),
                     optional_transaction_metadata: metadata.map(check_context_to_proto),
                 });
-                request.set_timeout(remaining_timeout(timeout));
                 self.proto
                     .permissions
                     .clone()
                     .write_relationships(request)
                     .await
-            })
-            .await?;
+            },
+            policy,
+        )
+        .await?;
 
         Ok(resp
             .into_inner()
@@ -211,15 +407,10 @@ impl SpiceDBClient {
     // Schema
     // -----------------------------------------------------------------------
 
-    async fn read_schema_impl(
-        &self,
-        timeout: Option<Duration>,
-    ) -> Result<(String, String), SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
+    async fn read_schema_impl(&self) -> Result<(String, String), SpiceDBError> {
         let resp = self
             .retry(|| async {
-                let mut request = tonic::Request::new(proto::ReadSchemaRequest {});
-                request.set_timeout(remaining_timeout(timeout));
+                let request = wire(proto::ReadSchemaRequest {});
                 self.proto.schema.clone().read_schema(request).await
             })
             .await?;
@@ -229,21 +420,19 @@ impl SpiceDBClient {
         Ok((inner.schema_text, revision))
     }
 
-    async fn write_schema_impl(
-        &self,
-        schema: &str,
-        timeout: Option<Duration>,
-    ) -> Result<String, SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
-        let resp = self
-            .call_once(|| async {
-                let mut request = tonic::Request::new(proto::WriteSchemaRequest {
+    async fn write_schema_impl(&self, schema: &str) -> Result<String, SpiceDBError> {
+        // Writing the same schema twice is idempotent, so a caller may opt in.
+        let policy = mutation_policy(true, "write schema")?;
+        let resp = mutation_call(
+            || async {
+                let request = wire(proto::WriteSchemaRequest {
                     schema: schema.to_string(),
                 });
-                request.set_timeout(remaining_timeout(timeout));
                 self.proto.schema.clone().write_schema(request).await
-            })
-            .await?;
+            },
+            policy,
+        )
+        .await?;
 
         Ok(resp
             .into_inner()
@@ -255,13 +444,11 @@ impl SpiceDBClient {
     async fn reflect_schema_impl(
         &self,
         consistency: &Strategy,
-        timeout: Option<Duration>,
         filters: &[ReflectionFilter],
     ) -> Result<ReflectSchemaResult, SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                let mut request = tonic::Request::new(proto::ReflectSchemaRequest {
+                let request = wire(proto::ReflectSchemaRequest {
                     consistency: Some(consistency.to_proto()),
                     optional_filters: filters
                         .iter()
@@ -273,7 +460,6 @@ impl SpiceDBClient {
                         })
                         .collect(),
                 });
-                request.set_timeout(remaining_timeout(timeout));
                 self.proto.schema.clone().reflect_schema(request).await
             })
             .await?;
@@ -296,19 +482,16 @@ impl SpiceDBClient {
         consistency: &Strategy,
         definition_name: &str,
         relation_name: &str,
-        timeout: Option<Duration>,
         definition_filter: Option<&str>,
     ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                let mut request = tonic::Request::new(proto::ComputablePermissionsRequest {
+                let request = wire(proto::ComputablePermissionsRequest {
                     consistency: Some(consistency.to_proto()),
                     definition_name: definition_name.to_string(),
                     relation_name: relation_name.to_string(),
                     optional_definition_name_filter: definition_filter.unwrap_or_default().into(),
                 });
-                request.set_timeout(remaining_timeout(timeout));
                 self.proto
                     .schema
                     .clone()
@@ -338,17 +521,14 @@ impl SpiceDBClient {
         consistency: &Strategy,
         definition_name: &str,
         permission_name: &str,
-        timeout: Option<Duration>,
     ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                let mut request = tonic::Request::new(proto::DependentRelationsRequest {
+                let request = wire(proto::DependentRelationsRequest {
                     consistency: Some(consistency.to_proto()),
                     definition_name: definition_name.to_string(),
                     permission_name: permission_name.to_string(),
                 });
-                request.set_timeout(remaining_timeout(timeout));
                 self.proto.schema.clone().dependent_relations(request).await
             })
             .await?;
@@ -373,16 +553,13 @@ impl SpiceDBClient {
         &self,
         consistency: &Strategy,
         comparison_schema: &str,
-        timeout: Option<Duration>,
     ) -> Result<(Vec<SchemaDiff>, String), SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                let mut request = tonic::Request::new(proto::DiffSchemaRequest {
+                let request = wire(proto::DiffSchemaRequest {
                     consistency: Some(consistency.to_proto()),
                     comparison_schema: comparison_schema.to_string(),
                 });
-                request.set_timeout(remaining_timeout(timeout));
                 self.proto.schema.clone().diff_schema(request).await
             })
             .await?;
@@ -405,12 +582,10 @@ impl SpiceDBClient {
         resource_type: &str,
         resource_id: &str,
         permission: &str,
-        timeout: Option<Duration>,
     ) -> Result<ExpandPermissionTreeResult, SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                let mut request = tonic::Request::new(proto::ExpandPermissionTreeRequest {
+                let request = wire(proto::ExpandPermissionTreeRequest {
                     consistency: Some(consistency.to_proto()),
                     resource: Some(proto::ObjectReference {
                         object_type: resource_type.to_string(),
@@ -418,7 +593,6 @@ impl SpiceDBClient {
                     }),
                     permission: permission.to_string(),
                 });
-                request.set_timeout(remaining_timeout(timeout));
                 self.proto
                     .permissions
                     .clone()
@@ -453,17 +627,14 @@ impl SpiceDBClient {
         &self,
         name: &str,
         filter: &Filter,
-        timeout: Option<Duration>,
     ) -> Result<(), SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let filter = filter.to_proto()?;
+        mutation_policy(false, "register relationship counter")?;
         self.call_once(|| async {
-            let mut request =
-                tonic::Request::new(proto::ExperimentalRegisterRelationshipCounterRequest {
-                    name: name.to_string(),
-                    relationship_filter: Some(filter.clone()),
-                });
-            request.set_timeout(remaining_timeout(timeout));
+            let request = wire(proto::ExperimentalRegisterRelationshipCounterRequest {
+                name: name.to_string(),
+                relationship_filter: Some(filter.clone()),
+            });
             self.proto
                 .experimental
                 .clone()
@@ -478,16 +649,12 @@ impl SpiceDBClient {
     async fn experimental_count_relationships_impl(
         &self,
         name: &str,
-        timeout: Option<Duration>,
     ) -> Result<ExperimentalCountRelationshipsResult, SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                let mut request =
-                    tonic::Request::new(proto::ExperimentalCountRelationshipsRequest {
-                        name: name.to_string(),
-                    });
-                request.set_timeout(remaining_timeout(timeout));
+                let request = wire(proto::ExperimentalCountRelationshipsRequest {
+                    name: name.to_string(),
+                });
                 self.proto
                     .experimental
                     .clone()
@@ -522,15 +689,12 @@ impl SpiceDBClient {
     async fn experimental_unregister_relationship_counter_impl(
         &self,
         name: &str,
-        timeout: Option<Duration>,
     ) -> Result<(), SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
+        mutation_policy(false, "unregister relationship counter")?;
         self.call_once(|| async {
-            let mut request =
-                tonic::Request::new(proto::ExperimentalUnregisterRelationshipCounterRequest {
-                    name: name.to_string(),
-                });
-            request.set_timeout(remaining_timeout(timeout));
+            let request = wire(proto::ExperimentalUnregisterRelationshipCounterRequest {
+                name: name.to_string(),
+            });
             self.proto
                 .experimental
                 .clone()
@@ -548,13 +712,11 @@ impl SpiceDBClient {
         resource_type: &str,
         permission: &str,
         subject: &SubjectRef,
-        timeout: Option<Duration>,
     ) -> Result<ExperimentalRoaringLookupResourcesResult, SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
         let consistency = consistency.to_proto();
         let resp = self
             .retry(|| async {
-                let mut request = tonic::Request::new(
+                let request = wire(
                     materialize_proto::ExperimentalRoaringLookupResourcesRequest {
                         consistency: Some(consistency.clone()),
                         resource_object_type: resource_type.to_string(),
@@ -562,7 +724,6 @@ impl SpiceDBClient {
                         subject: Some(subject.to_proto()),
                     },
                 );
-                request.set_timeout(remaining_timeout(timeout));
                 self.proto
                     .materialize
                     .clone()
@@ -582,10 +743,6 @@ impl SpiceDBClient {
         })
     }
 
-    // -----------------------------------------------------------------------
-    // Retry with exponential backoff
-    // -----------------------------------------------------------------------
-
     async fn retry<F, Fut, T>(&self, f: F) -> Result<tonic::Response<T>, SpiceDBError>
     where
         F: Fn() -> Fut,
@@ -599,34 +756,7 @@ impl SpiceDBClient {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
     {
-        f().await.map_err(error::from_grpc_status)
-    }
-}
-
-fn jittered_backoff_ms(attempt: u32) -> u64 {
-    let cap_ms = (BASE_RETRY_DELAY_MS * 2u64.pow(attempt)).min(5000);
-    (rand::random::<f64>() * cap_ms as f64) as u64
-}
-
-pub(crate) async fn retry_call<F, Fut, T>(f: F) -> Result<tonic::Response<T>, SpiceDBError>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
-{
-    let mut attempt = 0u32;
-    loop {
-        match f().await {
-            Ok(resp) => return Ok(resp),
-            Err(status) => {
-                let err = error::from_grpc_status(status);
-                if !error::is_transient(&err) || attempt >= MAX_RETRIES {
-                    return Err(err);
-                }
-                let delay_ms = jittered_backoff_ms(attempt);
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-                attempt += 1;
-            }
-        }
+        call_once(f).await
     }
 }
 

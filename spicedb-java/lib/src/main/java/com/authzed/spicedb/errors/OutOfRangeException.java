@@ -10,10 +10,10 @@ package com.authzed.spicedb.errors;
 public class OutOfRangeException extends SpiceDBException {
 
   public OutOfRangeException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.OUT_OF_RANGE, message, null);
   }
 
   public OutOfRangeException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.OUT_OF_RANGE, message, cause);
   }
 }

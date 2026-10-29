@@ -128,12 +128,34 @@ var grpcCodeToErrorCode = map[codes.Code]ErrorCode{
 	codes.DataLoss:           CodeDataLoss,
 }
 
+// errorCodeToGRPC is the inverse of grpcCodeToErrorCode, used to report a
+// gRPC status for errors that have no server status underneath them.
+var errorCodeToGRPC = func() map[ErrorCode]codes.Code {
+	m := make(map[ErrorCode]codes.Code, len(grpcCodeToErrorCode))
+	for g, c := range grpcCodeToErrorCode {
+		m[c] = g
+	}
+	return m
+}()
+
 // Error is a native SpiceDB error carrying a native error code and message.
 // It satisfies errors.Is against the sentinel matching its Code, and Unwrap
 // exposes the underlying gRPC status error for advanced inspection.
+//
+// Error also implements GRPCStatus, so status.Code, status.FromError and
+// status.Convert report the matching gRPC code for every *Error: server
+// errors, local cancellation and validation errors, and errors built with
+// NewError.
 type Error struct {
-	Code    ErrorCode
+	Code ErrorCode
+	// Message is the display message. For server errors it is
+	// "spicedb: <operation>: <server message>".
 	Message string
+
+	// ServerMessage is the server's status message exactly as sent, without
+	// the operation prefix Message adds. Forward this when relaying a server
+	// error to another party. Empty for errors raised locally by this client.
+	ServerMessage string
 
 	// Reason is SpiceDB's structured explanation for the failure: the name of
 	// an authzed.api.v1.ErrorReason enum value, e.g.
@@ -160,8 +182,87 @@ type Error struct {
 	err error // underlying gRPC status error
 }
 
+// NewError returns an *Error with the given code and message, as a server
+// would have produced it: ServerMessage is set to message too. It is intended
+// for test doubles, so a fake's errors satisfy errors.Is against the sentinels
+// and status.Code exactly as real ones do. Set Reason fields directly when a
+// fake needs to simulate structured ErrorInfo.
+func NewError(code ErrorCode, message string) *Error {
+	return &Error{Code: code, Message: message, ServerMessage: message}
+}
+
 func (e *Error) Error() string { return e.Message }
 func (e *Error) Unwrap() error { return e.err }
+
+// GRPCStatus reports this error as a gRPC status, which is what lets
+// status.Code(err) and status.FromError(err) work on an *Error. A server
+// error returns the server's own status, details included. Any other error
+// (local cancellation, local validation, NewError) returns a status built
+// from Code and the server message, or Message when there is none.
+func (e *Error) GRPCStatus() *status.Status {
+	if e == nil {
+		return nil
+	}
+	var se interface{ GRPCStatus() *status.Status }
+	if errors.As(e.err, &se) {
+		if st := se.GRPCStatus(); st != nil && errorCodeOf(st.Code()) == e.Code {
+			return st
+		}
+	}
+	code, ok := errorCodeToGRPC[e.Code]
+	if !ok {
+		code = codes.Unknown
+	}
+	msg := e.ServerMessage
+	if msg == "" {
+		msg = e.Message
+	}
+	return status.New(code, msg)
+}
+
+// statusOf returns err's own gRPC status: an *Error's (via GRPCStatus), a raw
+// status error's, or one classified by CodeOf with err's message.
+func statusOf(err error) *status.Status {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.GRPCStatus()
+	}
+	if st, ok := status.FromError(err); ok {
+		return st
+	}
+	code, ok := errorCodeToGRPC[CodeOf(err)]
+	if !ok {
+		code = codes.Unknown
+	}
+	return status.New(code, err.Error())
+}
+
+func errorCodeOf(c codes.Code) ErrorCode { return grpcCodeToErrorCode[c] }
+
+// CodeOf classifies any error as a native ErrorCode: an *Error anywhere in the
+// chain reports its Code, a raw gRPC status error (for example from a fake
+// returning status.Errorf) reports its mapped code, and context cancellation
+// and deadline errors report CodeCanceled and CodeDeadlineExceeded. Anything
+// else, including nil, is CodeUnknown.
+func CodeOf(err error) ErrorCode {
+	if err == nil {
+		return CodeUnknown
+	}
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return CodeCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return CodeDeadlineExceeded
+	}
+	if st, ok := status.FromError(err); ok {
+		return errorCodeOf(st.Code())
+	}
+	return CodeUnknown
+}
 func (e *Error) Is(target error) bool {
 	switch target {
 	case ErrUnknown:
@@ -228,17 +329,20 @@ func mapGRPCError(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	st, _ := status.FromError(err)
+	st, fromServer := status.FromError(err)
 	if errors.Is(err, context.Canceled) {
-		st = status.New(codes.Canceled, err.Error())
+		st, fromServer = status.New(codes.Canceled, err.Error()), false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		st = status.New(codes.DeadlineExceeded, err.Error())
+		st, fromServer = status.New(codes.DeadlineExceeded, err.Error()), false
 	}
 	mapped := &Error{
 		Code:    grpcCodeToErrorCode[st.Code()],
 		Message: fmt.Sprintf("spicedb: %s: %s", op, st.Message()),
 		err:     err,
+	}
+	if fromServer {
+		mapped.ServerMessage = st.Message()
 	}
 	if info := errorInfoFrom(st); info != nil {
 		mapped.Reason = info.GetReason()

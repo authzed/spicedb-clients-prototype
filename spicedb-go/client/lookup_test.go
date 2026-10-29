@@ -364,7 +364,10 @@ func TestLookupResourcesPermissionshipFilter(t *testing.T) {
 				require.Equal(t, []string{"0", "1"}, ids)
 			} else {
 				require.Equal(t, []string{"3", "5"}, ids)
-				require.Equal(t, []string{"", "2", "4", "5"}, stub.cursors)
+				// Every page asks for the same page size (SpiceDB rejects a
+				// cursor sent with a different limit), so the third page
+				// returns both remaining rows.
+				require.Equal(t, []string{"", "2", "4"}, stub.cursors)
 			}
 		})
 	}

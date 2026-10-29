@@ -1,5 +1,6 @@
 import { DeadlineExceededError, InvalidArgumentError, toSpiceDBError } from "./errors.js";
 import type { CallOptions, DeleteResult } from "./types.js";
+import type { RetryPolicy } from "./retry.js";
 /** Caller cancellation stays a native DOMException and preserves signal.reason as cause. */
 export class OperationAbortError extends DOMException {
     readonly cause: unknown;
@@ -15,7 +16,15 @@ export class Operation {
     private readonly onAbort: () => void;
     private failure?: Error;
     private disposed = false;
-    constructor(options: CallOptions | undefined, defaultTimeout: number | undefined, private readonly onDispose: () => void) {
+    private readonly transport?: Pick<CallOptions, "headers" | "onHeader" | "onTrailer">;
+    /** The retry policy for this operation: the call's own, the operation's, or the client's. */
+    readonly retryPolicy: RetryPolicy;
+    /** Whether the policy came from the call or the operation, which also governs stream establishment. */
+    readonly specificRetry: boolean;
+    constructor(options: CallOptions | undefined, defaultTimeout: number | undefined, private readonly onDispose: () => void, retryPolicy: RetryPolicy, specificRetry: boolean) {
+        this.retryPolicy = retryPolicy;
+        this.specificRetry = specificRetry;
+        this.transport = options === undefined ? undefined : { headers: options.headers === undefined ? undefined : new Headers(options.headers), onHeader: options.onHeader, onTrailer: options.onTrailer };
         const timeout = options?.timeoutMs ?? defaultTimeout;
         if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0))
             throw new InvalidArgumentError("timeoutMs must be finite and positive");
@@ -61,9 +70,16 @@ export class Operation {
     callOptions(): {
         signal: AbortSignal;
         timeoutMs?: number;
+        headers?: HeadersInit;
+        onHeader?: (headers: Headers) => void;
+        onTrailer?: (trailers: Headers) => void;
     } {
         this.check();
-        return { signal: this.controller.signal, ...(this.deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.ceil(this.deadline - performance.now())) }) };
+        // The transport escape hatch is forwarded to every attempt, chunk and
+        // page. signal/timeoutMs always come from the shared budget.
+        const t = this.transport;
+        return { ...(t?.headers === undefined ? {} : { headers: t.headers }), ...(t?.onHeader === undefined ? {} : { onHeader: t.onHeader }), ...(t?.onTrailer === undefined ? {} : { onTrailer: t.onTrailer }),
+            signal: this.controller.signal, ...(this.deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.ceil(this.deadline - performance.now())) }) };
     }
     map(error: unknown): Error {
         if (this.failure)

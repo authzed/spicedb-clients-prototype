@@ -1,6 +1,14 @@
 version: v2
+# This tier is the canonical Python binding for authzed.api.* (root DESIGN.md,
+# "Be the single copy of the protocol bindings in any process"). It emits
+# everything authzed-py ships for those protos, including the .pyi type stubs,
+# so a bridged authzed-py (spicedb_python_proto.bridge) loses nothing when it
+# drops its own generated modules.
 plugins:
   - remote: buf.build/protocolbuffers/python
+    include_imports: true
+    out: gen
+  - remote: buf.build/protocolbuffers/pyi
     include_imports: true
     out: gen
   - remote: buf.build/grpc/python

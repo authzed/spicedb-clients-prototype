@@ -8,9 +8,34 @@ Clients are explicit about their concurrency model -- import the one you want::
 Everything else in this package (relationship types, filters, transactions,
 consistency constructors, the error hierarchy) is shared by both flavors and
 imported from here.
+
+Integrating with an AI coding agent, or choosing between the generated typed
+client and this native client? Read ``AI_INTEGRATION_GUIDE.md`` next to this
+package's ``DESIGN.md``. Moving from authzed-py? Read ``MIGRATION.md``.
 """
 
 from spicedb.token import ZedToken
+from spicedb.options import (
+    BulkItemErrors,
+    CallOptions,
+    DefaultDeadline,
+    DeletePartial,
+    Operation,
+    Paging,
+    ResponseMetadata,
+    RetryAttempt,
+    RetryPolicy,
+    Retries,
+    StreamRetries,
+)
+from spicedb.types import (
+    ExportedRelationship,
+    Precondition,
+    PreconditionOperation,
+    ReadRelationship,
+)
+from spicedb.errors import code_of
+
 from spicedb.options import Tracing, LookupPermissionshipFilter, LookupDebug, Wildcards, WatchContent, TransportSecurity, RemoteCredentials
 from spicedb.consistency import (
     Consistency,
@@ -214,3 +239,22 @@ __all__ += [
 ]
 
 __all__ += ["LookupPermissionshipFilter", "ZedToken", "Tracing", "LookupDebug", "Wildcards", "WatchContent", "TransportSecurity", "RemoteCredentials"]
+
+__all__ += [
+    "BulkItemErrors",
+    "CallOptions",
+    "DefaultDeadline",
+    "DeletePartial",
+    "Operation",
+    "Paging",
+    "ResponseMetadata",
+    "RetryAttempt",
+    "RetryPolicy",
+    "Retries",
+    "StreamRetries",
+    "ExportedRelationship",
+    "Precondition",
+    "PreconditionOperation",
+    "ReadRelationship",
+    "code_of",
+]

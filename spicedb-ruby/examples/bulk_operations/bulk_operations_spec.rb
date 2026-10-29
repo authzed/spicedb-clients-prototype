@@ -83,6 +83,8 @@ RSpec.describe 'BulkOperations' do
                                                 consistency: SpiceDB::Consistency.at_least(@revision)).to_a
 
     expect(relationships.length).to be >= 3
-    expect(relationships.first).to be_a(SpiceDB::Relationship)
+    expect(relationships.first).to be_a(SpiceDB::ExportedRelationship)
+    expect(relationships.first.relationship).to be_a(SpiceDB::Relationship)
+    expect(relationships.first.cursor).not_to be_nil
   end
 end

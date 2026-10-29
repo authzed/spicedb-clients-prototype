@@ -78,7 +78,7 @@ func Gen() error {
 	if err := clauderun.Run(
 		"Read DESIGN.md. Review the generated code under gen/. " +
 			"Add the additional code specified in the manifest (Client.cs, ClientTest.cs). " +
-			"Run `dotnet test` to verify. Fix any failures.",
+			"Run `dotnet test tests/SpiceDB.Proto.Tests.csproj` to verify. Fix any failures.",
 	); err != nil {
 		return fmt.Errorf("claude invocation failed: %w", err)
 	}
@@ -86,7 +86,10 @@ func Gen() error {
 	// Test with retry loop
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running tests (attempt %d/%d)...\n", attempt, maxRetries)
-		if err := sh.RunV("dotnet", "test", "--verbosity", "normal"); err == nil {
+		if err := Bridge(); err != nil {
+			return err
+		}
+		if err := sh.RunV("dotnet", "test", testProject, "--verbosity", "normal"); err == nil {
 			fmt.Println("==> Tests passed!")
 			return nil
 		}
@@ -111,7 +114,17 @@ func Gen() error {
 	return nil
 }
 
-// Test runs the proto client tests.
+// testProject holds the proto tier's tests, kept out of SpiceDB.Proto.csproj so the
+// library's package carries no test framework dependencies.
+const testProject = "tests/SpiceDB.Proto.Tests.csproj"
+
+// Test runs the proto client tests, including the Authzed.Net bridge tests.
 func Test() error {
-	return sh.RunV("dotnet", "test", "--verbosity", "normal")
+	return sh.RunV("dotnet", "test", testProject, "--verbosity", "normal")
+}
+
+// Bridge regenerates the Authzed.Net bridge's type forwards from SpiceDB.Proto's exported
+// types. Run it after `buf generate`; tests fail if the checked-in forwards are stale.
+func Bridge() error {
+	return sh.RunV("dotnet", "run", "--project", "bridge/generator", "--", "bridge/Authzed.Net/TypeForwards.g.cs")
 }

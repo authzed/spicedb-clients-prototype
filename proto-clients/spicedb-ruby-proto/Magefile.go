@@ -56,6 +56,9 @@ func Gen() error {
 	if err := sh.Run("buf", genArgs...); err != nil {
 		return fmt.Errorf("buf generate failed: %w", err)
 	}
+	if err := pruneSharedImports(); err != nil {
+		return err
+	}
 
 	diff, _ := gitOutput("diff", "--name-only", ".")
 	if strings.TrimSpace(diff) == "" {
@@ -107,6 +110,23 @@ func Gen() error {
 		}
 	}
 
+	return nil
+}
+
+// sharedImports are generated imports that another gem in every grpc-ruby
+// process already registers: googleapis-common-protos-types (a dependency of
+// grpc itself) ships google/api/* and google/rpc/*. Loading a second copy into
+// Google::Protobuf::DescriptorPool.generated_pool raises "duplicate file name"
+// whenever that gem's copy loads first, so buf's copies are deleted and the
+// gem's are used instead (see DESIGN.md, "Canonical binding").
+var sharedImports = []string{"lib/gen/google"}
+
+func pruneSharedImports() error {
+	for _, dir := range sharedImports {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("pruning shared import %s: %w", dir, err)
+		}
+	}
 	return nil
 }
 

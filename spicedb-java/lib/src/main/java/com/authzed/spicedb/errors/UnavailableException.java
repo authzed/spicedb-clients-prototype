@@ -4,10 +4,10 @@ package com.authzed.spicedb.errors;
 public class UnavailableException extends SpiceDBException {
 
   public UnavailableException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.UNAVAILABLE, message, null);
   }
 
   public UnavailableException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.UNAVAILABLE, message, cause);
   }
 }

@@ -4,10 +4,10 @@ package com.authzed.spicedb.errors;
 public class ResourceExhaustedException extends SpiceDBException {
 
   public ResourceExhaustedException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.RESOURCE_EXHAUSTED, message, null);
   }
 
   public ResourceExhaustedException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.RESOURCE_EXHAUSTED, message, cause);
   }
 }

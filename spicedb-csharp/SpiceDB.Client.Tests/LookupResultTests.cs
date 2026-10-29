@@ -44,9 +44,13 @@ public class LookupResultTests
         if (filter == LookupPermissionshipFilter.HasPermissionOnly)
         {
             results.Select(r => r.ResourceID).Should().Equal("doc3", "doc5");
-            requests.Select(r => r.OptionalCursor?.Token).Should().Equal(null, "2", "4", "5");
+            requests.Select(r => r.OptionalCursor?.Token).Should().Equal(null, "2", "4");
         }
         else results.Select(r => r.Permissionship).Should().Equal(Permissionship.ConditionalPermission, Permissionship.Unspecified, Permissionship.Unspecified, Permissionship.HasPermission, Permissionship.ConditionalPermission, Permissionship.HasPermission, Permissionship.HasPermission);
+        // SpiceDB hashes the limit and consistency into each cursor: every page must repeat
+        // the caller's page size and consistency, never a shrunken final limit.
+        requests.Should().OnlyContain(r => r.OptionalLimit == 2 && r.Consistency.FullyConsistent);
+        results.Last().AfterResultCursor.Should().NotBeNull();
         Func<Task> subjects = async () => { await foreach (var result in client.LookupSubjectsAsync(Consistency.Full(), new ObjectRef("document", "one"), "view", "user", new LookupOptions { PermissionshipFilter = LookupPermissionshipFilter.HasPermissionOnly })) { } };
         await subjects.Should().ThrowAsync<InvalidArgumentException>();
     }

@@ -1850,8 +1850,8 @@ const file_authzed_api_v1_schema_service_proto_rawDesc = "" +
 	"\x06Schema\x82\xd3\xe4\x93\x02%:\x01*\" /v1/schema/permissions/dependent\x12\x80\x01\n" +
 	"\n" +
 	"DiffSchema\x12!.authzed.api.v1.DiffSchemaRequest\x1a\".authzed.api.v1.DiffSchemaResponse\"+\x92A\b\n" +
-	"\x06Schema\x82\xd3\xe4\x93\x02\x1a:\x01*\"\x15/v1/schema/diffschemaBJ\n" +
-	"\x12com.authzed.api.v1P\x01Z2github.com/authzed/authzed-go/proto/authzed/api/v1b\x06proto3"
+	"\x06Schema\x82\xd3\xe4\x93\x02\x1a:\x01*\"\x15/v1/schema/diffschemaBo\n" +
+	"\x12com.authzed.api.v1P\x01ZWgithub.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1;v1b\x06proto3"
 
 var (
 	file_authzed_api_v1_schema_service_proto_rawDescOnce sync.Once

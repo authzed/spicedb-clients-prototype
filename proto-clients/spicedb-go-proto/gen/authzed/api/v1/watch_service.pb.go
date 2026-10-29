@@ -293,8 +293,8 @@ const file_authzed_api_v1_watch_service_proto_rawDesc = "" +
 	"\x1eWATCH_KIND_INCLUDE_CHECKPOINTS\x10\x032v\n" +
 	"\fWatchService\x12f\n" +
 	"\x05Watch\x12\x1c.authzed.api.v1.WatchRequest\x1a\x1d.authzed.api.v1.WatchResponse\"\x1e\x92A\a\n" +
-	"\x05Watch\x82\xd3\xe4\x93\x02\x0e:\x01*\"\t/v1/watch0\x01BJ\n" +
-	"\x12com.authzed.api.v1P\x01Z2github.com/authzed/authzed-go/proto/authzed/api/v1b\x06proto3"
+	"\x05Watch\x82\xd3\xe4\x93\x02\x0e:\x01*\"\t/v1/watch0\x01Bo\n" +
+	"\x12com.authzed.api.v1P\x01ZWgithub.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1;v1b\x06proto3"
 
 var (
 	file_authzed_api_v1_watch_service_proto_rawDescOnce sync.Once

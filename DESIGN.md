@@ -28,8 +28,50 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - A documented escape hatch may expose the existing authenticated connection
     or protocol client; it must not create a connection or transfer ownership.
   - Supplied connections remain caller-owned unless ownership is explicitly transferred.
+  - Every client has a constructor from an existing connection or channel, such as
+    an in-memory or buffered-listener connection. Close never closes a supplied
+    connection. Operation options (deadlines, retry policy) still apply;
+    transport options do not. Credential options apply only where the
+    language's connection type cannot carry credentials itself (a tonic
+    `Channel`), in which case the constructor accepts the token alone.
+  - Every operation accepts a transport escape hatch: per-call transport options
+    and capture of response headers and trailers. This is the supported route to
+    transport-level data, including data that pre-1.30 servers send in trailers.
+    Callers do not need the raw protocol client for it.
+  - Native↔protocol conversions for requests, results, relationships, filters,
+    preconditions, consistency, updates and traces are exported in a secondary
+    namespace, so tools that persist or print protocol-shaped data reuse them.
+    Conversions to response messages reproduce the server's wire shape,
+    including whole bulk-check responses with per-item errors and deprecated
+    fields the server still populates.
+  - Match the server's own acceptance rules. A client rejects locally only what
+    the server would reject or what the protocol cannot express; for example an
+    empty relationship write is sent (SpiceDB evaluates its preconditions and
+    returns the current revision), and watch rejects object types combined with
+    filters because the server does.
   - Generate protocol bindings from the upstream schema; do not edit generated
-    protocol source by hand.
+    protocol source by hand. The only hand-maintained files in a generated
+    package are legacy helpers that must share the generated types' package (see
+    "Be the single copy..."); each proto tier's DESIGN.md lists them by name.
+
+- **Support SpiceDB 1.30 and later natively.**
+  - Behavior that only older servers need is reachable through the transport
+    escape hatch, not first-class API.
+
+- **Be the single copy of the protocol bindings in any process.**
+  - Protocol runtimes admit one definition per proto file and message name: Go's
+    `protoregistry`, the Python and Ruby descriptor pools, and the JVM class path.
+    A second, independently generated copy of `authzed.api.*` panics or misbinds
+    at load time. The proto tier is the canonical binding. It must never be
+    generated as a sibling copy beside a legacy `authzed-*` library.
+  - Legacy libraries migrate by re-exporting (aliasing) the proto tier, not the
+    other way around, so they can be deprecated without a flag day. The proto tier
+    therefore generates everything legacy consumers use on those message types,
+    such as Go fast-path marshalling, validation, and gateway output, and carries
+    any legacy hand-written helpers bound to those types.
+  - Each proto tier ships the bridge generator for its legacy library and a test
+    that loads both in one process. Until a language's bridge exists, its README
+    documents the conflict instead of implying coexistence.
 
 - **Evolve public APIs deliberately.**
   - Public APIs are append-only unless a breaking change is explicitly approved.
@@ -89,6 +131,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Per-item failures remain typed errors with the caller's absolute input index.
   - Split checks into at most 1,000 items per request. Each result carries its
     own chunk's revision; chunks do not imply a shared snapshot.
+  - By default the first per-item failure fails the call. A named mode instead
+    returns every item's result, with per-item errors carried on the result
+    alongside the other items' decisions. An errored item never grants.
 
 - **Preserve caller data and represent immutability honestly.**
   - Merge call-level check context with per-item overrides by key; the item wins.
@@ -99,6 +144,48 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     are documented as mutable and snapshot data when producing immutable values.
   - Model mutually exclusive variants structurally where supported, such as
     Rust enums and TypeScript discriminated unions. Represent unknown server states explicitly.
+
+- **Make native values observable and testable without the server.**
+  - Relationships, updates, filters, preconditions and transaction builders have
+    readable string forms and structured log/serialization forms. No native value
+    logs, prints or serializes as an empty object. Transactions expose their update
+    count without copying.
+  - Relationship filters match a native relationship client-side with server
+    semantics: resource type, ID or ID prefix, relation, subject type and ID, and
+    the `Any`/`Direct`/`Named` subject relation distinction. Test doubles use this
+    rather than reimplementing filter semantics.
+  - Each client ships an in-memory test double for relationship writes (with
+    preconditions and create conflicts), filtered reads and deletes, and
+    registered check results, plus imports, exports and schema reads and writes.
+    Its errors carry the same codes and message shape as the real client's for
+    the same failure. It records every call with its request and resolved
+    options, and accepts fault injection at defined points (before any call,
+    before each import batch, before an import commits, before each read or
+    export item; an import-batch fault sees the batch's relationships), so
+    failure paths and option assertions need neither a fake transport nor a
+    strict mock. Its resume cursors have a documented format or constructor,
+    and it can emulate servers whose schema reads report no revision.
+  - Each client exports an interface (or protocol) with the full client's
+    method set, kept in sync with the client by a test, and the double
+    implements all of it: operations without in-memory semantics are recorded,
+    consult the fault hook, and fail as unimplemented in the client's error
+    shape. Its surface matches the real client's so one
+    interface or protocol accepts both: caller-defined where the language is
+    structurally typed (Go, TypeScript, Python protocols), library-provided and
+    implemented by both where it is nominally typed (C#, Java).
+  - Languages whose constructors return errors make constants and test fixtures
+    one call: panicking variants where that is idiomatic (Go `Must*`), or a
+    one-call parse from tuple text where call-site assertion is the convention
+    (Rust `FromStr` plus `.expect()`). Languages whose constructors throw need neither.
+  - Option values may be opaque, but each client exposes a way to resolve a
+    call's options into an inspectable snapshot (cursor, limits, page size,
+    response-metadata targets, retry override), so test doubles and wrappers
+    can honor them without a fake transport.
+  - Relationship accessors offer short paths for the most common fields
+    (resource ID and subject ID) in addition to the nested object accessors.
+  - Tuple parsing and formatting cover SpiceDB's full syntax, including
+    `[caveat:{...}]` and `[expiration:...]`, and round-trip with SpiceDB's own
+    parser. Copy helpers replace a relationship's resource or subject.
 
 ## Check debug tracing
 
@@ -136,6 +223,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Streams and imports have no default lifetime timeout, but accept explicit
     total deadlines. Finite lookups and exports support deadlines even when
     their underlying RPC streams.
+  - A named mode disables the client default deadline. The caller's own deadline
+    or cancellation still applies. Zero or negative durations are never used as
+    a magic "disabled" value.
 
 - **Carry native cancellation through every layer.**
   - Check cancellation before new work and during backoff; distinguish caller
@@ -146,13 +236,36 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     Ruby expose working explicit stream cancellation.
 
 - **Retry only when replay is safe.**
-  - Retry idempotent reads on `UNAVAILABLE` or `ABORTED`, up to three retries,
-    using full-jitter exponential backoff starting at 100 ms.
-  - Never automatically retry `RESOURCE_EXHAUSTED` or replay mutations,
-    including writes, deletes, imports, and counter registration.
+  - By default, retry idempotent reads on `UNAVAILABLE` or `ABORTED`, up to three
+    retries, using full-jitter exponential backoff starting at 100 ms. The default
+    never retries `RESOURCE_EXHAUSTED`.
+  - Never replay a mutation automatically. A caller may opt a single call into
+    retries only where replay is idempotent: a relationship write containing
+    only touches and no preconditions, and a schema write. Creates, deletes,
+    preconditioned writes, imports and counter registration refuse the opt-in
+    before any request.
   - Stream establishment may retry only before any item is exposed. Never
     restart a partially consumed stream.
   - All retries share the original deadline and cancellation signal.
+  - A client-wide retry policy option replaces the default: max attempts,
+    retryable read codes (a caller may opt into others, such as
+    `RESOURCE_EXHAUSTED`), backoff, and an on-retry callback. A named mode
+    disables retries entirely, for callers that apply their own policy.
+  - A per-call retry policy overrides the client's for one operation, including
+    stream establishment, so a caller can exempt one stream (a supervised watch)
+    while retrying everything else.
+  - A client-wide per-operation retry policy applies the same override to every
+    call of one operation (never reopen watches, for example). Precedence is
+    per-call, then per-operation, then client-wide. A per-operation write policy
+    retries only writes that are idempotent on replay; operations that never are
+    reject a retrying per-operation policy when the client is built.
+  - The idempotence rule (touch-only, no preconditions) is public on the
+    transaction type, so callers decide eligibility with the client's own rule. Stream-establishment retry has its own named
+    setting, so long-lived streams like watch can opt out. No configuration can
+    make a mutation replay.
+  - The client-wide policy, default included, never reopens a watch: a reopened
+    watch with no start revision begins later and silently skips the changes in
+    between. Only a per-call or per-operation policy for watch opts in.
 
 ## Streams and ownership
 
@@ -169,6 +282,29 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
 - **Import incrementally with backpressure and predictable cleanup.**
   - Accept native iterable or async-iterable inputs.
   - Producer errors, cancellation, and conversion failures cancel an active upload.
+  - When the server aborts a client stream, report the server's final status
+    (for example `ALREADY_EXISTS` for a duplicate), never the transport's
+    end-of-stream signal from the failed send.
+  - The relationships-per-message batch size is configurable. One import call is
+    one stream and one transaction; callers wanting several transactions make
+    several calls.
+
+- **Expose paging state on paged reads.**
+  - Relationship reads, exports and resource lookups yield each item with its
+    after-result cursor and, where the response carries one, its read-at or
+    looked-up-at revision, and accept a starting cursor. Resuming requires
+    repeating the original request and page size. Cursors stay a type distinct
+    from revision tokens.
+  - Every page of a paged read repeats the caller's consistency and one fixed
+    page size. SpiceDB hashes request arguments, including consistency and
+    limit, into each cursor and rejects a cursor sent with different arguments;
+    the cursor itself pins later pages to the first page's revision. Enforce a
+    total limit client-side rather than by shrinking any page's limit, so the
+    wire limit is the page size alone and a cursor from a limited call resumes
+    an unlimited one.
+    Live tests must read across more than one page.
+  - A named single-request mode sends exactly one request, as the raw API does:
+    its limit is the total limit or unbounded, and no follow-up page is fetched.
 
 ## Filters and deletion
 
@@ -178,6 +314,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Examples prefer filters, including a resource-type-only filter for a whole
     type. Reject nonempty object types combined with nonempty relationship filters.
   - Snapshot caller-owned collections and preserve exact subject relation scope.
+  - A named mode requests schema-change events, combinable with checkpoints.
+    Events report a schema-updated fact distinct from relationship updates.
 
 - **Filters must preserve the caller's exact intended scope.**
   - Distinguish subject relation filters `Any`, `Direct`, and `Named(name)`.
@@ -187,8 +325,14 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Reject filters the protocol cannot represent; never silently widen them.
 
 - **Separate bounded deletion from deletion to completion.**
-  - Bounded deletion requires a positive total limit, issues one bounded request,
-    and returns revision, count, completion, and any server resume cursor.
+  - Bounded deletion issues one request and returns revision, count, completion,
+    and any server resume cursor. In the default partial mode it requires a
+    positive total limit.
+  - A named all-or-nothing mode disallows partial deletion: the server rejects a
+    delete that exceeds its limit instead of deleting part of it. In that mode
+    the limit may be omitted to use the server's default.
+  - Delete-to-completion accepts a per-batch progress callback with the
+    cumulative acknowledged count, revision and cursor.
   - Name the operation `deleteAllRelationshipsNonAtomic` using native language
     conventions. It uses a separate positive page size, defaulting to 1,000, and
     one operation budget. An `autoPage` flag must not change the meaning of a limit.
@@ -217,6 +361,19 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Map statuses, including `OUT_OF_RANGE` and `UNAUTHENTICATED`, to typed errors.
   - Preserve the original status or cause and structured ErrorInfo reason,
     domain, and metadata. Local validation uses the documented invalid-argument category.
+  - Keep the server's status message verbatim in its own field. The display
+    message may add operation context, but callers that forward errors must be
+    able to reproduce exactly what the server said.
+  - Native errors interoperate with the ecosystem's standard status inspection in
+    both directions. A native error reports its matching transport status code
+    through the language's status accessor, including errors for local
+    cancellation, local validation, and errors built by caller code. Code
+    classification helpers also accept raw transport status errors.
+  - Provide a public constructor for native errors from a code and message, so
+    test doubles produce errors that every predicate treats like real ones.
+  - Wrapper errors (bulk item, deletion progress) report their inner status
+    through the status accessor, so the server's message appears once rather
+    than under repeated operation prefixes.
 
 - **Use secure transport defaults and explicit trust configuration.**
   - Secure constructors delegate to the ecosystem's default trust source.
@@ -245,8 +402,71 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     non-atomic filter deletion and watch.
   - Schema-derived context may feed permission checks, but must not become
     check-only data on persisted relationships.
+
+- **Generate every schema position a caller can name, with exact constraints.**
+  - Usersets on permissions (`org#can_admin`) get subject refs just like usersets
+    on relations. Name collisions resolve with one documented rule per language.
+  - Wildcard subjects (`user:*`) get a distinct wildcard ref. A wildcard-only
+    relation admits only that ref; `user | user:*` admits both.
+  - Relations are checkable as well as writable, through an accessor that cannot
+    collide with writer, subject-ref or permission accessors.
+  - Deletes and exact filters identify a relationship by tuple identity alone.
+    Callers never invent caveat context or expiration to delete one.
+  - Validated by-name lookups resolve runtime permission and relation names to
+    typed values, rejecting names (and subjects) the schema does not allow.
+    Generated name lists support startup verification.
+
+- **Make generated values composable with the native layer in both directions.**
+  - Typed permissions, permission refs and relationships expose their resource
+    type, ID, permission or relation and a canonical string form.
+  - Typed relationships convert to native relationships, and native relationships
+    wrap into typed ones, documented as not schema-checked. Typed values also
+    produce native exact filters, type-level filters, relation-scoped filters,
+    native permission checks, and relation-name constants.
+  - A typed transaction builder mixes touch, create, delete and preconditions in
+    one atomic write and exposes its pending updates and preconditions. It defers the first construction error to build/write time
+    instead of requiring a check per step, and never shadows a promoted native method.
+  - Typed bulk checks forward native options and preserve input order, per-chunk
+    revisions and per-item errors.
+  - Generated output is formatted with the language's canonical formatter, and
+    the output package or module name is configurable.
   - Generate fixtures from templates, then compile, type-check, and execute them.
-    Include positive and negative type tests.
+    Include positive and negative type tests. Each forbidden construct must fail
+    on its own: a check that only proves "something failed to compile" lets one
+    error mask a regression elsewhere.
+  - The generator's help lists every language's options. A schema may be read
+    from standard input, so schemas kept in source code need no temporary file.
+  - Generation fails, naming both sources, when schema names would produce
+    colliding identifiers. It never silently renames, and offers an explicit
+    per-definition identifier override so production schemas need not change.
+  - Caveat expressions are opaque to generation: only caveat names and
+    parameter types are read, so caveats calling functions outside SpiceDB's
+    default CEL environment generate normally. The server validates
+    expressions when the schema is written.
+
+- **Guide AI coding agents to the right tier and safe integration.**
+  - The root `AI_INTEGRATION_GUIDE.md` is the language-neutral decision guide:
+    typed by default for a known schema, idiomatic for schema-agnostic code,
+    raw only through the escape hatch, never a second protocol copy. It also
+    states the integration rules (fail-closed checks, deliberate consistency,
+    atomic writes, no blind write retries, paging resumption, test doubles).
+  - Each client ships `AI_INTEGRATION_GUIDE.md` in its package directory,
+    following that structure with concrete, current code for its language,
+    and its package-level documentation points to it. Snippets are checked to
+    compile against the current API (generated snippets against the sample
+    schema fixture). Update the guide with any change to the APIs it shows.
+
+- **Document the path off the legacy libraries.**
+  - Each client with an official `authzed-*` predecessor ships `MIGRATION.md`
+    with before/after snippets for every observable behavior change: request
+    shapes, defaults (deadlines, retries), error matching, transport security
+    opt-ins, constructor arguments, and accessor paths.
+  - Library modules declare the lowest dependency versions they actually need,
+    and keep build tooling out of the requirements consumers inherit. "Need"
+    includes security: a floor is raised when an older version lets a guard be
+    bypassed (grpc for Python and Ruby before 1.73 resolves `UNIX://host/...`
+    as a DNS target, defeating the remote-plaintext loopback check). Verify
+    floors by running the suites at exactly those versions.
 
 - **Verify observable behavior rather than merely successful execution.**
   - Reconcile examples against their runners by name, execute them in CI, and

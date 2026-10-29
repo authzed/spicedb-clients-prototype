@@ -2,25 +2,27 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.LookupPermissionship;
-import build.buf.gen.authzed.api.v1.LookupResourcesRequest;
-import build.buf.gen.authzed.api.v1.LookupResourcesResponse;
-import build.buf.gen.authzed.api.v1.LookupSubjectsRequest;
-import build.buf.gen.authzed.api.v1.LookupSubjectsResponse;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.RelationshipUpdate;
-import build.buf.gen.authzed.api.v1.ResolvedSubject;
-import build.buf.gen.authzed.api.v1.WatchRequest;
-import build.buf.gen.authzed.api.v1.WatchResponse;
-import build.buf.gen.authzed.api.v1.WatchServiceGrpc;
+import com.authzed.api.v1.ExportBulkRelationshipsRequest;
+import com.authzed.api.v1.ExportBulkRelationshipsResponse;
+import com.authzed.api.v1.LookupPermissionship;
+import com.authzed.api.v1.LookupResourcesRequest;
+import com.authzed.api.v1.LookupResourcesResponse;
+import com.authzed.api.v1.LookupSubjectsRequest;
+import com.authzed.api.v1.LookupSubjectsResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ReadRelationshipsRequest;
+import com.authzed.api.v1.ReadRelationshipsResponse;
+import com.authzed.api.v1.RelationshipUpdate;
+import com.authzed.api.v1.ResolvedSubject;
+import com.authzed.api.v1.WatchRequest;
+import com.authzed.api.v1.WatchResponse;
+import com.authzed.api.v1.WatchServiceGrpc;
 import com.authzed.spicedb.errors.SpiceDBException;
+import com.authzed.spicedb.errors.UnavailableException;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -94,7 +96,9 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       List<Relationship> results;
       try (Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship)) {
         results = stream.toList();
       }
 
@@ -126,7 +130,9 @@ class StreamEstablishmentRetryTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship)) {
         assertThrows(SpiceDBException.class, () -> stream.toList());
       }
       assertEquals(1, attempts.get(), "a transient error after an item was read must not retry");
@@ -327,7 +333,9 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       List<Relationship> results;
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         results = stream.toList();
       }
 
@@ -359,7 +367,9 @@ class StreamEstablishmentRetryTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         assertThrows(SpiceDBException.class, () -> stream.toList());
       }
       assertEquals(1, attempts.get(), "a transient error after an item was read must not retry");
@@ -367,7 +377,8 @@ class StreamEstablishmentRetryTest {
   }
 
   // ---------------------------------------------------------------------
-  // updates (watch) — establishment-only retry, never mid-watch. Unlike the
+  // updates (watch) — never reopened by the client-wide policy; a per-call
+  // policy opts in to establishment-only retry, never mid-watch. Unlike the
   // 4 methods above (which buffer a whole page/response internally before
   // exposing anything to the caller), updates() exposes one WatchResponse's
   // worth of updates at a time via a lazily-driven iterator, so a
@@ -377,7 +388,7 @@ class StreamEstablishmentRetryTest {
   // ---------------------------------------------------------------------
 
   @Test
-  void updatesRetriesEstablishmentOnTransientError() throws IOException {
+  void updatesRetriesEstablishmentOnlyUnderAPerCallPolicy() throws IOException {
     var attempts = new AtomicInteger(0);
     var service =
         new WatchServiceGrpc.WatchServiceImplBase() {
@@ -402,15 +413,33 @@ class StreamEstablishmentRetryTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      List<SpiceDBClient.WatchEvent> results;
+      // The default client never reopens a watch: a reopened watch without a start revision
+      // would begin at a later revision and skip the changes between.
       try (Stream<SpiceDBClient.WatchEvent> stream = client.updates(List.of("document"), null)) {
+        assertThrows(UnavailableException.class, stream::toList);
+      }
+      assertEquals(1, attempts.get(), "the client-wide policy must not reopen a watch");
+
+      attempts.set(0);
+      List<SpiceDBClient.WatchEvent> results;
+      try (Stream<SpiceDBClient.WatchEvent> stream =
+          client.updates(
+              List.of("document"),
+              null,
+              WatchOptions.builder()
+                  .retryPolicy(
+                      RetryPolicy.builder()
+                          .maxRetries(1)
+                          .initialBackoff(Duration.ofMillis(1))
+                          .build())
+                  .build())) {
         results = stream.toList();
       }
 
       assertEquals(1, results.size());
       assertEquals(1, results.get(0).updates().size());
       assertEquals("doc1", results.get(0).updates().get(0).relationship().resource().objectId());
-      assertEquals(2, attempts.get(), "establishment retry should have made a 2nd attempt");
+      assertEquals(2, attempts.get(), "the per-call policy should have made a 2nd attempt");
     }
   }
 

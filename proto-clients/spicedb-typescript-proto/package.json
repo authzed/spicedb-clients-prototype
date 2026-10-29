@@ -10,14 +10,20 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.15.0",
-    "@connectrpc/connect": "^2.2.0",
-    "@connectrpc/connect-node": "^2.2.0"
+    "@bufbuild/protobuf": "^2.11.0",
+    "@connectrpc/connect": "^2.0.0",
+    "@connectrpc/connect-node": "^2.0.0"
   },
   "peerDependencies": {
-    "@types/node": "^26.6.3"
+    "@types/node": ">=20.19.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/node": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@authzed/authzed-node": "^1.6.1",
     "@types/node": "^26.6.3",
     "typescript": "^7.0.2",
     "vitest": "^5.0.2"

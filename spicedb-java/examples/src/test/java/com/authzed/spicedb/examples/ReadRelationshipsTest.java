@@ -45,7 +45,8 @@ class ReadRelationshipsTest extends SpiceDBIntegrationTest {
     Filter filter = Filter.of("document").withResourceId("firstdoc").withRelation("viewer");
 
     List<Relationship> relationships;
-    try (var stream = client.readRelationships(full(), filter)) {
+    try (var stream =
+        client.readRelationships(full(), filter).map(ReadRelationship::relationship)) {
       relationships = stream.toList();
     }
 
@@ -60,7 +61,8 @@ class ReadRelationshipsTest extends SpiceDBIntegrationTest {
     Filter filter = Filter.of("document").withResourceId("firstdoc");
 
     List<Relationship> relationships;
-    try (var stream = client.readRelationships(full(), filter)) {
+    try (var stream =
+        client.readRelationships(full(), filter).map(ReadRelationship::relationship)) {
       relationships = stream.toList();
     }
 
@@ -72,7 +74,8 @@ class ReadRelationshipsTest extends SpiceDBIntegrationTest {
   void empty_result_for_nonexistent_resource() {
     Filter filter = Filter.of("document").withResourceId("nonexistent");
 
-    try (var stream = client.readRelationships(full(), filter)) {
+    try (var stream =
+        client.readRelationships(full(), filter).map(ReadRelationship::relationship)) {
       assertThat(stream.count()).isZero();
     }
   }

@@ -61,6 +61,9 @@ type LookupResource struct {
 	// for every item yielded by a single LookupResources call — it is a
 	// property of the call, not of the individual resource.
 	LookedUpAt consistency.ZedToken
+	// AfterResultCursor resumes a lookup after this item, via
+	// WithLookupResourcesCursor.
+	AfterResultCursor string
 }
 
 // ResolvedSubject is a subject resolved by LookupSubjects — either the

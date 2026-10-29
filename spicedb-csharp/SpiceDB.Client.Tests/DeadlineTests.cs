@@ -216,7 +216,7 @@ public class DeadlineTests
                 var items = new List<Relationship>();
                 await foreach (var rel in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
                 {
-                    items.Add(rel);
+                    items.Add(rel.Relationship);
                 }
                 return items;
             });

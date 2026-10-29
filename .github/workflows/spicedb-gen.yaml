@@ -62,6 +62,11 @@ jobs:
               - 'spicedb-go/client/**'
               - 'spicedb-go/consistency/**'
               - 'spicedb-go/rel/**'
+              # ...and what those packages import (internal/conv, internal/native)
+              - 'spicedb-go/internal/**'
+              - 'spicedb-go/go.mod'
+              # tuplecompat: spicedb-go/rel's tuple syntax against SpiceDB's parser
+              - 'proto-clients/spicedb-go-proto/**'
               # TypeScript template: imports "@spicedb/client" (pnpm workspace -> spicedb-typescript)
               - 'spicedb-typescript/src/**'
               # Python templates: import spicedb, spicedb.consistency, spicedb.sync, spicedb.aio

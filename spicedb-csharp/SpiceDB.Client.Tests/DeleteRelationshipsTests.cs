@@ -121,10 +121,10 @@ public class DeleteRelationshipsTests
         var preconditions = captured[0].OptionalPreconditions;
         preconditions.Should().HaveCount(2);
 
-        preconditions[0].Operation.Should().Be(Precondition.Types.Operation.MustMatch);
+        preconditions[0].Operation.Should().Be(Authzed.Api.V1.Precondition.Types.Operation.MustMatch);
         preconditions[0].Filter.OptionalResourceId.Should().Be("doc1");
 
-        preconditions[1].Operation.Should().Be(Precondition.Types.Operation.MustNotMatch);
+        preconditions[1].Operation.Should().Be(Authzed.Api.V1.Precondition.Types.Operation.MustNotMatch);
         preconditions[1].Filter.OptionalResourceId.Should().Be("doc2");
     }
 
@@ -138,7 +138,7 @@ public class DeleteRelationshipsTests
         await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { MustMatch = [new Filter("document").WithResourceId("doc1")] }, default);
 
         captured[0].OptionalPreconditions.Should().ContainSingle();
-        captured[0].OptionalPreconditions[0].Operation.Should().Be(Precondition.Types.Operation.MustMatch);
+        captured[0].OptionalPreconditions[0].Operation.Should().Be(Authzed.Api.V1.Precondition.Types.Operation.MustMatch);
     }
 
     // ── limit sets OptionalLimit and keeps partial deletions allowed ───────
@@ -177,7 +177,7 @@ public class DeleteRelationshipsTests
             req.OptionalLimit.Should().Be(2u);
             req.OptionalAllowPartialDeletions.Should().BeTrue();
             req.OptionalPreconditions.Should().ContainSingle();
-            req.OptionalPreconditions[0].Operation.Should().Be(Precondition.Types.Operation.MustMatch);
+            req.OptionalPreconditions[0].Operation.Should().Be(Authzed.Api.V1.Precondition.Types.Operation.MustMatch);
         }
     }
 
@@ -234,8 +234,8 @@ public class DeleteRelationshipsTests
         captured[0].OptionalLimit.Should().Be(5u);
         var preconditions = captured[0].OptionalPreconditions;
         preconditions.Should().HaveCount(2);
-        preconditions[0].Operation.Should().Be(Precondition.Types.Operation.MustMatch);
-        preconditions[1].Operation.Should().Be(Precondition.Types.Operation.MustNotMatch);
+        preconditions[0].Operation.Should().Be(Authzed.Api.V1.Precondition.Types.Operation.MustMatch);
+        preconditions[1].Operation.Should().Be(Authzed.Api.V1.Precondition.Types.Operation.MustNotMatch);
     }
 
     // ── Cursor option seeds the first page; AfterResultCursor threads pages ─

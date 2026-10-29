@@ -2,45 +2,63 @@
 name = "spicedb"
 version = "0.2.0"
 edition = "2021"
+# Option::is_none_or.
+rust-version = "1.82"
 description = "Idiomatic Rust client for SpiceDB"
 license = "Apache-2.0"
 repository = "https://github.com/authzed/spicedb-clients"
 
+# Library requirements are the lowest versions that build and pass the tests,
+# and only the features the library uses, so consumers inherit no tooling and
+# no extra runtime features (root DESIGN.md, "Library modules declare the
+# lowest dependency versions they actually need"). tonic 0.12, tonic-types
+# 0.12, prost 0.13 and tower 0.4 are one coherent generation: bump them
+# together, along with the proto tier's tonic-build.
+[features]
+default = []
+# serde::Serialize for relationships, filters, updates, preconditions,
+# transactions and tokens.
+serde = ["dep:serde", "chrono/serde"]
+# spicedb::testing: an in-memory SpiceDB double reached through a real
+# SpiceDBClient (see DESIGN.md, "Ship an in-memory test double").
+testing = ["tonic/server", "dep:tower", "dep:hyper-util", "tokio/io-util"]
+
 [dependencies]
-# Proto-generated types (path dependency — not yet generated)
 spicedb-proto = { path = "../proto-clients/spicedb-rust-proto" }
 
-# gRPC / async
-tonic = "0.12"
+tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "channel"] }
 # google.rpc error details (ErrorInfo) and Status::get_details_error_info --
 # tonic's own decoder for the grpc-status-details-bin trailer, used instead of
-# decoding that trailer by hand. See root DESIGN.md, "RULE: Error mapping must
-# not lose the server's detail".
+# decoding that trailer by hand.
 tonic-types = "0.12"
 prost = "0.13"
 prost-types = "0.13"
-tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
-futures = "0.3"
-async-stream = "0.3"
-
-# Error handling
-thiserror = "2"
-
+tokio = { version = "1.38", features = ["macros", "rt", "sync", "time"] }
+futures = "0.3.21"
+async-stream = "0.3.5"
 # Full-jitter retry backoff
 rand = "0.8"
+# Caveat context
+serde_json = "1.0.70"
+# Expiration timestamps
+chrono = { version = "0.4.35", default-features = false, features = ["std", "clock"] }
 
-# Serialization (caveat context)
-serde_json = "1"
-
-# Timestamps (expiration)
-chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0.100", optional = true, features = ["derive"] }
+tower = { version = "0.4.13", optional = true, default-features = false, features = ["util"] }
+hyper-util = { version = "0.1.4", optional = true, default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 # In-process mock gRPC servers for integration tests use the generated tonic
 # server stubs from spicedb-proto plus a TcpListener-backed incoming stream.
-spicedb-proto = { path = "../proto-clients/spicedb-rust-proto" }
+tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "net", "io-util"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-# Builds statuses carrying google.rpc.ErrorInfo details, so the error tests
-# exercise the same decoding path a real SpiceDB response takes.
-tonic-types = "0.12"
+tonic = { version = "0.12", features = ["server"] }
+serde = { version = "1", features = ["derive"] }
+
+[[test]]
+name = "testing_double_test"
+required-features = ["testing"]
+
+[[test]]
+name = "watch_reopen_test"
+required-features = ["testing"]

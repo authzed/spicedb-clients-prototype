@@ -1,9 +1,10 @@
 package com.authzed.spicedb;
 
-import build.buf.gen.authzed.api.v1.*;
+import com.authzed.api.v1.*;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.SpiceDBException;
+import com.authzed.spicedb.protoconv.ProtoConv;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptors;
 import io.grpc.Context;
@@ -23,28 +24,26 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-public final class SpiceDBClient implements AutoCloseable {
-
-  private static final int DEFAULT_READ_PAGE_SIZE = 512;
-  private static final int DEFAULT_LOOKUP_PAGE_SIZE = 512;
-  private static final int DEFAULT_DELETE_PAGE_SIZE = 1_000;
-  private static final int DEFAULT_IMPORT_BATCH_SIZE = 1_000;
-  private static final int DEFAULT_EXPORT_PAGE_SIZE = 512;
+public final class SpiceDBClient implements SpiceDBApi {
 
   private static final int DEFAULT_CHECK_BATCH_SIZE = 1_000;
 
-  private static final int MAX_RETRIES = 4;
-  private static final long INITIAL_BACKOFF_MS = 100;
-
   public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
 
+  /** The channel this client owns and shuts down on close; null for a caller-owned channel. */
   private final ManagedChannel channel;
+
   private final PermissionsServiceGrpc.PermissionsServiceBlockingStub permissionsStub;
   private final SchemaServiceGrpc.SchemaServiceBlockingStub schemaStub;
   private final WatchServiceGrpc.WatchServiceBlockingStub watchStub;
   private final ExperimentalServiceGrpc.ExperimentalServiceBlockingStub experimentalStub;
   private final PermissionsServiceGrpc.PermissionsServiceStub permissionsAsyncStub;
   private final Duration defaultTimeout;
+  private final DefaultDeadline defaultDeadline;
+  private final RetryPolicy retryPolicy;
+  private final boolean retriesEnabled;
+  private final boolean streamRetriesEnabled;
+  private final java.util.Map<ClientOperation, RetryPolicy> operationRetryPolicies;
 
   private final Channel authenticatedChannel;
 
@@ -53,27 +52,64 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   private SpiceDBClient(ManagedChannel channel, Metadata metadata, Duration defaultTimeout) {
-    this.channel = channel;
+    this(
+        channel, channel, metadata, ClientOptions.builder().defaultTimeout(defaultTimeout).build());
+  }
+
+  /**
+   * @param base the channel calls go through
+   * @param owned the channel to shut down on close, or null when {@code base} is caller-owned
+   */
+  private SpiceDBClient(
+      Channel base, ManagedChannel owned, Metadata metadata, ClientOptions options) {
+    this.channel = owned;
+    Duration defaultTimeout = options.defaultTimeout();
     if (defaultTimeout == null || defaultTimeout.isZero() || defaultTimeout.isNegative())
       throw new InvalidArgumentException("default timeout must be positive");
     this.defaultTimeout = defaultTimeout;
-    this.permissionsStub =
-        PermissionsServiceGrpc.newBlockingStub(channel)
-            .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
-    this.schemaStub =
-        SchemaServiceGrpc.newBlockingStub(channel)
-            .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
-    this.watchStub =
-        WatchServiceGrpc.newBlockingStub(channel)
-            .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
-    this.experimentalStub =
-        ExperimentalServiceGrpc.newBlockingStub(channel)
-            .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
-    this.permissionsAsyncStub =
-        PermissionsServiceGrpc.newStub(channel)
-            .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+    this.defaultDeadline = options.defaultDeadline();
+    this.retryPolicy = options.retryPolicy();
+    this.retriesEnabled = options.retries() == Retries.ENABLED;
+    this.streamRetriesEnabled = options.streamRetries() == StreamRetries.ENABLED;
+    this.operationRetryPolicies = options.operationRetryPolicies();
     this.authenticatedChannel =
-        ClientInterceptors.intercept(channel, MetadataUtils.newAttachHeadersInterceptor(metadata));
+        metadata.keys().isEmpty()
+            ? base
+            : ClientInterceptors.intercept(
+                base, MetadataUtils.newAttachHeadersInterceptor(metadata));
+    this.permissionsStub = PermissionsServiceGrpc.newBlockingStub(authenticatedChannel);
+    this.schemaStub = SchemaServiceGrpc.newBlockingStub(authenticatedChannel);
+    this.watchStub = WatchServiceGrpc.newBlockingStub(authenticatedChannel);
+    this.experimentalStub = ExperimentalServiceGrpc.newBlockingStub(authenticatedChannel);
+    this.permissionsAsyncStub = PermissionsServiceGrpc.newStub(authenticatedChannel);
+  }
+
+  /**
+   * Builds a client over a caller-owned channel: an in-process or buffered-listener channel, a
+   * channel from SpiceDB's test server, or one with custom transport setup. The channel already
+   * carries its own transport security and credentials, so this sends no preshared key; wrap the
+   * channel with an interceptor if the server needs one.
+   *
+   * <p>{@link #close()} never shuts the channel down; it stays the caller's. Operation behavior
+   * from {@code options} (default timeout and deadline mode, retry policy) applies; transport and
+   * credential options (TLS material, {@code remotePlaintextCredentials}) do not and are rejected.
+   */
+  public static SpiceDBClient fromChannel(Channel channel) {
+    return fromChannel(channel, ClientOptions.builder().build());
+  }
+
+  /** See {@link #fromChannel(Channel)}. */
+  public static SpiceDBClient fromChannel(Channel channel, ClientOptions options) {
+    if (channel == null) throw new InvalidArgumentException("channel must not be null");
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options.caCertificate() != null
+        || options.clientCertificate() != null
+        || options.clientKey() != null
+        || options.remotePlaintextCredentials() != RemotePlaintextCredentials.REJECT)
+      throw new InvalidArgumentException(
+          "fromChannel: the supplied channel already carries its transport and credentials;"
+              + " TLS and remotePlaintextCredentials options do not apply");
+    return new SpiceDBClient(channel, null, new Metadata(), options);
   }
 
   public static SpiceDBClient createPlaintext(String endpoint, String presharedKey) {
@@ -93,10 +129,8 @@ public final class SpiceDBClient implements AutoCloseable {
       throw new InvalidArgumentException("TLS certificates cannot be used with plaintext");
     requireInsecureTransportAllowed(
         endpoint, true, options.remotePlaintextCredentials() == RemotePlaintextCredentials.ALLOW);
-    return new SpiceDBClient(
-        ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build(),
-        bearerMetadata(presharedKey),
-        options.defaultTimeout());
+    var managed = ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build();
+    return new SpiceDBClient(managed, managed, bearerMetadata(presharedKey), options);
   }
 
   public static SpiceDBClient createSystemTls(String endpoint, String presharedKey) {
@@ -116,8 +150,8 @@ public final class SpiceDBClient implements AutoCloseable {
     } catch (java.io.IOException | IllegalArgumentException e) {
       throw new InvalidArgumentException("invalid TLS configuration", e);
     }
-    return new SpiceDBClient(
-        builder.build(), bearerMetadata(presharedKey), options.defaultTimeout());
+    var managed = builder.build();
+    return new SpiceDBClient(managed, managed, bearerMetadata(presharedKey), options);
   }
 
   /**
@@ -166,6 +200,10 @@ public final class SpiceDBClient implements AutoCloseable {
 
   static SpiceDBClient forChannel(ManagedChannel channel, Duration defaultTimeout) {
     return new SpiceDBClient(channel, new Metadata(), defaultTimeout);
+  }
+
+  static SpiceDBClient forChannel(ManagedChannel channel, ClientOptions options) {
+    return new SpiceDBClient(channel, channel, new Metadata(), options);
   }
 
   @FunctionalInterface
@@ -292,8 +330,7 @@ public final class SpiceDBClient implements AutoCloseable {
   public CheckResult check(PermissionCheck request, CheckOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     if (request == null) throw new InvalidArgumentException("request must not be null");
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(options.timeout());
     var item = checkItem(request, options.context());
     var builder =
         CheckPermissionRequest.newBuilder()
@@ -306,7 +343,11 @@ public final class SpiceDBClient implements AutoCloseable {
     var response =
         withRetry(
             deadline,
-            () -> permissionsStub.withDeadline(deadline).checkPermission(builder.build()));
+            retryFor(ClientOperation.CHECK, options.retryPolicy()),
+            () ->
+                stub(permissionsStub, options.transport())
+                    .withDeadline(deadline)
+                    .checkPermission(builder.build()));
     return new CheckResult(
         checkPermissionshipFromProto(response.getPermissionship()),
         response.getPartialCaveatInfo().getMissingRequiredContextList(),
@@ -325,8 +366,7 @@ public final class SpiceDBClient implements AutoCloseable {
 
   public List<CheckResult> checkBulk(Collection<PermissionCheck> requests, CheckOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(options.timeout());
     if (requests == null) throw new InvalidArgumentException("requests must not be null");
     var snapshot = new ArrayList<>(requests);
     if (snapshot.contains(null))
@@ -352,7 +392,12 @@ public final class SpiceDBClient implements AutoCloseable {
               .build();
       var response =
           withRetry(
-              deadline, () -> permissionsStub.withDeadline(deadline).checkBulkPermissions(req));
+              deadline,
+              retryFor(ClientOperation.CHECK_BULK, options.retryPolicy()),
+              () ->
+                  stub(permissionsStub, options.transport())
+                      .withDeadline(deadline)
+                      .checkBulkPermissions(req));
       if (response.getPairsCount() != items.size())
         throw new SpiceDBException(
             "checkBulkPermissions returned "
@@ -365,9 +410,20 @@ public final class SpiceDBClient implements AutoCloseable {
         if (!pair.hasRequest() || !pair.getRequest().equals(items.get(i)))
           throw new SpiceDBException(
               "check item " + (offset + i) + ": missing or mismatched echoed request");
-        if (pair.hasError())
-          throw ErrorMapper.toSpiceDBException(
-              perItemStatusException(pair.getError(), "check item " + (offset + i) + ": "));
+        if (pair.hasError()) {
+          var itemError =
+              ErrorMapper.toSpiceDBException(
+                  perItemStatusException(pair.getError()),
+                  "check item " + (offset + i) + ": " + pair.getError().getMessage());
+          if (options.bulkItemErrors() == BulkItemErrors.FAIL_CALL) throw itemError;
+          results.add(
+              CheckResult.ofError(
+                  itemError,
+                  response.hasCheckedAt()
+                      ? new ZedToken(response.getCheckedAt().getToken())
+                      : null));
+          continue;
+        }
         if (!pair.hasItem())
           throw new SpiceDBException(
               "check item "
@@ -410,23 +466,31 @@ public final class SpiceDBClient implements AutoCloseable {
   public WriteResult write(Transaction txn, WriteOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     var reqBuilder = WriteRelationshipsRequest.newBuilder();
     if (options.metadata() != null)
       reqBuilder.setOptionalTransactionMetadata(toProtoStruct(options.metadata()));
 
     for (Transaction.Mutation m : List.copyOf(txn.mutations())) {
-      reqBuilder.addUpdates(toRelationshipUpdate(m));
+      reqBuilder.addUpdates(ProtoConv.toProto(m));
     }
 
     for (Transaction.Precondition p : List.copyOf(txn.preconditions())) {
-      reqBuilder.addOptionalPreconditions(toPrecondition(p));
+      reqBuilder.addOptionalPreconditions(ProtoConv.toProto(p));
     }
 
+    // An empty transaction is sent as is: SpiceDB accepts it, evaluates any preconditions, and
+    // returns the current revision.
+    var rs =
+        mutationRetry(ClientOperation.WRITE, options.retryPolicy(), txn.isIdempotent(), "write");
     WriteRelationshipsResponse resp =
-        callOnce(
-            () -> permissionsStub.withDeadline(deadline).writeRelationships(reqBuilder.build()));
+        retrying(
+            deadline,
+            () ->
+                stub(permissionsStub, options.transport())
+                    .withDeadline(deadline)
+                    .writeRelationships(reqBuilder.build()),
+            rs);
     return new WriteResult(
         resp.hasWrittenAt() ? new ZedToken(resp.getWrittenAt().getToken()) : null);
   }
@@ -435,30 +499,45 @@ public final class SpiceDBClient implements AutoCloseable {
   // Read Relationships — cursor-based auto-pagination (512-item pages)
   // -----------------------------------------------------------------------
 
-  public Stream<Relationship> readRelationships(Consistency consistency, Filter filter) {
+  public Stream<ReadRelationship> readRelationships(Consistency consistency, Filter filter) {
     return readRelationships(consistency, filter, ReadOptions.builder().build());
   }
 
-  public Stream<Relationship> readRelationships(
+  /**
+   * Reads relationships, paging automatically. Each item carries its after-result cursor and its
+   * page's read-at revision; {@link ReadOptions.Builder#cursor} resumes after a cursor.
+   *
+   * <p>Every page repeats the caller's consistency and the same page size: SpiceDB hashes both into
+   * the cursor and rejects a cursor sent with different arguments, while the cursor itself pins
+   * later pages to the first page's revision. A total {@code limit} is enforced client-side.
+   */
+  public Stream<ReadRelationship> readRelationships(
       Consistency consistency, Filter filter, ReadOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     var proto = toRelationshipFilter(filter);
     Objects.requireNonNull(consistency, "consistency");
+    boolean single = options.paging() == Paging.SINGLE_REQUEST;
+    int requestLimit = pageRequestLimit(single, options.pageSize(), options.limit());
     return pagedStream(
         cursor -> {
           var b =
               ReadRelationshipsRequest.newBuilder()
                   .setConsistency(consistency.toProto())
                   .setRelationshipFilter(proto)
-                  .setOptionalLimit(options.pageSize());
+                  .setOptionalLimit(requestLimit);
           if (cursor != null) b.setOptionalCursor(cursor);
-          return permissionsStub.readRelationships(b.build());
+          return stub(permissionsStub, options.transport()).readRelationships(b.build());
         },
         ReadRelationshipsResponse::getAfterResultCursor,
-        r -> fromProtoRelationship(r.getRelationship()),
-        options.pageSize(),
+        ProtoConv::fromProto,
+        "read",
+        options.cursor(),
+        response -> true,
+        requestLimit,
+        single,
         options.limit(),
-        options.timeout());
+        options.timeout(),
+        retryFor(ClientOperation.READ_RELATIONSHIPS, options.retryPolicy()));
   }
 
   public record DeleteResult(
@@ -470,9 +549,30 @@ public final class SpiceDBClient implements AutoCloseable {
 
   public DeleteResult deleteRelationships(Filter filter, int limit, DeleteOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(
+        ClientOperation.DELETE_RELATIONSHIPS, options.retryPolicy(), false, "delete relationships");
     if (limit <= 0) throw new InvalidArgumentException("limit must be positive");
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    return deleteBounded(filter, limit, options);
+  }
+
+  /**
+   * All-or-nothing delete with the server's default limit. Requires {@code
+   * options.partialDeletion() == PartialDeletion.DISALLOWED}: the server rejects a delete matching
+   * more than its limit instead of deleting part of it. In the default partial mode a positive
+   * limit is required, so use {@link #deleteRelationships(Filter, int, DeleteOptions)}.
+   */
+  public DeleteResult deleteRelationships(Filter filter, DeleteOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(
+        ClientOperation.DELETE_RELATIONSHIPS, options.retryPolicy(), false, "delete relationships");
+    if (options.partialDeletion() != PartialDeletion.DISALLOWED)
+      throw new InvalidArgumentException(
+          "deleteRelationships without a limit requires PartialDeletion.DISALLOWED");
+    return deleteBounded(filter, 0, options);
+  }
+
+  private DeleteResult deleteBounded(Filter filter, int limit, DeleteOptions options) {
+    var deadline = deadlineFor(options.timeout());
     try {
       return deletePage(filter, limit, options, deadline);
     } catch (SpiceDBException e) {
@@ -489,8 +589,8 @@ public final class SpiceDBClient implements AutoCloseable {
     var builder =
         DeleteRelationshipsRequest.newBuilder()
             .setRelationshipFilter(toRelationshipFilter(filter))
-            .setOptionalLimit(limit)
-            .setOptionalAllowPartialDeletions(true);
+            .setOptionalAllowPartialDeletions(options.partialDeletion() == PartialDeletion.ALLOWED);
+    if (limit > 0) builder.setOptionalLimit(limit);
     for (var f : options.mustMatch())
       builder.addOptionalPreconditions(
           toPrecondition(
@@ -502,7 +602,11 @@ public final class SpiceDBClient implements AutoCloseable {
     if (options.resumeCursor() != null && !options.resumeCursor().isEmpty())
       builder.setOptionalCursor(Cursor.newBuilder().setToken(options.resumeCursor()));
     var response =
-        callOnce(() -> permissionsStub.withDeadline(deadline).deleteRelationships(builder.build()));
+        callOnce(
+            () ->
+                stub(permissionsStub, options.transport())
+                    .withDeadline(deadline)
+                    .deleteRelationships(builder.build()));
     var token = (response.hasDeletedAt() ? new ZedToken(response.getDeletedAt().getToken()) : null);
     var cursor =
         response.hasAfterResultCursor() ? response.getAfterResultCursor().getToken() : null;
@@ -535,8 +639,12 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public DeleteResult deleteAllRelationshipsNonAtomic(Filter filter, DeleteAllOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    mutationRetry(
+        ClientOperation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC,
+        options.retryPolicy(),
+        false,
+        "delete relationships");
+    var deadline = deadlineFor(options.timeout());
     long count = 0;
     int pages = 0;
     ZedToken token = null;
@@ -551,13 +659,26 @@ public final class SpiceDBClient implements AutoCloseable {
                     .mustMatch(options.mustMatch())
                     .mustNotMatch(options.mustNotMatch())
                     .resumeCursor(cursor)
+                    .transport(options.transport())
                     .build(),
                 deadline);
+        var sent = cursor;
         count += result.deletedCount();
         pages++;
         token = result.revision();
         cursor = result.resumeCursor();
+        if (options.onProgress() != null)
+          options.onProgress().accept(new DeleteResult(token, count, result.completed(), cursor));
         if (result.completed()) return new DeleteResult(token, count, true, cursor);
+        // A partial page that returns the cursor it was sent would repeat the same request
+        // forever. (A partial page without a cursor is valid: the next page re-evaluates the
+        // filter against what remains.)
+        if (cursor != null && !cursor.isEmpty() && cursor.equals(sent)) {
+          var error =
+              ErrorMapper.newError(Status.Code.INTERNAL, "delete page did not advance cursor");
+          error.attachDeleteProgress(new DeleteProgress(0, token, cursor, 0, false));
+          throw error;
+        }
       } catch (SpiceDBException error) {
         var prior = error.deleteProgress();
         error.attachDeleteProgress(
@@ -599,6 +720,8 @@ public final class SpiceDBClient implements AutoCloseable {
       throw new InvalidArgumentException(
           "lookupResources uses the required SubjectRef relation, not subjectRelation options");
     var protoSubject = subjectProto(subject);
+    boolean single = options.paging() == Paging.SINGLE_REQUEST;
+    int requestLimit = pageRequestLimit(single, options.pageSize(), options.limit());
     return pagedStream(
         cursor -> {
           var b =
@@ -607,21 +730,25 @@ public final class SpiceDBClient implements AutoCloseable {
                   .setResourceObjectType(resourceType)
                   .setPermission(permission)
                   .setSubject(protoSubject)
-                  .setOptionalLimit(options.pageSize())
+                  .setOptionalLimit(requestLimit)
                   .setWithDebug(options.debug() == LookupDebug.ENABLED);
           if (cursor != null) b.setOptionalCursor(cursor);
           if (options.context() != null) b.setContext(toProtoStruct(options.context()));
-          return permissionsStub.lookupResources(b.build());
+          return stub(permissionsStub, options.transport()).lookupResources(b.build());
         },
         LookupResourcesResponse::getAfterResultCursor,
-        SpiceDBClient::lookupResourceFromProto,
+        ProtoConv::fromProto,
+        "lookup",
+        options.cursor(),
         response ->
             options.permissionshipFilter() == LookupPermissionshipFilter.ALL
                 || response.getPermissionship()
                     == LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
-        options.pageSize(),
+        requestLimit,
+        single,
         options.limit(),
-        options.timeout());
+        options.timeout(),
+        retryFor(ClientOperation.LOOKUP_RESOURCES, options.retryPolicy()));
   }
 
   public Stream<LookupResult.LookupSubject> lookupSubjects(
@@ -639,8 +766,11 @@ public final class SpiceDBClient implements AutoCloseable {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     if (options.permissionshipFilter() != LookupPermissionshipFilter.ALL)
       throw new InvalidArgumentException("lookupSubjects does not support permissionshipFilter");
-    if (options.debug() == LookupDebug.ENABLED || options.pageSize() != 512)
-      throw new InvalidArgumentException("lookupSubjects does not support debug or pageSize");
+    if (options.debug() == LookupDebug.ENABLED
+        || options.pageSize() != 512
+        || options.paging() != Paging.AUTOMATIC)
+      throw new InvalidArgumentException(
+          "lookupSubjects does not support debug, pageSize or paging");
     var builder =
         LookupSubjectsRequest.newBuilder()
             .setConsistency(consistency.toProto())
@@ -651,10 +781,11 @@ public final class SpiceDBClient implements AutoCloseable {
       builder.setOptionalSubjectRelation(options.subjectRelation());
     if (options.context() != null) builder.setContext(toProtoStruct(options.context()));
     return lazyStream(
-        () -> permissionsStub.lookupSubjects(builder.build()),
+        () -> stub(permissionsStub, options.transport()).lookupSubjects(builder.build()),
         SpiceDBClient::lookupSubjectFromProto,
         options.timeout(),
-        options.limit());
+        options.limit(),
+        retryFor(ClientOperation.LOOKUP_SUBJECTS, options.retryPolicy()));
   }
 
   // -----------------------------------------------------------------------
@@ -670,13 +801,13 @@ public final class SpiceDBClient implements AutoCloseable {
   public SchemaResult readSchema(CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     ReadSchemaResponse resp =
         withRetry(
             deadline,
+            retryFor(ClientOperation.READ_SCHEMA, options.retryPolicy()),
             () ->
-                schemaStub
+                stub(schemaStub, options.transport())
                     .withDeadline(deadline)
                     .readSchema(ReadSchemaRequest.getDefaultInstance()));
     return new SchemaResult(
@@ -691,14 +822,17 @@ public final class SpiceDBClient implements AutoCloseable {
   public ZedToken writeSchema(String schema, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
+    var rs =
+        mutationRetry(ClientOperation.WRITE_SCHEMA, options.retryPolicy(), true, "write schema");
     WriteSchemaResponse resp =
-        callOnce(
+        retrying(
+            deadline,
             () ->
-                schemaStub
+                stub(schemaStub, options.transport())
                     .withDeadline(deadline)
-                    .writeSchema(WriteSchemaRequest.newBuilder().setSchema(schema).build()));
+                    .writeSchema(WriteSchemaRequest.newBuilder().setSchema(schema).build()),
+            rs);
     return (resp.hasWrittenAt() ? new ZedToken(resp.getWrittenAt().getToken()) : null);
   }
 
@@ -741,13 +875,13 @@ public final class SpiceDBClient implements AutoCloseable {
   public ReflectSchemaResult reflectSchema(Consistency consistency, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     ReflectSchemaResponse resp =
         withRetry(
             deadline,
+            retryFor(ClientOperation.REFLECT_SCHEMA, options.retryPolicy()),
             () ->
-                schemaStub
+                stub(schemaStub, options.transport())
                     .withDeadline(deadline)
                     .reflectSchema(
                         ReflectSchemaRequest.newBuilder()
@@ -811,13 +945,13 @@ public final class SpiceDBClient implements AutoCloseable {
       Consistency consistency, String definitionName, String relationName, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     ComputablePermissionsResponse resp =
         withRetry(
             deadline,
+            retryFor(ClientOperation.COMPUTABLE_PERMISSIONS, options.retryPolicy()),
             () ->
-                schemaStub
+                stub(schemaStub, options.transport())
                     .withDeadline(deadline)
                     .computablePermissions(
                         ComputablePermissionsRequest.newBuilder()
@@ -852,13 +986,13 @@ public final class SpiceDBClient implements AutoCloseable {
       Consistency consistency, String definitionName, String permissionName, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     DependentRelationsResponse resp =
         withRetry(
             deadline,
+            retryFor(ClientOperation.DEPENDENT_RELATIONS, options.retryPolicy()),
             () ->
-                schemaStub
+                stub(schemaStub, options.transport())
                     .withDeadline(deadline)
                     .dependentRelations(
                         DependentRelationsRequest.newBuilder()
@@ -898,13 +1032,13 @@ public final class SpiceDBClient implements AutoCloseable {
       Consistency consistency, String comparisonSchema, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     DiffSchemaResponse resp =
         withRetry(
             deadline,
+            retryFor(ClientOperation.DIFF_SCHEMA, options.retryPolicy()),
             () ->
-                schemaStub
+                stub(schemaStub, options.transport())
                     .withDeadline(deadline)
                     .diffSchema(
                         DiffSchemaRequest.newBuilder()
@@ -935,13 +1069,13 @@ public final class SpiceDBClient implements AutoCloseable {
       Consistency consistency, ObjectRef resource, String permission, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     ExpandPermissionTreeResponse resp =
         withRetry(
             deadline,
+            retryFor(ClientOperation.EXPAND_PERMISSION_TREE, options.retryPolicy()),
             () ->
-                permissionsStub
+                stub(permissionsStub, options.transport())
                     .withDeadline(deadline)
                     .expandPermissionTree(
                         ExpandPermissionTreeRequest.newBuilder()
@@ -964,6 +1098,8 @@ public final class SpiceDBClient implements AutoCloseable {
 
   public long importRelationships(Iterable<Relationship> relationships, ImportOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(
+        ClientOperation.IMPORT_RELATIONSHIPS, options.retryPolicy(), false, "import relationships");
     var scope = new StreamScope(options.timeout());
     var ctx = scope.context();
     var previous = ctx.attach();
@@ -976,39 +1112,40 @@ public final class SpiceDBClient implements AutoCloseable {
             io.grpc.stub.ClientCallStreamObserver<ImportBulkRelationshipsRequest>>();
     Iterator<Relationship> input = null;
     try {
-      permissionsAsyncStub.importBulkRelationships(
-          new io.grpc.stub.ClientResponseObserver<
-              ImportBulkRelationshipsRequest, ImportBulkRelationshipsResponse>() {
-            public void beforeStart(
-                io.grpc.stub.ClientCallStreamObserver<ImportBulkRelationshipsRequest> stream) {
-              call.set(stream);
-              stream.setOnReadyHandler(
-                  () -> {
-                    synchronized (lock) {
-                      lock.notifyAll();
-                    }
-                  });
-            }
+      stub(permissionsAsyncStub, options.transport())
+          .importBulkRelationships(
+              new io.grpc.stub.ClientResponseObserver<
+                  ImportBulkRelationshipsRequest, ImportBulkRelationshipsResponse>() {
+                public void beforeStart(
+                    io.grpc.stub.ClientCallStreamObserver<ImportBulkRelationshipsRequest> stream) {
+                  call.set(stream);
+                  stream.setOnReadyHandler(
+                      () -> {
+                        synchronized (lock) {
+                          lock.notifyAll();
+                        }
+                      });
+                }
 
-            public void onNext(ImportBulkRelationshipsResponse response) {
-              loaded.set(response.getNumLoaded());
-            }
+                public void onNext(ImportBulkRelationshipsResponse response) {
+                  loaded.set(response.getNumLoaded());
+                }
 
-            public void onError(Throwable error) {
-              failure.set(error);
-              done.set(true);
-              synchronized (lock) {
-                lock.notifyAll();
-              }
-            }
+                public void onError(Throwable error) {
+                  failure.set(error);
+                  done.set(true);
+                  synchronized (lock) {
+                    lock.notifyAll();
+                  }
+                }
 
-            public void onCompleted() {
-              done.set(true);
-              synchronized (lock) {
-                lock.notifyAll();
-              }
-            }
-          });
+                public void onCompleted() {
+                  done.set(true);
+                  synchronized (lock) {
+                    lock.notifyAll();
+                  }
+                }
+              });
       input = relationships.iterator();
       var stream = call.get();
       while (true) {
@@ -1017,14 +1154,14 @@ public final class SpiceDBClient implements AutoCloseable {
         }
         if (ctx.isCancelled()) {
           if (scope.ended || ctx.getDeadline() == null || !ctx.getDeadline().isExpired())
-            throw new java.util.concurrent.CancellationException("import cancelled");
+            throw cancelled("import cancelled");
           throw Status.DEADLINE_EXCEEDED.asRuntimeException();
         }
         if (done.get()) {
           if (failure.get() != null) throw importFailure(failure.get());
           break;
         }
-        var batch = new ArrayList<build.buf.gen.authzed.api.v1.Relationship>(options.batchSize());
+        var batch = new ArrayList<com.authzed.api.v1.Relationship>(options.batchSize());
         while (batch.size() < options.batchSize()
             && !done.get()
             && !ctx.isCancelled()
@@ -1045,18 +1182,18 @@ public final class SpiceDBClient implements AutoCloseable {
       }
       if (failure.get() != null) throw importFailure(failure.get());
       if (ctx.isCancelled()) {
-        if (scope.ended) throw new java.util.concurrent.CancellationException("import cancelled");
+        if (scope.ended) throw cancelled("import cancelled");
         throw Status.DEADLINE_EXCEEDED.asRuntimeException();
       }
       return loaded.get();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       failure.compareAndSet(null, e);
-      throw new java.util.concurrent.CancellationException("import interrupted");
+      throw cancelled("import interrupted");
     } catch (StatusRuntimeException e) {
       failure.compareAndSet(null, e);
       if (Thread.currentThread().isInterrupted() || scope.ended)
-        throw new java.util.concurrent.CancellationException("import cancelled");
+        throw cancelled("import cancelled");
       throw ErrorMapper.toSpiceDBException(e);
     } catch (RuntimeException e) {
       failure.compareAndSet(null, e);
@@ -1083,11 +1220,16 @@ public final class SpiceDBClient implements AutoCloseable {
     return new SpiceDBException("import failed", error);
   }
 
-  public Stream<Relationship> exportRelationships(Consistency consistency, Filter filter) {
+  public Stream<ExportedRelationship> exportRelationships(Consistency consistency, Filter filter) {
     return exportRelationships(consistency, filter, ExportOptions.builder().build());
   }
 
-  public Stream<Relationship> exportRelationships(
+  /**
+   * Exports relationships as one server stream. Each item carries its batch's after-result cursor
+   * (exports have no read-at revision); {@link ExportOptions.Builder#cursor} resumes after one,
+   * repeating the original filter, consistency and page size.
+   */
+  public Stream<ExportedRelationship> exportRelationships(
       Consistency consistency, Filter filter, ExportOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     var b =
@@ -1095,24 +1237,30 @@ public final class SpiceDBClient implements AutoCloseable {
             .setConsistency(consistency.toProto())
             .setOptionalLimit(options.pageSize());
     if (filter != null) b.setOptionalRelationshipFilter(toRelationshipFilter(filter));
+    if (options.cursor() != null && !options.cursor().isEmpty())
+      b.setOptionalCursor(Cursor.newBuilder().setToken(options.cursor()));
     return managedStream(
         () -> {
           var responses =
-              openStreamWithRetry(() -> permissionsStub.exportBulkRelationships(b.build()));
-          return new Iterator<Relationship>() {
-            Iterator<build.buf.gen.authzed.api.v1.Relationship> batch = Collections.emptyIterator();
+              openStreamWithRetry(
+                  retryFor(ClientOperation.EXPORT_RELATIONSHIPS, options.retryPolicy()),
+                  () ->
+                      stub(permissionsStub, options.transport())
+                          .exportBulkRelationships(b.build()));
+          return new Iterator<ExportedRelationship>() {
+            Iterator<ExportedRelationship> batch = Collections.emptyIterator();
 
             public boolean hasNext() {
               while (!batch.hasNext()) {
                 if (!responses.hasNext()) return false;
-                batch = responses.next().getRelationshipsList().iterator();
+                batch = ProtoConv.fromProto(responses.next()).iterator();
               }
               return true;
             }
 
-            public Relationship next() {
+            public ExportedRelationship next() {
               if (!hasNext()) throw new NoSuchElementException();
-              return fromProtoRelationship(batch.next());
+              return batch.next();
             }
           };
         },
@@ -1133,16 +1281,37 @@ public final class SpiceDBClient implements AutoCloseable {
     DELETE
   }
 
-  public record WatchEvent(List<Update> updates, ZedToken changesThrough, boolean isCheckpoint) {
+  /**
+   * One watch response.
+   *
+   * @param schemaUpdated the schema changed at {@code changesThrough}; only reported when the watch
+   *     requested {@link WatchSchemaChanges#INCLUDED}
+   */
+  public record WatchEvent(
+      List<Update> updates, ZedToken changesThrough, boolean isCheckpoint, boolean schemaUpdated) {
     public WatchEvent {
       updates = updates == null ? List.of() : List.copyOf(updates);
     }
+
+    /** An event without a schema change. */
+    public WatchEvent(List<Update> updates, ZedToken changesThrough, boolean isCheckpoint) {
+      this(updates, changesThrough, isCheckpoint, false);
+    }
   }
 
+  /**
+   * Watches relationship changes; a null {@code startRevision} starts at head. The client-wide
+   * retry policy and stream-retry setting never reopen a watch: a failure before the first event
+   * (UNAVAILABLE included) is thrown, since a reopened watch without a start revision would begin
+   * at a later revision and skip the changes between. Only {@link WatchOptions.Builder#retryPolicy}
+   * or a {@link ClientOperation#WATCH} operation policy opts in to reopening before the first
+   * event; a watch that delivered an event is never reopened.
+   */
   public Stream<WatchEvent> updates(List<String> objectTypes, ZedToken startRevision) {
     return updates(objectTypes, startRevision, WatchOptions.builder().build());
   }
 
+  /** Watches relationship changes with options; see {@link #updates(List, ZedToken)}. */
   public Stream<WatchEvent> updates(
       List<String> objectTypes, ZedToken startRevision, WatchOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
@@ -1155,19 +1324,25 @@ public final class SpiceDBClient implements AutoCloseable {
     if (objectTypes != null) b.addAllOptionalObjectTypes(List.copyOf(objectTypes));
     if (startRevision != null)
       b.setOptionalStartCursor(
-          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
-    if (options.content() == WatchContent.RELATIONSHIPS_AND_CHECKPOINTS)
-      b.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES)
-          .addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_CHECKPOINTS);
+          com.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
+    boolean checkpoints = options.content() == WatchContent.RELATIONSHIPS_AND_CHECKPOINTS;
+    boolean schema = options.schemaChanges() == WatchSchemaChanges.INCLUDED;
+    if (checkpoints || schema) {
+      b.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES);
+      if (checkpoints) b.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_CHECKPOINTS);
+      if (schema) b.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_SCHEMA_UPDATES);
+    }
     return lazyStream(
-        () -> watchStub.watch(b.build()),
+        () -> stub(watchStub, options.transport()).watch(b.build()),
         r ->
             new WatchEvent(
                 r.getUpdatesList().stream().map(this::updateFromProto).toList(),
                 (r.hasChangesThrough() ? new ZedToken(r.getChangesThrough().getToken()) : null),
-                r.getIsCheckpoint()),
+                r.getIsCheckpoint(),
+                r.getSchemaUpdated()),
         options.timeout(),
-        0);
+        0,
+        watchRetry(ClientOperation.WATCH, options.retryPolicy()));
   }
 
   // -----------------------------------------------------------------------
@@ -1182,12 +1357,16 @@ public final class SpiceDBClient implements AutoCloseable {
   public void experimentalRegisterRelationshipCounter(
       String name, Filter filter, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(
+        ClientOperation.REGISTER_RELATIONSHIP_COUNTER,
+        options.retryPolicy(),
+        false,
+        "register relationship counter");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     callOnce(
         () ->
-            experimentalStub
+            stub(experimentalStub, options.transport())
                 .withDeadline(deadline)
                 .experimentalRegisterRelationshipCounter(
                     ExperimentalRegisterRelationshipCounterRequest.newBuilder()
@@ -1205,13 +1384,13 @@ public final class SpiceDBClient implements AutoCloseable {
   public CountResult experimentalCountRelationships(String name, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     ExperimentalCountRelationshipsResponse resp =
         withRetry(
             deadline,
+            retryFor(ClientOperation.COUNT_RELATIONSHIPS, options.retryPolicy()),
             () ->
-                experimentalStub
+                stub(experimentalStub, options.transport())
                     .withDeadline(deadline)
                     .experimentalCountRelationships(
                         ExperimentalCountRelationshipsRequest.newBuilder().setName(name).build()));
@@ -1233,12 +1412,16 @@ public final class SpiceDBClient implements AutoCloseable {
 
   public void experimentalUnregisterRelationshipCounter(String name, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(
+        ClientOperation.UNREGISTER_RELATIONSHIP_COUNTER,
+        options.retryPolicy(),
+        false,
+        "unregister relationship counter");
     Duration timeout = options.timeout();
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(timeout);
     callOnce(
         () ->
-            experimentalStub
+            stub(experimentalStub, options.transport())
                 .withDeadline(deadline)
                 .experimentalUnregisterRelationshipCounter(
                     ExperimentalUnregisterRelationshipCounterRequest.newBuilder()
@@ -1268,14 +1451,13 @@ public final class SpiceDBClient implements AutoCloseable {
         || options.context() != null
         || options.debug() == LookupDebug.ENABLED
         || options.limit() != 0
-        || options.pageSize() != 512)
+        || options.pageSize() != 512
+        || options.paging() != Paging.AUTOMATIC)
       throw new InvalidArgumentException(
-          "roaring lookup does not support context, debug, limit or pageSize");
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+          "roaring lookup does not support context, debug, limit, pageSize or paging");
+    var deadline = deadlineFor(options.timeout());
     var request =
-        build.buf.gen.authzed.api.materialize.v0.ExperimentalRoaringLookupResourcesRequest
-            .newBuilder()
+        com.authzed.api.materialize.v0.ExperimentalRoaringLookupResourcesRequest.newBuilder()
             .setConsistency(consistency.toProto())
             .setResourceObjectType(resourceType)
             .setPermission(permission)
@@ -1284,9 +1466,12 @@ public final class SpiceDBClient implements AutoCloseable {
     var response =
         withRetry(
             deadline,
+            retryFor(ClientOperation.ROARING_LOOKUP_RESOURCES, options.retryPolicy()),
             () ->
-                build.buf.gen.authzed.api.materialize.v0.RoaringLookupResourcesServiceGrpc
-                    .newBlockingStub(authenticatedChannel)
+                stub(
+                        com.authzed.api.materialize.v0.RoaringLookupResourcesServiceGrpc
+                            .newBlockingStub(authenticatedChannel),
+                        options.transport())
                     .withDeadline(deadline)
                     .experimentalRoaringLookupResources(request));
     return new Materialize.RoaringLookupResourcesResult(
@@ -1302,19 +1487,20 @@ public final class SpiceDBClient implements AutoCloseable {
 
   public CountResult experimentalCountRelationshipsByFilter(Filter filter, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    var deadline = deadlineFor(options.timeout());
     var request =
-        build.buf.gen.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest
-            .newBuilder()
+        com.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest.newBuilder()
             .setRelationshipFilter(toRelationshipFilter(filter))
             .build();
     var response =
         withRetry(
             deadline,
+            retryFor(ClientOperation.COUNT_RELATIONSHIPS_BY_FILTER, options.retryPolicy()),
             () ->
-                build.buf.gen.authzed.api.materialize.v0.RelationshipsServiceGrpc.newBlockingStub(
-                        authenticatedChannel)
+                stub(
+                        com.authzed.api.materialize.v0.RelationshipsServiceGrpc.newBlockingStub(
+                            authenticatedChannel),
+                        options.transport())
                     .withDeadline(deadline)
                     .experimentalCountRelationshipsByFilter(request));
     return new CountResult(
@@ -1323,7 +1509,11 @@ public final class SpiceDBClient implements AutoCloseable {
         false);
   }
 
-  /** Experimental closeable permission-set watch; null starts at head. */
+  /**
+   * Experimental closeable permission-set watch; null starts at head. Like {@link #updates(List,
+   * ZedToken)}, it is reopened before its first event only under a per-call or {@link
+   * ClientOperation#WATCH_PERMISSION_SETS} retry policy, never the client-wide one.
+   */
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
       ZedToken startRevision) {
     return experimentalWatchPermissionSets(startRevision, CallOptions.builder().build());
@@ -1332,18 +1522,21 @@ public final class SpiceDBClient implements AutoCloseable {
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
       ZedToken startRevision, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    var b = build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsRequest.newBuilder();
+    var b = com.authzed.api.materialize.v0.WatchPermissionSetsRequest.newBuilder();
     if (startRevision != null)
       b.setOptionalStartingAfter(
-          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
+          com.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
     return lazyStream(
         () ->
-            build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
-                    authenticatedChannel)
+            stub(
+                    com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
+                        authenticatedChannel),
+                    options.transport())
                 .watchPermissionSets(b.build()),
         Materialize::event,
         options.timeout(),
-        0);
+        0,
+        watchRetry(ClientOperation.WATCH_PERMISSION_SETS, options.retryPolicy()));
   }
 
   /** Experimental snapshot lookup with explicit opaque continuation. */
@@ -1356,23 +1549,25 @@ public final class SpiceDBClient implements AutoCloseable {
       ZedToken atRevision, PermissionSetOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     var b =
-        build.buf.gen.authzed.api.materialize.v0.LookupPermissionSetsRequest.newBuilder()
+        com.authzed.api.materialize.v0.LookupPermissionSetsRequest.newBuilder()
             .setLimit(options.limit());
     if (atRevision != null)
       b.setOptionalAtRevision(
-          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
+          com.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
     if (options.resumeCursor() != null)
       try {
         b.setOptionalStartingAfterCursor(
-            build.buf.gen.authzed.api.materialize.v0.Cursor.parseFrom(
+            com.authzed.api.materialize.v0.Cursor.parseFrom(
                 Base64.getDecoder().decode(options.resumeCursor())));
       } catch (Exception e) {
         throw new InvalidArgumentException("invalid permission-set cursor", e);
       }
     return lazyStream(
         () ->
-            build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
-                    authenticatedChannel)
+            stub(
+                    com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
+                        authenticatedChannel),
+                    options.transport())
                 .lookupPermissionSets(b.build()),
         r ->
             new Materialize.LookupPermissionSet(
@@ -1381,7 +1576,8 @@ public final class SpiceDBClient implements AutoCloseable {
                     ? Base64.getEncoder().encodeToString(r.getCursor().toByteArray())
                     : null),
         options.timeout(),
-        options.limit());
+        options.limit(),
+        retryFor(ClientOperation.LOOKUP_PERMISSION_SETS, options.retryPolicy()));
   }
 
   /**
@@ -1395,18 +1591,20 @@ public final class SpiceDBClient implements AutoCloseable {
   public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
       ZedToken atRevision, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    var deadline =
-        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
-    var b = build.buf.gen.authzed.api.materialize.v0.DownloadPermissionSetsRequest.newBuilder();
+    var deadline = deadlineFor(options.timeout());
+    var b = com.authzed.api.materialize.v0.DownloadPermissionSetsRequest.newBuilder();
     if (atRevision != null)
       b.setOptionalAtRevision(
-          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
+          com.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
     var r =
         withRetry(
             deadline,
+            retryFor(ClientOperation.DOWNLOAD_PERMISSION_SETS, options.retryPolicy()),
             () ->
-                build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc
-                    .newBlockingStub(authenticatedChannel)
+                stub(
+                        com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc
+                            .newBlockingStub(authenticatedChannel),
+                        options.transport())
                     .withDeadline(deadline)
                     .downloadPermissionSets(b.build()));
     return new Materialize.DownloadPermissionSetsResult(
@@ -1432,6 +1630,8 @@ public final class SpiceDBClient implements AutoCloseable {
   public void close() {
     closed = true;
     for (var scope : List.copyOf(activeStreams)) scope.close();
+    // A channel supplied to fromChannel stays the caller's: cancel this client's streams only.
+    if (channel == null) return;
     channel.shutdown();
     try {
       if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
@@ -1447,8 +1647,15 @@ public final class SpiceDBClient implements AutoCloseable {
   // Internal helpers
   // -----------------------------------------------------------------------
 
-  private Duration effectiveTimeout(Duration timeout) {
-    return timeout != null ? timeout : defaultTimeout;
+  /**
+   * The operation budget: the operation's own timeout, else the client default unless {@link
+   * DefaultDeadline#DISABLED}, in which case {@code null} (unbounded apart from the caller's gRPC
+   * {@code Context} deadline).
+   */
+  private io.grpc.Deadline deadlineFor(Duration timeout) {
+    if (timeout != null) return io.grpc.Deadline.after(timeout.toNanos(), TimeUnit.NANOSECONDS);
+    if (defaultDeadline == DefaultDeadline.DISABLED) return null;
+    return io.grpc.Deadline.after(defaultTimeout.toNanos(), TimeUnit.NANOSECONDS);
   }
 
   private static Metadata bearerMetadata(String presharedKey) {
@@ -1468,8 +1675,7 @@ public final class SpiceDBClient implements AutoCloseable {
     try {
       return op.get();
     } catch (StatusRuntimeException e) {
-      if (Thread.currentThread().isInterrupted())
-        throw new java.util.concurrent.CancellationException("operation interrupted");
+      if (Thread.currentThread().isInterrupted()) throw cancelled("operation interrupted");
       throw ErrorMapper.toSpiceDBException(e);
     }
   }
@@ -1486,24 +1692,87 @@ public final class SpiceDBClient implements AutoCloseable {
     return (long) (ThreadLocalRandom.current().nextDouble() * cap);
   }
 
-  private <T> T withRetry(RetryableCall<T> call) {
-    return withRetry(Context.current().getDeadline(), call);
+  /**
+   * The retry behavior for one operation: a per-call or per-operation policy wins over the client's
+   * (including its disabled modes) and also governs stream establishment for that call.
+   */
+  private record RetrySettings(RetryPolicy policy, int maxRetries, boolean streams) {}
+
+  private static final RetrySettings NO_RETRIES =
+      new RetrySettings(RetryPolicy.defaults(), 0, false);
+
+  /**
+   * The most specific policy for one call of {@code operation}: the call's own, then the client's
+   * per-operation policy, or {@code null} for the client-wide behavior.
+   */
+  private RetryPolicy retryFor(ClientOperation operation, RetryPolicy perCall) {
+    return perCall != null ? perCall : operationRetryPolicies.get(operation);
   }
 
-  private <T> T withRetry(io.grpc.Deadline deadline, RetryableCall<T> call) {
-    long backoff = INITIAL_BACKOFF_MS;
-    for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  private static final RetryPolicy NEVER_REOPEN = RetryPolicy.builder().maxRetries(0).build();
+
+  /**
+   * A watch's retry policy: only a per-call or per-operation policy may reopen it. The client-wide
+   * policy (the default included) and the stream-retry setting never do, since a reopened watch
+   * without a start revision begins at a later revision and silently skips the changes between.
+   */
+  private RetryPolicy watchRetry(ClientOperation operation, RetryPolicy perCall) {
+    var policy = retryFor(operation, perCall);
+    return policy != null ? policy : NEVER_REOPEN;
+  }
+
+  private RetrySettings retrySettings(RetryPolicy override) {
+    if (override != null) return new RetrySettings(override, override.maxRetries(), true);
+    return new RetrySettings(
+        retryPolicy,
+        retriesEnabled ? retryPolicy.maxRetries() : 0,
+        retriesEnabled && streamRetriesEnabled);
+  }
+
+  /**
+   * The retry settings for a mutation: none unless the caller opted in, which only idempotent
+   * mutations (touch-only writes without preconditions, schema writes) may do. A per-call opt-in on
+   * a non-idempotent mutation is an error; a per-operation policy applies only to the calls that
+   * are idempotent (never-idempotent operations reject a retrying one when the client is built).
+   */
+  private RetrySettings mutationRetry(
+      ClientOperation op, RetryPolicy perCall, boolean idempotent, String operation) {
+    if (perCall != null) {
+      if (perCall.maxRetries() == 0) return NO_RETRIES;
+      if (!idempotent)
+        throw new InvalidArgumentException(
+            operation
+                + " cannot be retried: only touch-only writes without preconditions and schema"
+                + " writes are idempotent on replay");
+      return new RetrySettings(perCall, perCall.maxRetries(), false);
+    }
+    var perOperation = operationRetryPolicies.get(op);
+    if (perOperation != null && perOperation.maxRetries() > 0 && idempotent)
+      return new RetrySettings(perOperation, perOperation.maxRetries(), false);
+    return NO_RETRIES;
+  }
+
+  /** Retries an idempotent read under the call's or the client's {@link RetryPolicy}. */
+  private <T> T withRetry(io.grpc.Deadline deadline, RetryPolicy perCall, RetryableCall<T> call) {
+    return retrying(deadline, call, retrySettings(perCall));
+  }
+
+  private <T> T retrying(io.grpc.Deadline deadline, RetryableCall<T> call, RetrySettings rs) {
+    var retryPolicy = rs.policy();
+    int maxRetries = rs.maxRetries();
+    long backoff = retryPolicy.initialBackoff().toMillis();
+    long maxBackoff = retryPolicy.maxBackoff().toMillis();
+    for (int attempt = 0; ; attempt++) {
       if (deadline != null && deadline.isExpired())
         throw ErrorMapper.toSpiceDBException(Status.DEADLINE_EXCEEDED.asRuntimeException());
-      if (closed) throw new java.util.concurrent.CancellationException("client closed");
+      if (closed) throw cancelled("client closed");
       try {
-        if (Thread.currentThread().isInterrupted())
-          throw new java.util.concurrent.CancellationException("operation interrupted");
+        if (Thread.currentThread().isInterrupted()) throw cancelled("operation interrupted");
         return call.call();
       } catch (StatusRuntimeException e) {
-        if (Thread.currentThread().isInterrupted())
-          throw new java.util.concurrent.CancellationException("operation interrupted");
-        if (!ErrorMapper.isTransient(e) || attempt == MAX_RETRIES - 1) {
+        if (Thread.currentThread().isInterrupted()) throw cancelled("operation interrupted");
+        if (attempt >= maxRetries
+            || !retryPolicy.retryableCodes().contains(e.getStatus().getCode())) {
           throw ErrorMapper.toSpiceDBException(e);
         }
         try {
@@ -1515,47 +1784,74 @@ public final class SpiceDBClient implements AutoCloseable {
                       Math.min(
                           jitteredBackoffMs(backoff),
                           deadline.timeRemaining(TimeUnit.MILLISECONDS)));
+          if (retryPolicy.onRetry() != null)
+            retryPolicy
+                .onRetry()
+                .accept(
+                    new RetryPolicy.RetryAttempt(
+                        attempt + 1, e.getStatus().getCode(), Duration.ofMillis(pause), e));
           long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(pause);
           while (System.nanoTime() < until) {
             if (closed
                 || (Context.current().isCancelled() && (deadline == null || !deadline.isExpired())))
-              throw new java.util.concurrent.CancellationException(
-                  "operation cancelled during backoff");
+              throw cancelled("operation cancelled during backoff");
             Thread.sleep(
                 Math.max(
                     1, Math.min(10, TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime()))));
           }
         } catch (InterruptedException ie) {
           Thread.currentThread().interrupt();
-          throw new java.util.concurrent.CancellationException("interrupted during retry");
+          throw cancelled("interrupted during retry");
         }
-        backoff *= 2;
+        backoff = Math.min(maxBackoff, backoff * 2);
       }
     }
-    throw new SpiceDBException("unreachable");
+  }
+
+  /**
+   * This client's native cancellation: a {@link java.util.concurrent.CancellationException} whose
+   * cause is a {@code CANCELLED} status, so {@code Status.fromThrowable} and {@link
+   * ErrorMapper#codeOf} classify local cancellation as {@code CANCELLED}.
+   */
+  static java.util.concurrent.CancellationException cancelled(String message) {
+    var e = new java.util.concurrent.CancellationException(message);
+    e.initCause(Status.CANCELLED.withDescription(message).asRuntimeException());
+    return e;
+  }
+
+  /** Applies the operation's transport options (call options, metadata capture) to a stub. */
+  private static <S extends io.grpc.stub.AbstractStub<S>> S stub(S base, TransportOptions t) {
+    var interceptor = t.interceptor();
+    return interceptor == null ? base : base.withInterceptors(interceptor);
   }
 
   private <T> T callOnce(RetryableCall<T> call) {
     try {
-      if (Thread.currentThread().isInterrupted())
-        throw new java.util.concurrent.CancellationException("operation interrupted");
+      if (Thread.currentThread().isInterrupted()) throw cancelled("operation interrupted");
       return call.call();
     } catch (StatusRuntimeException e) {
-      if (Thread.currentThread().isInterrupted())
-        throw new java.util.concurrent.CancellationException("operation interrupted");
+      if (Thread.currentThread().isInterrupted()) throw cancelled("operation interrupted");
       throw ErrorMapper.toSpiceDBException(e);
     }
   }
 
-  private <T> Iterator<T> openStreamWithRetry(RetryableCall<Iterator<T>> openCall) {
-    return withRetry(
+  /**
+   * Opens a server stream, retrying establishment (before any item is exposed) unless {@link
+   * StreamRetries#DISABLED} or {@link Retries#DISABLED}.
+   */
+  private <T> Iterator<T> openStreamWithRetry(
+      RetryPolicy perCall, RetryableCall<Iterator<T>> openCall) {
+    var rs = retrySettings(perCall);
+    return retrying(
+        Context.current().getDeadline(),
         () -> {
           Iterator<T> serverStream = openCall.call();
           // Force establishment now, inside the retried unit of work, instead of leaving it to
           // whatever unretried call the caller makes next.
           serverStream.hasNext();
           return serverStream;
-        });
+        },
+        rs.streams() ? rs : new RetrySettings(rs.policy(), 0, false));
   }
 
   private final Set<StreamScope> activeStreams = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -1579,12 +1875,12 @@ public final class SpiceDBClient implements AutoCloseable {
       activeStreams.add(this);
       if (closed) {
         close();
-        throw new java.util.concurrent.CancellationException("client closed");
+        throw cancelled("client closed");
       }
     }
 
     synchronized Context.CancellableContext context() {
-      if (ended) throw new java.util.concurrent.CancellationException("stream closed");
+      if (ended) throw cancelled("stream closed");
       if (context == null)
         context =
             timeout == null
@@ -1619,8 +1915,7 @@ public final class SpiceDBClient implements AutoCloseable {
             var ctx = scope.context();
             var previous = ctx.attach();
             try {
-              if (Thread.currentThread().isInterrupted())
-                throw new java.util.concurrent.CancellationException("stream interrupted");
+              if (Thread.currentThread().isInterrupted()) throw cancelled("stream interrupted");
               if (delegate == null) delegate = create.get();
               boolean more = mapStreamErrors(delegate::hasNext);
               if (!more) {
@@ -1632,7 +1927,7 @@ public final class SpiceDBClient implements AutoCloseable {
               boolean local = scope.ended;
               scope.close();
               if (local && e instanceof com.authzed.spicedb.errors.CancelledException)
-                throw new java.util.concurrent.CancellationException("stream cancelled");
+                throw cancelled("stream cancelled");
               throw e;
             } finally {
               ctx.detach(previous);
@@ -1651,7 +1946,7 @@ public final class SpiceDBClient implements AutoCloseable {
               boolean local = scope.ended;
               scope.close();
               if (local && e instanceof com.authzed.spicedb.errors.CancelledException)
-                throw new java.util.concurrent.CancellationException("stream cancelled");
+                throw cancelled("stream cancelled");
               throw e;
             } finally {
               ctx.detach(previous);
@@ -1667,10 +1962,11 @@ public final class SpiceDBClient implements AutoCloseable {
       RetryableCall<Iterator<P>> open,
       java.util.function.Function<P, T> convert,
       Duration timeout,
-      long limit) {
+      long limit,
+      RetryPolicy perCall) {
     return managedStream(
         () -> {
-          var source = openStreamWithRetry(open);
+          var source = openStreamWithRetry(perCall, open);
           return new Iterator<T>() {
             public boolean hasNext() {
               return source.hasNext();
@@ -1689,26 +1985,27 @@ public final class SpiceDBClient implements AutoCloseable {
       java.util.function.Function<Cursor, Iterator<P>> open,
       java.util.function.Function<P, Cursor> cursorOf,
       java.util.function.Function<P, T> convert,
-      int pageSize,
-      long limit,
-      Duration timeout) {
-    return pagedStream(open, cursorOf, convert, response -> true, pageSize, limit, timeout);
-  }
-
-  private <P, T> Stream<T> pagedStream(
-      java.util.function.Function<Cursor, Iterator<P>> open,
-      java.util.function.Function<P, Cursor> cursorOf,
-      java.util.function.Function<P, T> convert,
+      String what,
+      String startCursor,
       java.util.function.Predicate<P> include,
       int pageSize,
+      boolean singleRequest,
       long limit,
-      Duration timeout) {
+      Duration timeout,
+      RetryPolicy perCall) {
     return managedStream(
         () ->
             new Iterator<T>() {
               P pending;
               Iterator<P> page = Collections.emptyIterator();
-              Cursor cursor;
+              Cursor cursor =
+                  startCursor == null || startCursor.isEmpty()
+                      ? null
+                      : Cursor.newBuilder().setToken(startCursor).build();
+              // The cursor sent with the open page and the last cursor that page returned: a full
+              // page whose last cursor is missing or unchanged would re-request itself forever.
+              String sentToken = startCursor == null ? "" : startCursor;
+              String lastToken = "";
               int count;
               boolean opened, done;
 
@@ -1718,17 +2015,25 @@ public final class SpiceDBClient implements AutoCloseable {
                   while (page.hasNext()) {
                     var response = page.next();
                     count++;
-                    cursor = cursorOf.apply(response);
+                    var next = cursorOf.apply(response);
+                    lastToken = next == null ? "" : next.getToken();
+                    if (!lastToken.isEmpty()) cursor = next;
                     if (include.test(response)) {
                       pending = response;
                       return true;
                     }
                   }
-                  if (opened && count < pageSize) {
+                  if (opened && (singleRequest || count < pageSize)) {
                     done = true;
                     return false;
                   }
-                  page = openStreamWithRetry(() -> open.apply(cursor));
+                  if (opened && (lastToken.isEmpty() || lastToken.equals(sentToken))) {
+                    done = true;
+                    throw ErrorMapper.newError(
+                        Status.Code.INTERNAL, what + " page did not advance cursor");
+                  }
+                  sentToken = cursor == null ? "" : cursor.getToken();
+                  page = openStreamWithRetry(perCall, () -> open.apply(cursor));
                   opened = true;
                   count = 0;
                 }
@@ -1746,198 +2051,27 @@ public final class SpiceDBClient implements AutoCloseable {
         limit);
   }
 
+  /**
+   * The limit every request of a paged read sends: the page size (fixed for the whole call, since
+   * SpiceDB rejects a cursor sent with a different limit), or in single-request mode the total
+   * limit alone (0 meaning unbounded).
+   */
+  private static int pageRequestLimit(boolean singleRequest, int pageSize, long limit) {
+    if (singleRequest) return (int) Math.min(limit, 0xFFFFFFFFL);
+    return pageSize;
+  }
+
   private static CheckBulkPermissionsRequestItem checkItem(
       PermissionCheck r, Map<String, Object> defaults) {
-    var builder =
-        CheckBulkPermissionsRequestItem.newBuilder()
-            .setResource(objectProto(r.resource()))
-            .setPermission(r.permission())
-            .setSubject(subjectProto(r.subject()));
-    var context = mergeCheckContext(defaults, r.context());
-    if (context != null) builder.setContext(toProtoStruct(context));
-    return builder.build();
+    return ProtoConv.toProto(r, defaults);
   }
 
-  private static ObjectReference objectProto(ObjectRef object) {
-    return ObjectReference.newBuilder()
-        .setObjectType(object.objectType())
-        .setObjectId(object.objectId())
-        .build();
-  }
-
-  private static SubjectReference subjectProto(SubjectRef subject) {
-    return SubjectReference.newBuilder()
-        .setObject(objectProto(subject.object()))
-        .setOptionalRelation(subject.relation() == null ? "" : subject.relation())
-        .build();
-  }
-
-  private static Map<String, Object> mergeCheckContext(
-      Map<String, Object> callLevel, Map<String, Object> item) {
-    boolean callEmpty = callLevel == null || callLevel.isEmpty();
-    boolean itemEmpty = item == null || item.isEmpty();
-    if (callEmpty && itemEmpty) {
-      return null;
-    }
-    var merged = new LinkedHashMap<String, Object>();
-    if (callLevel != null) {
-      merged.putAll(callLevel);
-    }
-    if (item != null) {
-      merged.putAll(item);
-    }
-    return merged;
-  }
-
-  private static com.google.protobuf.Struct toProtoStruct(Map<String, Object> context) {
-    var builder = com.google.protobuf.Struct.newBuilder();
-    for (var entry : context.entrySet()) {
-      builder.putFields(entry.getKey(), toProtoValueForKey(entry.getKey(), entry.getValue()));
-    }
-    return builder.build();
-  }
-
-  private static RelationshipUpdate toRelationshipUpdate(Transaction.Mutation m) {
-    RelationshipUpdate.Operation op =
-        switch (m.operation()) {
-          case CREATE -> RelationshipUpdate.Operation.OPERATION_CREATE;
-          case TOUCH -> RelationshipUpdate.Operation.OPERATION_TOUCH;
-          case DELETE -> RelationshipUpdate.Operation.OPERATION_DELETE;
-        };
-    return RelationshipUpdate.newBuilder()
-        .setOperation(op)
-        .setRelationship(toProtoRelationship(m.relationship()))
-        .build();
-  }
-
-  private static Precondition toPrecondition(Transaction.Precondition p) {
-    Precondition.Operation op =
-        switch (p.operation()) {
-          case MUST_NOT_MATCH -> Precondition.Operation.OPERATION_MUST_NOT_MATCH;
-          case MUST_MATCH -> Precondition.Operation.OPERATION_MUST_MATCH;
-        };
-    return Precondition.newBuilder()
-        .setOperation(op)
-        .setFilter(toRelationshipFilter(p.filter()))
-        .build();
-  }
-
-  static build.buf.gen.authzed.api.v1.Relationship toProtoRelationship(Relationship r) {
-    var builder =
-        build.buf.gen.authzed.api.v1.Relationship.newBuilder()
-            .setResource(
-                ObjectReference.newBuilder()
-                    .setObjectType(r.resource().objectType())
-                    .setObjectId(r.resource().objectId())
-                    .build())
-            .setRelation(r.relation())
-            .setSubject(
-                SubjectReference.newBuilder()
-                    .setObject(
-                        ObjectReference.newBuilder()
-                            .setObjectType(r.subject().object().objectType())
-                            .setObjectId(r.subject().object().objectId())
-                            .build())
-                    .setOptionalRelation(
-                        r.subject().relation() != null ? r.subject().relation() : "")
-                    .build());
-
-    if (r.caveatName() != null && !r.caveatName().isEmpty()) {
-      var caveatBuilder = ContextualizedCaveat.newBuilder().setCaveatName(r.caveatName());
-      if (r.caveatContext() != null) {
-        var structBuilder = com.google.protobuf.Struct.newBuilder();
-        for (var entry : r.caveatContext().entrySet()) {
-          structBuilder.putFields(
-              entry.getKey(), toProtoValueForKey(entry.getKey(), entry.getValue()));
-        }
-        caveatBuilder.setContext(structBuilder.build());
-      }
-      builder.setOptionalCaveat(caveatBuilder.build());
-    }
-
-    if (r.expiration() != null) {
-      builder.setOptionalExpiresAt(
-          com.google.protobuf.Timestamp.newBuilder()
-              .setSeconds(r.expiration().getEpochSecond())
-              .setNanos(r.expiration().getNano())
-              .build());
-    }
-
-    return builder.build();
-  }
-
-  static Relationship fromProtoRelationship(build.buf.gen.authzed.api.v1.Relationship pr) {
-    String caveatName = null;
-    Map<String, Object> caveatContext = null;
-    if (pr.hasOptionalCaveat()) {
-      caveatName = pr.getOptionalCaveat().getCaveatName();
-      if (pr.getOptionalCaveat().hasContext()) {
-        caveatContext = new HashMap<>();
-        for (var entry : pr.getOptionalCaveat().getContext().getFieldsMap().entrySet()) {
-          caveatContext.put(entry.getKey(), fromProtoValue(entry.getValue()));
-        }
-      }
-    }
-
-    Instant expiration = null;
-    if (pr.hasOptionalExpiresAt()) {
-      expiration =
-          Instant.ofEpochSecond(
-              pr.getOptionalExpiresAt().getSeconds(), pr.getOptionalExpiresAt().getNanos());
-    }
-
-    var object =
-        new ObjectRef(
-            pr.getSubject().getObject().getObjectType(), pr.getSubject().getObject().getObjectId());
-    var relation = pr.getSubject().getOptionalRelation();
-    return new Relationship(
-        new ObjectRef(pr.getResource().getObjectType(), pr.getResource().getObjectId()),
-        pr.getRelation(),
-        relation.isEmpty() ? SubjectRef.direct(object) : SubjectRef.named(object, relation),
-        caveatName,
-        caveatContext,
-        expiration);
-  }
-
-  private static Permissionship permissionshipFromProto(LookupPermissionship v) {
-    return switch (v) {
-      case LOOKUP_PERMISSIONSHIP_HAS_PERMISSION -> Permissionship.HAS_PERMISSION;
-      case LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION -> Permissionship.CONDITIONAL_PERMISSION;
-      default -> Permissionship.UNSPECIFIED;
-    };
-  }
-
-  private static LookupResult.PartialCaveatInfo partialCaveatFromProto(
-      build.buf.gen.authzed.api.v1.PartialCaveatInfo v) {
-    if (v == null) {
-      return null;
-    }
-    return new LookupResult.PartialCaveatInfo(List.copyOf(v.getMissingRequiredContextList()));
-  }
-
-  private static Permissionship checkPermissionshipFromProto(
-      CheckPermissionResponse.Permissionship v) {
-    return switch (v) {
-      case PERMISSIONSHIP_HAS_PERMISSION -> Permissionship.HAS_PERMISSION;
-      case PERMISSIONSHIP_CONDITIONAL_PERMISSION -> Permissionship.CONDITIONAL_PERMISSION;
-      case PERMISSIONSHIP_NO_PERMISSION -> Permissionship.NO_PERMISSION;
-      default -> Permissionship.UNSPECIFIED;
-    };
-  }
-
-  private static StatusRuntimeException perItemStatusException(
-      build.buf.gen.google.rpc.Status errorStatus, String messagePrefix) {
-    String message = messagePrefix + errorStatus.getMessage();
-    try {
-      return StatusProto.toStatusRuntimeException(
-          com.google.rpc.Status.parseFrom(errorStatus.toByteArray()).toBuilder()
-              .setMessage(message)
-              .build());
-    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
-      return Status.fromCodeValue(errorStatus.getCode())
-          .withDescription(message)
-          .asRuntimeException();
-    }
+  /**
+   * The item's status exactly as the server sent it (details intact); the display message adds the
+   * item index at the call site, and {@link SpiceDBException#serverMessage()} keeps this message.
+   */
+  private static StatusRuntimeException perItemStatusException(com.google.rpc.Status errorStatus) {
+    return StatusProto.toStatusRuntimeException(errorStatus);
   }
 
   private static CheckResult checkResultFromBulkItem(
@@ -1950,171 +2084,6 @@ public final class SpiceDBClient implements AutoCloseable {
         responseCheckedAt,
         item.hasDebugTrace() ? DebugInformation.fromProto(item.getDebugTrace()) : null,
         null);
-  }
-
-  private static LookupResult.LookupResource lookupResourceFromProto(LookupResourcesResponse resp) {
-    return new LookupResult.LookupResource(
-        resp.getResourceObjectId(),
-        permissionshipFromProto(resp.getPermissionship()),
-        partialCaveatFromProto(resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null),
-        (resp.hasLookedUpAt() ? new ZedToken(resp.getLookedUpAt().getToken()) : null));
-  }
-
-  private static LookupResult.ResolvedSubject resolvedSubjectFromProto(
-      build.buf.gen.authzed.api.v1.ResolvedSubject v) {
-    if (v == null) {
-      return new LookupResult.ResolvedSubject("", Permissionship.UNSPECIFIED, null);
-    }
-    return new LookupResult.ResolvedSubject(
-        v.getSubjectObjectId(),
-        permissionshipFromProto(v.getPermissionship()),
-        partialCaveatFromProto(v.hasPartialCaveatInfo() ? v.getPartialCaveatInfo() : null));
-  }
-
-  @SuppressWarnings("deprecation") // intentional fallback to deprecated fields, see below
-  private static LookupResult.LookupSubject lookupSubjectFromProto(LookupSubjectsResponse resp) {
-    LookupResult.ResolvedSubject subject =
-        resp.hasSubject() ? resolvedSubjectFromProto(resp.getSubject()) : null;
-    if (subject == null || subject.subjectId().isEmpty()) {
-      // Fall back to the deprecated top-level fields for servers that don't yet populate the
-      // non-deprecated `subject` field.
-      subject =
-          new LookupResult.ResolvedSubject(
-              resp.getSubjectObjectId(),
-              permissionshipFromProto(resp.getPermissionship()),
-              partialCaveatFromProto(
-                  resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null));
-    }
-
-    List<LookupResult.ResolvedSubject> excluded;
-    if (!resp.getExcludedSubjectsList().isEmpty()) {
-      excluded =
-          resp.getExcludedSubjectsList().stream()
-              .map(SpiceDBClient::resolvedSubjectFromProto)
-              .toList();
-    } else if (!resp.getExcludedSubjectIdsList().isEmpty()) {
-      // Fall back to the deprecated excluded_subject_ids field, which carries only IDs (no
-      // permissionship/caveat info).
-      excluded =
-          resp.getExcludedSubjectIdsList().stream()
-              .map(id -> new LookupResult.ResolvedSubject(id, Permissionship.UNSPECIFIED, null))
-              .toList();
-    } else {
-      excluded = List.of();
-    }
-
-    return new LookupResult.LookupSubject(
-        subject,
-        excluded,
-        (resp.hasLookedUpAt() ? new ZedToken(resp.getLookedUpAt().getToken()) : null));
-  }
-
-  static PermissionTree toPermissionTree(PermissionRelationshipTree t) {
-    if (t == null) {
-      return new PermissionTree(new PermissionTree.ObjectRef("", ""), "", null, null);
-    }
-
-    PermissionTree.IntermediateNode intermediate = null;
-    if (t.hasIntermediate()) {
-      AlgebraicSubjectSet algebraic = t.getIntermediate();
-      var children = new ArrayList<PermissionTree>(algebraic.getChildrenCount());
-      for (var child : algebraic.getChildrenList()) {
-        children.add(toPermissionTree(child));
-      }
-      intermediate =
-          new PermissionTree.IntermediateNode(
-              toTreeOperation(algebraic.getOperation()), List.copyOf(children));
-    }
-
-    PermissionTree.LeafNode leaf = null;
-    if (t.hasLeaf()) {
-      DirectSubjectSet direct = t.getLeaf();
-      var subjects = new ArrayList<PermissionTree.SubjectRef>(direct.getSubjectsCount());
-      for (var subject : direct.getSubjectsList()) {
-        subjects.add(
-            new PermissionTree.SubjectRef(
-                subject.getObject().getObjectType(),
-                subject.getObject().getObjectId(),
-                subject.getOptionalRelation()));
-      }
-      leaf = new PermissionTree.LeafNode(List.copyOf(subjects));
-    }
-
-    return new PermissionTree(
-        new PermissionTree.ObjectRef(
-            t.getExpandedObject().getObjectType(), t.getExpandedObject().getObjectId()),
-        t.getExpandedRelation(),
-        intermediate,
-        leaf);
-  }
-
-  private static PermissionTree.Operation toTreeOperation(AlgebraicSubjectSet.Operation op) {
-    return switch (op) {
-      case OPERATION_UNION -> PermissionTree.Operation.UNION;
-      case OPERATION_INTERSECTION -> PermissionTree.Operation.INTERSECTION;
-      case OPERATION_EXCLUSION -> PermissionTree.Operation.EXCLUSION;
-      default -> PermissionTree.Operation.UNSPECIFIED;
-    };
-  }
-
-  private static RelationshipFilter toRelationshipFilter(Filter f) {
-    var builder = RelationshipFilter.newBuilder().setResourceType(f.resourceType());
-
-    if (f.resourceID() != null && !f.resourceID().isEmpty()) {
-      builder.setOptionalResourceId(f.resourceID());
-    }
-    if (f.resourceIDPrefix() != null && !f.resourceIDPrefix().isEmpty()) {
-      builder.setOptionalResourceIdPrefix(f.resourceIDPrefix());
-    }
-    if (f.relation() != null && !f.relation().isEmpty()) {
-      builder.setOptionalRelation(f.relation());
-    }
-    boolean hasSubjectID = f.subjectID() != null && !f.subjectID().isEmpty();
-    boolean hasSubjectRelation = !(f.subjectRelation() instanceof SubjectRelationFilter.Any);
-    if (f.subjectType() != null && !f.subjectType().isEmpty()) {
-      var subjectBuilder = SubjectFilter.newBuilder().setSubjectType(f.subjectType());
-      if (hasSubjectID) {
-        subjectBuilder.setOptionalSubjectId(f.subjectID());
-      }
-      if (hasSubjectRelation) {
-        subjectBuilder.setOptionalRelation(
-            SubjectFilter.RelationFilter.newBuilder()
-                .setRelation(
-                    f.subjectRelation() instanceof SubjectRelationFilter.Named n ? n.name() : "")
-                .build());
-      }
-      builder.setOptionalSubjectFilter(subjectBuilder.build());
-    } else if (hasSubjectID || hasSubjectRelation) {
-      String missing = hasSubjectID ? "subjectID" : "subjectRelation";
-      throw new InvalidArgumentException(
-          "Filter has "
-              + missing
-              + " set without subjectType. The wire format requires subjectType whenever a"
-              + " subject constraint is present -- call withSubjectType(...) before with"
-              + Character.toUpperCase(missing.charAt(0))
-              + missing.substring(1)
-              + "(...).");
-    }
-    return builder.build();
-  }
-
-  private Update updateFromProto(RelationshipUpdate pu) {
-    // Server-supplied data: an unrecognized operation (OPERATION_UNSPECIFIED, or a future wire
-    // value added after this client shipped) MUST NOT map to a write. Mirrors toTreeOperation and
-    // both permissionship mappers in this file, which already map an unrecognized server enum to
-    // their safe UNSPECIFIED value rather than raising or guessing. Root DESIGN.md, "RULE: A
-    // conversion that cannot preserve meaning must fail", clause 2: server-supplied values the
-    // client does not recognise MUST NOT raise, and MUST map to the safe, non-permissive default
-    // -- never a grant, and never a write. Mapping to TOUCH here would let a cache or index mirror
-    // consuming the watch stream upsert a relationship that may in fact have been deleted.
-    UpdateOperation op =
-        switch (pu.getOperation()) {
-          case OPERATION_CREATE -> UpdateOperation.CREATE;
-          case OPERATION_TOUCH -> UpdateOperation.TOUCH;
-          case OPERATION_DELETE -> UpdateOperation.DELETE;
-          default -> UpdateOperation.UNSPECIFIED;
-        };
-    return new Update(op, fromProtoRelationship(pu.getRelationship()));
   }
 
   private SchemaDiff schemaDiffFromProto(ReflectionSchemaDiff d) {
@@ -2223,70 +2192,55 @@ public final class SpiceDBClient implements AutoCloseable {
     return new SchemaDiff("unknown", "", "", "", "");
   }
 
-  private static com.google.protobuf.Value toProtoValue(Object value) {
-    if (value == null) {
-      return com.google.protobuf.Value.newBuilder()
-          .setNullValue(com.google.protobuf.NullValue.NULL_VALUE)
-          .build();
-    } else if (value instanceof Boolean b) {
-      return com.google.protobuf.Value.newBuilder().setBoolValue(b).build();
-    } else if (value instanceof Number n) {
-      return com.google.protobuf.Value.newBuilder().setNumberValue(n.doubleValue()).build();
-    } else if (value instanceof String s) {
-      return com.google.protobuf.Value.newBuilder().setStringValue(s).build();
-    } else if (value instanceof Map<?, ?> m) {
-      var structBuilder = com.google.protobuf.Struct.newBuilder();
-      for (var entry : m.entrySet()) {
-        structBuilder.putFields(
-            String.valueOf(entry.getKey()),
-            toProtoValueForKey(String.valueOf(entry.getKey()), entry.getValue()));
-      }
-      return com.google.protobuf.Value.newBuilder().setStructValue(structBuilder.build()).build();
-    } else if (value instanceof List<?> l) {
-      var listBuilder = com.google.protobuf.ListValue.newBuilder();
-      for (var item : l) {
-        listBuilder.addValues(toProtoValue(item));
-      }
-      return com.google.protobuf.Value.newBuilder().setListValue(listBuilder.build()).build();
-    } else {
-      // A value this conversion cannot represent came from the caller, who can see this error and
-      // fix their input -- stringifying it instead would silently produce a caveat context value
-      // SpiceDB never intended. Shared by both the check path (toProtoStruct) and the write path
-      // (toProtoRelationship).
-      throw new InvalidArgumentException(
-          "unsupported caveat context value type: " + value.getClass().getName());
-    }
+  // Conversions live in ProtoConv (the exported secondary namespace); these delegates keep the
+  // client's call sites and package-private test hooks short.
+
+  private static ObjectReference objectProto(ObjectRef object) {
+    return ProtoConv.toProto(object);
   }
 
-  private static com.google.protobuf.Value toProtoValueForKey(String key, Object value) {
-    try {
-      return toProtoValue(value);
-    } catch (InvalidArgumentException e) {
-      throw new InvalidArgumentException("caveat context key \"" + key + "\": " + e.getMessage());
-    }
+  private static SubjectReference subjectProto(SubjectRef subject) {
+    return ProtoConv.toProto(subject);
+  }
+
+  private static com.google.protobuf.Struct toProtoStruct(Map<String, Object> context) {
+    return ProtoConv.toStruct(context);
+  }
+
+  private static Precondition toPrecondition(Transaction.Precondition p) {
+    return ProtoConv.toProto(p);
+  }
+
+  static com.authzed.api.v1.Relationship toProtoRelationship(Relationship r) {
+    return ProtoConv.toProto(r);
+  }
+
+  static Relationship fromProtoRelationship(com.authzed.api.v1.Relationship pr) {
+    return ProtoConv.fromProto(pr);
+  }
+
+  private static Permissionship checkPermissionshipFromProto(
+      CheckPermissionResponse.Permissionship v) {
+    return ProtoConv.fromProto(v);
+  }
+
+  private static LookupResult.LookupSubject lookupSubjectFromProto(LookupSubjectsResponse resp) {
+    return ProtoConv.fromProto(resp);
+  }
+
+  static PermissionTree toPermissionTree(PermissionRelationshipTree t) {
+    return ProtoConv.fromProto(t);
+  }
+
+  private static RelationshipFilter toRelationshipFilter(Filter f) {
+    return ProtoConv.toProto(f);
+  }
+
+  private Update updateFromProto(RelationshipUpdate pu) {
+    return ProtoConv.fromProto(pu);
   }
 
   static Object fromProtoValue(com.google.protobuf.Value value) {
-    return switch (value.getKindCase()) {
-      case NULL_VALUE -> null;
-      case BOOL_VALUE -> value.getBoolValue();
-      case NUMBER_VALUE -> value.getNumberValue();
-      case STRING_VALUE -> value.getStringValue();
-      case STRUCT_VALUE -> {
-        Map<String, Object> m = new LinkedHashMap<>();
-        for (var entry : value.getStructValue().getFieldsMap().entrySet()) {
-          m.put(entry.getKey(), fromProtoValue(entry.getValue()));
-        }
-        yield m;
-      }
-      case LIST_VALUE -> {
-        List<Object> l = new ArrayList<>();
-        for (var item : value.getListValue().getValuesList()) {
-          l.add(fromProtoValue(item));
-        }
-        yield l;
-      }
-      default -> null;
-    };
+    return ProtoConv.fromValue(value);
   }
 }

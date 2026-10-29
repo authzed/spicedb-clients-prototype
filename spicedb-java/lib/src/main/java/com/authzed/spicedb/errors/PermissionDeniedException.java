@@ -4,10 +4,10 @@ package com.authzed.spicedb.errors;
 public class PermissionDeniedException extends SpiceDBException {
 
   public PermissionDeniedException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.PERMISSION_DENIED, message, null);
   }
 
   public PermissionDeniedException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.PERMISSION_DENIED, message, cause);
   }
 }

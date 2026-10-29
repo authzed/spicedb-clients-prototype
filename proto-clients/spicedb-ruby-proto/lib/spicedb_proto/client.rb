@@ -146,30 +146,45 @@ module SpiceDBProto
       end
 
       @channel = GRPC::Core::Channel.new(endpoint, {}, credentials)
-      stub_opts[:channel_override] = @channel
-
-      @permissions = Authzed::Api::V1::PermissionsService::Stub.new(
-        endpoint, nil, **stub_opts
-      )
-      @schema = Authzed::Api::V1::SchemaService::Stub.new(
-        endpoint, nil, **stub_opts
-      )
-      @watch = Authzed::Api::V1::WatchService::Stub.new(
-        endpoint, nil, **stub_opts
-      )
-      @experimental = Authzed::Api::V1::ExperimentalService::Stub.new(
-        endpoint, nil, **stub_opts
-      )
-      @materialize_relationships = Authzed::Api::Materialize::V0::RelationshipsService::Stub.new(endpoint, nil, **stub_opts)
-      @permission_sets = Authzed::Api::Materialize::V0::WatchPermissionSetsService::Stub.new(endpoint, nil, **stub_opts)
-      @materialize = Authzed::Api::Materialize::V0::RoaringLookupResourcesService::Stub.new(
-        endpoint, nil, **stub_opts
-      )
+      @owns_channel = true
+      build_stubs(endpoint, stub_opts)
     end
 
-    # Closes the underlying gRPC channel.
+    # Wraps an existing, caller-owned GRPC::Core::Channel (root DESIGN.md:
+    # "Every client has a constructor from an existing connection"). The channel
+    # already carries its transport security, so no credential or TLS argument
+    # applies; +interceptors+ (for example a BearerTokenInterceptor on a
+    # plaintext channel) are applied to every stub. #close never closes it.
+    #
+    # @param channel [GRPC::Core::Channel]
+    # @param interceptors [Array<GRPC::ClientInterceptor>]
+    # @raise [ArgumentError] if +channel+ is not a GRPC::Core::Channel
+    def self.from_channel(channel, interceptors: [])
+      raise ArgumentError, "spicedb: from_channel expects a GRPC::Core::Channel, got #{channel.class}" unless channel.is_a?(GRPC::Core::Channel)
+
+      client = allocate
+      client.instance_variable_set(:@channel, channel)
+      client.instance_variable_set(:@owns_channel, false)
+      opts = interceptors.empty? ? {} : { interceptors: interceptors.dup }
+      client.send(:build_stubs, channel.target, opts)
+      client
+    end
+
+    # Closes the underlying gRPC channel when this client created it. A channel
+    # supplied to .from_channel stays open; it belongs to the caller.
     def close
-      @channel&.close
+      @channel&.close if @owns_channel
+    end
+
+    private def build_stubs(endpoint, stub_opts)
+      stub_opts = stub_opts.merge(channel_override: @channel)
+      @permissions = Authzed::Api::V1::PermissionsService::Stub.new(endpoint, nil, **stub_opts)
+      @schema = Authzed::Api::V1::SchemaService::Stub.new(endpoint, nil, **stub_opts)
+      @watch = Authzed::Api::V1::WatchService::Stub.new(endpoint, nil, **stub_opts)
+      @experimental = Authzed::Api::V1::ExperimentalService::Stub.new(endpoint, nil, **stub_opts)
+      @materialize_relationships = Authzed::Api::Materialize::V0::RelationshipsService::Stub.new(endpoint, nil, **stub_opts)
+      @permission_sets = Authzed::Api::Materialize::V0::WatchPermissionSetsService::Stub.new(endpoint, nil, **stub_opts)
+      @materialize = Authzed::Api::Materialize::V0::RoaringLookupResourcesService::Stub.new(endpoint, nil, **stub_opts)
     end
 
     # Refuses a TLS configuration this client cannot honour. Called from the

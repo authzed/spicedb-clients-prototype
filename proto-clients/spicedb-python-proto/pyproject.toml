@@ -3,22 +3,53 @@ name = "spicedb-python-proto"
 version = "0.1.0"
 description = "SpiceDB proto client for Python (internal)"
 requires-python = ">=3.11"
+# Floors are the lowest versions that actually work (root DESIGN.md, "Document
+# the path off the legacy libraries"):
+# - protobuf: the generated modules call ValidateProtobufRuntimeVersion with
+#   gencode 7.36.2, which rejects any older runtime.
+# - grpcio: 1.73.0 is the oldest release whose transport rejects an
+#   authority-bearing unix target ("unix://evil.com/x.sock"). The plaintext
+#   credential guard classifies every unix: target as loopback and relies on
+#   that rejection; grpcio <= 1.72 accepts both spellings, resolving "UNIX" as a DNS host,
+#   so credentials could leave the machine in plaintext. Verified by running
+#   spicedb-python's tests on Python 3.11 against grpcio 1.63-1.78 (1.73 is the
+#   first fully green release). It sits inside authzed-py's grpcio~=1.63 range.
+# - googleapis-common-protos: provides google.api / google.rpc, which the
+#   generated modules import.
 dependencies = [
     "googleapis-common-protos>=1.56.1",
-    "grpcio>=1.71.0",
-    "protobuf>=7.36.1",
-    "protovalidate>=1.1.0",
+    "grpcio>=1.73.0",
+    "protobuf>=7.36.2",
 ]
 
 [project.optional-dependencies]
+# protovalidate is the runtime validator for buf.validate rules; the bindings
+# (buf/validate/validate_pb2.py) ship here unconditionally, so only callers who
+# validate messages need it. Same shape as authzed-py's `validation` extra.
+validation = [
+    "protovalidate>=1.1.0",
+]
+# Test tooling (CI runs `uv sync --extra dev`); never a runtime requirement.
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
 ]
 
+[project.scripts]
+authzed-py-bridge = "spicedb_python_proto.bridge:main"
+
 [tool.hatch.build.targets.wheel]
-packages = ["gen/authzed", "gen/buf", "gen/validate", "gen/protoc_gen_openapiv2"]
+# No package listed here may gain an __init__.py under gen/: authzed, authzed.api,
+# authzed.api.v1, authzed.api.materialize.v0, buf, validate and
+# protoc_gen_openapiv2 are namespace packages shared with a bridged authzed-py,
+# which owns the __init__.py files that hold its client classes.
+packages = ["gen/authzed", "gen/buf", "gen/validate", "gen/protoc_gen_openapiv2", "spicedb_python_proto"]
 sources = ["gen"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# The typing marker for the shared `authzed` namespace. It is kept out of gen/
+# (buf output only) and replaces the copy authzed-py ships.
+"pkgdata/py.typed" = "authzed/py.typed"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

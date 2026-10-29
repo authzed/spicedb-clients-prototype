@@ -248,15 +248,15 @@ async fn main() {
     assert!(
         exported
             .iter()
-            .any(|r| r.resource().object_id() == "report"
-                && r.subject().object().object_id() == "alice"),
+            .any(|r| r.relationship.resource_id() == "report"
+                && r.relationship.subject_id() == "alice"),
         "expected the export to include document:report#viewer@user:alice"
     );
     assert!(
         exported
             .iter()
-            .any(|r| r.resource().object_id() == "bulk-doc-99"
-                && r.subject().object().object_id() == "alice"),
+            .any(|r| r.relationship.resource_id() == "bulk-doc-99"
+                && r.relationship.subject_id() == "alice"),
         "expected the export to include the last imported relationship"
     );
 

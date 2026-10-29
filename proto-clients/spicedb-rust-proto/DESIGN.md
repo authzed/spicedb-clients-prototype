@@ -90,6 +90,17 @@ The `src/client.rs` file provides:
    and a `Transport(tonic::transport::Error)` variant for everything tonic
    itself can fail on.
 
+3. **`SpiceDBProtoClient::from_channel(channel, token: Option<&str>)`** —
+   synchronous constructor over an existing tonic `Channel` (in-memory
+   `connect_with_connector` channels, buffered listeners, embedded servers).
+   Nothing is dialed and no endpoint/TLS guard applies: the caller chose the
+   transport. `Channel` is a cheap shared handle, so the connection stays
+   caller-owned; dropping the client never closes the caller's clone. `Some`
+   sends `Bearer <token>` (malformed tokens return `InvalidToken`); `None`
+   sends no `authorization` header. `BearerTokenInterceptor` therefore holds an
+   optional token. Root DESIGN.md: "Every client has a constructor from an
+   existing connection or channel".
+
 The `src/lib.rs` file provides:
 - Proto module declarations via `tonic::include_proto!`
 - Re-export of `SpiceDBProtoClient`
@@ -112,6 +123,33 @@ Any methods or fields marked deprecated in the proto definitions must carry
 - No business logic — only plumbing (connection, auth, re-export)
 - All proto types re-exported as-is, no transformation
 - Proto files under `proto/` are never modified (they come from buf export)
+
+## Single protocol copy and legacy bridge
+
+Root DESIGN.md, "Be the single copy of the protocol bindings in any process",
+is **not applicable** to Rust, and this tier ships no bridge generator:
+
+- prost has no process-global descriptor registry. Generated messages are
+  plain Rust types namespaced by crate, so a second, independently generated
+  copy of `authzed.api.*` (for example another crate's tonic-build output)
+  links into the same binary without a load-time conflict or misbinding. The
+  two copies are simply distinct types; values cross between them by
+  `prost::Message` encode/decode.
+- There is no official `authzed-*` Rust library to alias or bridge, so there
+  is no legacy helper set to carry and no hand-maintained code inside the
+  generated modules. Generated code lives only in `OUT_DIR` and is never
+  edited.
+
+## Dependency floor
+
+Root DESIGN.md, "Library modules declare the lowest dependency versions they
+actually need". `tonic` is declared with `default-features = false` and only
+`codegen`, `prost`, `channel`, `tls` and `tls-native-roots`, so consumers do not
+inherit tonic's server stack. tokio and tonic's `server` feature are
+dev-dependencies for the tests. tonic 0.12 / prost 0.13 / tonic-build 0.12 are
+one generation and move together. Build tooling (`tonic-build`, `glob`,
+`protoc-bin-vendored`) is a build-dependency only and the Magefile is a Go
+module outside the crate.
 
 ## Canonical idiomatic redesign boundary
 

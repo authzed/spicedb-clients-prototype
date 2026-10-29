@@ -2,7 +2,7 @@ package com.authzed.spicedb.gen.test;
 import static org.junit.jupiter.api.Assertions.*;
 import static com.authzed.spicedb.gen.test.Permissions.*;
 import com.authzed.spicedb.*;
-import build.buf.gen.authzed.api.v1.*;
+import com.authzed.api.v1.*;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 import java.time.Duration;
@@ -12,14 +12,14 @@ class TypedForwardingTest {
   var requests=new ArrayList<CheckPermissionRequest>();
   var lookups=new ArrayList<LookupSubjectsRequest>();
   var server=io.grpc.ServerBuilder.forPort(0).addService(new PermissionsServiceGrpc.PermissionsServiceImplBase(){
-   public void writeRelationships(WriteRelationshipsRequest request,StreamObserver<WriteRelationshipsResponse> out){out.onNext(WriteRelationshipsResponse.newBuilder().setWrittenAt(build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken("write-revision")).build());out.onCompleted();}
+   public void writeRelationships(WriteRelationshipsRequest request,StreamObserver<WriteRelationshipsResponse> out){out.onNext(WriteRelationshipsResponse.newBuilder().setWrittenAt(com.authzed.api.v1.ZedToken.newBuilder().setToken("write-revision")).build());out.onCompleted();}
    public void lookupResources(LookupResourcesRequest request,StreamObserver<LookupResourcesResponse> out){
     out.onNext(LookupResourcesResponse.newBuilder().setResourceObjectId("conditional").setPermissionship(LookupPermissionship.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION).build());
     out.onNext(LookupResourcesResponse.newBuilder().setResourceObjectId("unknown").setPermissionshipValue(99).build());
     out.onNext(LookupResourcesResponse.newBuilder().setResourceObjectId("granted").setPermissionship(LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION).build());out.onCompleted();
    }
    public void lookupSubjects(LookupSubjectsRequest request,StreamObserver<LookupSubjectsResponse> out){lookups.add(request);assertNotNull(io.grpc.Context.current().getDeadline());out.onCompleted();}
-   public void checkPermission(CheckPermissionRequest request,StreamObserver<CheckPermissionResponse> out){requests.add(request);assertNotNull(io.grpc.Context.current().getDeadline());var trace=build.buf.gen.authzed.api.v1.DebugInformation.newBuilder().setSchemaUsed("generated trace").setCheck(CheckDebugTrace.newBuilder().setResource(request.getResource()).setPermission(request.getPermission()).setSubject(request.getSubject()).setWasCachedResult(false));out.onNext(CheckPermissionResponse.newBuilder().setPermissionship(CheckPermissionResponse.Permissionship.PERMISSIONSHIP_HAS_PERMISSION).setDebugTrace(trace).build());out.onCompleted();}
+   public void checkPermission(CheckPermissionRequest request,StreamObserver<CheckPermissionResponse> out){requests.add(request);assertNotNull(io.grpc.Context.current().getDeadline());var trace=com.authzed.api.v1.DebugInformation.newBuilder().setSchemaUsed("generated trace").setCheck(CheckDebugTrace.newBuilder().setResource(request.getResource()).setPermission(request.getPermission()).setSubject(request.getSubject()).setWasCachedResult(false));out.onNext(CheckPermissionResponse.newBuilder().setPermissionship(CheckPermissionResponse.Permissionship.PERMISSIONSHIP_HAS_PERMISSION).setDebugTrace(trace).build());out.onCompleted();}
   }).build().start();
   try(var raw=SpiceDBClient.createPlaintext("localhost:"+server.getPort(),"test");var client=new TypedClient(raw)){
    try(var stream=client.lookupResources(com.authzed.spicedb.Consistency.full(),Document_View,User("alice"),LookupOptions.builder().permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY).limit(1).build())){assertEquals(List.of("granted"),stream.map(LookupResult.LookupResource::resourceId).toList());}

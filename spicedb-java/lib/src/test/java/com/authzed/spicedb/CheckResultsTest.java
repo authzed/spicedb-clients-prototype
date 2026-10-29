@@ -2,14 +2,14 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsPair;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem;
-import build.buf.gen.authzed.api.v1.CheckPermissionResponse;
-import build.buf.gen.authzed.api.v1.PartialCaveatInfo;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ZedToken;
+import com.authzed.api.v1.CheckBulkPermissionsPair;
+import com.authzed.api.v1.CheckBulkPermissionsRequest;
+import com.authzed.api.v1.CheckBulkPermissionsResponse;
+import com.authzed.api.v1.CheckBulkPermissionsResponseItem;
+import com.authzed.api.v1.CheckPermissionResponse;
+import com.authzed.api.v1.PartialCaveatInfo;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ZedToken;
 import com.authzed.spicedb.errors.PermissionDeniedException;
 import com.authzed.spicedb.errors.ResourceExhaustedException;
 import io.grpc.Status;
@@ -276,7 +276,7 @@ class CheckResultsTest {
                         CheckBulkPermissionsPair.newBuilder()
                             .setRequest(request.getItems(1))
                             .setError(
-                                build.buf.gen.google.rpc.Status.newBuilder()
+                                com.google.rpc.Status.newBuilder()
                                     .setCode(Status.Code.PERMISSION_DENIED.value())
                                     .setMessage("schema mismatch on doc2")
                                     .build())
@@ -331,7 +331,7 @@ class CheckResultsTest {
   @Test
   void perItemErrorCarriesItsOwnErrorReasonAndMetadata() throws IOException {
     var errorInfo =
-        build.buf.gen.google.rpc.ErrorInfo.newBuilder()
+        com.google.rpc.ErrorInfo.newBuilder()
             .setReason("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED")
             .setDomain("authzed.com")
             .putMetadata("maximum_depth_allowed", "50")
@@ -350,7 +350,7 @@ class CheckResultsTest {
                         CheckBulkPermissionsPair.newBuilder()
                             .setRequest(request.getItems(0))
                             .setError(
-                                build.buf.gen.google.rpc.Status.newBuilder()
+                                com.google.rpc.Status.newBuilder()
                                     .setCode(Status.Code.RESOURCE_EXHAUSTED.value())
                                     .setMessage("max depth exceeded")
                                     .addDetails(

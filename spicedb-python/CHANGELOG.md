@@ -12,6 +12,221 @@
 
 ## Unreleased
 
+### Paging and bridge fixes
+
+- A paged read or lookup whose page was retried after a mid-page failure no
+  longer counts the failed attempt's items toward that page. Previously, when
+  every item read before the failure had been skipped (for example by
+  `LookupPermissionshipFilter.HAS_PERMISSION_ONLY`), a short final page could
+  look full and trigger one needless extra request.
+- `authzed-py-bridge` no longer corrupts `pyproject.toml` when a dependency has
+  extras (`"grpcio[protobuf]>=1.63"`): the `dependencies` and `module-name`
+  arrays now end at their own closing bracket, skipping brackets inside
+  strings and comments. The rest of the file is left as it was.
+
+### Full-client protocols and test doubles
+
+- `spicedb.protocols.ClientProtocol` and `AsyncClientProtocol` list every
+  public method of the sync and aio clients (a test keeps them identical).
+  The real clients and `spicedb.testing.InMemoryClient` /
+  `AsyncInMemoryClient` satisfy them: the doubles now implement every
+  operation. `close` and the context manager work in memory; operations
+  without in-memory semantics (expand, lookups, watch, schema diff and
+  relations, counters, materialize) are recorded, consult the fault hook and
+  raise a `SpiceDBError` with code `UNIMPLEMENTED`; `raw_grpc()` raises the
+  same.
+- `Fault.batch` carries an import batch's relationships at
+  `FaultStage.IMPORT_BATCH`. Every relationship is now validated before the
+  first batch fault.
+- `spicedb.testing.cursor_after(n)` builds the doubles' resume cursor after
+  `n` matching items; the format (the decimal count) is stable for tests.
+- `set_read_schema_revision(SchemaRevision.OMITTED)` makes the doubles'
+  `read_schema` report `ZedToken("")`, emulating servers whose schema reads
+  carry no revision.
+
+### One protocol copy, dependency floors and the path off authzed-py
+
+- spicedb-python-proto is now the single copy of the `authzed.api.*`
+  bindings in a process. It ships only namespace packages (no shared
+  `__init__.py`), adds `.pyi` stubs and `authzed/py.typed`, and ships
+  `authzed-py-bridge`, which rewrites an authzed-py checkout, sdist or wheel
+  to drop its own generated modules and require spicedb-python-proto. A test
+  installs the bridged authzed-py 1.25.0 next to this client in one
+  interpreter and proves one descriptor-pool copy, disjoint file ownership and
+  that both clients work (in-process and live SpiceDB). An unbridged
+  authzed-py beside this client remains unsupported (it overwrites the same
+  files).
+- **BREAKING (dependencies):** runtime floors are now the lowest versions that
+  pass the suite. `grpcio>=1.73.0` (was `>=1.71.0`): grpcio 1.71-1.72 accept an
+  authority-bearing `unix://host/...` target that the plaintext-credential
+  guard treats as loopback, resolving `UNIX` as a DNS host instead of
+  rejecting it. `protobuf>=7.36.2` (the proto tier said `>=7.36.1`, below the
+  bindings' gencode version, which fails at import). `protobuf` and
+  `googleapis-common-protos` are now declared directly. Before: `grpcio 1.71`
+  installed. After: upgrade to `grpcio>=1.73`.
+- spicedb-python-proto: `protovalidate` moved from a hard requirement to the
+  optional `validation` extra (it pulled in cel-python, google-re2 and
+  pendulum for a validator nothing here calls).
+- New `MIGRATION.md` (from authzed-py) and `AI_INTEGRATION_GUIDE.md`.
+
+### Generated typed client
+
+- Generation no longer fails for a definition used as both a subject and a
+  resource. Usersets on permissions get subject refs
+  (`Organization(id).can_admin_subject`), with caveat and expiration variants
+  (e.g. `OrganizationCanAdminExpiring`); wildcard refs (`UserWildcard()`): a
+  `user:*`-only relation admits only the wildcard, `user | user:*` both.
+- Added: `r_key(subject)` / `RelationshipKey` for identity-only deletes,
+  `r_relation` check accessors, `filter()`, `type_filter()`, `r_filter()`,
+  `with_subject()`, `XRelations` / `XPermissions` constants and
+  `X_RELATION_NAMES` / `X_PERMISSION_NAMES`, `permission_by_name` /
+  `relation_by_name` / `relationship_by_name` (raising `NotInSchemaError` /
+  `SubjectNotAllowedError`), `Permission.resource_type` / `resource_id` /
+  `name` / `ref` / `str()`, `PermissionRef` accessors, `permission_check` and
+  `checks_for` for native `check_bulk`, `TypedRelationship.to_relationship` /
+  `from_relationship` (not schema-checked) / `from_error` / `str()`,
+  `TypedTransaction.build` / `len` / `str` / `error`, and
+  `TypedClient.write_txn` / `check_dynamic` / `from_channel`.
+- `--python.module=<name>` names the generated types module; output is
+  `ruff format`-clean. Identifier collisions fail generation naming both
+  sources. Negative type fixtures require a pyright error on every marked line.
+- **BREAKING:** `tc.write(TypedTransaction())` → `tc.write_txn(TypedTransaction())`;
+  `write` takes only a native `Transaction`.
+- **BREAKING:** static lookup refs are constants: `DocumentView` →
+  `DOCUMENT_VIEW` (the old name collided with permission-userset subject
+  classes).
+- **BREAKING:** `TypedClient.connect(max_retries=...)` → `retry_policy=` /
+  `stream_retries=`; generated clients forward every new native option.
+- **BREAKING:** `TypedTransaction` defers construction errors to `build()` /
+  `write_txn` and no longer exposes `_txn`; `must_match` / `must_not_match`
+  take `*filters`. Before: `TypedTransaction().touch(Document("").viewer(u))`
+  raised immediately. After: it raises from `build()` or `write_txn`.
+- **BREAKING:** `check` and `lookup` subject sets follow usersets to the
+  subjects that reach them (so `check(invitation.accept, User("alice"))`
+  type-checks), and `check` raises `SubjectNotAllowedError` at runtime for a
+  subject the schema cannot grant.
+
+### Tooling-grade native client
+
+- `operation_retry_policies={Operation.X: policy}` on both clients'
+  constructors and `from_channel` (and the generated typed clients' `connect`
+  and `from_channel`) sets the retry policy for every call of one operation,
+  including stream establishment, between the per-call and client-wide
+  policies in precedence. An `Operation.WRITE` policy retries only idempotent
+  writes and leaves the others un-retried; deletes, delete-all, imports and
+  counter registration/unregistration reject a policy with retries when the
+  client is built (a zero-retry policy is always allowed). `Operation` names
+  every client operation. `Transaction.is_idempotent()` exposes the
+  retry-eligibility rule (touch-only, no preconditions).
+- `spicedb.testing` doubles record every call (`calls()`,
+  `calls_of(operation)`, `Call(operation, index, request, options)`) and
+  inject faults (`set_fault_hook`, `fail_next`) before any call, before each
+  import batch, before an import commits and before each read or export item
+  (`Fault`, `FaultStage`). A failed write or import applies nothing.
+
+- `CallOptions(retry_policy=...)` overrides the client's retry policy for one
+  call, including stream establishment (exempt one `watch` with
+  `Retries.DISABLED` while the client retries everything else, or opt one
+  watch in). Touch-only writes without preconditions and `write_schema` may
+  opt in to retries per call; every other mutation raises
+  `InvalidArgumentError` for the opt-in before any request.
+- `paging=Paging.SINGLE_REQUEST` on `read_relationships` and
+  `lookup_resources` sends exactly one request, as the raw API does (limit:
+  `limit=` or unbounded; `page_size` ignored).
+- `spicedb.testing` doubles add `import_relationships`,
+  `export_relationships`, `read_schema`, `write_schema` and `reflect_schema`
+  (`set_reflect_schema_result`), honor read/export cursors, the export filter
+  and `CallOptions(response_metadata=...)` (`set_response_metadata`), apply
+  the per-call retry opt-in rules, run the real clients' request validation,
+  and send empty writes like SpiceDB. **Behavior change:** an empty
+  `Transaction` written to a double no longer raises; it checks preconditions
+  and returns the current revision.
+- `protoconv.check_bulk_to_proto` (whole response, per-item errors as
+  statuses) and `check_request_to_proto`; `lookup_subject_to_proto` fills the
+  deprecated top-level fields SpiceDB still sends.
+- Generated typed clients: `--python.rename=<definition>=<ClassName>`
+  (comma-separated) overrides a definition's class names without changing
+  wire names, and the collision error suggests it; caveats calling functions
+  outside the default CEL environment generate (expressions are opaque);
+  `TypedTransaction.updates` / `preconditions`; `with_subject_any_relation`;
+  `paging=` forwarded. **BREAKING:** `r_key(subject)` is generated only for
+  relations admitting caveated or expiring subjects; elsewhere use the
+  writer's `TypedRelationship` (e.g. `Document(d).editor(User(u))`) for deletes
+  and filters. **Fix:** a schema with exactly one typed overload for `check`,
+  `lookup_resources` or `lookup_subjects` failed pyright
+  (reportInconsistentOverload); a lone overload is now the implementation's
+  signature.
+
+- **Fix:** paged `lookup_resources` and `lookup_subjects` with a `limit` that
+  is not a multiple of `page_size` failed on their last page ("the cursor
+  provided does not have the same arguments as the original API call"): the
+  pager shrank the last page's limit, and SpiceDB hashes the limit into the
+  cursor. Every page now repeats the caller's consistency and page size;
+  limits are enforced client-side.
+- **Fix:** the sync `import_relationships` could report `GeneratorExit` or a
+  cancelled future instead of the server's status when the server aborted
+  the upload (e.g. ALREADY_EXISTS for a duplicate). It now always raises the
+  call's final status (`AlreadyExistsError`).
+- **BREAKING:** `read_relationships` yields `ReadRelationship` and
+  `export_relationships` yields `ExportedRelationship`, each wrapping the
+  relationship with its `after_result_cursor` (plus `read_at` for reads;
+  exports carry no revision). Before: `for rel in client.read_relationships(f,
+  consistency=full()): rel.resource`. After: `for item in ...:
+  item.relationship.resource`. `LookupResource` gains `after_result_cursor`.
+  All three accept `cursor=` to resume with the same request and page size.
+- **BREAKING:** the constructors' `max_retries: int` is replaced by
+  `retry_policy: RetryPolicy | Retries`. Before: `SpiceDBClient(...,
+  max_retries=0)`. After: `SpiceDBClient(..., retry_policy=Retries.DISABLED)`
+  or `retry_policy=RetryPolicy(max_retries=1, retryable_codes=frozenset({...}),
+  initial_backoff=0.1, max_backoff=5.0, on_retry=log)`. Any read code may be
+  retried, including RESOURCE_EXHAUSTED; mutations never are. New
+  `stream_retries=StreamRetries.DISABLED` stops stream re-establishment.
+- **BREAKING:** `Relationship.from_tuple` parses one SpiceDB tuple string,
+  including `[caveat]`, `[caveat:{json}]` and `[expiration:RFC 3339]`, and
+  `str(relationship)` formats it. Before:
+  `Relationship.from_tuple("document:a#viewer", "user:b")`. After:
+  `Relationship.from_tuple("document:a#viewer@user:b")`. New copy helpers
+  `with_resource`, `with_relation`, `with_subject`; `str()` on `ObjectRef` and
+  `SubjectRef`.
+- **BREAKING:** `Transaction` stores native values. Its private
+  `_updates`/`_preconditions` proto lists are gone; use `len(txn)` (an empty
+  transaction is falsy), `txn.updates` (`Update`) and `txn.preconditions`
+  (new `Precondition` / `PreconditionOperation`).
+- **BREAKING:** `delete_relationships(limit=...)` is optional and paired with
+  `partial: DeletePartial`. Before: `limit` was required. After: the default
+  `DeletePartial.ALLOWED` still requires a positive `limit`;
+  `partial=DeletePartial.DISALLOWED` is all-or-nothing (SpiceDB rejects a
+  delete exceeding the limit with `InvalidArgumentError`) and may omit
+  `limit` for the server default. `delete_all_relationships_non_atomic` gains
+  `on_progress` (sync or, on aio, async callable) called after each batch.
+- **BREAKING (behavior):** `SpiceDBError` now subclasses `grpc.RpcError` and
+  implements `code()`, `details()`, `trailing_metadata()` and
+  `initial_metadata()` for every error, including local validation, local
+  deadlines and errors built by caller code. Code that catches
+  `grpc.RpcError` around client calls now also catches native errors.
+  New `SpiceDBError.from_code(code, message, *, reason=...)`, `code_of(exc)`
+  (accepts raw `grpc.RpcError`, `asyncio.CancelledError`, `TimeoutError`)
+  and `error.server_message` (the server's text, verbatim).
+- `SpiceDBClient.from_channel(channel, ...)` wraps a caller-owned
+  `grpc.Channel` / `grpc.aio.Channel`; `close()` leaves it open.
+- `default_timeout=DefaultDeadline.DISABLED` removes the 30 s default.
+- Every operation accepts `call_options=CallOptions(metadata=...,
+  wait_for_ready=..., compression=..., response_metadata=ResponseMetadata())`
+  to send gRPC call options and capture response headers/trailers.
+- `check_bulk(item_errors=BulkItemErrors.RETURN)` returns per-item errors on
+  the new `CheckResult.error` (never a grant) instead of raising.
+- `import_relationships(batch_size=...)` sets relationships per message.
+- `Filter.matches(relationship)`; `str()`/`to_dict()` on relationships,
+  filters, updates, preconditions and transactions; short `Relationship`
+  accessors `resource_type`, `resource_id`, `subject_type`, `subject_id`,
+  `subject_relation`.
+- New `spicedb.protoconv` (native/proto conversions) and `spicedb.testing`
+  (`InMemoryClient`, `AsyncInMemoryClient` test doubles with the real
+  clients' signatures).
+- Watch schema changes (`WatchContent.SCHEMA`, combinable with
+  `CHECKPOINTS`; `WatchEvent.schema_updated`) are now covered by a live
+  example. New example `examples/tooling_escape_hatches/`.
+
 ### Native tokens and named modes (breaking)
 
 - Revision inputs/results now use immutable `ZedToken`. Migrate

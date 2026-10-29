@@ -20,9 +20,7 @@ type ExpandPermissionTreeResult struct {
 
 func (c *Client) ExpandPermissionTree(ctx context.Context, request ExpandPermissionTreeRequest, opts ...ExpandPermissionTreeOption) (ExpandPermissionTreeResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return ExpandPermissionTreeResult{}, e
@@ -38,8 +36,8 @@ func (c *Client) ExpandPermissionTree(ctx context.Context, request ExpandPermiss
 	if request.Permission == "" {
 		return ExpandPermissionTreeResult{}, invalid("permission required")
 	}
-	resp, e := retry(ctx, "expand permission tree", func() (*v1.ExpandPermissionTreeResponse, error) {
-		return c.psc.ExpandPermissionTree(ctx, &v1.ExpandPermissionTreeRequest{Consistency: cs, Resource: object(request.Resource), Permission: request.Permission})
+	resp, e := retry(ctx, c.retrySettings(o), "expand permission tree", func() (*v1.ExpandPermissionTreeResponse, error) {
+		return c.psc.ExpandPermissionTree(ctx, &v1.ExpandPermissionTreeRequest{Consistency: cs, Resource: object(request.Resource), Permission: request.Permission}, o.callOptions...)
 	})
 	if e != nil {
 		return ExpandPermissionTreeResult{}, e

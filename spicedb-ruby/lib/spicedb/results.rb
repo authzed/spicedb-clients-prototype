@@ -31,7 +31,6 @@ module SpiceDB
   ExpandResult = Values.record(:tree, :revision)
   CountResult = Values.record(:relationship_count, :revision, :still_calculating)
   RoaringLookupResourcesResult = Values.record(:bitmap, :cardinality, :at_revision)
-  Update = Values.record(:operation, :relationship)
 
   WatchEvent = Values.record(:updates, :changes_through, :is_checkpoint, :schema_updated, :metadata, :full_revision_metadata) do
     def initialize(updates:, changes_through:, is_checkpoint:, schema_updated: false, metadata: nil, full_revision_metadata: [])
@@ -42,15 +41,26 @@ module SpiceDB
   end
 
   PartialCaveatInfo = Values.record(:missing_required_context)
-  LookupResource = Values.record(:resource_id, :permissionship, :partial_caveat, :looked_up_at)
+  # +cursor+ resumes the lookup after this item (pass it as +cursor:+ with the
+  # same request and page size).
+  LookupResource = Values.record(:resource_id, :permissionship, :partial_caveat, :looked_up_at, :cursor) do
+    def initialize(resource_id:, permissionship:, partial_caveat:, looked_up_at:, cursor: nil)
+      super(**Values.token_fields(Values.snapshot({ resource_id: resource_id, permissionship: permissionship, partial_caveat: partial_caveat,
+                                                    looked_up_at: looked_up_at, cursor: cursor })))
+    end
+  end
   ResolvedSubject = Values.record(:subject_id, :permissionship, :partial_caveat)
   LookupSubject = Values.record(:subject, :excluded_subjects, :looked_up_at)
 
-  CheckResult = Values.record(:permissionship, :missing_context, :checked_at, :debug_trace, :expiration) do
-    def initialize(permissionship:, missing_context:, checked_at:, debug_trace: nil, expiration: nil)
-      super(**Values.snapshot({ permissionship: permissionship, missing_context: missing_context,
+  # +error+ is set only by check_bulk with +item_errors: BulkItemErrors::RETURNED+;
+  # an errored item has :unspecified permissionship and never grants.
+  CheckResult = Values.record(:permissionship, :missing_context, :checked_at, :debug_trace, :expiration, :error) do
+    def initialize(permissionship:, missing_context:, checked_at:, debug_trace: nil, expiration: nil, error: nil)
+      raise InvalidArgumentError, 'error: expected SpiceDB::Error' unless error.nil? || error.is_a?(Error)
+
+      super(**Values.snapshot({ permissionship: error ? :unspecified : permissionship, missing_context: missing_context,
                                 checked_at: checked_at.nil? ? nil : ZedToken.validate(checked_at), debug_trace: debug_trace,
-                                expiration: expiration }))
+                                expiration: expiration }), error: error)
     end
 
     def has_permission?

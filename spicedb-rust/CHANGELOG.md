@@ -2,6 +2,128 @@
 
 ## Unreleased
 
+- Paged `read_relationships` and `export_relationships` fail with `INTERNAL`
+  ("... page did not advance continuation cursor") when a full page ends with
+  an empty cursor or the cursor that was sent, as `lookup_resources` already
+  did, instead of re-requesting the same page forever. Previously only a
+  missing cursor was caught.
+- The client-wide retry policy (the default, and with
+  `StreamRetryMode::Enabled`) no longer reopens `updates` or
+  `watch_permission_sets` when opening fails: a watch reopened without a start
+  revision begins at a later revision and silently skips the changes in
+  between, so the failure is returned. A per-call or per-operation retry
+  policy still opts a watch in to reopening before its first event.
+- `testing::InMemorySpiceDB` serves every service the client calls, so every
+  `SpiceDBClient` method reaches it: operations it does not model (lookups,
+  expand, watch, schema introspection, counters, Materialize) are recorded,
+  consult the fault hook and otherwise fail with `UNIMPLEMENTED` through the
+  real client (watch, counters and Materialize were previously unrecorded and
+  bypassed the hook). A test calls every client method against it. Import-batch
+  faults carry the batch's relationships (`Fault::batch`).
+  `testing::cursor_after(n)` builds the double's resume cursor after `n`
+  matching relationships, whose format is now stable for tests: read and
+  export cursors count matching relationships rather than stored positions.
+  `set_read_schema_revision(SchemaRevision::Omitted)` emulates servers whose
+  schema reads report no revision.
+- Builder setting `operation_retry_policy(Operation, RetryPolicy)` sets a
+  client-wide retry policy for every call of one operation (e.g. never reopen
+  `updates`), between the per-call and client-wide policies in precedence and
+  also governing stream establishment. For `Operation::Write` it retries only
+  idempotent writes and sends the rest once; never-idempotent operations
+  (deletes, delete-all, imports, counter registration and unregistration)
+  reject a retrying policy when the client is built. `Operation` names every
+  client operation. `Transaction::is_idempotent()` exposes the
+  retry-eligibility rule the client uses.
+- `testing::InMemorySpiceDB` records every RPC (`calls`, `calls_of`) with its
+  operation, per-operation index, protocol request and request metadata, and
+  injects faults (`set_fault_hook`, `clear_fault_hook`, `fail_next`) before an
+  RPC, before each import batch, before an import commits and before each read
+  or export item; `testing::server_error` and `server_error_with_reason` build
+  SpiceDB-shaped statuses.
+
+- `CallOptions::with_retry_policy(RetryPolicy)` overrides the client's retry
+  policy for one call, including stream establishment (open one supervised
+  watch exactly once while the client retries everything else). A touch-only
+  `write` without preconditions and `write_schema` may opt in to retries per
+  call; every other mutation rejects the opt-in with `InvalidArgument` before
+  any request.
+- `ReadRelationshipsOptions::with_paging` and
+  `LookupResourcesOptions::with_paging(Paging::SingleRequest)` send exactly one
+  request, as the raw API does.
+- `protoconv::check_bulk_to_proto` and `check_request_to_proto`;
+  `lookup_subject_to_proto` fills the deprecated fields SpiceDB still sends;
+  `reflect_schema_result_to_proto`.
+- `testing::InMemorySpiceDB` serves imports, exports, `read_schema`,
+  `write_schema` and `reflect_schema` (`set_reflect_schema_result`), accepts
+  empty writes like SpiceDB, and sends `set_response_metadata` headers.
+  `ReflectSchemaResult` and the schema reflection types derive `Default`.
+- Writes sent with an empty transaction are documented and tested as reaching
+  the server (SpiceDB checks their preconditions and returns the current
+  revision); bulk-item and delete-progress errors are tested to convert to the
+  server's status with its message once.
+
+- **Fix:** paged `read_relationships` and `lookup_resources` failed on their
+  second page against a real SpiceDB ("the cursor provided does not have the
+  same arguments as the original API call"): the pager switched later pages to
+  `snapshot(read_at)` and shrank the last page's limit, and SpiceDB hashes both
+  into the cursor. Every page now repeats the caller's consistency and page
+  size (exports too); total limits are enforced client-side.
+- **BREAKING:** `read_relationships` yields `ReadRelationship` and
+  `export_relationships` yields `ExportedRelationship` instead of
+  `Relationship`; both carry `after_result_cursor` (and `read_at` for reads).
+  `LookupResource` gains `after_result_cursor`. Resume with the options'
+  `with_cursor`, repeating the request and page size.
+
+  ```rust,ignore
+  // Before
+  let r: Relationship = item?;
+  // After
+  let r: Relationship = item?.relationship; // or .into_relationship()
+  ```
+- **BREAKING:** `CheckResult` gains `error: Option<SpiceDBError>` and
+  implements `PartialEq` by hand (errors compare by code and text).
+  `CheckOptions::with_bulk_item_errors(BulkItemErrors::Returned)` returns
+  per-item errors on it (never a grant) instead of failing the bulk call.
+- **BREAKING:** `Relationship`'s `Display` now prints SpiceDB's full tuple
+  syntax, including `[caveat:{...}]` and `[expiration:...]`, and `from_tuple`
+  parses it (`...` means a direct subject). Before: `doc:a#viewer@user:bob`
+  for a caveated relationship; after: `doc:a#viewer@user:bob[active:{"now":5}]`.
+- **BREAKING:** integral protobuf numbers in caveat and check contexts read
+  back as JSON integers (`5`), not floats (`5.0`), matching protojson and
+  SpiceDB's tuple formatter.
+- `SpiceDBClient::from_channel(channel).token(..).build()` builds a client over
+  a caller-owned tonic `Channel` (in-memory, embedded SpiceDB); dropping the
+  client leaves the channel usable. The proto tier adds
+  `SpiceDBProtoClient::from_channel(channel, Option<&str>)`.
+- Builder settings `retry_policy(RetryPolicy)`, `retries(RetryMode::Disabled)`,
+  `stream_retries(StreamRetryMode::Disabled)` and
+  `default_deadline(DefaultDeadline::Disabled)`. A policy may opt reads into
+  other codes such as `ResourceExhausted`; mutations are never retried.
+- Every options type takes `with_call_options(CallOptions)`: request metadata
+  on every RPC and `ResponseMetadata` header/trailer capture.
+- `ImportRelationshipsOptions::with_batch_size`; a server abort reports its
+  status (for example `AlreadyExists`), now pinned by tests.
+- `DeleteOptions::with_partial(DeletePartial::Disallowed)` for all-or-nothing
+  deletes, `DeleteRequest::server_default_limit(filter)` in that mode, and
+  `DeleteAllOptions::with_progress(..)` per acknowledged batch.
+- Error interop: `SpiceDBError::new(code, message)`, `code()`,
+  `server_message()`, `to_status()`, `From` conversions with `tonic::Status`
+  in both directions, and `spicedb::error::code_of`.
+- Observable values: `Filter::matches`, `FromStr` for `ObjectRef`,
+  `SubjectRef` and `Relationship`, `Display` for refs, filters, updates,
+  preconditions, operations and transactions, short accessors
+  (`resource_id()`, `subject_id()`, ...), copy helpers `with_resource`,
+  `with_subject`, `with_relation`, `Update::new`, `Precondition::new`, and an
+  optional `serde` feature deriving `Serialize`.
+- `spicedb::protoconv` exports native/protocol conversions;
+  `spicedb::tonic` re-exports tonic.
+- New feature `testing`: `spicedb::testing::InMemorySpiceDB`, an in-memory
+  SpiceDB double reached through a real `SpiceDBClient`.
+- Dependencies: tonic without default features (no server stack), tokio with
+  only `macros`/`rt`/`sync`/`time`, chrono without default features; unused
+  `thiserror` removed. New example `tooling_escape_hatches`; new
+  `AI_INTEGRATION_GUIDE.md`.
+
 - Watch supports native relationship filters through `WatchOptions::with_filters`, with OR semantics and local rejection of simultaneous object types. Examples use type-only relationship filters.
 
 - **BREAKING:** Rename `delete_all_relationships` to `delete_all_relationships_non_atomic` and `DeleteResult.deleted_at` to `DeleteResult.revision`. Each deletion batch is transactional; the complete operation is non-atomic and completed batches remain committed after later failures.

@@ -49,12 +49,15 @@ public final class LookupResult {
    * @param lookedUpAt the revision this result was computed at; identical for every item yielded by
    *     a single {@code lookupResources} call — it is a property of the call, not of the individual
    *     resource
+   * @param afterResultCursor the cursor to resume after this result ({@link
+   *     LookupOptions.Builder#cursor}); {@code null} if the server sent none
    */
   public record LookupResource(
       String resourceId,
       Permissionship permissionship,
       PartialCaveatInfo partialCaveat,
-      ZedToken lookedUpAt) {}
+      ZedToken lookedUpAt,
+      String afterResultCursor) {}
 
   /**
    * A subject resolved by {@link SpiceDBClient#lookupSubjects} — either the matched subject, or

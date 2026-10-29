@@ -4,13 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import build.buf.gen.authzed.api.v1.CheckPermissionRequest;
-import build.buf.gen.authzed.api.v1.CheckPermissionResponse;
-import build.buf.gen.authzed.api.v1.Consistency;
-import build.buf.gen.authzed.api.v1.ObjectReference;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.SubjectReference;
-import build.buf.gen.authzed.api.v1.ZedToken;
+import com.authzed.api.v1.CheckPermissionRequest;
+import com.authzed.api.v1.CheckPermissionResponse;
+import com.authzed.api.v1.Consistency;
+import com.authzed.api.v1.ObjectReference;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.SubjectReference;
+import com.authzed.api.v1.ZedToken;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import io.grpc.Metadata;
 import io.grpc.Server;
@@ -85,18 +85,15 @@ class RawEscapeHatchTest {
 
                     @Override
                     public void checkBulkPermissions(
-                        build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest request,
-                        StreamObserver<build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse>
-                            observer) {
-                      var response =
-                          build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse.newBuilder();
+                        com.authzed.api.v1.CheckBulkPermissionsRequest request,
+                        StreamObserver<com.authzed.api.v1.CheckBulkPermissionsResponse> observer) {
+                      var response = com.authzed.api.v1.CheckBulkPermissionsResponse.newBuilder();
                       for (int i = 0; i < request.getItemsCount(); i++) {
                         response.addPairs(
-                            build.buf.gen.authzed.api.v1.CheckBulkPermissionsPair.newBuilder()
+                            com.authzed.api.v1.CheckBulkPermissionsPair.newBuilder()
                                 .setRequest(request.getItems(i))
                                 .setItem(
-                                    build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem
-                                        .newBuilder()
+                                    com.authzed.api.v1.CheckBulkPermissionsResponseItem.newBuilder()
                                         .setPermissionship(
                                             CheckPermissionResponse.Permissionship
                                                 .PERMISSIONSHIP_HAS_PERMISSION)

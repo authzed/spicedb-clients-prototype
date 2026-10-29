@@ -2,9 +2,9 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ExportBulkRelationshipsRequest;
+import com.authzed.api.v1.ExportBulkRelationshipsResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.time.Duration;
@@ -59,7 +59,9 @@ class ExportRelationshipsStreamingTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         Iterator<Relationship> iterator = stream.iterator();
 
         // assertTimeoutPreemptively runs this on a separate thread and

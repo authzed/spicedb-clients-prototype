@@ -25,7 +25,7 @@ var File_authzed_api_v1_openapi_proto protoreflect.FileDescriptor
 
 const file_authzed_api_v1_openapi_proto_rawDesc = "" +
 	"\n" +
-	"\x1cauthzed/api/v1/openapi.proto\x12\x0eauthzed.api.v1\x1a.protoc-gen-openapiv2/options/annotations.protoB\xd7\x03\x92A\x89\x03\x12\x9c\x01\n" +
+	"\x1cauthzed/api/v1/openapi.proto\x12\x0eauthzed.api.v1\x1a.protoc-gen-openapiv2/options/annotations.protoB\xfc\x03\x92A\x89\x03\x12\x9c\x01\n" +
 	"\aAuthzed\"D\n" +
 	"\rAuthzed, Inc.\x12\x1ehttps://github.com/authzed/api\x1a\x13support@authzed.com*F\n" +
 	"\x12Apache 2.0 License\x120https://github.com/authzed/api/blob/main/LICENSE2\x031.0*\x03\x01\x02\x042\x10application/json:\x10application/jsonZf\n" +
@@ -36,7 +36,7 @@ const file_authzed_api_v1_openapi_proto_rawDesc = "" +
 	"\n" +
 	"ApiKeyAuth\x12\x00rE\n" +
 	"\x1bMore about the Authzed API.\x12&https://docs.authzed.com/reference/api\n" +
-	"\x12com.authzed.api.v1P\x01Z2github.com/authzed/authzed-go/proto/authzed/api/v1b\x06proto3"
+	"\x12com.authzed.api.v1P\x01ZWgithub.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1;v1b\x06proto3"
 
 var file_authzed_api_v1_openapi_proto_goTypes = []any{}
 var file_authzed_api_v1_openapi_proto_depIdxs = []int32{

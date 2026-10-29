@@ -71,6 +71,8 @@ module SpiceDB
     def initialize(object_type:, object_id:)
       super(object_type: Values.text(object_type, 'object_type'), object_id: Values.text(object_id, 'object_id'))
     end
+
+    def to_s = "#{object_type}:#{object_id}"
   end
 
   SubjectRef = Data.define(:object, :relation) do
@@ -80,6 +82,8 @@ module SpiceDB
 
       super(object: object, relation: relation.nil? ? nil : Values.text(relation, 'subject.relation'))
     end
+
+    def to_s = relation ? "#{object}##{relation}" : object.to_s
   end
 
   Caveat = Data.define(:name, :context) do

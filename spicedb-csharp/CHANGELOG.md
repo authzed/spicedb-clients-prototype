@@ -2,6 +2,160 @@
 
 ## Unreleased
 
+### Paging and watch fixes
+
+- Paged reads, lookups and exports fail with an Internal-status `SpiceDBException` ("...
+  cursor did not advance") when a full page arrives with a missing or empty cursor, or the
+  same cursor that was sent. Previously a repeated cursor re-requested the same page forever
+  and a missing one silently ended the results early.
+- The client-wide retry policy (including the default, whatever `StreamRetries` says) no
+  longer reopens `UpdatesAsync` or `ExperimentalWatchPermissionSetsAsync` when they fail
+  before their first event, since a watch reopened without a start revision begins later and
+  skips the changes in between. A per-call `RetryPolicy` or an `OperationRetryPolicies` entry
+  for the watch still opts in to reopening before the first event.
+
+### Full-surface client interface for the test double
+
+- `ISpiceDBClient` is the client's full public method set (it extends
+  `ISpiceDBRelationshipClient`, `ISpiceDBSchemaClient` and `IAsyncDisposable`), kept in sync
+  with `SpiceDBClient` by a test. `SpiceDBClient` and `InMemorySpiceDBClient` implement it.
+- `InMemorySpiceDBClient` implements every client method: `CheckAnyAsync` and
+  `CheckAllAsync` work in memory, `DisposeAsync` does nothing and `RawProto()` throws
+  `InvalidOperationException`; lookups, watch, schema introspection and diff, expansion and
+  the experimental operations are recorded, consult the fault hook and fail with
+  `StatusCode.Unimplemented` in the real client's error shape.
+- Import-batch faults carry the batch's relationships (`Fault.Batch`) and now fire once the
+  batch is full (or the input ends) rather than before its first relationship.
+- `InMemorySpiceDBClient.CursorAfter(n)` builds the resume cursor the double returns on item
+  n; the format is stable for tests.
+- `InMemorySpiceDBClient.SetReadSchemaRevision(SchemaRevision.Omitted)` makes schema reads
+  report no revision, to test code that falls back to another revision source.
+
+### Per-operation retries and a fault-injecting test double
+
+- `ClientOptions.OperationRetryPolicies` sets the retry policy for every call of one
+  operation, keyed by the new `SpiceDBOperation` enum (one member per client method), for
+  example `[SpiceDBOperation.Updates] = RetryPolicy.None` so the client never reopens a
+  watch. Precedence is per call, then per operation, then client-wide; a per-operation
+  policy also governs stream establishment. A `Write` policy retries only idempotent
+  writes and leaves the others single-attempt without error. Deletes, delete-all, imports
+  and counter registration and unregistration reject a retrying per-operation policy with
+  `InvalidArgumentException` when the client is built; a zero-retry policy is allowed for
+  any operation.
+- `Transaction.IsIdempotent` exposes the client's retry-eligibility rule (touches only, no
+  preconditions).
+- `InMemorySpiceDBClient` records every call (`Calls`, `CallsOf`, as `RecordedCall` with
+  operation, per-operation index, arguments and options) and injects faults
+  (`SetFaultHook`, `FailNext`) before calls, import batches, import commits and read or
+  export items. `InMemorySpiceDBClient.ServerError` builds the real client's exception for a
+  server failure. Its delete-all no longer records its inner page deletes as delete calls.
+
+### Tooling and test-double follow-ups
+
+- Every options type (`CheckOptions`, `LookupOptions`, `ReadOptions`, `ExportOptions`,
+  `ImportOptions`, `WatchOptions`, `WriteOptions`, `DeleteOptions`, `DeleteAllOptions`,
+  `CallOptions`, `PermissionSetLookupOptions`) gains `RetryPolicy`, overriding the client's
+  policy for one call, stream establishment included. `RetryPolicy.None` exempts one call
+  (for example a supervised watch) while the client retries everything else. Touch-only
+  writes without preconditions and `WriteSchemaAsync` may opt in to retries per call; other
+  mutations throw `InvalidArgumentException` before any request.
+- `ReadOptions.Paging` / `LookupOptions.Paging = Paging.SingleRequest` send exactly one
+  request, as the raw API does (limit = `Limit` or unbounded, no follow-up page).
+- Empty `Transaction`s are sent to SpiceDB (which checks their preconditions and returns
+  the current revision); a test now pins this. The in-memory double no longer advances its
+  revision for them.
+- `ProtoConvert.ToCheckBulkResponse(requests, results, options)` and
+  `ToCheckBulkRequestItem`; `ProtoConvert.ToProto(LookupSubject)` fills the deprecated fields
+  SpiceDB still sends, so live responses round-trip exactly.
+- **BREAKING:** `ISpiceDBRelationshipClient` adds `ImportRelationshipsAsync` and
+  `ExportRelationshipsAsync`; the new `ISpiceDBSchemaClient` covers `ReadSchemaAsync`,
+  `WriteSchemaAsync` and `ReflectSchemaAsync`. `InMemorySpiceDBClient` implements both,
+  honors cursors, limits and response-metadata sinks (`SetResponseMetadata`), and returns a
+  registered reflection (`SetReflectSchemaResult`).
+- **Fix:** `InMemorySpiceDBClient` errors now match the real client's for the same failure.
+  An all-or-nothing delete over its limit is `InvalidArgumentException` (it was
+  `FailedPreconditionException`; SpiceDB returns `INVALID_ARGUMENT`), CREATE conflicts and
+  import duplicates use SpiceDB's message, the missing-schema message matches SpiceDB's, and
+  precondition, conflict and transactional-delete errors carry SpiceDB's `ErrorInfo` reason.
+- Bulk item and deletion-progress failures already are the server's typed exception (no
+  wrapper), so `Status` reports the server's message once; tests now pin this.
+
+### Adoption fixes (tooling, test doubles, legacy coexistence)
+
+- **Fix:** paged `ReadRelationshipsAsync`, `LookupResourcesAsync` and
+  `ExportRelationshipsAsync` shrank the last page's limit to fit `Limit`, and SpiceDB
+  hashes the limit into each cursor, so a read whose limit was not a multiple of the page
+  size failed on its next page with "the cursor provided does not have the same arguments
+  as the original API call" (reproduced against SpiceDB). Every page now repeats the
+  caller's consistency and page size; `Limit` is enforced client-side.
+- **BREAKING:** `ReadRelationshipsAsync` yields `ReadRelationship` and
+  `ExportRelationshipsAsync` yields `ExportedRelationship`, carrying `AfterResultCursor`
+  (and `ReadAt` for reads). `LookupResource` gains `AfterResultCursor`. Resume with
+  `ReadOptions`/`ExportOptions`/`LookupOptions.ResumeCursor`, repeating the request and
+  page size.
+  ```csharp
+  // Before
+  await foreach (Relationship r in client.ReadRelationshipsAsync(Full(), filter)) Use(r);
+  // After
+  await foreach (ReadRelationship item in client.ReadRelationshipsAsync(Full(), filter)) Use(item.Relationship);
+  ```
+- **BREAKING:** `DeleteRelationshipsAsync(Filter, int? limit, ...)`: the limit is
+  nullable. `DeleteOptions.Partial = PartialDeletion.Disallowed` makes the delete
+  all-or-nothing, and a null limit then uses the server default; the default `Allowed`
+  mode still requires a positive limit. Callers passing an `int` are unchanged at source
+  level. `DeleteAllOptions.Progress` (`IProgress<DeleteResult>`) reports cumulative
+  progress after every batch.
+- **BREAKING:** `Transaction` stores native values. `Updates` (`RelationshipUpdate`) and
+  `Preconditions` (new native `Precondition` record with `PreconditionOperation`) are
+  public snapshots, and `Count` gives the update count. Code in the `SpiceDB.Client`
+  namespace that referred to the protocol `Precondition` type unqualified must now write
+  `Authzed.Api.V1.Precondition`.
+- New `SpiceDBClient.CreateFromCallInvoker(callInvoker, options)` wraps a caller-owned
+  `CallInvoker` (in-memory or test-server channels, intercepted invokers). It adds no
+  credentials, never disposes the transport, and applies operation options. The proto
+  tier gains `SpiceDBProtoClient(CallInvoker)`.
+- `ClientOptions.RetryPolicy` (`RetryPolicy` with `MaxRetries`, `RetryableCodes`,
+  `InitialBackoff`, `MaxBackoff`, `OnRetry`), `ClientOptions.Retries = Retries.Disabled`
+  and `ClientOptions.StreamRetries = StreamRetries.Disabled` configure retries
+  client-wide. Mutations never retry under any policy.
+- `ClientOptions.DefaultDeadline = DefaultDeadline.Disabled` removes the 30s default
+  unary deadline; per-operation timeouts and cancellation tokens still apply.
+- Every options type gains `Transport` (`TransportOptions`): request `Headers` for every
+  RPC of the operation and a `ResponseMetadata` sink for response headers and trailers.
+- `SpiceDBException` interoperates with gRPC status inspection: `StatusCode`, `Status`,
+  `Trailers` and `ToRpcException()` for server, local and caller-built errors;
+  `ServerMessage` keeps the server's message verbatim; `SpiceDBException.Create(code,
+  message)` builds errors for test doubles; `SpiceDBException.CodeOf(exception)` and
+  `FromRpcException(rpc)` classify and map raw `RpcException`s.
+- `CheckOptions.ItemErrors = BulkItemErrors.Returned` returns per-item errors on
+  `CheckResult.Error` (never a grant) instead of failing the bulk check.
+- `ImportRelationshipsAsync` reports the server's final status when it aborts the stream
+  (for example `AlreadyExistsException` for a duplicate), verified against SpiceDB.
+  `ImportOptions.BatchSize` documents that one call is one transaction.
+- `SpiceDB.Client.Protocol.ProtoConvert` exports native↔protocol conversions for
+  references, relationships, updates, filters, preconditions, consistency, tokens,
+  check requests, transactions, and check (with traces), lookup, expand, read and write
+  results.
+- `Relationship.FromTuple` and `ToString` cover SpiceDB's full tuple syntax, including
+  `[caveat:{...}]` and `[expiration:...]`. New `WithResource`, `WithRelation`,
+  `WithSubject` copy helpers and `ResourceType`/`ResourceId`/`SubjectType`/`SubjectId`/
+  `SubjectRelation` shortcuts. `ObjectRef`, `SubjectRef`, `RelationshipUpdate`, `Filter`,
+  `SubjectRelationFilter`, `Precondition` and `Transaction` have readable `ToString`
+  forms and non-empty JSON forms (`SubjectRelationFilter.Kind`/`Name`).
+- `Filter.Matches(Relationship)` applies SpiceDB filter semantics client-side.
+- New `ISpiceDBRelationshipClient`, implemented by `SpiceDBClient` and by the new
+  in-memory double `SpiceDB.Client.Testing.InMemorySpiceDBClient` (preconditions,
+  CREATE conflicts, filtered reads and deletes, registered check results and errors).
+- The proto tier is the single copy of the generated types: a generated `Authzed.Net`
+  bridge assembly type-forwards `Authzed.Api.V1`/`Authzed.Api.Materialize.V0` to
+  `SpiceDB.Proto`, so the legacy package and this client coexist in one process. See
+  MIGRATION.md.
+- Package floors are exact minimums (Grpc 2.80.0, Google.Protobuf 3.34.1,
+  Google.Api.CommonProtos 2.17.0) instead of floating wildcards, and the proto tier's
+  tests moved to their own project so `SpiceDB.Proto` carries no test dependencies.
+- New example `ToolingEscapeHatches`; `ReadRelationships` and `LookupResources` examples
+  now read across several pages and resume from cursors.
+
 ### Changed
 
 - **BREAKING CHANGE — named behavioral options.** Replace `Tracing = true`

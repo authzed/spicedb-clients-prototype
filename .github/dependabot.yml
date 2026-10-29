@@ -15,14 +15,14 @@ updates:
       - /
       - /spicedb-gen
       - /spicedb-gen/testdata/go
-      - /spicedb-go
+      - /spicedb-go/magefiles
       - /spicedb-python
       - /spicedb-typescript
       - /spicedb-csharp
       - /spicedb-java
       - /spicedb-ruby
       - /spicedb-rust
-      - /proto-clients/spicedb-go-proto
+      - /proto-clients/spicedb-go-proto/magefiles
       - /proto-clients/spicedb-python-proto
       - /proto-clients/spicedb-typescript-proto
       - /proto-clients/spicedb-csharp-proto
@@ -34,6 +34,18 @@ updates:
     groups:
       gomod:
         patterns: ["*"]
+
+  # Go library modules. Consumers inherit these requirements through MVS, so
+  # they stay at the lowest versions that work (root DESIGN.md, "Document the
+  # path off the legacy libraries"). Version-bump PRs are disabled; security
+  # updates still open. Raise a floor only when the code needs it.
+  - package-ecosystem: gomod
+    directories:
+      - /spicedb-go
+      - /proto-clients/spicedb-go-proto
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
 
   # Python (uv)
   - package-ecosystem: pip

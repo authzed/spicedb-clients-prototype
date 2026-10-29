@@ -2751,8 +2751,8 @@ const file_authzed_api_v1_permission_service_proto_rawDesc = "" +
 	"\x17ImportBulkRelationships\x12..authzed.api.v1.ImportBulkRelationshipsRequest\x1a/.authzed.api.v1.ImportBulkRelationshipsResponse\"7\x92A\r\n" +
 	"\vPermissions\x82\xd3\xe4\x93\x02!:\x01*\"\x1c/v1/relationships/importbulk(\x01\x12\xb5\x01\n" +
 	"\x17ExportBulkRelationships\x12..authzed.api.v1.ExportBulkRelationshipsRequest\x1a/.authzed.api.v1.ExportBulkRelationshipsResponse\"7\x92A\r\n" +
-	"\vPermissions\x82\xd3\xe4\x93\x02!:\x01*\"\x1c/v1/relationships/exportbulk0\x01BJ\n" +
-	"\x12com.authzed.api.v1P\x01Z2github.com/authzed/authzed-go/proto/authzed/api/v1b\x06proto3"
+	"\vPermissions\x82\xd3\xe4\x93\x02!:\x01*\"\x1c/v1/relationships/exportbulk0\x01Bo\n" +
+	"\x12com.authzed.api.v1P\x01ZWgithub.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1;v1b\x06proto3"
 
 var (
 	file_authzed_api_v1_permission_service_proto_rawDescOnce sync.Once

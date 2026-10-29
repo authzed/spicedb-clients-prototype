@@ -270,6 +270,24 @@ fn test_transaction_empty() {
 }
 
 #[test]
+fn test_transaction_is_idempotent_only_when_touch_only_without_preconditions() {
+    let r = spicedb::Relationship::from_tuple("document:doc1#viewer@user:alice").unwrap();
+    assert!(Transaction::new().is_idempotent(), "empty");
+    let mut touch = Transaction::new();
+    touch.touch(&r);
+    assert!(touch.is_idempotent());
+    let mut create = touch.clone();
+    create.create(&r);
+    assert!(!create.is_idempotent());
+    let mut delete = Transaction::new();
+    delete.delete(&r);
+    assert!(!delete.is_idempotent());
+    let mut guarded = touch.clone();
+    guarded.must_match(Filter::new("document"));
+    assert!(!guarded.is_idempotent());
+}
+
+#[test]
 fn test_transaction_borrows_relationship() {
     let r = spicedb::Relationship::from_tuple("document:doc1#viewer@user:alice").unwrap();
     let mut txn = Transaction::new();

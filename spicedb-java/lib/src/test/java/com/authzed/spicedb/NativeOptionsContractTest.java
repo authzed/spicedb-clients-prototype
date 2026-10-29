@@ -41,19 +41,18 @@ class NativeOptionsContractTest {
 
   @Test
   void absentAndOpaqueRevisionsSurviveRpcMapping() throws Exception {
-    var seen = new java.util.ArrayList<build.buf.gen.authzed.api.v1.CheckPermissionRequest>();
+    var seen = new java.util.ArrayList<com.authzed.api.v1.CheckPermissionRequest>();
     var service =
-        new build.buf.gen.authzed.api.v1.PermissionsServiceGrpc.PermissionsServiceImplBase() {
+        new com.authzed.api.v1.PermissionsServiceGrpc.PermissionsServiceImplBase() {
           @Override
           public void checkPermission(
-              build.buf.gen.authzed.api.v1.CheckPermissionRequest request,
-              io.grpc.stub.StreamObserver<build.buf.gen.authzed.api.v1.CheckPermissionResponse>
-                  out) {
+              com.authzed.api.v1.CheckPermissionRequest request,
+              io.grpc.stub.StreamObserver<com.authzed.api.v1.CheckPermissionResponse> out) {
             seen.add(request);
-            var response = build.buf.gen.authzed.api.v1.CheckPermissionResponse.newBuilder();
+            var response = com.authzed.api.v1.CheckPermissionResponse.newBuilder();
             if (seen.size() > 1)
               response.setCheckedAt(
-                  build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken("  opaque/日本語==\n"));
+                  com.authzed.api.v1.ZedToken.newBuilder().setToken("  opaque/日本語==\n"));
             out.onNext(response.build());
             out.onCompleted();
           }

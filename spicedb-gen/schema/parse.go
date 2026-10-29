@@ -19,8 +19,14 @@ func ParseFile(path string) (*Schema, error) {
 	return ParseString(string(data))
 }
 
-// ParseString parses a SpiceDB schema string into a Schema.
+// ParseString parses a SpiceDB schema string into a Schema. Caveat expressions
+// are treated as opaque (see opaqueCaveatBodies): only caveat names and
+// parameter types are read.
 func ParseString(schemaText string) (*Schema, error) {
+	schemaText, err := opaqueCaveatBodies(schemaText)
+	if err != nil {
+		return nil, fmt.Errorf("compiling schema: %w", err)
+	}
 	compiled, err := compiler.Compile(
 		compiler.InputSchema{
 			Source:       input.Source("schema"),

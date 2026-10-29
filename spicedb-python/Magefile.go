@@ -58,6 +58,7 @@ var wantExamples = []string{
 	"sync_read_relationships",
 	"sync_watch_changes",
 	"sync_write_relationships",
+	"tooling_escape_hatches",
 	"unrepresentable_values",
 	"watch_changes",
 	"write_relationships",

@@ -2,22 +2,30 @@
 
 module SpiceDB
   module Operations
+    MAX_UINT32 = (2**32) - 1
+    private_constant :MAX_UINT32
+
     private
 
-    def unary_budget(timeout)
+    def unary_budget(timeout, call_options = nil, retry_policy: nil)
       raise Error, 'client is closed' if @closed
 
-      Budget.new(timeout || @default_timeout)
+      Budget.new(timeout || (@default_deadline == DefaultDeadline::ENABLED ? @default_timeout : nil), call_options: call_options,
+                                                                                                      retry_policy: retry_policy)
     end
 
-    def with_budget(timeout, retryable: true)
-      budget = unary_budget(timeout)
-      with_retry(budget: budget, max_retries: retryable ? @max_retries : 0) { yield budget }
+    def stream_budget(timeout, call_options = nil, retry_policy: nil)
+      Budget.new(timeout, call_options: call_options, retry_policy: retry_policy)
+    end
+
+    def with_budget(timeout, call_options = nil, retryable: true, operation: nil, retry_policy: nil)
+      budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
+      with_retry(budget: budget, retryable: retryable, operation: operation) { yield budget }
     end
 
     def rpc(service, operation, request, budget, retryable: true)
-      with_retry(budget: budget, max_retries: retryable ? @max_retries : 0) do
-        service.public_send(operation, request, deadline: budget.deadline)
+      with_retry(budget: budget, retryable: retryable, operation: operation) do
+        invoke(service, operation, request, budget)
       end
     end
 
@@ -55,13 +63,13 @@ module SpiceDB
                                   end)
     end
 
-    def delete_page(filter, limit, must_match, must_not_match, cursor, budget)
-      preconditions = must_match.map { |item| { operation: :must_match, filter: item } } +
-                      must_not_match.map { |item| { operation: :must_not_match, filter: item } }
+    def delete_page(filter, limit, must_match, must_not_match, cursor, budget, partial: DeletePartial::ALLOWED)
+      preconditions = must_match.map { |item| Precondition.new(operation: :must_match, filter: item) } +
+                      must_not_match.map { |item| Precondition.new(operation: :must_not_match, filter: item) }
       request = Authzed::Api::V1::DeleteRelationshipsRequest.new(relationship_filter: filter_to_proto(filter),
-                                                                 optional_preconditions: build_preconditions(preconditions), optional_limit: limit,
-                                                                 optional_allow_partial_deletions: true,
-                                                                 optional_cursor: cursor && !cursor.empty? ? Authzed::Api::V1::Cursor.new(token: cursor) : nil)
+                                                                 optional_preconditions: build_preconditions(preconditions), optional_limit: limit || 0,
+                                                                 optional_allow_partial_deletions: partial == DeletePartial::ALLOWED,
+                                                                 optional_cursor: cursor_proto(cursor))
       response = rpc(@proto_client.permissions, :delete_relationships, request, budget, retryable: false)
       progress = { DELETION_PROGRESS_COMPLETE: :complete, DELETION_PROGRESS_PARTIAL: :partial }.fetch(response.deletion_progress, :unspecified)
       result = DeleteResult.new(revision: ZedToken.from_proto(response.deleted_at), deleted_count: response.relationships_deleted_count,
@@ -92,28 +100,44 @@ module SpiceDB
       stream.close if block_given?
     end
 
+    # The policy that may re-establish a stream before it exposes an item: the
+    # call's own +retry_policy:+ (which also overrides StreamRetries::DISABLED
+    # and watch's default of never re-establishing), else the client's.
+    def stream_retry_policy(budget, retryable)
+      return budget.retry_policy if budget.retry_policy
+      return nil unless retryable && @stream_retries == StreamRetries::ENABLED
+
+      call_retry_policy(budget)
+    end
+
     def consume_rpc(stream, service, operation, request, budget, retryable: true)
+      policy = stream_retry_policy(budget, retryable)
       produced = 0
       attempt = 0
       begin
-        call = @proto_client.public_send(service).public_send(operation, request, deadline: budget.deadline, return_op: true)
+        call = @proto_client.public_send(service).public_send(operation, request, **stub_kwargs(budget), return_op: true)
         stream.attach(call)
         call.execute.each do |response|
           budget.remaining
           produced += 1
           yield response
         end
+        record_metadata(budget, call)
       rescue StandardError => e
         raise StopIteration if stream.closed?
 
-        if retryable && produced.zero? && SpiceDB.transient?(e) && attempt < @max_retries
+        record_metadata(budget, call, e) if call && e.is_a?(GRPC::BadStatus)
+        if policy && produced.zero? && attempt < policy.max_retries && policy.retryable?(e)
           call&.cancel
           stream.detach(call) if call
           call = nil
           attempt += 1
-          budget.sleep(backoff_delay(attempt))
+          delay = policy.delay(attempt)
+          notify_retry(policy, operation, attempt, e, delay)
+          budget.sleep(delay)
           retry
         end
+        raise if e.is_a?(Error)
         raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
 
         raise
@@ -123,8 +147,7 @@ module SpiceDB
       end
     end
 
-    def response_stream(service, operation, request, timeout, mapper:, retryable: true, limit: nil, &)
-      budget = Budget.new(timeout)
+    def response_stream(service, operation, request, budget, mapper:, retryable: true, limit: nil, &)
       positive(limit, 'limit') if limit
       stream = make_stream do |owner, out|
         delivered = 0
@@ -137,51 +160,56 @@ module SpiceDB
       return_stream(stream, &)
     end
 
-    def paged_stream(service, operation, request, page_size, limit, timeout, limit_field, cursor_field, response_cursor, mapper, include_result: nil, &) # rubocop:disable Metrics/ParameterLists
+    # Every page repeats the caller's consistency and the same page size:
+    # SpiceDB hashes both into the cursor and rejects a cursor sent with
+    # different arguments. The cursor itself pins later pages to the first
+    # page's revision. A total limit is enforced here, never by shrinking the
+    # last page's limit.
+    #
+    # With +paging: Paging::SINGLE_REQUEST+ exactly one request is sent, as
+    # the raw API does: its limit is +limit+ (0, unbounded, without one), the
+    # page size is ignored, and no follow-up page is requested.
+    def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, paging: Paging::AUTOMATIC, &)
       positive(page_size, 'page_size')
       positive(limit, 'limit') if limit
-      budget = Budget.new(timeout)
+      single = Paging.validate(paging) == Paging::SINGLE_REQUEST
       stream = make_stream do |owner, out|
         delivered = 0
-        cursor = nil
         loop do
           count = 0
-          page_limit = limit ? [page_size, limit - delivered].min : page_size
-          request.public_send("#{limit_field}=", page_limit)
-          request.public_send("#{cursor_field}=", cursor && Authzed::Api::V1::Cursor.new(token: cursor))
+          request.optional_limit = single ? [limit || 0, MAX_UINT32].min : page_size
+          request.optional_cursor = cursor_proto(cursor)
           previous = cursor
           consume_rpc(owner, service, operation, request, budget) do |response|
-            cursor = response.public_send(response_cursor)&.token
-            # Pin later pages to the first response's revision.
-            token = response.respond_to?(:read_at) ? response.read_at : response.looked_up_at
-            request.consistency = Authzed::Api::V1::Consistency.new(at_exact_snapshot: token) if token && !token.token.empty?
+            cursor = response.after_result_cursor&.token
             count += 1
-            result = mapper.call(response)
+            result = mapper.call(response, cursor)
             next if include_result && !include_result.call(result)
 
             delivered += 1
             out << result
+            break if limit && delivered >= limit
           end
-          break if count < page_limit || (limit && delivered >= limit)
+          break if single || count < page_size || (limit && delivered >= limit)
           raise Error, 'paged stream did not advance its cursor' if cursor.nil? || cursor.empty? || cursor == previous
         end
       end
       return_stream(stream, &)
     end
 
-    def export_stream(request, page_size, limit, timeout, &)
+    def export_stream(request, page_size, limit, budget, &)
       positive(page_size, 'page_size')
       positive(limit, 'limit') if limit
       request.optional_limit = page_size
-      budget = Budget.new(timeout)
       stream = make_stream do |owner, out|
         delivered = 0
         consume_rpc(owner, :permissions, :export_bulk_relationships, request, budget) do |response|
+          cursor = response.after_result_cursor&.token
           response.relationships.each do |relationship|
             break if limit && delivered >= limit
 
             delivered += 1
-            out << relationship_from_proto(relationship)
+            out << ExportedRelationship.new(relationship: relationship_from_proto(relationship), cursor: cursor)
           end
           break if limit && delivered >= limit
         end

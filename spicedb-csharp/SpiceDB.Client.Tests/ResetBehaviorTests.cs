@@ -201,13 +201,16 @@ public class ResetBehaviorTests
                 calls++; deadlines.Add(deadline!.Value);
                 async Task<CheckBulkPermissionsResponse> Respond()
                 {
-                    await Task.Delay(90, token);
+                    await Task.Delay(600, token);
                     var response = new CheckBulkPermissionsResponse(); response.Pairs.AddRange(r.Items.Select(item => new CheckBulkPermissionsPair { Request = item.Clone(), Item = new() })); return response;
                 }
                 return Call(Respond());
             });
         await using var client = Client(mock);
-        await Assert.ThrowsAsync<DeadlineExceededException>(() => client.CheckBulkAsync(Enumerable.Range(0, 1001).Select(_ => Request()).ToArray(), new CheckOptions { Timeout = TimeSpan.FromMilliseconds(150) }));
+        // Generous margins: the first chunk must finish inside the budget on a
+        // loaded runner (a 90ms/150ms version flaked in CI), and the second
+        // chunk must then exhaust the same, unrestarted budget.
+        await Assert.ThrowsAsync<DeadlineExceededException>(() => client.CheckBulkAsync(Enumerable.Range(0, 1001).Select(_ => Request()).ToArray(), new CheckOptions { Timeout = TimeSpan.FromMilliseconds(1000) }));
         Assert.Equal(2, calls); Assert.True((deadlines[1] - deadlines[0]).Duration() < TimeSpan.FromMilliseconds(15));
     }
     [Fact]

@@ -2,19 +2,19 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.LookupResourcesRequest;
-import build.buf.gen.authzed.api.v1.LookupResourcesResponse;
-import build.buf.gen.authzed.api.v1.LookupSubjectsRequest;
-import build.buf.gen.authzed.api.v1.LookupSubjectsResponse;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.RelationshipUpdate;
-import build.buf.gen.authzed.api.v1.WatchRequest;
-import build.buf.gen.authzed.api.v1.WatchResponse;
-import build.buf.gen.authzed.api.v1.WatchServiceGrpc;
+import com.authzed.api.v1.ExportBulkRelationshipsRequest;
+import com.authzed.api.v1.ExportBulkRelationshipsResponse;
+import com.authzed.api.v1.LookupResourcesRequest;
+import com.authzed.api.v1.LookupResourcesResponse;
+import com.authzed.api.v1.LookupSubjectsRequest;
+import com.authzed.api.v1.LookupSubjectsResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ReadRelationshipsRequest;
+import com.authzed.api.v1.ReadRelationshipsResponse;
+import com.authzed.api.v1.RelationshipUpdate;
+import com.authzed.api.v1.WatchRequest;
+import com.authzed.api.v1.WatchResponse;
+import com.authzed.api.v1.WatchServiceGrpc;
 import com.authzed.spicedb.errors.NotFoundException;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -54,7 +54,9 @@ class StreamingErrorMappingTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship)) {
         assertThrows(NotFoundException.class, () -> stream.forEach(r -> {}));
       }
     }
@@ -140,7 +142,9 @@ class StreamingErrorMappingTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         assertThrows(NotFoundException.class, () -> stream.forEach(r -> {}));
       }
     }

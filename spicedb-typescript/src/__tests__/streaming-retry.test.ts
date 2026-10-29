@@ -1,4 +1,5 @@
 import { TransportSecurity } from "../modes.js";
+import { DEFAULT_RETRY_POLICY } from "../retry.js";
 import { describe, it, expect, vi } from "vitest";
 import { ConnectError, Code } from "@connectrpc/connect";
 import { create } from "@bufbuild/protobuf";
@@ -23,7 +24,7 @@ function clientWithFakeProto(fake: FakeProto): SpiceDBClient {
         endpoint: "localhost:50051",
         token: "test-token",
         transportSecurity: TransportSecurity.Plaintext,
-        maxRetries: 3
+        retryPolicy: { ...DEFAULT_RETRY_POLICY, maxRetries: 3 }
     });
     (client as unknown as {
         proto: FakeProto;
@@ -334,7 +335,7 @@ describe("streaming RPC establishment retry (no replay)", () => {
             endpoint: "localhost:50051",
             token: "test-token",
             transportSecurity: TransportSecurity.Plaintext,
-            maxRetries: 2
+            retryPolicy: { ...DEFAULT_RETRY_POLICY, maxRetries: 2 }
         });
         (client as unknown as {
             proto: FakeProto;

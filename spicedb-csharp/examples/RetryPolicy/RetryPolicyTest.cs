@@ -167,6 +167,40 @@ public class RetryPolicyTest
     }
 
     [Fact]
+    public async Task AnIdempotentWrite_MayOptInPerCall_AndOthersRefuse()
+    {
+        // A write of only touches, without preconditions, leaves the same state however
+        // often it is replayed, so the caller may opt this one call into retries. A create
+        // (or a delete, a preconditioned write, an import) is refused before any request.
+        var counts = new Counts();
+        var (app, client) = await StartAsync(counts);
+        try
+        {
+            var retryTwice = new SpiceDB.Client.RetryPolicy { MaxRetries = 2, InitialBackoff = TimeSpan.FromMilliseconds(1) };
+            var touch = new Transaction();
+            touch.Touch(new Relationship(new ObjectRef("document", "readme"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+            await Assert.ThrowsAsync<UnavailableException>(() => client.WriteAsync(touch, new SpiceDB.Client.WriteOptions { RetryPolicy = retryTwice }, default));
+            Assert.Equal(3, counts.Write);
+
+            var create = new Transaction();
+            create.Create(new Relationship(new ObjectRef("document", "readme"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+            await Assert.ThrowsAsync<InvalidArgumentException>(() => client.WriteAsync(create, new SpiceDB.Client.WriteOptions { RetryPolicy = retryTwice }, default));
+            Assert.Equal(3, counts.Write);
+
+            // The other direction: one read exempted while the client retries everything else.
+            counts.CheckFailures = 1;
+            await Assert.ThrowsAsync<UnavailableException>(() =>
+                client.CheckAsync(new PermissionCheck(Doc().Resource, "view", Doc().Subject, Full()), new CheckOptions { RetryPolicy = SpiceDB.Client.RetryPolicy.None }, default));
+            Assert.Equal(1, counts.Check);
+        }
+        finally
+        {
+            await client.DisposeAsync();
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
     public async Task ResourceExhausted_IsNotRetriedEvenOnARead()
     {
         // In SpiceDB this code means memory load-shed or a deterministic

@@ -46,7 +46,7 @@ public class StreamingEstablishmentRetryTests
 
         var got = new List<Relationship>();
         await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-            got.Add(r);
+            got.Add(r.Relationship);
 
         got.Select(r => r.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(2); // one failed open + one successful open
@@ -73,7 +73,7 @@ public class StreamingEstablishmentRetryTests
         var act = async () =>
         {
             await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-                got.Add(r);
+                got.Add(r.Relationship);
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
@@ -273,7 +273,7 @@ public class StreamingEstablishmentRetryTests
 
         var got = new List<Relationship>();
         await foreach (var r in client.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-            got.Add(r);
+            got.Add(r.Relationship);
 
         got.Select(r => r.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(2);
@@ -306,7 +306,7 @@ public class StreamingEstablishmentRetryTests
         var act = async () =>
         {
             await foreach (var r in client.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-                got.Add(r);
+                got.Add(r.Relationship);
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
@@ -317,7 +317,27 @@ public class StreamingEstablishmentRetryTests
     // ── UpdatesAsync / Watch (server-streaming, single call) ─────────────────
 
     [Fact]
-    public async Task UpdatesAsync_RetriesEstablishment_OnFirstOpenTransientError()
+    public async Task UpdatesAsync_ClientWidePolicyNeverReopensAWatch()
+    {
+        // A reopened watch without a start revision would begin at a later revision and skip
+        // the changes in between, so the default client surfaces the failure instead.
+        var script = new StreamCallScript<WatchResponse>()
+            .Then([], UnavailableError())
+            .Then([new WatchResponse { ChangesThrough = new() { Token = "t" } }]);
+        var mockWatch = new Mock<WatchService.WatchServiceClient>();
+        mockWatch
+            .Setup(c => c.Watch(It.IsAny<WatchRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Returns(() => script.Next());
+
+        await using var client = NewClient(watch: mockWatch.Object);
+        var act = async () => { await foreach (var _ in client.UpdatesAsync([], null)) { } };
+
+        await act.Should().ThrowAsync<UnavailableException>();
+        script.CallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task UpdatesAsync_PerCallPolicyReopensBeforeTheFirstEvent()
     {
         var script = new StreamCallScript<WatchResponse>()
             .Then([], UnavailableError())
@@ -338,7 +358,7 @@ public class StreamingEstablishmentRetryTests
         await using var client = NewClient(watch: mockWatch.Object);
 
         var events = new List<WatchEvent>();
-        await foreach (var e in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships }, default))
+        await foreach (var e in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships, RetryPolicy = new RetryPolicy { MaxRetries = 1, RetryableCodes = [StatusCode.Unavailable], InitialBackoff = TimeSpan.FromMilliseconds(1) } }, default))
             events.Add(e);
 
         var got = events.SelectMany(e => e.Updates).ToList();

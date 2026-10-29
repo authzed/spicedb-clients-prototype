@@ -74,26 +74,25 @@ module SpiceDB
 
     def build_preconditions(preconditions)
       preconditions.map do |pc|
-        op = Authzed::Api::V1::Precondition::Operation.const_get(PRECONDITION_MAP[pc[:operation]])
+        op = Authzed::Api::V1::Precondition::Operation.const_get(PRECONDITION_MAP.fetch(pc.operation))
         Authzed::Api::V1::Precondition.new(
           operation: op,
-          filter: filter_to_proto(pc[:filter])
+          filter: filter_to_proto(pc.filter)
         )
       end
     end
 
     def call_expand_permission_tree(consistency, resource_type, resource_id, permission, timeout_seconds)
-      resp = @proto_client.permissions.expand_permission_tree(
-        Authzed::Api::V1::ExpandPermissionTreeRequest.new(
-          consistency: build_consistency(consistency),
-          resource: Authzed::Api::V1::ObjectReference.new(
-            object_type: resource_type,
-            object_id: resource_id
-          ),
-          permission: permission
-        ),
-        deadline: deadline_for(timeout_seconds)
-      )
+      resp = invoke(@proto_client.permissions, :expand_permission_tree,
+                    Authzed::Api::V1::ExpandPermissionTreeRequest.new(
+                      consistency: build_consistency(consistency),
+                      resource: Authzed::Api::V1::ObjectReference.new(
+                        object_type: resource_type,
+                        object_id: resource_id
+                      ),
+                      permission: permission
+                    ),
+                    timeout_seconds)
 
       ExpandResult.new(
         tree: permission_tree_from_proto(resp.tree_root),
@@ -101,13 +100,19 @@ module SpiceDB
       )
     end
 
-    def call_import_relationships(relationships, timeout_seconds)
+    # One call is one stream and one server transaction. When the server
+    # aborts the stream (for example ALREADY_EXISTS for a duplicate), grpc's
+    # client streamer reads the call's final status after the failed send and
+    # raises it, so the server's status -- not a transport end-of-stream
+    # error -- reaches the caller; a send failure that carries no status is
+    # replaced by the status the call finished with when one is available.
+    def call_import_relationships(relationships, budget, batch_size = Client::DEFAULT_IMPORT_BATCH_SIZE)
       batch = []
 
       requests = Enumerator.new do |yielder|
         relationships.each do |rel|
           batch << relationship_to_proto(rel)
-          next unless batch.size >= Client::DEFAULT_IMPORT_BATCH_SIZE
+          next unless batch.size >= batch_size
 
           yielder << Authzed::Api::V1::ImportBulkRelationshipsRequest.new(
             relationships: batch
@@ -122,31 +127,41 @@ module SpiceDB
       end
 
       owner = make_stream { nil }
-      call = @proto_client.permissions.import_bulk_relationships(requests, deadline: deadline_for(timeout_seconds), return_op: true)
+      call = @proto_client.permissions.import_bulk_relationships(requests, **stub_kwargs(budget), return_op: true)
       owner.attach(call)
-      call.execute.num_loaded
+      begin
+        response = call.execute
+        record_metadata(budget, call)
+        response.num_loaded
+      rescue GRPC::BadStatus => e
+        record_metadata(budget, call, e)
+        raise
+      rescue GRPC::Core::CallError => e
+        status = final_status(call)
+        raise status if status
+
+        raise e
+      end
     ensure
       owner&.close
       relationships.close if relationships.respond_to?(:close)
     end
 
     def call_register_relationship_counter(name, filter, timeout_seconds)
-      @proto_client.experimental.experimental_register_relationship_counter(
-        Authzed::Api::V1::ExperimentalRegisterRelationshipCounterRequest.new(
-          name: name,
-          relationship_filter: filter_to_proto(filter)
-        ),
-        deadline: deadline_for(timeout_seconds)
-      )
+      invoke(@proto_client.experimental, :experimental_register_relationship_counter,
+             Authzed::Api::V1::ExperimentalRegisterRelationshipCounterRequest.new(
+               name: name,
+               relationship_filter: filter_to_proto(filter)
+             ),
+             timeout_seconds)
     end
 
     def call_count_relationships(name, timeout_seconds)
-      resp = @proto_client.experimental.experimental_count_relationships(
-        Authzed::Api::V1::ExperimentalCountRelationshipsRequest.new(
-          name: name
-        ),
-        deadline: deadline_for(timeout_seconds)
-      )
+      resp = invoke(@proto_client.experimental, :experimental_count_relationships,
+                    Authzed::Api::V1::ExperimentalCountRelationshipsRequest.new(
+                      name: name
+                    ),
+                    timeout_seconds)
 
       if resp.counter_still_calculating
         return CountResult.new(
@@ -165,12 +180,11 @@ module SpiceDB
     end
 
     def call_unregister_relationship_counter(name, timeout_seconds)
-      @proto_client.experimental.experimental_unregister_relationship_counter(
-        Authzed::Api::V1::ExperimentalUnregisterRelationshipCounterRequest.new(
-          name: name
-        ),
-        deadline: deadline_for(timeout_seconds)
-      )
+      invoke(@proto_client.experimental, :experimental_unregister_relationship_counter,
+             Authzed::Api::V1::ExperimentalUnregisterRelationshipCounterRequest.new(
+               name: name
+             ),
+             timeout_seconds)
     end
   end
 end

@@ -117,7 +117,7 @@ async fn read_relationships_yields_incrementally_and_paginates_lazily() {
         .await
         .expect("stream should yield a first item")
         .expect("first item should be Ok(Relationship)");
-    assert_eq!(first.resource().object_id(), "doc-0");
+    assert_eq!(first.relationship.resource_id(), "doc-0");
 
     // Only the FIRST page's RPC should have been issued so far — the second
     // page must not be fetched until the first is fully drained.
@@ -139,7 +139,7 @@ async fn read_relationships_yields_incrementally_and_paginates_lazily() {
     );
     for (i, rel) in all.iter().enumerate() {
         assert_eq!(
-            rel.resource().object_id(),
+            rel.relationship.resource_id(),
             format!("doc-{i}"),
             "items must arrive in order"
         );
@@ -550,7 +550,7 @@ async fn export_relationships_yields_incrementally_and_paginates_lazily() {
         .await
         .expect("stream should yield a first item")
         .expect("first item should be Ok(Relationship)");
-    assert_eq!(first.resource().object_id(), "doc-0");
+    assert_eq!(first.relationship.resource_id(), "doc-0");
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -565,7 +565,7 @@ async fn export_relationships_yields_incrementally_and_paginates_lazily() {
     assert_eq!(all.len(), PAGE_SIZE + 3);
     for (i, rel) in all.iter().enumerate() {
         assert_eq!(
-            rel.resource().object_id(),
+            rel.relationship.resource_id(),
             format!("doc-{i}"),
             "items must arrive in order"
         );
@@ -596,8 +596,9 @@ async fn lookup_resources_filters_exact_grants_across_pages() {
         };
         mock.push_lookup_resources_page(vec![row("conditional", 2, "1"), row("unknown", 99, "2")]);
         mock.push_lookup_resources_page(vec![row("unspecified", 0, "3"), row("grant1", 1, "4")]);
-        mock.push_lookup_resources_page(vec![row("conditional2", 2, "5")]);
-        mock.push_lookup_resources_page(vec![row("grant2", 1, "6")]);
+        // Every page is requested with the same page size (2); a short page
+        // ends the lookup, so the server fills each page it has rows for.
+        mock.push_lookup_resources_page(vec![row("conditional2", 2, "5"), row("grant2", 1, "6")]);
         let cursors = mock.lookup_resources_cursors();
         let addr = spawn_permissions_server(mock).await;
         let client = SpiceDBClient::new_plaintext(
@@ -632,12 +633,7 @@ async fn lookup_resources_filters_exact_grants_across_pages() {
             assert_eq!(ids, vec!["grant1", "grant2"]);
             assert_eq!(
                 *cursors.lock().unwrap(),
-                vec![
-                    None,
-                    Some(cursor("2")),
-                    Some(cursor("4")),
-                    Some(cursor("5"))
-                ]
+                vec![None, Some(cursor("2")), Some(cursor("4")),]
             );
         } else {
             assert_eq!(ids, vec!["conditional", "unknown"]);

@@ -19,7 +19,7 @@ func TestCanonicalCheckOptionsAndWriteCollection(t *testing.T) {
 	require.NoError(t, err)
 	files, err := (&Generator{}).Generate(s, nil)
 	require.NoError(t, err)
-	output := string(files[0].Content)
+	output := squash(string(files[0].Content))
 	assert.Contains(t, output, "subject Subject, opts ...client.CheckOption)")
 	assert.Contains(t, output, "client.PermissionCheck{")
 	assert.Contains(t, output, "}, opts...)")
@@ -38,7 +38,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	require.Len(t, files, 1)
 	assert.Equal(t, "permissions.gen.go", files[0].Path)
 
-	output := string(files[0].Content)
+	output := squash(string(files[0].Content))
 
 	// Generated file header
 	assert.Contains(t, output, "DO NOT EDIT")
@@ -61,7 +61,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// TypedClient
 	assert.Contains(t, output, "type TypedClient struct {")
-	assert.Contains(t, output, "\t*client.Client")
+	assert.Contains(t, output, "type TypedClient struct { *client.Client }")
 	assert.Contains(t, output, "func NewTypedClient(c *client.Client) *TypedClient {")
 
 	// Caveat context types
@@ -95,7 +95,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// SubRef constructors (conflict with relation name "member")
 	// SubRef method: Team("eng").Member() returns TeamMemberRef
-	assert.Contains(t, output, "func (r TeamRef) Member() TeamMemberRef {")
+	assert.Contains(t, output, "func (d TeamRef) Member() TeamMemberRef {")
 
 	// Type sentinels
 	assert.Contains(t, output, "var UserType = userRefType{}")
@@ -142,7 +142,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.NotContains(t, output, "(bool, error)")
 	// The CheckResult returned by the underlying client is passed through
 	// untouched, so a Conditional result (and its MissingContext) survives.
-	assert.Contains(t, output, "return tc.Client.Check(ctx, client.PermissionCheck{")
+	assert.Contains(t, output, "return tc.Client.Check(ctx, check, opts...)")
 	assert.Contains(t, output, "func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {")
 	assert.Contains(t, output, "func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {")
 
@@ -158,7 +158,7 @@ func TestCheckAcceptsContext(t *testing.T) {
 	require.NoError(t, err)
 	files, err := (&Generator{}).Generate(s, nil)
 	require.NoError(t, err)
-	output := string(files[0].Content)
+	output := squash(string(files[0].Content))
 	assert.Contains(t, output, "opts ...client.CheckOption")
 	assert.Contains(t, output, "Context: sCtx,")
 	assert.Contains(t, output, "}, opts...)")
@@ -169,7 +169,7 @@ func TestCheckForwardsSubjectCaveatContext(t *testing.T) {
 	require.NoError(t, err)
 	files, err := (&Generator{}).Generate(s, nil)
 	require.NoError(t, err)
-	output := string(files[0].Content)
+	output := squash(string(files[0].Content))
 	assert.Equal(t, 1, strings.Count(output, "_, sCtx := subject.caveatInfo()"))
 	assert.Contains(t, output, "Context: sCtx,")
 }
@@ -192,14 +192,15 @@ func TestWriteMethodsPropagateTxnErrors(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 
-	output := string(files[0].Content)
+	output := squash(string(files[0].Content))
 
+	// The collection helpers route through the typed Txn, whose Build and
+	// WriteTxn report the first construction or rel.Txn error before any RPC.
 	for _, op := range []string{"Touch", "Create", "Delete"} {
-		assert.Contains(t, output, "if err := txn."+op+"(r.r); err != nil {",
-			"generated %s must check the error rel.Txn.%s returns", op, op)
-		assert.NotContains(t, output, "\t\ttxn."+op+"(r.r)\n",
-			"generated %s must not discard the error rel.Txn.%s returns", op, op)
+		assert.Contains(t, output, "txn."+op+"(r) }")
 	}
+	assert.Contains(t, output, "err = apply(&t.txn, relationship)")
+	assert.Contains(t, output, "native, err := txn.Build() if err != nil { return client.WriteResult{}, err }")
 }
 
 func TestGenerateEmptySchema(t *testing.T) {
@@ -212,7 +213,7 @@ func TestGenerateEmptySchema(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 
-	output := string(files[0].Content)
+	output := squash(string(files[0].Content))
 
 	// Should still have base types
 	assert.Contains(t, output, "type Subject interface {")
@@ -262,10 +263,10 @@ func TestToLowerCamel(t *testing.T) {
 }
 
 func TestGoSubjectRefTypeName(t *testing.T) {
-	assert.Equal(t, "UserRef", goSubjectRefTypeName(schema.SubjectType{Definition: "user"}))
-	assert.Equal(t, "TeamMemberRef", goSubjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member"}))
-	assert.Equal(t, "UserIpRange", goSubjectRefTypeName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
-	assert.Equal(t, "UserExpiring", goSubjectRefTypeName(schema.SubjectType{Definition: "user", Expiration: true}))
+	assert.Equal(t, "UserRef", renamer(nil).goSubjectRefTypeName(schema.SubjectType{Definition: "user"}))
+	assert.Equal(t, "TeamMemberRef", renamer(nil).goSubjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member"}))
+	assert.Equal(t, "UserIpRange", renamer(nil).goSubjectRefTypeName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
+	assert.Equal(t, "UserExpiring", renamer(nil).goSubjectRefTypeName(schema.SubjectType{Definition: "user", Expiration: true}))
 }
 
 func TestCelTypeToGoType(t *testing.T) {
@@ -297,3 +298,7 @@ func TestTypedClientEmbedsAllNativeCapabilities(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(files[0].Content), "type TypedClient struct {\n\t*client.Client\n}")
 }
+
+// squash collapses whitespace runs so assertions ignore gofmt alignment and
+// line breaks.
+func squash(s string) string { return strings.Join(strings.Fields(s), " ") }

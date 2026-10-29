@@ -2,6 +2,175 @@
 
 ## Unreleased
 
+### Paging and watch fixes
+
+- A paged read or lookup whose full page ends without an after-result cursor,
+  or with the cursor it was sent, now fails with `INTERNAL` ("read page did not
+  advance cursor" / "lookup page did not advance cursor") instead of
+  re-requesting the same page forever. `deleteAllRelationshipsNonAtomic` does
+  the same ("delete page did not advance cursor", with delete progress
+  attached) for a partial page that returns the cursor it was sent.
+- The client-wide retry policy (the default included) and
+  `StreamRetries` no longer reopen `updates` or
+  `experimentalWatchPermissionSets`: a watch that fails before its first event
+  throws, since a reopened watch without a start revision would silently skip
+  the changes in between. A per-call `retryPolicy` or a `ClientOperation.WATCH`
+  / `WATCH_PERMISSION_SETS` operation policy opts in to reopening.
+
+### Full-surface interface and test double
+
+- `SpiceDBApi` (extends `PermissionsApi` and `AutoCloseable`) mirrors every
+  public instance method of `SpiceDBClient`; a reflection test keeps them
+  identical. `SpiceDBClient` and `InMemorySpiceDB` both implement it. The
+  double runs `checkAny`, `checkAll`, `deleteAllRelationshipsNonAtomic` and
+  `close` in memory; the other operations are recorded, consult the fault hook
+  and throw `UNIMPLEMENTED`, and `rawChannel()` returns `null`.
+- `InMemorySpiceDB.Fault.batch()` carries an import batch's relationships at
+  `FaultStage.IMPORT_BATCH`; batch faults now run after the whole input is
+  read.
+- `InMemorySpiceDB.cursorAfter(n)` builds the resume cursor the double puts on
+  the n-th matching read or export item; its format is stable for tests.
+- `InMemorySpiceDB.setReadSchemaRevision(SchemaRevision.OMITTED)` makes
+  `readSchema` report no revision, as some SpiceDB deployments do.
+
+### Per-operation retries and a fault-injecting test double
+
+- `ClientOptions.builder().operationRetryPolicy(ClientOperation, RetryPolicy)`
+  sets the retry policy for every call of one operation (for example
+  `ClientOperation.WATCH` with `maxRetries(0)` never reopens a watch), including
+  stream establishment. Precedence is per call, then per operation, then
+  client-wide. A `WRITE` policy retries only idempotent transactions and leaves
+  other writes unretried; deletes, delete-all, imports and counter
+  registration/unregistration reject a retrying policy when `ClientOptions` is
+  built (a zero-retry policy is accepted).
+- `Transaction.isIdempotent()` exposes the client's retry-eligibility rule
+  (touches only, no preconditions).
+- `InMemorySpiceDB` records every call (`calls()`, `callsOf(ClientOperation)`:
+  operation, per-operation index, arguments and options) and injects faults
+  (`setFaultHook`, `failNext`) before calls, import batches, the import commit
+  and read/export items; `serverError` builds client-shaped errors. Read and
+  export streams from the double are now lazy, so a call fault surfaces when
+  the stream is consumed, as with the real client.
+
+### Per-call retries, single-request paging, test double and generator additions
+
+- Every options class has `retryPolicy(RetryPolicy)`, which overrides the
+  client's retry policy for that call, including stream establishment (a
+  `maxRetries(0)` policy exempts one watch while the client retries everything
+  else). Mutations stay unretried by default: a `write` whose transaction holds
+  only touches and no preconditions, and `writeSchema`, may opt in; deletes,
+  delete-all, imports, counter registration and every other write reject the
+  opt-in with `InvalidArgumentException` before any request.
+- `write` sends an empty `Transaction` (SpiceDB evaluates its preconditions and
+  returns the current revision); `InMemorySpiceDB` now matches.
+- `ReadOptions`/`LookupOptions.paging(Paging.SINGLE_REQUEST)` sends exactly one
+  request, as the raw API does: its limit is `limit` (unbounded when 0), the page
+  size is ignored and no follow-up page is fetched. `lookupSubjects` and the
+  roaring lookup reject it.
+- `ProtoConv.toProto(PermissionCheck[, callContext])` builds a bulk request item,
+  `ProtoConv.checkBulkToProto(requests, results[, callContext])` rebuilds a whole
+  bulk-check response (per-item errors as statuses with details), and
+  `ProtoConv.toProto(LookupSubject)` fills the deprecated top-level fields SpiceDB
+  still sends.
+- `InMemorySpiceDB` and `PermissionsApi` add `importRelationships`,
+  `exportRelationships` (cursor, limit, filter), `readSchema`, `writeSchema` and
+  `reflectSchema` (`setReflectSchemaResult`); the double fills the call's
+  `ResponseMetadata` from `setResponseMetadata` and refuses a retry opt-in on
+  non-idempotent mutations like the client. `ResponseMetadata.recordHeaders` and
+  `recordTrailers` are public so doubles and wrappers can report metadata.
+- Generated typed clients: `--java.rename=<definition>=<JavaName>` (comma-
+  separated) changes a definition's Java identifiers without changing the names
+  sent to SpiceDB, and the collision error suggests it; caveats calling functions
+  outside SpiceDB's default CEL environment generate (expressions are opaque);
+  `Txn.updates()`, `preconditions()` and `error()`; `withSubjectAnyRelation`
+  beside `withSubject` (which always pins the subject relation); `rKey(subject)`
+  is generated only for relations admitting a caveated or expiring subject.
+
+### Adoption changes (2026-10-28)
+
+- **BREAKING:** the protocol classes are `com.authzed.api.v1.*` /
+  `com.authzed.api.materialize.v0.*` (the proto tier now compiles its own buf
+  output instead of depending on BSR SDKs). Only `rawChannel()` users see this:
+  replace `import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;` with
+  `import com.authzed.api.v1.PermissionsServiceGrpc;`. These are the same class
+  names authzed-java ships; `spicedb-java-proto`'s `bridgeAuthzedJava` task
+  repackages authzed-java onto them so both can share one JVM (see MIGRATION.md).
+- **BREAKING:** `readRelationships` yields `ReadRelationship` (`relationship()`,
+  `afterResultCursor()`, `readAt()`) and `exportRelationships` yields
+  `ExportedRelationship` (`relationship()`, `afterResultCursor()`).
+  Before: `client.readRelationships(c, f).map(Relationship::relation)`;
+  after: `client.readRelationships(c, f).map(r -> r.relationship().relation())`.
+  `LookupResult.LookupResource` gains a fifth component, `afterResultCursor`.
+  Resume with `ReadOptions/ExportOptions/LookupOptions.builder().cursor(...)`,
+  repeating the request and page size.
+- Paged reads and lookups repeat the caller's consistency and one fixed page
+  size on every page, and enforce `limit` client-side. (The Java pager already
+  did; this is now pinned by unit tests and a live multi-page example. The Go
+  client had failed on page two.)
+- `SpiceDBException` interoperates with gRPC status both ways: `code()`,
+  `status()`, `toStatusRuntimeException()`, and `Status.fromThrowable(e)` agree
+  for server errors, local validation errors and errors built by callers (a
+  status cause is attached when none exists). The client's own
+  `CancellationException`s carry a `CANCELLED` status cause.
+  `ErrorMapper.codeOf(Throwable)` classifies anything, including raw
+  `StatusRuntimeException`; `ErrorMapper.newError(code, message)` builds the
+  typed error for test doubles; `serverMessage()` is the server's message
+  verbatim (bulk item errors keep the `check item N:` prefix only in
+  `getMessage()`).
+- `SpiceDBClient.fromChannel(Channel[, ClientOptions])` wraps a caller-owned
+  channel; `close()` never shuts it down; TLS and remote-plaintext options are
+  rejected there.
+- `ClientOptions`: `retryPolicy(RetryPolicy)` (max retries, retryable read codes
+  including opt-in `RESOURCE_EXHAUSTED`, backoff, `onRetry` callback),
+  `retries(Retries.DISABLED)`, `streamRetries(StreamRetries.DISABLED)`, and
+  `defaultDeadline(DefaultDeadline.DISABLED)`. Mutations never retry.
+- Every options class has `.transport(TransportOptions)`: adjust gRPC
+  `CallOptions` per call and capture headers/trailers in `ResponseMetadata`.
+- `CheckOptions.bulkItemErrors(BulkItemErrors.RETURNED)` returns per-item errors
+  on `CheckResult.error()` (new sixth component; the five-argument constructor
+  remains) instead of failing the call. An errored item never grants.
+- `WatchOptions.schemaChanges(WatchSchemaChanges.INCLUDED)` and
+  `WatchEvent.schemaUpdated()` (new fourth component; the three-argument
+  constructor remains).
+- `DeleteOptions.partialDeletion(PartialDeletion.DISALLOWED)` for all-or-nothing
+  deletes, plus `deleteRelationships(Filter, DeleteOptions)` without a limit (the
+  server default). `DeleteAllOptions.onProgress(Consumer<DeleteResult>)` reports
+  each acknowledged batch cumulatively.
+- `ImportOptions.batchSize` (relationships per message) is documented with "one
+  call is one stream and one transaction"; an aborted import reports the
+  server's status (for example `AlreadyExistsException`), now covered by tests.
+- `com.authzed.spicedb.protoconv.ProtoConv` exports native↔protocol conversions
+  for relationships, filters, preconditions, updates, transactions, consistency,
+  tokens, contexts, check results with traces, lookups, reads, writes and
+  expand trees. `Consistency.kind()`/`token()`/`toString()` are new.
+- `Relationship.fromTuple`/`toString` implement SpiceDB's full tuple syntax,
+  including `[caveat:{...}]` and `[expiration:...]`, matching SpiceDB's
+  formatter. New `withResource`, `withRelation`, `withSubject`, and short
+  accessors `resourceType()`, `resourceId()`, `subjectType()`, `subjectId()`,
+  `subjectRelation()`. `ObjectRef`/`SubjectRef.toString()` print `type:id[#rel]`.
+- `Filter.matches(Relationship)` applies server filter semantics client-side.
+  `Filter`, `Transaction`, `Transaction.Mutation` and `Transaction.Precondition`
+  have readable `toString()` and structured `toJson()`; `Relationship.toJson()`;
+  `Transaction.size()`.
+- New `PermissionsApi` interface (write, read, delete, check, bulk check),
+  implemented by `SpiceDBClient` and by the new in-memory test double
+  `com.authzed.spicedb.testing.InMemorySpiceDB`.
+- Dependencies: the proto tier no longer requires the BSR repository or
+  `javax.annotation-api`; `grpc-netty-shaded` is `runtimeOnly` there (lib keeps
+  it as an implementation dependency). Floors: protobuf-java 4.36.2 (the gencode
+  version), gRPC 1.84.0 (the BOM).
+- New `AI_INTEGRATION_GUIDE.md` and `MIGRATION.md` (from authzed-java).
+- Generated typed clients (spicedb-gen): permission-userset subjects
+  (`organization.canAdminSubject()`), wildcard refs (`UserWildcard()`),
+  identity-only keys (`invitation.inviterKey(user)`), relation checks
+  (`memberRelation()`), typed `Txn` + `TypedClient.writeTxn`, typed
+  `checkBulk(Consistency, List<TypedCheck>)`, native round trips
+  (`TypedRelationship.toRelationship/fromRelationship/ofError`), typed filters
+  and name constants, validated by-name lookups, observable `Permission`, and
+  google-java-format output. **BREAKING:** `Permission` gained a fourth record
+  component (`subjectType`); `TypedRelationship` is a final class rather than a
+  record (accessors kept); type sentinels (`UserType`) are no longer writable.
+
 ### Changed
 
 - Behavioral options use enums: replace `.tracing(true)` with

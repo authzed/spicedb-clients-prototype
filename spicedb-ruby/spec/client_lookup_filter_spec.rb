@@ -36,7 +36,7 @@ RSpec.describe 'LookupResources permissionship filter' do
       ids = client.lookup_resources(**arguments, page_size: 2, limit: 2, permissionship_filter: mode).map(&:resource_id)
       filtered = mode == SpiceDB::LookupPermissionshipFilter::HAS_PERMISSION_ONLY
       expect(ids).to eq(filtered ? %w[2 4] : %w[0 1])
-      expect(requests).to eq(filtered ? [[0, 2], [2, 2], [4, 1]] : [[0, 2]])
+      expect(requests).to eq(filtered ? [[0, 2], [2, 2], [4, 2]] : [[0, 2]])
     end
   end
 end

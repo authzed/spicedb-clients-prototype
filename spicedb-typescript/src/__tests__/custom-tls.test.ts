@@ -1,4 +1,4 @@
-import { TransportSecurity } from "../modes.js";
+import { TransportSecurity, Retries } from "../modes.js";
 /**
  * The idiomatic client's `tls` option, proven end-to-end.
  *
@@ -109,7 +109,7 @@ describe("SpiceDBClient tls option", () => {
                 endpoint: `localhost:${port}`,
                 token: TOKEN,
                 tls: { caCert: ca },
-                maxRetries: 0
+                retries: Retries.Disabled
             });
             // One real check, not an empty array: `checkBulk` with zero
             // checks now sends no request at all, so an empty call would resolve
@@ -125,7 +125,7 @@ describe("SpiceDBClient tls option", () => {
             const untrusting = new SpiceDBClient({
                 endpoint: `localhost:${port}`,
                 token: TOKEN,
-                maxRetries: 0
+                retries: Retries.Disabled
             });
             await expect(untrusting.checkBulk([ONE_CHECK].map(request => ({
                 ...request,

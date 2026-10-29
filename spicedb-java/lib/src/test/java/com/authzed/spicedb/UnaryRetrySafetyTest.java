@@ -2,12 +2,12 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ReadSchemaRequest;
-import build.buf.gen.authzed.api.v1.ReadSchemaResponse;
-import build.buf.gen.authzed.api.v1.SchemaServiceGrpc;
-import build.buf.gen.authzed.api.v1.WriteRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.WriteRelationshipsResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ReadSchemaRequest;
+import com.authzed.api.v1.ReadSchemaResponse;
+import com.authzed.api.v1.SchemaServiceGrpc;
+import com.authzed.api.v1.WriteRelationshipsRequest;
+import com.authzed.api.v1.WriteRelationshipsResponse;
 import com.authzed.spicedb.errors.ResourceExhaustedException;
 import com.authzed.spicedb.errors.UnavailableException;
 import io.grpc.Status;

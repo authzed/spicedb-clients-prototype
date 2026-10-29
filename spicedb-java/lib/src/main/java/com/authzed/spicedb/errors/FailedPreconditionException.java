@@ -4,10 +4,10 @@ package com.authzed.spicedb.errors;
 public class FailedPreconditionException extends SpiceDBException {
 
   public FailedPreconditionException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.FAILED_PRECONDITION, message, null);
   }
 
   public FailedPreconditionException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.FAILED_PRECONDITION, message, cause);
   }
 }

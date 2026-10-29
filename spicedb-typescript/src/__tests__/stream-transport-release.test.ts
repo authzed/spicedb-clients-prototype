@@ -5,6 +5,7 @@ import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { PermissionsService } from "@spicedb/proto";
 import { SpiceDBClient } from "../client.js";
 import { full } from "../consistency.js";
+import { CancelledError } from "../errors.js";
 async function serve() {
     let closeStream!: () => void;
     const streamClosed = new Promise<void>(resolve => closeStream = resolve);
@@ -66,8 +67,8 @@ describe("real HTTP/2 stream release", () => {
                     else
                         client.close();
                     const error = await promptly(settled);
-                    expect(error).toBeInstanceOf(DOMException);
-                    expect((error as DOMException).name).toBe("AbortError");
+                    expect(error).toBeInstanceOf(CancelledError);
+                    expect((error as CancelledError).name).toBe("AbortError");
                     if (mode === "abort pending next")
                         expect((error as Error).cause).toBe("caller");
                 }

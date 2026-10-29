@@ -1,5 +1,5 @@
 import { ZedToken } from "../../src/index.js";
-import { WatchContent, TransportSecurity } from "../../src/index.js";
+import { WatchContent, TransportSecurity, CancelledError, Code } from "../../src/index.js";
 /**
  * Example: Watching for changes
  *
@@ -154,8 +154,9 @@ const settled = await Promise.race([
     consumerSettled,
     failAfter(RELEASE_TIMEOUT_MS, `the watch consumer had not settled ${RELEASE_TIMEOUT_MS}ms after abort(): aborting the signal did not release the stream`),
 ]);
-// Caller cancellation remains a native AbortError, with signal.reason as cause.
-assert(settled instanceof DOMException && settled.name === "AbortError", `expected the aborted watch to reject with AbortError, got: ${String(settled)}`);
+// Caller cancellation is the client's CancelledError (code Canceled, named
+// "AbortError"), with signal.reason as cause -- never a platform DOMException.
+assert(settled instanceof CancelledError && settled.code === Code.Canceled && settled.name === "AbortError", `expected the aborted watch to reject with CancelledError, got: ${String(settled)}`);
 console.log(`watch stream released after abort: ${String(settled)}`);
 // Clean up so later examples that write a narrower schema aren't blocked by
 // leftover relationships (examples run in sequence against one shared SpiceDB

@@ -233,8 +233,9 @@ describe("native cancellation across every operation", () => {
             throw new Error("expected abort");
         }
         catch (error) {
-            expect(error).toBeInstanceOf(DOMException);
-            expect((error as DOMException).name).toBe("AbortError");
+            expect(error).toBeInstanceOf(CancelledError);
+            expect((error as CancelledError).code).toBe(Code.Canceled);
+            expect((error as CancelledError).name).toBe("AbortError");
             expect((error as Error).cause).toBe(reason);
         }
         expect(spies.every(spy => spy.mock.calls.length === 0)).toBe(true);
@@ -306,7 +307,8 @@ describe("native cancellation across every operation", () => {
             throw new Error("expected abort");
         }
         catch (error) {
-            expect(error).toBeInstanceOf(DOMException);
+            expect(error).toBeInstanceOf(CancelledError);
+            expect((error as CancelledError).code).toBe(Code.Canceled);
             expect(error).toMatchObject({ name: "AbortError", cause: reason, deleteProgress: { deletedCount: 2n, revision: new ZedToken("acknowledged"), progress: "partial" } });
         }
         expect(reason).not.toHaveProperty("deleteProgress");

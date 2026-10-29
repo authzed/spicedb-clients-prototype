@@ -67,10 +67,17 @@ import { createSpiceDBClient } from "@spicedb/client";
 import { TypedClient } from "./authz/permissions.gen";
 
 const client = createSpiceDBClient("spicedb.example.com:443", process.env.SPICEDB_TOKEN!);
+await client.ready({ timeoutMs: 5000 }); // fail at startup if SpiceDB is unreachable or rejects the token
 const tc = new TypedClient(client); // tc also has every native method
 // ... on shutdown:
 tc.close();
 ```
+
+The client connects lazily; `client.ready()` makes one cheap call so a wrong
+or unreachable endpoint fails at startup (`UnavailableError`,
+`DeadlineExceededError`, or `UnauthenticatedError` for a bad token).
+`InMemorySpiceDB.ready()` does nothing. `dns:///` and `unix:` targets are
+rejected at construction: use `host:port` or an `http://`/`https://` URL.
 
 TLS is the default. For local development pass
 `{ transportSecurity: TransportSecurity.Plaintext }`; a non-loopback plaintext
@@ -174,7 +181,13 @@ for await (const rel of tc.readRelationships(minLatency(), Organization(orgId).a
 ```
 
 To resume, pass `cursor: resumeAt` with the **same filter, consistency and
-`pageSize`**. `limit` caps the total without changing page sizes.
+`pageSize`**. `limit` caps the total without changing page sizes. An error
+thrown part-way through `readRelationships`, `lookupResources` or
+`exportRelationships` carries `err.resumeCursor` (the cursor after the last
+delivered item), so a caller with retries off can continue with
+`{ ...request, cursor: err.resumeCursor }`. Each page request gets the client
+default deadline (30 s), so a stalled server fails the read rather than
+hanging it; a call's `timeoutMs` bounds the whole read.
 
 ## Schema-agnostic code (native tier)
 
@@ -220,6 +233,12 @@ try { /* ... */ } catch (err) {
 }
 ```
 
+A caller abort (`signal`, iterator `return()`, `close()`) rejects with
+`CancelledError` (`Code.Canceled`, `name` `"AbortError"`, `cause` the signal's
+reason), never a `DOMException`. A response the client cannot interpret (a
+missing required field, a cursor that does not advance) fails with
+`Code.Internal`: treat it as a bug report, not a retry.
+
 Every native error has `code` (Connect's `Code`); `errorCode(err)` classifies
 any error, including raw `ConnectError`s, and `toConnectError(err)` converts for
 code written against Connect. Forward `err.serverMessage`, not `err.message`,
@@ -261,8 +280,12 @@ permissionship filter, wildcards, `limit` and `cursor`. The double also works
 in memory for `write`, `readRelationships`, `deleteRelationships`,
 `deleteAllRelationshipsNonAtomic`, `importRelationships`,
 `exportRelationships`, `readSchema`, `writeSchema`, `reflectSchema` (register
-its result with `setReflectSchemaResult`), `checkBulk` and `close`; its other
-methods are recorded and fail with `Code.Unimplemented`.
+its result with `setReflectSchemaResult`), `diffSchema` (a name-level diff of
+the stored schema text: definitions, relations and subject types, permissions
+and their expressions, caveats; no doc-comment changes), `checkBulk` and
+`close`; `ready` does nothing; its other methods are recorded and fail with
+`Code.Unimplemented`. `ZedToken` keeps its text in the readonly `token` field,
+so `expect(a).toEqual(b)` compares tokens by value.
 `InMemorySpiceDB.cursorAfter(n)` builds a resume cursor after n matching (or,
 for lookups, granted) items, and `db.setReadSchemaRevision(SchemaRevision.Omitted)`
 emulates servers whose schema reads report no revision. Its errors have the real client's classes, codes and

@@ -1,11 +1,23 @@
-import { DeadlineExceededError, InvalidArgumentError, toSpiceDBError } from "./errors.js";
+import { CancelledError, DeadlineExceededError, InvalidArgumentError, toSpiceDBError } from "./errors.js";
 import type { CallOptions, DeleteResult } from "./types.js";
 import type { RetryPolicy } from "./retry.js";
-/** Caller cancellation stays a native DOMException and preserves signal.reason as cause. */
-export class OperationAbortError extends DOMException {
-    readonly cause: unknown;
-    declare readonly deleteProgress?: DeleteResult;
-    constructor(reason: unknown) { super("The operation was aborted", "AbortError"); this.cause = reason; }
+/**
+ * Local cancellation: the caller's `signal` fired, an iterator was closed, or
+ * the client was closed. It is the client's {@link CancelledError} (code
+ * `Canceled`), never the platform's `DOMException`, whose legacy numeric
+ * `code` (20) would read like a status code. `cause` is the signal's
+ * `reason`. `name` stays `"AbortError"`, so handlers written for fetch-style
+ * aborts keep matching.
+ */
+export class OperationAbortError extends CancelledError {
+    constructor(reason: unknown) { super("The operation was aborted", { cause: reason }); this.name = "AbortError"; }
+}
+/** @internal The paging state of one paged read, shared with its error. */
+export interface PageProgress {
+    /** Whether the read resumes from a string cursor, reported as `resumeCursor` on a failure. */
+    readonly resumable: boolean;
+    /** The cursor after everything delivered so far (initially the request's). */
+    cursor?: string;
 }
 /** @internal A monotonic budget shared by every transport attempt, chunk, and page. */
 export class Operation {
@@ -21,9 +33,12 @@ export class Operation {
     readonly retryPolicy: RetryPolicy;
     /** Whether the policy came from the call or the operation, which also governs stream establishment. */
     readonly specificRetry: boolean;
-    constructor(options: CallOptions | undefined, defaultTimeout: number | undefined, private readonly onDispose: () => void, retryPolicy: RetryPolicy, specificRetry: boolean) {
+    /** The client default deadline applied to each page request of a finite paged read, if any. */
+    readonly pageTimeoutMs?: number;
+    constructor(options: CallOptions | undefined, defaultTimeout: number | undefined, private readonly onDispose: () => void, retryPolicy: RetryPolicy, specificRetry: boolean, pageTimeoutMs?: number) {
         this.retryPolicy = retryPolicy;
         this.specificRetry = specificRetry;
+        this.pageTimeoutMs = pageTimeoutMs;
         this.transport = options === undefined ? undefined : { headers: options.headers === undefined ? undefined : new Headers(options.headers), onHeader: options.onHeader, onTrailer: options.onTrailer };
         const timeout = options?.timeoutMs ?? defaultTimeout;
         if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0))
@@ -109,6 +124,24 @@ export class Operation {
                 signal.removeEventListener("abort", listener);
         }
     }
+    /**
+     * Awaits `promise` for at most `ms`; past that the operation fails with
+     * `DeadlineExceededError`, which also cancels the transport call. The
+     * operation's own deadline and signal still apply.
+     */
+    async within<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
+        const expire = () => this.fail(new DeadlineExceededError(`Page deadline exceeded: the server did not finish a page request within ${this.pageTimeoutMs} ms (the client default deadline applies to each page)`));
+        if (ms <= 0)
+            expire();
+        const timer = setTimeout(expire, Math.min(Math.ceil(Math.max(ms, 0)), 0x7fffffff));
+        timer.unref?.();
+        try {
+            return await this.race(promise);
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
     async sleep(ms: number): Promise<void> {
         this.check();
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -129,6 +162,39 @@ export class Operation {
         this.controller.abort();
         this.onDispose();
     }
+}
+/**
+ * @internal Iterates one page request of a finite paged read under the
+ * operation's per-page budget. Only time spent waiting on the server counts:
+ * the caller's loop body between items does not. With `perMessage`, every
+ * response message (an export batch) gets a fresh budget.
+ */
+export function pageOf<T>(op: Operation, items: AsyncIterable<T>, perMessage = false): AsyncIterable<T> {
+    const budget = op.pageTimeoutMs;
+    if (budget === undefined)
+        return items;
+    return {
+        [Symbol.asyncIterator](): AsyncIterator<T> {
+            const iterator = items[Symbol.asyncIterator]();
+            let remaining = budget;
+            return {
+                async next() {
+                    const started = performance.now();
+                    const result = await op.within(iterator.next(), remaining);
+                    remaining = perMessage ? budget : remaining - (performance.now() - started);
+                    return result;
+                },
+                // Closing passes straight through, so `for await` releases the call as before.
+                return: (value?: unknown) => iterator.return ? iterator.return(value) : Promise.resolve({ done: true, value: undefined }),
+            };
+        },
+    };
+}
+/** @internal Attach the resume cursor of a failed paged read to its (client-owned) error. */
+export function withResumeCursor(error: Error, progress: PageProgress | undefined): Error {
+    if (progress?.resumable && progress.cursor !== undefined)
+        Object.defineProperty(error, "resumeCursor", { value: progress.cursor, enumerable: true, configurable: true });
+    return error;
 }
 /** @internal Attach acknowledged delete progress without mutating a caller-owned abort reason. */
 export function withDeleteProgress(error: Error, progress: DeleteResult): Error {

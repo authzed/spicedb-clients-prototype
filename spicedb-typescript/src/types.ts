@@ -3,7 +3,7 @@ import { create, clone, type JsonObject } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { type Relationship as ProtoRelationship, RelationshipSchema, ObjectReferenceSchema, SubjectReferenceSchema, ContextualizedCaveatSchema, RelationshipUpdateSchema, RelationshipUpdate_Operation, type RelationshipFilter as ProtoRelationshipFilter, RelationshipFilterSchema, SubjectFilterSchema, SubjectFilter_RelationFilterSchema, type Precondition as ProtoPrecondition, PreconditionSchema, Precondition_Operation, DeleteRelationshipsRequestSchema, CursorSchema, type PermissionRelationshipTree as ProtoPermissionRelationshipTree, AlgebraicSubjectSet_Operation, type ReflectionDefinition as ProtoReflectionDefinition, type ReflectionCaveat as ProtoReflectionCaveat, type ReflectionRelationReference as ProtoReflectionRelationReference, type ReflectionSchemaDiff as ProtoReflectionSchemaDiff, type PartialCaveatInfo as ProtoPartialCaveatInfo, type ResolvedSubject as ProtoResolvedSubject, type LookupResourcesResponse as ProtoLookupResourcesResponse, type LookupSubjectsResponse as ProtoLookupSubjectsResponse, LookupPermissionship, type CheckPermissionResponse as ProtoCheckPermissionResponse, type CheckBulkPermissionsResponseItem as ProtoCheckBulkPermissionsResponseItem, } from "@spicedb/proto";
 import { Consistency } from "./consistency.js";
-import { InvalidArgumentError } from "./errors.js";
+import { InvalidArgumentError, malformedResponse } from "./errors.js";
 export type JSONValue = null | boolean | number | string | JSONObject | readonly JSONValue[];
 export interface JSONObject {
     readonly [key: string]: JSONValue;
@@ -360,8 +360,20 @@ export interface SchemaResult {
     readonly schema: string;
     readonly revision: ZedToken;
 }
+/**
+ * The kind of a {@link SchemaDiff}: one per `ReflectionSchemaDiff` variant,
+ * or `"unknown"` for a variant this client does not know.
+ */
+export type SchemaDiffKind =
+    | "definition_added" | "definition_removed" | "definition_doc_comment_changed"
+    | "relation_added" | "relation_removed" | "relation_doc_comment_changed"
+    | "relation_subject_type_added" | "relation_subject_type_removed"
+    | "permission_added" | "permission_removed" | "permission_doc_comment_changed" | "permission_expr_changed"
+    | "caveat_added" | "caveat_removed" | "caveat_doc_comment_changed" | "caveat_expr_changed"
+    | "caveat_parameter_added" | "caveat_parameter_removed" | "caveat_parameter_type_changed"
+    | "unknown";
 export interface SchemaDiff {
-    readonly kind: string;
+    readonly kind: SchemaDiffKind;
     readonly definitionName: string;
     readonly relationName: string;
     readonly permissionName: string;
@@ -555,6 +567,22 @@ export function fromProtoRelationship(rel: ProtoRelationship): Relationship {
         subject: nativeSubject(rel.subject ?? { optionalRelation: "" }),
         ...(rel.optionalCaveat ? { caveat: { name: rel.optionalCaveat.caveatName, ...(rel.optionalCaveat.context === undefined ? {} : { context: jsonSnapshot(rel.optionalCaveat.context, "caveat.context") }) } } : {}),
         ...(rel.optionalExpiresAt ? { expiration: new Date(Number(rel.optionalExpiresAt.seconds) * 1000 + rel.optionalExpiresAt.nanos / 1e6) } : {}) });
+}
+/**
+ * @internal A relationship from a server response. A missing relationship,
+ * resource, subject or relation fails with the client's malformed-response
+ * error (`Internal`) instead of being skipped or filled with empty values.
+ */
+export function checkedRelationship(rel: ProtoRelationship | undefined, what: string): Relationship {
+    if (!rel)
+        throw malformedResponse(`${what} has no relationship`);
+    if (!rel.resource?.objectType || !rel.resource.objectId)
+        throw malformedResponse(`${what} relationship has no resource`);
+    if (!rel.relation)
+        throw malformedResponse(`${what} relationship has no relation`);
+    if (!rel.subject?.object?.objectType || !rel.subject.object.objectId)
+        throw malformedResponse(`${what} relationship has no subject`);
+    return fromProtoRelationship(rel);
 }
 export function relationship(resource: string, relation: string, subject: string): Relationship {
     const parse = (value: string): ObjectRef => {

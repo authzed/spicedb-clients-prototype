@@ -65,6 +65,27 @@ RSpec.describe SpiceDB::Testing::Store do
       expect(contexts).to eq([{ 'a' => 1, 'b' => 2 }])
     end
 
+    it 'never answers a check, bulk-check item, resource or subject lookup with :unspecified, which the client reports as malformed' do
+      %i[unspecified maybe].each do |answer|
+        store = described_class.new([rel('doc:a#viewer@user:alice')])
+        expect { store.set_check_result(check('a', alice), answer) }.to raise_error(SpiceDB::LocalValidationError, /permissionship/)
+        unspecified = SpiceDB::CheckResult.new(permissionship: answer, missing_context: [], checked_at: nil)
+        expect { store.set_check_result(check('a', alice), unspecified) }.to raise_error(SpiceDB::LocalValidationError, /permissionship/)
+
+        [answer, unspecified].each do |resolved|
+          store.check_resolver = ->(_item) { resolved }
+          expect { store.check(check('a', alice), consistency: full) }.to raise_error(SpiceDB::LocalValidationError, /check_resolver/)
+          expect { store.check_bulk([check('a', alice)], consistency: full) }.to raise_error(SpiceDB::LocalValidationError, /check_resolver/)
+          expect do
+            store.lookup_resources(resource_type: 'doc', permission: 'viewer', subject: alice, consistency: full).to_a
+          end.to raise_error(SpiceDB::LocalValidationError, /check_resolver/)
+          expect do
+            store.lookup_subjects(resource: doc('a'), permission: 'viewer', subject_type: 'user', consistency: full).to_a
+          end.to raise_error(SpiceDB::LocalValidationError, /check_resolver/)
+        end
+      end
+    end
+
     it 'rejects a resolver result it cannot interpret, naming its class' do
       store = described_class.new(check_resolver: ->(_item) { 'yes' })
       expect { store.check(check('a', alice), consistency: full) }.to raise_error(SpiceDB::InvalidArgumentError, /got String/)

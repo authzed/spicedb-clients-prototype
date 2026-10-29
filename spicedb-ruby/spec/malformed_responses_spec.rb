@@ -46,7 +46,7 @@ RSpec.describe 'malformed responses' do
 
   it 'fails a read response with no relationship, after yielding the good one before it' do
     calls, seen, run = read_with(nil)
-    expect_internal(/malformed response: relationship is missing/, calls) { run.call }
+    expect_internal(/client detected malformed response from server: relationship is missing/, calls) { run.call }
     expect(seen.length).to eq(1)
   end
 
@@ -103,13 +103,107 @@ RSpec.describe 'malformed responses' do
 
   it 'fails a paged read whose cursor does not advance with INTERNAL' do
     calls = serve(:lookup_resources, Array.new(2) do |i|
-      Authzed::Api::V1::LookupResourcesResponse.new(resource_object_id: i.to_s, after_result_cursor: cursor)
+      Authzed::Api::V1::LookupResourcesResponse.new(resource_object_id: i.to_s, permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+                                                    after_result_cursor: cursor)
     end)
     expect do
       client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
                               page_size: 2).to_a
     end.to raise_error(SpiceDB::Error, /cursor did not advance/) { |e| expect(e.code).to eq(GRPC::Core::StatusCodes::INTERNAL) }
     expect(calls[0]).to eq(2)
+  end
+
+  it 'says the client detected a malformed response, so it is not read as a status the server sent' do
+    calls, _, run = read_with(nil)
+    expect_internal(/\Aspicedb: client detected malformed response from server: relationship is missing\z/, calls) { run.call }
+  end
+
+  # Root DESIGN.md: an unspecified enum the server always sets, such as a
+  # check's permissionship, is a malformed response, never :unspecified.
+  describe 'an unspecified permissionship' do
+    let(:check) { SpiceDB::PermissionCheck.new(resource: readme, permission: 'view', subject: alice) }
+
+    def serve_unary(method, &respond)
+      calls = [0]
+      service = double('permissions')
+      allow(service).to receive(method) do |request, **|
+        calls[0] += 1
+        respond.call(request)
+      end
+      client.instance_variable_set(:@proto_client, double('proto', permissions: service))
+      calls
+    end
+
+    it 'fails a check with INTERNAL' do
+      calls = serve_unary(:check_permission) { Authzed::Api::V1::CheckPermissionResponse.new(permissionship: :PERMISSIONSHIP_UNSPECIFIED) }
+      expect_internal(/client detected malformed response from server: check: permissionship is unspecified/, calls) do
+        client.check(check, consistency: SpiceDB::Consistency.full)
+      end
+    end
+
+    [SpiceDB::BulkItemErrors::RAISED, SpiceDB::BulkItemErrors::RETURNED].each do |mode|
+      it "fails a bulk-check item with INTERNAL, naming its index (#{mode})" do
+        calls = serve_unary(:check_bulk_permissions) do |request|
+          answers = %i[PERMISSIONSHIP_HAS_PERMISSION PERMISSIONSHIP_UNSPECIFIED]
+          Authzed::Api::V1::CheckBulkPermissionsResponse.new(pairs: request.items.each_with_index.map do |item, i|
+            Authzed::Api::V1::CheckBulkPermissionsPair.new(
+              request: item, item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(permissionship: answers[i])
+            )
+          end)
+        end
+        expect_internal(/client detected malformed response from server: check item 1: permissionship is unspecified/, calls) do
+          client.check_bulk([check, check], consistency: SpiceDB::Consistency.full, item_errors: mode)
+        end
+      end
+    end
+
+    it 'fails a lookup_resources result with INTERNAL, after yielding the good one before it' do
+      calls = serve(:lookup_resources, [
+                      Authzed::Api::V1::LookupResourcesResponse.new(resource_object_id: 'a', permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+                                                                    after_result_cursor: cursor),
+                      Authzed::Api::V1::LookupResourcesResponse.new(resource_object_id: 'b', after_result_cursor: cursor)
+                    ])
+      seen = []
+      expect_internal(/client detected malformed response from server: lookup_resources: permissionship is unspecified/, calls) do
+        client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice,
+                                consistency: SpiceDB::Consistency.full).each { |item| seen << item }
+      end
+      expect(seen.map(&:resource_id)).to eq(%w[a])
+    end
+  end
+
+  describe 'an unspecified lookup_subjects permissionship' do
+    def subject(permissionship = nil) = Authzed::Api::V1::ResolvedSubject.new(subject_object_id: 'bob', permissionship: permissionship)
+
+    def run(responses)
+      calls = serve(:lookup_subjects, responses)
+      seen = []
+      expect_internal(/client detected malformed response from server: lookup_subjects: permissionship is unspecified/, calls) do
+        client.lookup_subjects(resource: readme, permission: 'view', subject_type: 'user', consistency: SpiceDB::Consistency.full)
+              .each { |item| seen << item }
+      end
+      seen
+    end
+
+    it 'fails on the resolved subject, after yielding the good one before it' do
+      good = Authzed::Api::V1::LookupSubjectsResponse.new(subject: subject(:LOOKUP_PERMISSIONSHIP_HAS_PERMISSION))
+      seen = run([good, Authzed::Api::V1::LookupSubjectsResponse.new(subject: subject)])
+      expect(seen.map { |item| item.subject.subject_id }).to eq(%w[bob])
+    end
+
+    it 'fails on the deprecated top-level fields too' do
+      run([Authzed::Api::V1::LookupSubjectsResponse.new(subject_object_id: 'bob')])
+    end
+
+    it 'leaves an excluded subject without one as sent' do
+      calls = serve(:lookup_subjects, [Authzed::Api::V1::LookupSubjectsResponse.new(
+        subject: Authzed::Api::V1::ResolvedSubject.new(subject_object_id: '*', permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION),
+        excluded_subjects: [subject]
+      )])
+      items = client.lookup_subjects(resource: readme, permission: 'view', subject_type: 'user', consistency: SpiceDB::Consistency.full).to_a
+      expect(items.first.excluded_subjects.map(&:permissionship)).to eq(%i[unspecified])
+      expect(calls[0]).to eq(1)
+    end
   end
 
   it 'reports use after close as FAILED_PRECONDITION, not UNKNOWN' do

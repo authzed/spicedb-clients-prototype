@@ -90,7 +90,7 @@ RSpec.describe 'singular check tracing' do
     expect(result.expiration).to eq(Time.at(100, 123, :nsec))
     expect(result.expiration).to be_frozen
     expect(result.debug_trace).to be_nil
-    bulk = Authzed::Api::V1::CheckBulkPermissionsResponseItem.new
+    bulk = Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(permissionship: :PERMISSIONSHIP_NO_PERMISSION)
     expect(client.send(:check_result, bulk, nil).expiration).to be_nil
   end
 
@@ -151,7 +151,9 @@ RSpec.describe 'operation budgets and bounded deletion' do
       deadlines << (options[:deadline] - Time.now)
       now += 6
       Authzed::Api::V1::CheckBulkPermissionsResponse.new(pairs: wire.items.map do |item|
-        Authzed::Api::V1::CheckBulkPermissionsPair.new(request: item, item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new)
+        Authzed::Api::V1::CheckBulkPermissionsPair.new(request: item, item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(
+          permissionship: :PERMISSIONSHIP_NO_PERMISSION
+        ))
       end)
     end
     expect { client.check_bulk(Array.new(2001, request), consistency: SpiceDB::Consistency.full, timeout: 10) }

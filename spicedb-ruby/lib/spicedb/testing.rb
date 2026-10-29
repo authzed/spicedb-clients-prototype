@@ -198,6 +198,7 @@ module SpiceDB
         result = CheckResult.new(permissionship: result, missing_context: [], checked_at: nil) if result.is_a?(Symbol)
         raise LocalValidationError, 'set_check_result: expected CheckResult or permissionship Symbol' unless result.is_a?(CheckResult)
 
+        answered!(result, 'set_check_result')
         @mutex.synchronize { @checks[check_key(check)] = result }
         self
       end
@@ -687,6 +688,20 @@ module SpiceDB
       GRANTING = %i[has_permission conditional_permission].freeze
       private_constant :GRANTING
 
+      # Permissionships a check answers with. SpiceDB never answers
+      # UNSPECIFIED, and the client raises a malformed-response error for
+      # it, so the double never returns :unspecified (or an unknown state)
+      # except on an errored bulk item, as the client does.
+      ANSWERS = %i[no_permission has_permission conditional_permission].freeze
+      private_constant :ANSWERS
+
+      def answered!(result, what)
+        return result if result.error || ANSWERS.include?(result.permissionship)
+
+        raise LocalValidationError, "#{what}: expected permissionship :has_permission, :no_permission or :conditional_permission, " \
+                                    "got #{result.permissionship.inspect} (SpiceDB never answers a check without one)"
+      end
+
       # What check resolution reads, taken under the lock so the resolver
       # runs outside it.
       def snapshot
@@ -712,10 +727,10 @@ module SpiceDB
 
       def resolver_result(value, revision)
         case value
-        when CheckResult then value
+        when CheckResult then answered!(value, 'check_resolver')
         when true then CheckResult.new(permissionship: :has_permission, missing_context: [], checked_at: revision)
         when false then CheckResult.new(permissionship: :no_permission, missing_context: [], checked_at: revision)
-        when Symbol then CheckResult.new(permissionship: value, missing_context: [], checked_at: revision)
+        when Symbol then answered!(CheckResult.new(permissionship: value, missing_context: [], checked_at: revision), 'check_resolver')
         else raise LocalValidationError, "check_resolver: expected CheckResult, permissionship Symbol, true, false or nil, got #{Values.received(value)}"
         end
       end

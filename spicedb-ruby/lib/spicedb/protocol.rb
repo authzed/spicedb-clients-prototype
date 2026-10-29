@@ -49,12 +49,14 @@ module SpiceDB
                                          optional_expires_at: expiration)
     end
 
-    # A response this client cannot interpret (a missing required field, a
-    # cursor that does not advance, an echo that does not match): INTERNAL,
-    # which no default retry policy retries. Never skip such a response or
-    # fill its missing fields with empty values.
+    # A response this client cannot interpret (a missing required field, an
+    # unspecified permissionship, a cursor that does not advance, an echo that
+    # does not match): INTERNAL, which no default retry policy retries. Never
+    # skip such a response or fill its missing fields with empty values. The
+    # message says the client detected it, so it is not mistaken for a status
+    # the server sent.
     def malformed_response(message)
-      Error.new("spicedb: malformed response: #{message}", code: GRPC::Core::StatusCodes::INTERNAL)
+      Error.new("spicedb: client detected malformed response from server: #{message}", code: GRPC::Core::StatusCodes::INTERNAL)
     end
 
     # Runs a conversion of server data, reporting a value the native types

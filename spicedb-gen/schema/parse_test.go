@@ -29,6 +29,15 @@ func TestParseFile(t *testing.T) {
 	assert.Equal(t, "invitation", s.Definitions[4].Name)
 }
 
+// Source keeps the text verbatim, caveat bodies included, for generators
+// that embed the schema.
+func TestParseKeepsSource(t *testing.T) {
+	text := "caveat c(x int) {\n  x > 1\n}\n\ndefinition user {}\n"
+	s, err := schema.ParseString(text)
+	require.NoError(t, err)
+	assert.Equal(t, text, s.Source)
+}
+
 func TestUserDefinition(t *testing.T) {
 	s, err := schema.ParseFile(testdataPath("sample.zed"))
 	require.NoError(t, err)

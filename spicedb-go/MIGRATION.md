@@ -209,11 +209,15 @@ restore it with `consistency.NewZedToken(s)`. Pass them back with
 
 ## Testing
 
-`client/clienttest.Store` is an in-memory double with the same method
-signatures as `*client.Client` for `Write`, `ReadRelationships`,
-`DeleteRelationships`, `Check` and `CheckBulk`. It applies SpiceDB filter,
-precondition and CREATE semantics; register check results with
-`SetCheckResult`. If you keep your own fake, `rel.Filter.Matches` and
+`client/clienttest.Store` is an in-memory double that implements
+`client.Interface`, the full `*client.Client` method set. It applies SpiceDB
+filter, precondition and CREATE semantics. Checks resolve to a result
+registered with `SetCheckResult`, then to a `SetCheckResolver` callback
+(`clienttest.GrantAll` grants everything), then to stored relationships whose
+relation is the permission's name (exact or wildcard subject), and otherwise
+deny. `LookupResources` and `LookupSubjects` return the objects in stored
+relationships that check resolution grants. A generated `TypedClient` wraps
+the Store: `permissions.NewTypedClient(store)`. If you keep your own fake, `rel.Filter.Matches` and
 `client.NewError` replace hand-written filter matching and `&client.Error{}`
 literals.
 
@@ -235,3 +239,5 @@ literals.
 | Usersets on permissions | `org.CanAdminSubject()` |
 | Check a relation | `org.MemberRelation()` |
 | Runtime permission names | `org.PermissionByName(name)`, `org.RelationshipByName(rel, subject)`, `permissions.OrganizationPermissionNames()` |
+| Runtime type and permission names (policy expressions) | `permissions.DefinitionByName(t)`, `permissions.PermissionRefByName(t, p)`, `permissions.LookupResourcesByName(ctx, tc, cs, t, p, subject)` |
+| Definition names and the schema text | `permissions.Definitions.Organization`, `permissions.DefinitionNames()`, `permissions.SchemaText` |

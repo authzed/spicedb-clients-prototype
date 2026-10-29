@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- `clienttest.Store` resolves checks in a fixed order: a result registered
+  with `SetCheckResult`, then a resolver set with `SetCheckResolver`
+  (`SetCheckResolver(clienttest.GrantAll)` grants every check, so tests over
+  generated IDs need no per-ID registration), then the stored relationships
+  (a relationship whose relation is the permission's name and whose subject
+  matches exactly or by wildcard grants it; caveated ones grant conditionally,
+  expired ones never), and otherwise `NoPermission`. Previously only
+  registered results granted. This applies to `Check`, `CheckBulk` and
+  `CheckIter`.
+- `clienttest.Store` serves `LookupResources` and `LookupSubjects` (they
+  failed with `CodeUnimplemented`): they enumerate objects of the requested
+  type found in stored relationships and return those check resolution grants,
+  conditional results as conditional, honoring the permissionship filter,
+  limit and `CursorAfter` cursors, with call recording and `StageItem` faults.
+- Generated `TypedClient` embeds `client.Interface` instead of
+  `*client.Client`, and `NewTypedClient` accepts any `client.Interface`, so a
+  typed client wraps `clienttest.Store`. The embedded field is now
+  `tc.Interface` (it was `tc.Client`).
+- spicedb-gen (Go): `DefinitionByName`, `PermissionRefByName`,
+  `LookupResourcesByName` (names validated against the schema, failing with
+  `ErrNotInSchema`), `Definitions`/`DefinitionNames()` and the `SchemaText`
+  constant, for code that receives type and permission names at runtime.
 - Paged reads and lookups send the page size as every request's limit,
   whatever the total limit, so a cursor from a limited call resumes an
   unlimited one with the same page size.

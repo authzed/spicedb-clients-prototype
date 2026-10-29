@@ -39,4 +39,19 @@ func typeErrors() {
 	_ = Invitation("x").Grant(Organization("acme").CanAdmin()) // should not compile
 	// WriteTxn does not shadow the native Write
 	_, _ = NewTypedClient(nil).Write(context.Background(), &Txn{}) // should not compile
+
+	// NewTypedClient takes a client.Interface, not an endpoint or a bare value
+	_ = NewTypedClient("localhost:50051") // should not compile
+	_ = NewTypedClient(struct{}{})        // should not compile
+	// By-name lookups report schema errors; their results cannot be used unchecked
+	var _ PermissionRef = PermissionRefByName("document", "view") // should not compile
+	var _ Definition = DefinitionByName("document")               // should not compile
+	// A Definition is not a PermissionRef, and only the schema builds one
+	var _ PermissionRef = Definition{}          // should not compile
+	_ = Definition{name: "document"}            // should not compile
+	_ = Definitions.Folder                      // should not compile
+	SchemaText = "definition folder {}"         // should not compile
+	_ = DefinitionNames()[0] + Definitions.User // fine: both are plain strings
+	// LookupResourcesByName takes a typed subject, not a tuple string
+	_ = LookupResourcesByName(context.Background(), NewTypedClient(nil), consistency.Full(), "document", "view", "user:alice") // should not compile
 }

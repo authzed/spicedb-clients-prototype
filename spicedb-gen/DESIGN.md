@@ -116,6 +116,15 @@ and options forwarding rather than just generated text fragments.
 - Each definition `d` gets `D(id) DRef`, `DFilter()`, `DRelations`,
   `DPermissions`, `DRelationNames()`, `DPermissionNames()`, and, when `d:*` is
   allowed anywhere, `DWildcard() DWildcardRef`.
+- Package scope adds `Definitions` (a struct of definition names),
+  `DefinitionNames()`, the `SchemaText` constant (a raw string literal unless
+  the schema holds a backquote or carriage return), `DefinitionByName(name)
+  (Definition, error)` (with `PermissionRef(p)`, `Permission(id, p)` and
+  `Relation(id, r)`), `PermissionRefByName(d, p)` and `LookupResourcesByName`.
+  These names are reserved: a definition whose identifier collides with one
+  fails generation and needs `--go.rename`.
+- `TypedClient` embeds `client.Interface`; `NewTypedClient` accepts any
+  implementation, including `clienttest.Store`.
 - On `DRef`: permission `p` → `P() Permission`; relation `r` → writer
   `R(subject)`, key `RKey(subject)`, check `RRelation()`, filter `RFilter()`.
   A userset `d#r` on a relation gets the accessor `R()` and the writer moves to

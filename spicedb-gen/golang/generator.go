@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/token"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -41,6 +42,8 @@ type TemplateData struct {
 	Definitions        []DefinitionData
 	SealedInterfaces   []SealedInterfaceData
 	PermissionVars     []PermissionVarData
+	// SchemaLiteral is the source schema as a Go string literal.
+	SchemaLiteral string
 }
 
 // CaveatContextData holds data for generating a caveat context struct.
@@ -222,6 +225,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 	data.Package = pkg
+	data.SchemaLiteral = goStringLiteral(s.Source)
 
 	funcMap := template.FuncMap{
 		"hasWithMethods": func(s SubjectRefTypeData) bool {
@@ -654,7 +658,8 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 	for _, fixed := range []string{"Subject", "Permission", "PermissionRef", "TypedRelationship", "RelationshipKey",
 		"Deletable", "TypedClient", "NewTypedClient", "Txn", "TypedCheck", "ChecksFor", "Check", "CheckBulk",
 		"LookupResources", "LookupSubjects", "FromRelationship", "ErrRelationship", "WithSubject", "WithSubjectAnyRelation",
-		"ErrNotInSchema", "ErrSubjectNotAllowed"} {
+		"ErrNotInSchema", "ErrSubjectNotAllowed", "SchemaText", "Definitions", "DefinitionNames", "Definition",
+		"DefinitionByName", "PermissionRefByName", "LookupResourcesByName", "definitionsByName"} {
 		n.claim("", fixed, "generated support code")
 	}
 	if n.err != nil {
@@ -669,6 +674,16 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 		SealedInterfaces:   sealedInterfaces,
 		PermissionVars:     permissionVars,
 	}, nil
+}
+
+// goStringLiteral renders text as a Go string literal: a raw string when it
+// can hold the text verbatim (no backquote or carriage return), otherwise an
+// interpreted one.
+func goStringLiteral(text string) string {
+	if strings.ContainsAny(text, "`\r") {
+		return strconv.Quote(text)
+	}
+	return "`" + text + "`"
 }
 
 func describe(b subjectBase, caveat string, expiration bool) string {

@@ -146,6 +146,50 @@ fn stream_budget<T: Send + 'static>(
     }
 }
 
+/// When one page of a finite paged read must have delivered its last item:
+/// the client default deadline from the moment the page is requested, or
+/// `None` when the default is disabled. The operation's total deadline (the
+/// caller's own) still bounds the whole read, so the earlier of the two wins.
+fn page_deadline(page_timeout: Option<Duration>) -> Option<Instant> {
+    page_timeout.and_then(|t| Instant::now().checked_add(t))
+}
+
+/// Runs one step of a page (opening it, or reading its next item) within the
+/// page's deadline, so a server that stalls mid-read fails the read instead
+/// of hanging it.
+async fn within_page<T>(
+    page_end: Option<Instant>,
+    future: impl Future<Output = Result<T, SpiceDBError>>,
+) -> Result<T, SpiceDBError> {
+    match page_end {
+        Some(end) => tokio::time::timeout_at(end, future).await.map_err(|_| {
+            SpiceDBError::DeadlineExceeded(
+                "page deadline exceeded: the server did not finish the page within the \
+                 client default deadline"
+                    .into(),
+            )
+        })?,
+        None => future.await,
+    }
+}
+
+/// [`wire`] for a page request: the timeout sent is the earlier of the
+/// operation's remaining budget and the page's.
+fn wire_page<T>(value: T, page_end: Option<Instant>) -> tonic::Request<T> {
+    let mut request = wire(value);
+    if let Some(end) = page_end {
+        let now = Instant::now();
+        let page = end.saturating_duration_since(now);
+        let total = EXEC
+            .try_with(|exec| exec.deadline)
+            .ok()
+            .flatten()
+            .map(|d| d.saturating_duration_since(now));
+        request.set_timeout(total.map_or(page, |t| t.min(page)));
+    }
+    request
+}
+
 /// The `optional_limit` every request of a paged read sends: the page size,
 /// fixed for the whole call (SpiceDB rejects a cursor sent with a different
 /// limit), or in single-request mode the total limit alone (0 meaning
@@ -394,7 +438,8 @@ impl SpiceDBClient {
                     debug_trace: result
                         .debug_trace
                         .as_ref()
-                        .map(DebugInformation::from_proto),
+                        .map(DebugInformation::from_proto)
+                        .transpose()?,
                     expiration: result
                         .optional_expires_at
                         .as_ref()
@@ -489,7 +534,7 @@ impl SpiceDBClient {
                         }
                         match &pair.response {
                             Some(proto::check_bulk_permissions_pair::Response::Item(item)) => {
-                                results.push(check_result_from_bulk_item(item, &revision))
+                                results.push(check_result_from_bulk_item(item, &revision)?)
                             }
                             Some(proto::check_bulk_permissions_pair::Response::Error(status)) => {
                                 let cause = error::from_grpc_status(tonic::Status::with_details(
@@ -987,6 +1032,7 @@ impl SpiceDBClient {
         request: ReadRelationshipsRequest,
     ) -> impl Stream<Item = Result<ReadRelationship, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
+        let page_timeout = self.default_timeout;
         stream_budget(
             self.plan(
                 Operation::ReadRelationships,
@@ -1003,33 +1049,41 @@ impl SpiceDBClient {
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
                     let previous_cursor = cursor.clone();
-                    let response = open_stream(|| async {
+                    let page_end = page_deadline(page_timeout);
+                    let response = within_page(page_end, open_stream(|| async {
                         permissions
                             .clone()
-                            .read_relationships(wire(proto::ReadRelationshipsRequest {
+                            .read_relationships(wire_page(proto::ReadRelationshipsRequest {
                                 consistency: Some(consistency.clone()),
                                 relationship_filter: Some(filter.clone()),
                                 optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
-                            }))
+                            }, page_end))
                             .await
-                    })
+                    }))
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = next_message(&mut stream).await? {
+                    while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
                         cursor = response.after_result_cursor.clone();
                         count += 1;
-                        if let Some(r) = response.relationship {
-                            remaining -= 1;
-                            yield ReadRelationship {
-                                relationship: Relationship::from_proto(&r),
-                                after_result_cursor: response.after_result_cursor.map(|c| c.token),
-                                read_at: response.read_at.map(|t| t.token.into()).unwrap_or_default(),
-                            };
-                            if remaining == 0 {
-                                break;
-                            }
+                        // A response without its relationship is not skipped:
+                        // a skipped item makes a full page look short and
+                        // silently ends the read early.
+                        let relationship = Relationship::from_response(
+                            response
+                                .relationship
+                                .as_ref()
+                                .ok_or_else(|| missing_in_response("relationship"))?,
+                        )?;
+                        remaining -= 1;
+                        yield ReadRelationship {
+                            relationship,
+                            after_result_cursor: response.after_result_cursor.map(|c| c.token),
+                            read_at: response.read_at.map(|t| t.token.into()).unwrap_or_default(),
+                        };
+                        if remaining == 0 {
+                            break;
                         }
                     }
                     if single || remaining == 0 || count < page_size {
@@ -1048,6 +1102,7 @@ impl SpiceDBClient {
         request: LookupResourcesRequest,
     ) -> impl Stream<Item = Result<LookupResource, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
+        let page_timeout = self.default_timeout;
         stream_budget(
             self.plan(
                 Operation::LookupResources,
@@ -1068,10 +1123,11 @@ impl SpiceDBClient {
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
                     let previous_cursor = cursor.clone();
-                    let response = open_stream(|| async {
+                    let page_end = page_deadline(page_timeout);
+                    let response = within_page(page_end, open_stream(|| async {
                         permissions
                             .clone()
-                            .lookup_resources(wire(proto::LookupResourcesRequest {
+                            .lookup_resources(wire_page(proto::LookupResourcesRequest {
                                 consistency: Some(consistency.clone()),
                                 resource_object_type: request.resource_type.clone(),
                                 permission: request.permission.clone(),
@@ -1080,19 +1136,22 @@ impl SpiceDBClient {
                                 with_debug: request.options.debug == DebugMode::Enabled,
                                 optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
-                            }))
+                            }, page_end))
                             .await
-                    })
+                    }))
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = next_message(&mut stream).await? {
+                    while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
                         let revision: ZedToken = response
                             .looked_up_at
                             .map(|t| t.token.into())
                             .unwrap_or_default();
                         cursor = response.after_result_cursor.clone();
                         count += 1;
+                        if response.resource_object_id.is_empty() {
+                            Err(missing_in_response("resource object ID"))?;
+                        }
                         if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
                             && response.permissionship != proto::LookupPermissionship::HasPermission as i32 {
                             continue;
@@ -1122,6 +1181,7 @@ impl SpiceDBClient {
         request: LookupSubjectsRequest,
     ) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
+        let page_timeout = self.default_timeout;
         stream_budget(
             self.plan(
                 Operation::LookupSubjects,
@@ -1138,10 +1198,13 @@ impl SpiceDBClient {
                 if let Some(r) = &request.options.subject_relation {
                     required("subject_relation", r)?;
                 }
-                let response = open_stream(|| async {
+                // One request returns every subject: its single page is
+                // bounded by the client default deadline.
+                let page_end = page_deadline(page_timeout);
+                let response = within_page(page_end, open_stream(|| async {
                     permissions
                         .clone()
-                        .lookup_subjects(wire(proto::LookupSubjectsRequest {
+                        .lookup_subjects(wire_page(proto::LookupSubjectsRequest {
                             consistency: Some(request.consistency.to_proto()),
                             resource: Some(request.resource.to_proto()),
                             permission: request.permission.clone(),
@@ -1158,25 +1221,31 @@ impl SpiceDBClient {
                                 WildcardOption::Include => 1,
                                 WildcardOption::Exclude => 2,
                             },
-                        }))
+                        }, page_end))
                         .await
-                })
+                }))
                 .await?;
                 let mut stream = response.into_inner();
-                while let Some(response) = next_message(&mut stream).await? {
-                    let mut subject = resolved_subject_from_proto(response.subject.as_ref());
+                while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
+                    // Servers that predate `subject` send the deprecated
+                    // response-level fields instead; with neither, the
+                    // response names no subject and is not skipped.
                     #[allow(deprecated)]
-                    if response.subject.is_none() {
-                        subject = ResolvedSubject {
-                            subject_id: response.subject_object_id,
+                    let subject = match response.subject.as_ref() {
+                        Some(s) => resolved_subject_from_proto(s),
+                        None => ResolvedSubject {
+                            subject_id: response.subject_object_id.clone(),
                             permissionship: permissionship_from_proto(response.permissionship),
                             partial_caveat: partial_caveat_from_proto(response.partial_caveat_info.as_ref()),
-                        };
+                        },
+                    };
+                    if subject.subject_id.is_empty() {
+                        Err(missing_in_response("lookup subject"))?;
                     }
                     let mut excluded_subjects: Vec<_> = response
                         .excluded_subjects
                         .iter()
-                        .map(|s| resolved_subject_from_proto(Some(s)))
+                        .map(resolved_subject_from_proto)
                         .collect();
                     #[allow(deprecated)]
                     if excluded_subjects.is_empty() {
@@ -1212,6 +1281,7 @@ impl SpiceDBClient {
         request: ExportRelationshipsRequest,
     ) -> impl Stream<Item = Result<ExportedRelationship, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
+        let page_timeout = self.default_timeout;
         stream_budget(
             self.plan(
                 Operation::ExportRelationships,
@@ -1227,28 +1297,29 @@ impl SpiceDBClient {
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
                     let previous_cursor = cursor.clone();
-                    let response = open_stream(|| async {
+                    let page_end = page_deadline(page_timeout);
+                    let response = within_page(page_end, open_stream(|| async {
                         permissions
                             .clone()
-                            .export_bulk_relationships(wire(proto::ExportBulkRelationshipsRequest {
+                            .export_bulk_relationships(wire_page(proto::ExportBulkRelationshipsRequest {
                                 consistency: Some(consistency.clone()),
                                 optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
                                 optional_relationship_filter: filter.clone(),
-                            }))
+                            }, page_end))
                             .await
-                    })
+                    }))
                     .await?;
                     let mut stream = response.into_inner();
                     let mut count = 0;
-                    while let Some(response) = next_message(&mut stream).await? {
+                    while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
                         cursor = response.after_result_cursor.clone();
                         let after = response.after_result_cursor.map(|c| c.token);
                         for relationship in response.relationships {
                             count += 1;
                             remaining -= 1;
                             yield ExportedRelationship {
-                                relationship: Relationship::from_proto(&relationship),
+                                relationship: Relationship::from_response(&relationship)?,
                                 after_result_cursor: after.clone(),
                             };
                             if remaining == 0 {
@@ -1324,21 +1395,27 @@ impl SpiceDBClient {
                     .await?
                     .into_inner();
                 while let Some(response) = next_message(&mut stream).await? {
+                    // An update without its relationship fails the watch
+                    // rather than silently dropping a change.
                     let updates = response
                         .updates
                         .iter()
-                        .filter_map(|u| {
-                            u.relationship.as_ref().map(|r| Update {
+                        .map(|u| {
+                            Ok::<_, SpiceDBError>(Update {
                                 operation: match u.operation {
                                     1 => UpdateOperation::Create,
                                     2 => UpdateOperation::Touch,
                                     3 => UpdateOperation::Delete,
                                     _ => UpdateOperation::Unspecified,
                                 },
-                                relationship: Relationship::from_proto(r),
+                                relationship: Relationship::from_response(
+                                    u.relationship
+                                        .as_ref()
+                                        .ok_or_else(|| missing_in_response("watch update relationship"))?,
+                                )?,
                             })
                         })
-                        .collect();
+                        .collect::<Result<Vec<_>, _>>()?;
                     yield WatchEvent {
                         updates,
                         changes_through: response
@@ -1440,10 +1517,10 @@ impl PermissionSetCursor {
 }
 fn set_reference(s: materialize_proto::SetReference) -> SetReference {
     SetReference {
-        object: ObjectRef::from_proto(Some(&proto::ObjectReference {
+        object: ObjectRef::from_proto(&proto::ObjectReference {
             object_type: s.object_type,
             object_id: s.object_id,
-        })),
+        }),
         permission_or_relation: s.permission_or_relation,
     }
 }
@@ -1462,10 +1539,10 @@ fn set_change(c: materialize_proto::PermissionSetChange) -> PermissionSetChange 
             }
             materialize_proto::permission_set_change::Child::ChildMember(m) => {
                 PermissionSetChild::Member(MemberReference {
-                    object: ObjectRef::from_proto(Some(&proto::ObjectReference {
+                    object: ObjectRef::from_proto(&proto::ObjectReference {
                         object_type: m.object_type,
                         object_id: m.object_id,
-                    })),
+                    }),
                     permission_or_relation: if m.optional_permission_or_relation.is_empty() {
                         None
                     } else {
@@ -1574,6 +1651,7 @@ impl SpiceDBClient {
         request: LookupPermissionSetsRequest,
     ) -> impl Stream<Item = Result<LookupPermissionSetsResult, SpiceDBError>> + Send + 'static {
         let service = self.proto.permission_sets.clone();
+        let page_timeout = self.default_timeout;
         stream_budget(
             self.plan(
                 Operation::LookupPermissionSets,
@@ -1586,15 +1664,16 @@ impl SpiceDBClient {
                     optional_at_revision: request.options.at_revision.map(|t| t.to_proto()),
                     optional_starting_after_cursor: request.options.cursor.map(|c| c.to_proto()),
                 };
-                let mut stream = open_stream(|| async {
+                let page_end = page_deadline(page_timeout);
+                let mut stream = within_page(page_end, open_stream(|| async {
                     service
                         .clone()
-                        .lookup_permission_sets(wire(value.clone()))
+                        .lookup_permission_sets(wire_page(value.clone(), page_end))
                         .await
-                })
+                }))
                 .await?
                 .into_inner();
-                while let Some(response) = next_message(&mut stream).await? {
+                while let Some(response) = within_page(page_end, next_message(&mut stream)).await? {
                     yield LookupPermissionSetsResult {
                         change: response.change.map(set_change),
                         cursor: response.cursor.map(PermissionSetCursor::from_proto),

@@ -258,7 +258,10 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Finite paged reads (relationship reads, lookups, exports) apply the client
     default deadline to each page request, from opening it to receiving its
     last item, so a server that stalls mid-read fails the read instead of
-    hanging it. A caller's total deadline still bounds the whole operation and
+    hanging it. The deadline bounds waiting on the server, never the caller's
+    processing: time the caller spends between items does not count (buffer
+    the page, which is at most the page size, or pause the timer while the
+    caller holds an item), so a slow consumer never fails a healthy read. A caller's total deadline still bounds the whole operation and
     wins when earlier. Long-lived streams (watch) keep no default.
   - A named mode disables the client default deadline. The caller's own deadline
     or cancellation still applies. Zero or negative durations are never used as

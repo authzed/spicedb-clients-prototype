@@ -452,3 +452,62 @@ async fn http_url_endpoint_with_eager_connect_reaches_spicedb() {
         .await;
     assert!(matches!(down, Err(spicedb::SpiceDBError::Transport(_))));
 }
+
+/// A `unix:` target reaches a real SpiceDB over a Unix domain socket. With
+/// `SPICEDB_UNIX_SOCKET` set (a SpiceDB started with `--grpc-network unix`),
+/// the client dials that socket directly; otherwise the test bridges a
+/// socket of its own to the live TCP endpoint byte for byte, so the client's
+/// socket transport still carries every frame to and from SpiceDB.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires a live SpiceDB server (see module docs)"]
+async fn unix_socket_endpoint_reaches_spicedb() {
+    let _guard = LIVE_LOCK.lock().await;
+    let path = match std::env::var("SPICEDB_UNIX_SOCKET") {
+        Ok(path) => path,
+        Err(_) => {
+            let dir =
+                std::env::temp_dir().join(format!("spicedb-rust-live-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("bridge.sock");
+            let _ = std::fs::remove_file(&path);
+            let listener = tokio::net::UnixListener::bind(&path).expect("bind bridge socket");
+            let target = live_endpoint().trim_start_matches("http://").to_string();
+            tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    let target = target.clone();
+                    tokio::spawn(async move {
+                        if let Ok(mut tcp) = tokio::net::TcpStream::connect(&target).await {
+                            let _ = tokio::io::copy_bidirectional(&mut socket, &mut tcp).await;
+                        }
+                    });
+                }
+            });
+            path.display().to_string()
+        }
+    };
+    let endpoint = format!("unix:{path}");
+    let client = SpiceDBClient::builder(&endpoint, live_token())
+        .connect_mode(spicedb::ConnectMode::Eager)
+        .build()
+        .await
+        .unwrap_or_else(|e| panic!("{endpoint} must connect: {e:?}"));
+    // Everything below goes over the socket, including the setup.
+    cleanup(&client).await;
+    client
+        .write_schema(spicedb::WriteSchemaRequest::new(ADOPTION_SCHEMA))
+        .await
+        .expect("write schema over the unix socket");
+    let viewer: spicedb::Relationship = "doc:uds#viewer@user:alice".parse().unwrap();
+    let mut txn = Transaction::new();
+    txn.touch(&viewer);
+    let written = client.write(spicedb::WriteRequest::new(txn)).await.unwrap();
+    let check = spicedb::PermissionCheck::new(
+        viewer.resource().clone(),
+        "view",
+        spicedb::ObjectRef::new("user", "alice").unwrap().into(),
+        consistency::at_least(written.revision),
+    );
+    assert!(client.check(check).await.unwrap().has_permission());
+    cleanup(&client).await;
+}

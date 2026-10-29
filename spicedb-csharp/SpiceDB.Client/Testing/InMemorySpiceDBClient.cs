@@ -464,6 +464,10 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     /// <summary>Does nothing; the double holds no transport.</summary>
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
+    /// <summary>A no-op that completes immediately: the double is always ready. A cancelled token still cancels.</summary>
+    public Task ConnectAsync(ConnectOptions? options = null, CancellationToken cancellationToken = default) =>
+        cancellationToken.IsCancellationRequested ? Task.FromCanceled(cancellationToken) : Task.CompletedTask;
+
     /// <summary>
     /// Yields the resources of <paramref name="resourceType"/> that appear in the stored
     /// relationships (as resource or subject, in order of first appearance) and that check

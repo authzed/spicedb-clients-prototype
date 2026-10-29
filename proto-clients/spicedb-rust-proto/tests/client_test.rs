@@ -45,6 +45,7 @@ mod insecure_host_guard {
         WriteSchemaResponse,
     };
     use spicedb_proto::client::is_loopback_endpoint;
+    use spicedb_proto::ConnectMode;
     use spicedb_proto::{SpiceDBProtoClient, SpiceDBProtoClientError};
     use tokio::sync::mpsc;
     use tonic::{Request, Response, Status};
@@ -99,8 +100,9 @@ mod insecure_host_guard {
         // first two used to be asserted as loopback above. tonic's Channel
         // takes a URI, and "http://unix:/var/run/spicedb.sock" parses with
         // host "unix" -- so the exemption was handing a bearer token to
-        // whatever DNS answers for the name "unix". new_with_options now
-        // refuses these outright; see refuses_unix_socket_targets below.
+        // whatever DNS answers for the name "unix". new_with_options never
+        // hands these to the host check: it dials them as socket paths (on
+        // Unix) or refuses them; see the unix target tests below.
         "unix:/var/run/spicedb.sock",
         "unix:///var/run/spicedb.sock",
         "UNIX:/var/run/spicedb.sock",
@@ -399,49 +401,147 @@ mod insecure_host_guard {
         );
     }
 
-    /// A unix-socket target must be refused outright, not treated as loopback.
-    /// tonic's `Channel` takes a URI, and
-    /// `"http://unix:/var/run/spicedb.sock".parse::<Uri>()` has host `"unix"`
-    /// -- so the old "a unix socket never leaves the kernel" exemption was
-    /// shipping the bearer token to whatever DNS answers for the name `unix`,
-    /// in cleartext, while the guard reported "loopback".
-    ///
-    /// The refusal is unconditional: TLS and the opt-in are both exercised
-    /// here, because neither makes dialing a host called `unix` the thing the
-    /// caller asked for. Nothing can be sent, because construction never
-    /// returns a client at all.
+    /// A `unix:` target dials the socket path it names -- never a host called
+    /// `unix` -- and the bearer token arrives over that socket. A local
+    /// socket needs no remote-credentials opt-in.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_socket_targets_dial_the_socket_and_send_the_token() {
+        let dir = std::env::temp_dir().join(format!("spicedb-proto-uds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("spicedb.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind unix socket");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let service = CapturingSchemaService { sender: tx };
+        tokio::spawn(async move {
+            let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+            let _ = tonic::transport::Server::builder()
+                .add_service(SchemaServiceServer::new(service))
+                .serve_with_incoming(incoming)
+                .await;
+        });
+
+        let display = path.display().to_string();
+        for endpoint in [
+            format!("unix:{display}"),
+            format!("unix://{display}"),
+            format!("UNIX:{display}"),
+        ] {
+            for connect in [ConnectMode::TransportDefault, ConnectMode::Eager] {
+                let client = SpiceDBProtoClient::new_with_connect_mode(
+                    &endpoint,
+                    "uds-token",
+                    true,
+                    false,
+                    connect,
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{endpoint}: {e}"));
+                let status = client
+                    .schema
+                    .clone()
+                    .read_schema(ReadSchemaRequest {})
+                    .await
+                    .expect_err("the capturing server answers Unimplemented");
+                assert_eq!(
+                    status.code(),
+                    tonic::Code::Unimplemented,
+                    "{endpoint}: {status}"
+                );
+                assert_eq!(
+                    rx.recv().await.flatten().as_deref(),
+                    Some("Bearer uds-token"),
+                    "{endpoint}"
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An eager unix target fails at construction when nothing listens there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn eager_unix_target_fails_at_construction_when_nothing_listens() {
+        let result = SpiceDBProtoClient::new_with_connect_mode(
+            "unix:/nonexistent/spicedb-proto-test.sock",
+            "t",
+            true,
+            false,
+            ConnectMode::Eager,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(SpiceDBProtoClientError::Transport(_))),
+            "{:?}",
+            result.err()
+        );
+    }
+
+    /// A unix target is plaintext (TLS is refused), and a target without a
+    /// path or with an authority (`unix://host/...`) is malformed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_or_tls_unix_targets_are_refused() {
+        for (endpoint, insecure, problem) in [
+            ("unix:/var/run/spicedb.sock", false, "plaintext"),
+            ("unix:", true, "socket path"),
+            ("unix://", true, "absolute path"),
+            ("unix://host/var/run/spicedb.sock", true, "absolute path"),
+        ] {
+            match SpiceDBProtoClient::new_with_options(endpoint, "t", insecure, false).await {
+                Err(SpiceDBProtoClientError::InvalidEndpoint(msg)) => {
+                    assert!(msg.contains(problem), "{msg}");
+                    assert!(msg.contains("unix:/path/to/socket"), "{msg}");
+                }
+                other => panic!(
+                    "expected InvalidEndpoint for {endpoint:?}, got {:?}",
+                    other.err()
+                ),
+            }
+        }
+    }
+
+    /// Without Unix domain sockets a unix target is refused outright, never
+    /// dialed as a host called `unix`.
+    #[cfg(not(unix))]
     #[tokio::test]
     async fn refuses_unix_socket_targets() {
-        for (endpoint, insecure, allow_remote) in [
-            ("unix:/var/run/spicedb.sock", true, false),
-            ("unix:///var/run/spicedb.sock", true, false),
-            ("UNIX:/var/run/spicedb.sock", true, false),
-            // The opt-in does not buy a unix target either.
-            ("unix:/var/run/spicedb.sock", true, true),
-            // Nor does TLS.
-            ("unix:/var/run/spicedb.sock", false, false),
+        for (endpoint, insecure) in [
+            ("unix:/var/run/spicedb.sock", true),
+            ("unix:///var/run/spicedb.sock", true),
         ] {
-            let result = SpiceDBProtoClient::new_with_options(
-                endpoint,
-                "super-secret-token",
-                insecure,
-                allow_remote,
-            )
-            .await;
+            assert!(matches!(
+                SpiceDBProtoClient::new_with_options(endpoint, "t", insecure, true).await,
+                Err(SpiceDBProtoClientError::UnixSocketNotSupported(_))
+            ));
+        }
+    }
 
-            match result {
-                Err(SpiceDBProtoClientError::UnixSocketNotSupported(msg)) => {
-                    assert!(msg.contains(endpoint), "{msg}");
-                    assert!(msg.contains("unix-domain-socket"), "{msg}");
+    /// gRPC resolver schemes the transport cannot honor are refused, naming
+    /// the accepted forms; `dns:` says why (no client-side load balancing).
+    #[tokio::test]
+    async fn grpc_resolver_schemes_are_refused_naming_the_accepted_forms() {
+        for (endpoint, problem) in [
+            ("dns:///spicedb:50051", "load balancing"),
+            ("dns:spicedb:50051", "load balancing"),
+            ("DNS:///spicedb:50051", "load balancing"),
+            ("dns://8.8.8.8/spicedb:50051", "load balancing"),
+            ("ipv4:127.0.0.1:50051", "\"ipv4:\""),
+            ("xds:///spicedb", "\"xds:\""),
+            ("unix-abstract:spicedb", "\"unix-abstract:\""),
+        ] {
+            for insecure in [true, false] {
+                match SpiceDBProtoClient::new_with_options(endpoint, "t", insecure, true).await {
+                    Err(SpiceDBProtoClientError::InvalidEndpoint(msg)) => {
+                        assert!(msg.contains(problem), "{msg}");
+                        assert!(msg.contains("host:port"), "{msg}");
+                    }
+                    other => panic!(
+                        "expected InvalidEndpoint for {endpoint:?}, got {:?}",
+                        other.err()
+                    ),
                 }
-                Err(other) => panic!(
-                    "expected UnixSocketNotSupported for {endpoint:?} (insecure={insecure}, \
-                     allow_remote={allow_remote}), got {other:?}"
-                ),
-                Ok(_) => panic!(
-                    "expected {endpoint:?} to be refused (insecure={insecure}, \
-                     allow_remote={allow_remote})"
-                ),
             }
         }
     }
@@ -466,7 +566,7 @@ mod insecure_host_guard {
                 "t",
                 false,
                 false,
-                spicedb_proto::ConnectMode::Lazy,
+                ConnectMode::Lazy,
             )
             .await;
             assert!(
@@ -511,7 +611,7 @@ mod insecure_host_guard {
             "t",
             false,
             false,
-            spicedb_proto::ConnectMode::Lazy,
+            ConnectMode::Lazy,
         )
         .await;
         assert!(tls.is_ok(), "{:?}", tls.err());
@@ -720,7 +820,6 @@ mod insecure_host_guard {
     /// `ConnectMode::Eager` makes the same endpoint fail at construction.
     #[tokio::test]
     async fn eager_connect_fails_at_construction_for_an_unreachable_server() {
-        use spicedb_proto::ConnectMode;
         let lazy = SpiceDBProtoClient::new("127.0.0.1:1", "t", true).await;
         assert!(lazy.is_ok(), "{:?}", lazy.err());
         let eager = SpiceDBProtoClient::new_with_connect_mode(
@@ -826,7 +925,7 @@ mod insecure_host_guard {
             "t",
             false,
             false,
-            spicedb_proto::ConnectMode::Lazy,
+            ConnectMode::Lazy,
         )
         .await;
         assert!(result.is_ok(), "{:?}", result.err());

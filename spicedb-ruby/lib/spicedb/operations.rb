@@ -164,11 +164,14 @@ module SpiceDB
       end
     end
 
+    # One call streams every result. A finite read's per-page default
+    # (Budget#page_timeout) bounds each wait for the next response, never the
+    # time the caller spends on an item (see PageWatchdog); watch has none.
     def response_stream(service, operation, request, budget, mapper:, retryable: true, limit: nil, &)
       positive(limit, 'limit') if limit
       stream = make_stream do |owner, out|
         delivered = 0
-        consume_rpc(owner, service, operation, request, budget.page, retryable: retryable) do |response|
+        consume_rpc(owner, service, operation, request, budget, retryable: retryable, page_timeout: budget.page_timeout) do |response|
           out << mapper.call(response)
           delivered += 1
           break if limit && delivered >= limit
@@ -186,6 +189,12 @@ module SpiceDB
     # With +paging: Paging::SINGLE_REQUEST+ exactly one request is sent, as
     # the raw API does: its limit is +limit+ (0, unbounded, without one), the
     # page size is ignored, and no follow-up page is requested.
+    #
+    # The per-page default deadline never counts the caller's processing
+    # time. An automatic page (at most +page_size+ responses) is received
+    # whole under its page deadline (Budget#page) and only then yielded. A
+    # single request has no size bound, so it is not buffered: the default
+    # bounds each wait for the next response instead (PageWatchdog).
     def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, paging: Paging::AUTOMATIC, &)
       positive(page_size, 'page_size')
       positive(limit, 'limit') if limit
@@ -197,15 +206,24 @@ module SpiceDB
           request.optional_limit = single ? [limit || 0, MAX_UINT32].min : page_size
           request.optional_cursor = cursor_proto(cursor)
           previous = cursor
-          consume_rpc(owner, service, operation, request, budget.page) do |response|
+          deliver = lambda do |response|
             cursor = response.after_result_cursor&.token
             count += 1
             result = mapper.call(response, cursor)
-            next if include_result && !include_result.call(result)
+            next false if include_result && !include_result.call(result)
 
             delivered += 1
             out << result
-            break if limit && delivered >= limit
+            limit && delivered >= limit
+          end
+          if single
+            consume_rpc(owner, service, operation, request, budget, page_timeout: budget.page_timeout) do |response|
+              break if deliver.call(response)
+            end
+          else
+            page = []
+            consume_rpc(owner, service, operation, request, budget.page) { |response| page << response }
+            page.each { |response| break if deliver.call(response) }
           end
           break if single || count < page_size || (limit && delivered >= limit)
           raise malformed_response("#{operation}: the page cursor did not advance") if cursor.nil? || cursor.empty? || cursor == previous

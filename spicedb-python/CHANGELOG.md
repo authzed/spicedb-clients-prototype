@@ -12,6 +12,18 @@
 
 ## Unreleased
 
+### Paging and bridge fixes
+
+- A paged read or lookup whose page was retried after a mid-page failure no
+  longer counts the failed attempt's items toward that page. Previously, when
+  every item read before the failure had been skipped (for example by
+  `LookupPermissionshipFilter.HAS_PERMISSION_ONLY`), a short final page could
+  look full and trigger one needless extra request.
+- `authzed-py-bridge` no longer corrupts `pyproject.toml` when a dependency has
+  extras (`"grpcio[protobuf]>=1.63"`): the `dependencies` and `module-name`
+  arrays now end at their own closing bracket, skipping brackets inside
+  strings and comments. The rest of the file is left as it was.
+
 ### Full-client protocols and test doubles
 
 - `spicedb.protocols.ClientProtocol` and `AsyncClientProtocol` list every

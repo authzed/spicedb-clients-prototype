@@ -717,7 +717,6 @@ class SpiceDBClient(ClientConfig):
             delivered = 0
             try:
                 while not owner._closed:
-                    page_count = 0
                     # Every page repeats the caller's consistency and ONE fixed
                     # page size: SpiceDB hashes both into the cursor and rejects
                     # a cursor sent with different arguments. Limits are
@@ -728,6 +727,11 @@ class SpiceDBClient(ClientConfig):
                     request = request_factory(cursor, (limit or 0) if single_request else page_size)
                     attempt = 0
                     while True:
+                        # Count per attempt: a retry re-reads the page from
+                        # its start, so items read by a failed attempt (all
+                        # skipped by the include filter, or the retry would
+                        # not be allowed) must not count toward this page.
+                        page_count = 0
                         call = None
                         try:
                             call = rpc_factory()(

@@ -154,6 +154,46 @@ def _top_level_dirs_left(pkg_root: Path, names: Iterable[str]) -> list[str]:
     return [n for n in names if (pkg_root / n).exists() or (pkg_root / f"{n}.py").exists()]
 
 
+def _find_array(key: str, text: str) -> tuple[int, int] | None:
+    """Locate the array assigned to ``key`` at the start of a line in ``text``.
+
+    Returns ``(start, end)`` such that ``text[start:end]`` is everything between
+    the array's brackets, or None when ``key`` is not assigned. The closing bracket is found by a bracket-aware scan that skips TOML string
+    literals (basic, literal and their multi-line forms) and comments, so a
+    ``]`` inside a value such as ``"grpcio[protobuf]>=1.63"`` does not end it.
+    """
+    m = re.search(rf"(?m)^{re.escape(key)}\s*=\s*\[", text)
+    if m is None:
+        return None
+    i, depth = m.end(), 1
+    while i < len(text):
+        c = text[i]
+        if c in "\"'":
+            quote = text[i : i + 3] if text[i : i + 3] in ('"""', "'''") else c
+            i += len(quote)
+            while i < len(text) and not text.startswith(quote, i):
+                # Only basic (double-quoted) strings have escapes.
+                i += 2 if quote[0] == '"' and text[i] == "\\" else 1
+            if len(quote) == 3:
+                # A multi-line string may end with up to two extra quotes.
+                while text.startswith(quote[0], i + 3):
+                    i += 1
+            i += len(quote)
+            continue
+        if c == "#":
+            nl = text.find("\n", i)
+            i = len(text) if nl < 0 else nl
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return m.end(), i
+        i += 1
+    raise SystemExit(f"pyproject.toml: the {key} array is never closed")
+
+
 def _rewrite_pyproject(text: str, requirement: str, pkg_root: Path) -> str:
     """Add the requirement and drop build-backend module names that are gone.
 
@@ -166,11 +206,12 @@ def _rewrite_pyproject(text: str, requirement: str, pkg_root: Path) -> str:
     if project is None:
         raise SystemExit("pyproject.toml has no [project] table; cannot add the requirement")
     section = project.group(0)
-    deps = re.search(r"(?ms)^dependencies\s*=\s*\[(.*?)\]", section)
+    deps = _find_array("dependencies", section)
     if deps is None:
         raise SystemExit("[project] has no dependencies array; cannot add the requirement")
-    if re.search(rf'["\']{re.escape(req_name)}\s*[<>=!~;\["\']', deps.group(1)) is None:
-        body = deps.group(1)
+    deps_start, deps_end = deps
+    body = section[deps_start:deps_end]
+    if re.search(rf'["\']{re.escape(req_name)}\s*[<>=!~;\["\']', body) is None:
         indent = "  "
         m = re.search(r"\n([ \t]+)\S", body)
         if m:
@@ -179,19 +220,20 @@ def _rewrite_pyproject(text: str, requirement: str, pkg_root: Path) -> str:
         if new_body and not new_body.endswith(","):
             new_body += ","
         new_body += f'\n{indent}"{requirement}",\n'
-        section = section[: deps.start(1)] + new_body + section[deps.end(1) :]
+        section = section[:deps_start] + new_body + section[deps_end:]
         text = text[: project.start()] + section + text[project.end() :]
 
-    mod = re.search(r"(?ms)^module-name\s*=\s*\[(.*?)\]", text)
+    mod = _find_array("module-name", text)
     if mod is not None:
-        items = re.findall(r'["\']([^"\']+)["\']', mod.group(1))
+        mod_start, mod_end = mod
+        body = text[mod_start:mod_end]
+        items = re.findall(r'["\']([^"\']+)["\']', body)
         kept = _top_level_dirs_left(pkg_root, items)
         if kept != items:
-            body = mod.group(1)
             for name in items:
                 if name not in kept:
                     body = re.sub(rf'\n?[ \t]*["\']{re.escape(name)}["\'],?[ \t]*', "", body)
-            text = text[: mod.start(1)] + body + text[mod.end(1) :]
+            text = text[:mod_start] + body + text[mod_end:]
     return text
 
 

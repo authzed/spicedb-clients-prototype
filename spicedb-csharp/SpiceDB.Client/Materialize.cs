@@ -60,10 +60,15 @@ public sealed partial class SpiceDBClient
         var response = await Unary(budget, o => RawProto().MaterializeRelationships.ExperimentalCountRelationshipsByFilterAsync(new() { RelationshipFilter = filter.ToProto() }, o.Headers, o.Deadline, o.CancellationToken));
         return new() { RelationshipCount = response.RelationshipCount, Revision = new(response.ReadAt?.Token ?? "") };
     }
-    /// <summary>Experimental materialized permission-set watch. Dispose the enumerator to release the call.</summary>
+    /// <summary>
+    /// Experimental materialized permission-set watch. Dispose the enumerator to release the call.
+    /// The client-wide retry policy never reopens it; only a per-call <see cref="CallOptions.RetryPolicy"/>
+    /// or a <see cref="ClientOptions.OperationRetryPolicies"/> entry for
+    /// <see cref="SpiceDBOperation.ExperimentalWatchPermissionSets"/> reopens it, and only before its first event.
+    /// </summary>
     public async IAsyncEnumerable<PermissionSetEvent> ExperimentalWatchPermissionSetsAsync(ZedToken? startRevision, CallOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, watch: true);
         options?.Validate();
         var request = new M.WatchPermissionSetsRequest { OptionalStartingAfter = startRevision is { } token ? new() { Token = token.Value } : null };
         await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.WatchPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))

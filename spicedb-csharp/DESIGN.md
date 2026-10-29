@@ -84,14 +84,21 @@
     replaces it client-wide (`MaxRetries`, `RetryableCodes` such as an opted-in
     `ResourceExhausted`, `InitialBackoff`, `MaxBackoff`, and an `OnRetry` callback receiving
     a `RetryEvent`); `Retries.Disabled` makes every operation one attempt;
-    `StreamRetries.Disabled` opens each server stream (reads, lookups, exports, watch) once.
+    `StreamRetries.Disabled` opens each server stream (reads, lookups, exports) once.
     Every options type's `RetryPolicy` overrides the client's for one call, stream
-    establishment included (`RetryPolicy.None` exempts one supervised watch; a policy
-    re-enables retries for one call under `Retries.Disabled`).
-    `ClientOptions.OperationRetryPolicies` (keyed by the `SpiceDBOperation` enum, one member
-    per client method) applies the same override to every call of one operation, for example
-    `[SpiceDBOperation.Updates] = RetryPolicy.None` so watches are never reopened; the most
-    specific policy wins (per call, then per operation, then client-wide). Mutations are
+    establishment included (a policy re-enables retries for one call under
+    `Retries.Disabled`). `ClientOptions.OperationRetryPolicies` (keyed by the
+    `SpiceDBOperation` enum, one member per client method) applies the same override to every
+    call of one operation; the most specific policy wins (per call, then per operation, then
+    client-wide).
+  - The client-wide policy (the default included, whatever `StreamRetries` says) never
+    reopens a watch (`UpdatesAsync`, `ExperimentalWatchPermissionSetsAsync`): a watch
+    reopened without a start revision begins at a later revision and silently skips the
+    changes in between. Only a per-call or per-operation policy for that watch opts in to
+    reopening, and only before its first event.
+  - A paged read, lookup or export whose full page arrives without a new cursor (missing,
+    empty or equal to the one sent) fails with an Internal-status `SpiceDBException`
+    ("... cursor did not advance") instead of re-requesting the same page forever. Mutations are
     never replayed automatically: only a touch-only `WriteAsync` without preconditions and
     `WriteSchemaAsync` may opt in, per call or per operation. A per-operation `Write` policy
     retries only writes whose `Transaction.IsIdempotent` is true (the client's own rule:

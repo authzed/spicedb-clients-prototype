@@ -45,6 +45,49 @@ public class MaterializeCoverageTests
             return Task.FromResult(new DownloadPermissionSetsResponse { AtRevision = new() { Token = "download" }, Timestamp = Google.Protobuf.WellKnownTypes.Timestamp.FromDateTimeOffset(DateTimeOffset.UnixEpoch), Files = { new M.File { Name = "sets.avro", Url = "https://example.test/sets.avro" } } });
         }
     }
+    /// <summary>Fails a watch with UNAVAILABLE before any event while <see cref="FailNext"/> is set (clearing it); otherwise delivers one event.</summary>
+    public sealed class FlakySets : WatchPermissionSetsService.WatchPermissionSetsServiceBase
+    {
+        public int Calls;
+        public volatile bool FailNext;
+        public override async Task WatchPermissionSets(WatchPermissionSetsRequest request, IServerStreamWriter<WatchPermissionSetsResponse> response, ServerCallContext context)
+        {
+            Interlocked.Increment(ref Calls);
+            if (FailNext) { FailNext = false; throw new RpcException(new Status(StatusCode.Unavailable, "transient")); }
+            await response.WriteAsync(new() { CompletedRevision = new() { Token = "completed" } });
+        }
+    }
+    [Fact]
+    public async Task PermissionSetWatchIsReopenedOnlyUnderAPerCallOrPerOperationPolicy()
+    {
+        var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders(); builder.Services.AddGrpc();
+        var sets = new FlakySets(); builder.Services.AddSingleton(sets);
+        builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, 0, o => o.Protocols = HttpProtocols.Http2));
+        await using var app = builder.Build(); app.MapGrpcService<FlakySets>(); await app.StartAsync();
+        var authority = new Uri(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single()).Authority;
+        var retrying = new RetryPolicy { MaxRetries = 1, RetryableCodes = [StatusCode.Unavailable], InitialBackoff = TimeSpan.FromMilliseconds(1) };
+
+        // The client-wide policy (default or explicit) never reopens it: a reopened watch without
+        // a start revision would begin later and skip the changes in between.
+        await using (var client = SpiceDBClient.CreatePlaintext(authority, "materialize-test", new ClientOptions { RetryPolicy = retrying }))
+        {
+            sets.FailNext = true;
+            await Assert.ThrowsAsync<UnavailableException>(async () => { await foreach (var _ in client.ExperimentalWatchPermissionSetsAsync(null)) { } });
+            Assert.Equal(1, sets.Calls);
+
+            sets.FailNext = true;
+            var events = new List<PermissionSetEvent>();
+            await foreach (var e in client.ExperimentalWatchPermissionSetsAsync(null, new CallOptions { RetryPolicy = retrying })) events.Add(e);
+            Assert.IsType<PermissionSetEvent.Completed>(Assert.Single(events));
+            Assert.Equal(3, sets.Calls);
+        }
+        await using (var client = SpiceDBClient.CreatePlaintext(authority, "materialize-test", new ClientOptions { OperationRetryPolicies = new Dictionary<SpiceDBOperation, RetryPolicy> { [SpiceDBOperation.ExperimentalWatchPermissionSets] = retrying } }))
+        {
+            sets.FailNext = true;
+            await foreach (var _ in client.ExperimentalWatchPermissionSetsAsync(null)) { }
+            Assert.Equal(5, sets.Calls);
+        }
+    }
     [Fact]
     public async Task EveryMaterializeRpcUsesAuthenticatedTransportAndNativeValues()
     {

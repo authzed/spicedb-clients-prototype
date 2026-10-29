@@ -102,8 +102,10 @@ Authzed.Net applied no deadline and no retries.
   ```
 
   Every options type also takes a per-call `RetryPolicy` that overrides the client's for
-  that call, stream establishment included: `new WatchOptions { RetryPolicy = RetryPolicy.None }`
-  never reopens one supervised watch while everything else keeps retrying, and a policy on a
+  that call, stream establishment included. Watches are never reopened by the client-wide
+  policy (a reopened watch without a start revision would skip changes); only
+  `new WatchOptions { RetryPolicy = ... }` or a per-operation policy opts one in, before its
+  first event. A policy on a
   touch-only `WriteAsync` (no preconditions) or on `WriteSchemaAsync` retries those
   idempotent writes. Other mutations reject the opt-in.
 

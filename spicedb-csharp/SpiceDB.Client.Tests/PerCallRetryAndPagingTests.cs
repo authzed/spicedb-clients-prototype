@@ -179,6 +179,78 @@ public class PerCallRetryAndPagingTests
         Assert.Throws<InvalidArgumentException>(() => new ReadOptions { Paging = (Paging)9 });
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("same")]
+    public async Task FullPageWithoutANewCursorFailsInsteadOfRepeatingThePage(string? pageCursor)
+    {
+        // Every page is full and ends on pageCursor; "same" is also the cursor the caller resumes
+        // from, so the first page already fails to advance. Requests are capped so a regression
+        // fails rather than hangs.
+        int reads = 0, lookups = 0, exports = 0;
+        Cursor? Next() => pageCursor is null ? null : new() { Token = pageCursor };
+        void Cap(int calls) { if (calls > 5) throw new InvalidOperationException("the same page was requested repeatedly"); }
+        var permissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        permissions.Setup(p => p.ReadRelationships(It.IsAny<ReadRelationshipsRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                Cap(++reads);
+                return MakeServerStreamingCall(new FakeStreamReader<ReadRelationshipsResponse>(Enumerable.Range(0, 2).Select(i => new ReadRelationshipsResponse
+                { Relationship = Relationship.FromTuple($"document:{i}#viewer@user:a").ToProto(), AfterResultCursor = Next() }).ToArray()));
+            });
+        permissions.Setup(p => p.LookupResources(It.IsAny<LookupResourcesRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                Cap(++lookups);
+                return MakeServerStreamingCall(new FakeStreamReader<LookupResourcesResponse>(Enumerable.Range(0, 2).Select(i => new LookupResourcesResponse
+                { ResourceObjectId = i.ToString(), Permissionship = LookupPermissionship.HasPermission, AfterResultCursor = Next() }).ToArray()));
+            });
+        permissions.Setup(p => p.ExportBulkRelationships(It.IsAny<ExportBulkRelationshipsRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                Cap(++exports);
+                var response = new ExportBulkRelationshipsResponse { AfterResultCursor = Next() };
+                response.Relationships.Add(Enumerable.Range(0, 2).Select(i => Relationship.FromTuple($"document:{i}#viewer@user:a").ToProto()));
+                return MakeServerStreamingCall(new FakeStreamReader<ExportBulkRelationshipsResponse>([response]));
+            });
+        await using var client = Client(permissions.Object);
+        var subject = SubjectRef.Direct(new ObjectRef("user", "a"));
+        var resume = pageCursor == "same" ? "same" : null;
+
+        var read = await Assert.ThrowsAsync<SpiceDBException>(async () => { await foreach (var _ in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), new ReadOptions { PageSize = 2, ResumeCursor = resume })) { } });
+        var lookup = await Assert.ThrowsAsync<SpiceDBException>(async () => { await foreach (var _ in client.LookupResourcesAsync(Consistency.Full(), "document", "view", subject, new LookupOptions { PageSize = 2, ResumeCursor = resume })) { } });
+        var export = await Assert.ThrowsAsync<SpiceDBException>(async () => { await foreach (var _ in client.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"), new ExportOptions { PageSize = 2, ResumeCursor = resume })) { } });
+
+        foreach (var error in new[] { read, lookup, export })
+        {
+            error.StatusCode.Should().Be(StatusCode.Internal);
+            error.Message.Should().Contain("cursor did not advance");
+        }
+        (reads, lookups, exports).Should().Be((1, 1, 1));
+    }
+
+    [Fact]
+    public async Task FullPageWithAnAdvancingCursorFetchesTheNextPage()
+    {
+        var sent = new List<string?>();
+        var permissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        permissions.Setup(p => p.ReadRelationships(It.IsAny<ReadRelationshipsRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Returns((ReadRelationshipsRequest r, Metadata _, DateTime? _, CancellationToken _) =>
+            {
+                sent.Add(r.OptionalCursor?.Token);
+                var rows = sent.Count == 1 ? 2 : 1;
+                return MakeServerStreamingCall(new FakeStreamReader<ReadRelationshipsResponse>(Enumerable.Range(0, rows).Select(i => new ReadRelationshipsResponse
+                { Relationship = Relationship.FromTuple($"document:{sent.Count}{i}#viewer@user:a").ToProto(), AfterResultCursor = new() { Token = $"p{sent.Count}" } }).ToArray()));
+            });
+        await using var client = Client(permissions.Object);
+
+        var count = 0;
+        await foreach (var _ in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), new ReadOptions { PageSize = 2 })) count++;
+        count.Should().Be(3);
+        sent.Should().Equal(null, "p1");
+    }
+
     [Fact]
     public async Task ItemAndProgressErrorsReportTheServerStatusOnce()
     {

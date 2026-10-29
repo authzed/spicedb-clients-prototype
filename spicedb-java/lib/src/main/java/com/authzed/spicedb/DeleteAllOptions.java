@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Duration;
 import java.util.*;
 
@@ -17,15 +18,13 @@ public final class DeleteAllOptions {
     this.onProgress = b.onProgress;
     this.transport = b.transport;
     this.retryPolicy = b.retryPolicy;
-    if (transport == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
+    if (transport == null) throw new LocalValidationException("transport must not be null");
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
+      throw new LocalValidationException("timeout must be positive");
     this.resumeCursor = b.resumeCursor;
     this.pageSize = b.pageSize;
-    if (pageSize <= 0)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("pageSize must be positive");
+    if (pageSize <= 0) throw new LocalValidationException("pageSize must be positive");
     this.mustMatch = List.copyOf(b.mustMatch);
     this.mustNotMatch = List.copyOf(b.mustNotMatch);
   }

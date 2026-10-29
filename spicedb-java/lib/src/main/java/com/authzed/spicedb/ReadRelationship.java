@@ -1,5 +1,7 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
+
 /**
  * One relationship from {@link SpiceDBClient#readRelationships}, with its paging state.
  *
@@ -12,8 +14,7 @@ package com.authzed.spicedb;
 public record ReadRelationship(
     Relationship relationship, String afterResultCursor, ZedToken readAt) {
   public ReadRelationship {
-    if (relationship == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("relationship is required");
+    if (relationship == null) throw new LocalValidationException("relationship is required");
   }
 
   @Override

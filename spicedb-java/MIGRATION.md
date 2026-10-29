@@ -335,16 +335,18 @@ try {
   object missing; a cursor that does not advance) fails with `INTERNAL`, which
   is not retried by default. It is never skipped or filled with empty values.
 - Local validation (`Relationship.fromTuple`, `ObjectRef`, option builders,
-  endpoint parsing) throws `InvalidArgumentException`, not
-  `IllegalArgumentException`. Java has single class inheritance and `catch`
+  endpoint parsing) throws `LocalValidationException`, a subclass of
+  `InvalidArgumentException`, not `IllegalArgumentException`. Java has single class inheritance and `catch`
   needs a class, so one exception cannot be both a `SpiceDBException` (with
   `code()`, the status accessors and `catch (SpiceDBException e)`) and an
   `IllegalArgumentException`. Code that wrapped legacy parsing in
   `catch (IllegalArgumentException e)` should catch
-  `InvalidArgumentException`, or both:
-  `catch (IllegalArgumentException | InvalidArgumentException e)`. Both local
-  and server invalid-argument errors report `INVALID_ARGUMENT`; a local one's
-  `serverMessage()` is `null`, which tells the two apart.
+  `LocalValidationException` (local validation only) or
+  `InvalidArgumentException` (local or server), for example
+  `catch (IllegalArgumentException | LocalValidationException e)`. Both report
+  `INVALID_ARGUMENT`; the server's rejection is a plain
+  `InvalidArgumentException`, never a `LocalValidationException`.
+  `serverMessage()` is never `null`: for a local error it is the message.
 
 ## Transport-level data
 

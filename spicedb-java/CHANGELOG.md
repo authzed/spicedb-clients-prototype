@@ -31,9 +31,13 @@
   when building the channel. Where epoll is unavailable (macOS, Windows) a
   `unix:` endpoint fails at construction with `InvalidArgumentException`
   naming the accepted forms; an empty `unix:` path is rejected.
-- Local validation stays `InvalidArgumentException`, which cannot also be an
-  `IllegalArgumentException` in Java; MIGRATION.md documents catching it around
-  parsing.
+- Local validation throws the new `LocalValidationException`, a subclass of
+  `InvalidArgumentException` (existing `catch` blocks still match), so callers
+  can tell it from the server's `INVALID_ARGUMENT`, which stays a plain
+  `InvalidArgumentException`. It cannot also be an `IllegalArgumentException`
+  in Java; MIGRATION.md documents catching it around parsing.
+- `SpiceDBException.serverMessage()` is never `null`: for local and
+  caller-built errors it is the error's message (it was `null`).
 
 ### Endpoint forms
 

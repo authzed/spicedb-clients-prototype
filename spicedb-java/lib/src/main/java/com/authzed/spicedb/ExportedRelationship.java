@@ -1,5 +1,7 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
+
 /**
  * One relationship from {@link SpiceDBClient#exportRelationships}, with its paging state. Export
  * responses carry no read-at revision.
@@ -11,8 +13,7 @@ package com.authzed.spicedb;
  */
 public record ExportedRelationship(Relationship relationship, String afterResultCursor) {
   public ExportedRelationship {
-    if (relationship == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("relationship is required");
+    if (relationship == null) throw new LocalValidationException("relationship is required");
   }
 
   @Override

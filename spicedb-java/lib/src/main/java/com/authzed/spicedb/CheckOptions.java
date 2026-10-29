@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Duration;
 import java.util.*;
 
@@ -14,19 +15,16 @@ public final class CheckOptions {
   private CheckOptions(Builder b) {
     this.bulkItemErrors = b.bulkItemErrors;
     if (bulkItemErrors == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "bulkItemErrors must not be null");
+      throw new LocalValidationException("bulkItemErrors must not be null");
     this.transport = b.transport;
     this.retryPolicy = b.retryPolicy;
-    if (transport == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
+    if (transport == null) throw new LocalValidationException("transport must not be null");
     this.context = JsonContext.snapshot(b.context);
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
+      throw new LocalValidationException("timeout must be positive");
     this.tracing = b.tracing;
-    if (tracing == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("tracing must not be null");
+    if (tracing == null) throw new LocalValidationException("tracing must not be null");
   }
 
   public static Builder builder() {

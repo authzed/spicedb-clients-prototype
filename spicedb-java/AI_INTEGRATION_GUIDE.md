@@ -278,8 +278,10 @@ including local validation errors and the client's `CancellationException`.
 relaying an error to another party.
 
 Local validation (`Relationship.fromTuple`, builders) throws
-`InvalidArgumentException`, which is not an `IllegalArgumentException`: catch
-`InvalidArgumentException` around parsing. Reads, lookups and exports put the
+`LocalValidationException`, a subclass of `InvalidArgumentException` that is
+not an `IllegalArgumentException`: catch `LocalValidationException` around
+parsing (the server's `INVALID_ARGUMENT` is a plain `InvalidArgumentException`).
+`serverMessage()` is never null; for a local error it is the message. Reads, lookups and exports put the
 client default deadline (30 s) on each page, so a stalled server ends them with
 `DeadlineExceededException`; a response missing a required field fails with
 `INTERNAL` and is not retried.

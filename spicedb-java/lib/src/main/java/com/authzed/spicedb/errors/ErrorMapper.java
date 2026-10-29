@@ -55,7 +55,7 @@ public final class ErrorMapper {
    * a real server error, and {@link SpiceDBException#serverMessage()} is {@code message}.
    */
   public static SpiceDBException newError(Status.Code code, String message) {
-    if (code == null) throw new InvalidArgumentException("code must not be null");
+    if (code == null) throw new LocalValidationException("code must not be null");
     return toSpiceDBException(Status.fromCode(code).withDescription(message).asRuntimeException());
   }
 

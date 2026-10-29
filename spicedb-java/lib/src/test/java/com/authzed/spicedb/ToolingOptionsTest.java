@@ -267,6 +267,9 @@ class ToolingOptionsTest {
             resp.onNext(
                 LookupResourcesResponse.newBuilder()
                     .setResourceObjectId("d9")
+                    .setPermissionship(
+                        com.authzed.api.v1.LookupPermissionship
+                            .LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
                     .setAfterResultCursor(Cursor.newBuilder().setToken("c9"))
                     .build());
             resp.onCompleted();

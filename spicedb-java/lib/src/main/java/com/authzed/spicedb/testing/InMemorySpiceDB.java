@@ -145,7 +145,8 @@ public final class InMemorySpiceDB implements SpiceDBApi {
      * relationships. {@code check} carries the call's default context merged in (its own keys win).
      * Only the permissionship and missing context of the result are used; the double stamps its own
      * revision. A resolver never fails: script failures with the fault hooks ({@link
-     * #setFaultHook}, {@link #failNext}) instead.
+     * #setFaultHook}, {@link #failNext}) instead. A result with {@code UNSPECIFIED} (or null)
+     * permissionship is rejected, since a real server never sends one.
      */
     CheckResult resolve(PermissionCheck check);
   }
@@ -466,9 +467,18 @@ public final class InMemorySpiceDB implements SpiceDBApi {
     return relationships.values().stream().filter(this::live).toList();
   }
 
-  /** Registers the result {@link #check} returns for this resource, permission and subject. */
+  /**
+   * Registers the result {@link #check} returns for this resource, permission and subject.
+   *
+   * @throws LocalValidationException when {@code result} is null or {@code UNSPECIFIED}, which a
+   *     real server never sends (the client treats it as a malformed response)
+   */
   public synchronized void setCheckResult(
       ObjectRef resource, String permission, SubjectRef subject, Permissionship result) {
+    if (result == null || result == Permissionship.UNSPECIFIED)
+      throw new LocalValidationException(
+          "check result must be NO_PERMISSION, HAS_PERMISSION or CONDITIONAL_PERMISSION, not "
+              + result);
     checkResults.put(
         checkKey(resource, permission, subject),
         new CheckResult(result, List.of(), null, null, null));
@@ -649,6 +659,12 @@ public final class InMemorySpiceDB implements SpiceDBApi {
         if (resolved.error() != null)
           throw new IllegalStateException(
               "a CheckResolver result must not carry an error; inject failures with the fault hook");
+        if (resolved.permissionship() == null
+            || resolved.permissionship() == Permissionship.UNSPECIFIED)
+          throw new IllegalStateException(
+              "a CheckResolver result must have NO_PERMISSION, HAS_PERMISSION or"
+                  + " CONDITIONAL_PERMISSION permissionship, not "
+                  + resolved.permissionship());
         return new CheckResult(
             resolved.permissionship(), resolved.missingContext(), token(), null, null);
       }

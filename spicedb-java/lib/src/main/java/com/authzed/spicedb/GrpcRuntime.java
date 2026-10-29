@@ -77,11 +77,13 @@ final class GrpcRuntime {
             + format(FLOOR)
             + " or later at run time, but the class path has "
             + format(runtime)
-            + ". A dependency manager is probably pinning an older version: in Maven or Spring"
-            + " Boot, set the property <grpc.version>"
+            + ". A dependency manager is probably pinning an older version: in Maven, set the"
+            + " property <grpc.version>"
             + format(FLOOR)
-            + "</grpc.version> (or later), or import io.grpc:grpc-bom at that version; in Gradle,"
-            + " use platform(\"io.grpc:grpc-bom:"
+            + "</grpc.version> (or later); in Spring Boot, set <grpc-java.version>"
+            + format(FLOOR)
+            + "</grpc-java.version> (the property Boot's dependency management uses); or import"
+            + " io.grpc:grpc-bom at that version. In Gradle, use platform(\"io.grpc:grpc-bom:"
             + format(FLOOR)
             + "\") or later. Keep every io.grpc artifact at one version.");
   }

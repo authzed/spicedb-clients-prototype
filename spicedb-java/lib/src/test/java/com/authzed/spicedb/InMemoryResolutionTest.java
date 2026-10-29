@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import com.authzed.spicedb.errors.NotFoundException;
 import com.authzed.spicedb.errors.UnavailableException;
 import com.authzed.spicedb.testing.InMemorySpiceDB;
@@ -384,6 +385,31 @@ class InMemoryResolutionTest {
             ALICE,
             LookupOptions.builder().cursor(InMemorySpiceDB.cursorAfter(1)).build());
     assertEquals("c", rest.get(0).resourceId());
+  }
+
+  /** A real server never sends an unspecified permissionship, so the double never produces one. */
+  @Test
+  void neverProducesAnUnspecifiedPermissionship() {
+    var db = new InMemorySpiceDB();
+    assertThrows(
+        LocalValidationException.class,
+        () -> db.setCheckResult(DOC, "view", ALICE, Permissionship.UNSPECIFIED));
+    assertThrows(LocalValidationException.class, () -> db.setCheckResult(DOC, "view", ALICE, null));
+    write(db, "document:a#viewer@user:alice");
+    db.setCheckResolver(c -> result(Permissionship.UNSPECIFIED));
+    var check = new PermissionCheck(DOC, "viewer", ALICE, Consistency.full());
+    assertThrows(IllegalStateException.class, () -> db.check(check));
+    assertThrows(IllegalStateException.class, () -> db.checkBulk(List.of(check)));
+    assertThrows(
+        IllegalStateException.class,
+        () -> resources(db, "document", ALICE, LookupOptions.builder().build()));
+    assertThrows(
+        IllegalStateException.class,
+        () -> {
+          try (var s = db.lookupSubjects(Consistency.full(), DOC, "viewer", "user")) {
+            s.toList();
+          }
+        });
   }
 
   private static CheckResult result(Permissionship p) {

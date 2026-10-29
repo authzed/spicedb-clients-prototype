@@ -11,11 +11,12 @@ import org.junit.jupiter.api.Test;
 class GrpcRuntimeTest {
 
   @Test
-  void olderRuntimeFailsNamingTheMavenProperty() {
+  void olderRuntimeFailsNamingTheMavenAndSpringBootProperties() {
     var e =
         assertThrows(
             IllegalStateException.class, () -> GrpcRuntime.requireAtLeast(new int[] {1, 68, 1}));
     assertTrue(e.getMessage().contains("<grpc.version>"), e.getMessage());
+    assertTrue(e.getMessage().contains("<grpc-java.version>"), e.getMessage());
     assertTrue(e.getMessage().contains("grpc-bom"), e.getMessage());
     assertTrue(e.getMessage().contains("1.68.1"), e.getMessage());
     assertTrue(e.getMessage().contains(GrpcRuntime.format(GrpcRuntime.FLOOR)));

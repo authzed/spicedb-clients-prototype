@@ -32,7 +32,9 @@ found and the property to raise, `<protobuf-java.version>` in Maven or Spring
 Boot. In Gradle, require `com.google.protobuf:protobuf-java:4.33.2` or later.
 The same applies to gRPC: a grpc-java older than 1.80.0 makes the first
 factory call throw `IllegalStateException` naming the version found and
-`<grpc.version>` (or `io.grpc:grpc-bom`) to raise. If the gRPC version cannot be
+what to raise: `<grpc.version>` in Maven, `<grpc-java.version>` in Spring Boot
+(the property its dependency management uses), or an imported
+`io.grpc:grpc-bom`. If the gRPC version cannot be
 read from the class path, for example in a repackaged jar, that check is skipped.
 
 ## Legacy-to-new member map
@@ -333,8 +335,12 @@ try {
 - Local cancellation (thread interrupt, closed stream or client) raises
   `java.util.concurrent.CancellationException` with a `CANCELLED` status cause.
 - A response the client cannot interpret (a relationship, resource, subject or
-  object missing; a cursor that does not advance) fails with `INTERNAL`, which
-  is not retried by default. It is never skipped or filled with empty values.
+  object missing; a check, bulk-check item, looked-up resource or subject with an
+  unspecified permissionship; a cursor that does not advance) fails with
+  `INTERNAL`, which is not retried by default. It is never skipped or filled
+  with empty values, and a successful `CheckResult` or `LookupResource` never
+  carries `UNSPECIFIED`. The message begins `client detected malformed response
+  from server:`, so it is not mistaken for a status the server sent.
 - Local validation (`Relationship.fromTuple`, `ObjectRef`, option builders,
   endpoint parsing) throws `LocalValidationException`, a subclass of
   `InvalidArgumentException`, not `IllegalArgumentException`. Java has single class inheritance and `catch`
@@ -346,7 +352,10 @@ try {
   `InvalidArgumentException` (local or server), for example
   `catch (IllegalArgumentException | LocalValidationException e)`. Both report
   `INVALID_ARGUMENT`; the server's rejection is a plain
-  `InvalidArgumentException`, never a `LocalValidationException`.
+  `InvalidArgumentException`, never a `LocalValidationException`. A null
+  pre-shared key, a null `ClientOption` and a null consistency on
+  `readRelationships` or `lookupResources` are local validation too, no longer
+  a `NullPointerException` or a `Bearer null` header.
   `serverMessage()` is never `null`: for a local error it is the message.
 
 ## Transport-level data

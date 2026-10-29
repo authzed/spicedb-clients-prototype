@@ -54,7 +54,7 @@ from authzed.api.materialize.v0 import (
     watchpermissionsets_pb2 as permission_sets,
     watchpermissionsets_pb2_grpc,
 )
-from spicedb import _mapping, _requests
+from spicedb import _mapping, _requests, _wire
 from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
 from spicedb._endpoint import parse_endpoint
 from spicedb._tls import channel_credentials, require_tls_material_usable
@@ -113,7 +113,6 @@ from spicedb.types import (
     LookupResource,
     LookupSubject,
     WatchEvent,
-    _permission_tree_from_proto,
     _snapshot,
     _schema_diff_from_proto,
 )
@@ -423,7 +422,7 @@ class SpiceDBClient(ClientConfig):
         response = await self._rpc(
             self._permissions.WriteRelationships, request, budget, policy, call_options
         )
-        return WriteResult(revision=ZedToken(response.written_at.token))
+        return WriteResult(revision=_wire.token(response, "written_at", "WriteRelationshipsResponse"))
 
     async def delete_relationships(
         self,
@@ -478,7 +477,7 @@ class SpiceDBClient(ClientConfig):
             response.deletion_progress, DeleteProgress.UNSPECIFIED
         )
         return DeleteResult(
-            ZedToken(response.deleted_at.token),
+            _wire.token(response, "deleted_at", "DeleteRelationshipsResponse"),
             response.relationships_deleted_count,
             progress,
             response.after_result_cursor.token
@@ -541,7 +540,7 @@ class SpiceDBClient(ClientConfig):
                 if page.progress == DeleteProgress.COMPLETE:
                     return acknowledged
                 if page.progress == DeleteProgress.UNSPECIFIED:
-                    raise SpiceDBError("delete-all received unspecified progress")
+                    raise _wire.malformed("DeleteRelationshipsResponse.deletion_progress is unspecified")
                 cursor = page.cursor
         except BaseException as error:
             if acknowledged is not None:
@@ -557,7 +556,7 @@ class SpiceDBClient(ClientConfig):
         response = await self._rpc(
             self._schema.ReadSchema, s.ReadSchemaRequest(), budget, Operation.READ_SCHEMA, call_options
         )
-        return SchemaResult(response.schema_text, ZedToken(response.read_at.token))
+        return SchemaResult(response.schema_text, _wire.token(response, "read_at", "ReadSchemaResponse"))
 
     async def write_schema(
         self, schema: str, *, timeout: float | None = None, call_options: CallOptions | None = None
@@ -569,7 +568,7 @@ class SpiceDBClient(ClientConfig):
         response = await self._rpc(
             self._schema.WriteSchema, s.WriteSchemaRequest(schema=schema), budget, policy, call_options
         )
-        return ZedToken(response.written_at.token)
+        return _wire.token(response, "written_at", "WriteSchemaResponse")
 
     async def expand_permission_tree(
         self,
@@ -591,7 +590,7 @@ class SpiceDBClient(ClientConfig):
             call_options,
         )
         return ExpandResult(
-            _permission_tree_from_proto(response.tree_root), ZedToken(response.expanded_at.token)
+            _mapping.permission_tree(response), _wire.token(response, "expanded_at", "ExpandPermissionTreeResponse")
         )
 
     async def reflect_schema(
@@ -636,7 +635,7 @@ class SpiceDBClient(ClientConfig):
         )
         return RelationsResult(
             [RelationReference._from_proto(x) for x in response.permissions],
-            ZedToken(response.read_at.token),
+            _wire.token(response, "read_at", "ComputablePermissionsResponse"),
         )
 
     async def dependent_relations(
@@ -662,7 +661,7 @@ class SpiceDBClient(ClientConfig):
         )
         return RelationsResult(
             [RelationReference._from_proto(x) for x in response.relations],
-            ZedToken(response.read_at.token),
+            _wire.token(response, "read_at", "DependentRelationsResponse"),
         )
 
     async def diff_schema(
@@ -684,7 +683,7 @@ class SpiceDBClient(ClientConfig):
             call_options,
         )
         return SchemaDiffResult(
-            [_schema_diff_from_proto(x) for x in response.diffs], ZedToken(response.read_at.token)
+            [_schema_diff_from_proto(x) for x in response.diffs], _wire.token(response, "read_at", "DiffSchemaResponse")
         )
 
     async def experimental_register_relationship_counter(
@@ -735,9 +734,15 @@ class SpiceDBClient(ClientConfig):
         if response.HasField("read_counter_value"):
             return CountResult(
                 response.read_counter_value.relationship_count,
-                ZedToken(response.read_counter_value.read_at.token),
+                _wire.token(
+                    response.read_counter_value, "read_at", "ExperimentalCountRelationshipsResponse.read_counter_value"
+                ),
             )
-        return CountResult(None, None, response.counter_still_calculating)
+        if not response.counter_still_calculating:
+            raise _wire.malformed(
+                "ExperimentalCountRelationshipsResponse has neither read_counter_value nor counter_still_calculating"
+            )
+        return CountResult(None, None, True)
 
     async def experimental_roaring_lookup_resources(
         self,
@@ -762,7 +767,7 @@ class SpiceDBClient(ClientConfig):
             self._materialize.ExperimentalRoaringLookupResources, request, budget, Operation.EXPERIMENTAL_ROARING_LOOKUP_RESOURCES, call_options
         )
         return RoaringLookupResourcesResult(
-            response.bitmap, response.cardinality, ZedToken(response.at_revision.token)
+            response.bitmap, response.cardinality, _wire.token(response, "at_revision", "RoaringLookupResourcesResponse")
         )
 
     def _stream(
@@ -806,6 +811,7 @@ class SpiceDBClient(ClientConfig):
                     # Single-request mode sends one request, as the raw
                     # API does: its limit is the total limit (0 means
                     # unbounded) and no follow-up page is fetched.
+                    page_start = cursor
                     request = request_factory(cursor, (limit or 0) if single_request else page_size)
                     attempt = 0
                     while True:
@@ -884,6 +890,11 @@ class SpiceDBClient(ClientConfig):
                                 call.cancel()
                     if single_request or page_size is None or page_count < page_size or cursor is None:
                         return
+                    if page_start is not None and cursor.token == page_start.token:
+                        # Re-requesting the same cursor would loop forever.
+                        raise _wire.malformed(
+                            "a full page ended at the cursor it started from; the cursor does not advance"
+                        )
             finally:
                 if owner._call is not None:
                     owner._call.cancel()
@@ -922,9 +933,9 @@ class SpiceDBClient(ClientConfig):
             ),
             lambda response: [
                 ReadRelationship(
-                    Relationship._from_proto(response.relationship),
+                    _wire.relationship(response, "relationship", "ReadRelationshipsResponse"),
                     _response_cursor(response),
-                    ZedToken(response.read_at.token),
+                    _wire.token(response, "read_at", "ReadRelationshipsResponse"),
                 )
             ],
             budget,
@@ -1073,7 +1084,7 @@ class SpiceDBClient(ClientConfig):
         def items(response):
             after = _response_cursor(response)
             return [
-                ExportedRelationship(Relationship._from_proto(x), after)
+                ExportedRelationship(_wire.relationship(x, None, "ExportBulkRelationshipsResponse.relationships"), after)
                 for x in response.relationships
             ]
 
@@ -1254,7 +1265,7 @@ class SpiceDBClient(ClientConfig):
             Operation.EXPERIMENTAL_COUNT_RELATIONSHIPS_BY_FILTER,
             call_options,
         )
-        return CountResult(response.relationship_count, ZedToken(response.read_at.token))
+        return CountResult(response.relationship_count, _wire.token(response, "read_at", "CountRelationshipsResponse"))
 
     def watch_permission_sets(
         self,

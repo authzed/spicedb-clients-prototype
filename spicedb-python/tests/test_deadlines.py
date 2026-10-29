@@ -16,6 +16,7 @@ along with it) if a regression reintroduces an unbounded call.
 """
 
 from __future__ import annotations
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import TransportSecurity
 from spicedb import PermissionCheck
 import asyncio
@@ -82,15 +83,15 @@ class _StallingHandlers:
 
     def check_bulk(self, request: bytes, context: grpc.ServicerContext) -> bytes:
         time.sleep(_STALL_SECONDS)
-        return psp.CheckBulkPermissionsResponse().SerializeToString()
+        return psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t")).SerializeToString()
 
     def write(self, request: bytes, context: grpc.ServicerContext) -> bytes:
         time.sleep(_STALL_SECONDS)
-        return psp.WriteRelationshipsResponse().SerializeToString()
+        return psp.WriteRelationshipsResponse(written_at=_core_tok.ZedToken(token="t")).SerializeToString()
 
     def read_relationships(self, request: bytes, context: grpc.ServicerContext):
         time.sleep(_STALL_SECONDS)
-        yield psp.ReadRelationshipsResponse(
+        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
             relationship=Relationship.from_triple(
                 "document:a", "viewer", "user:jimmy"
             )._to_proto()

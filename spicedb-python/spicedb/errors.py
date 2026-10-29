@@ -243,6 +243,17 @@ class OutOfRangeError(SpiceDBError):
     grpc_code = grpc.StatusCode.OUT_OF_RANGE
 
 
+class InternalError(SpiceDBError):
+    """An internal error: from the server, or a response this client cannot
+    interpret (a missing required field, a cursor that does not advance).
+
+    Not retryable by default. The client never skips such a response or fills
+    its missing fields with empty values.
+    """
+
+    grpc_code = grpc.StatusCode.INTERNAL
+
+
 class EventLoopBindingError(SpiceDBError):
     """An async client was used from a different event loop than it bound to.
 
@@ -269,6 +280,7 @@ _CODE_TO_ERROR: dict[grpc.StatusCode, type[SpiceDBError]] = {
     grpc.StatusCode.RESOURCE_EXHAUSTED: ResourceExhaustedError,
     grpc.StatusCode.UNAUTHENTICATED: UnauthenticatedError,
     grpc.StatusCode.OUT_OF_RANGE: OutOfRangeError,
+    grpc.StatusCode.INTERNAL: InternalError,
 }
 
 _TRANSIENT_CODES = frozenset(

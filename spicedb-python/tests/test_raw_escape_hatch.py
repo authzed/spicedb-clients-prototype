@@ -13,6 +13,7 @@ both the response and the `authorization` header the server actually received.
 """
 
 from __future__ import annotations
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import TransportSecurity
 import inspect
 from concurrent import futures
@@ -39,7 +40,7 @@ class _Recorder:
         )
         req = psp.CheckBulkPermissionsRequest()
         req.ParseFromString(request)
-        resp = psp.CheckBulkPermissionsResponse()
+        resp = psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"))
         for _ in req.items:
             pair = resp.pairs.add()
             pair.item.permissionship = (

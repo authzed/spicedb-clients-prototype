@@ -333,6 +333,12 @@ also classifies raw `grpc.RpcError`, `asyncio.CancelledError` and
 `TimeoutError`. Tests construct errors with
 `SpiceDBError.from_code(grpc.StatusCode.FAILED_PRECONDITION, "...")`.
 
+A response the client cannot interpret (a missing relationship, object, ID or
+revision, an expand node with neither children nor subjects, a cursor that
+does not advance) raises `InternalError` (code `INTERNAL`, not retried by
+default). authzed-py passed such responses through with empty values; this
+client never skips them or fills them in.
+
 ## Metadata and call options
 
 authzed-py methods took gRPC keyword arguments (`metadata=`, `timeout=`,

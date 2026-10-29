@@ -14,6 +14,27 @@
 
 ## Unreleased
 
+### Malformed responses fail with INTERNAL
+
+- New `InternalError` (code `INTERNAL`, not retryable by default); a server
+  `INTERNAL` status now maps to it too. A response the client cannot
+  interpret raises it: a missing relationship, resource, subject or object,
+  an empty object ID or relation, a missing revision (`read_at`,
+  `looked_up_at`, `checked_at`, `written_at`, `deleted_at`, `expanded_at`,
+  `changes_through`, and the counter, roaring and permission-set revisions),
+  an expand node with neither children nor subjects, a counter response with
+  neither a value nor `counter_still_calculating`, a permission-set change
+  without its parent, child or revision, a permission-set lookup without its
+  change or cursor, and a full page whose cursor does not advance. Such a
+  response is never skipped (which would make a full page look short and
+  end a paged read early) and never filled with empty values: a missing
+  revision used to become `ZedToken("")`.
+- Client-detected errors (a bulk-check pair count or echo mismatch, a pair
+  with neither item nor error, unspecified delete progress) now report
+  `INTERNAL` instead of `UNKNOWN`.
+- `protoconv.*_from_proto` reports a response proto missing a required field
+  as `LocalValidationError`, since the caller supplied it.
+
 ### Per-page default deadlines
 
 - Finite paged reads (`read_relationships`, `lookup_resources`,

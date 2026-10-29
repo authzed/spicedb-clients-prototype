@@ -8,6 +8,7 @@ credentials). These tests fail loudly if that regresses.
 """
 
 from __future__ import annotations
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import TransportSecurity
 from spicedb import PermissionCheck
 import contextlib
@@ -71,7 +72,7 @@ class _Recorder:
         self._record(context)
         req = psp.CheckBulkPermissionsRequest()
         req.ParseFromString(request)
-        return psp.CheckBulkPermissionsResponse(
+        return psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
             pairs=[
                 psp.CheckBulkPermissionsPair(
                     request=item,

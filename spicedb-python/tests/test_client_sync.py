@@ -3,6 +3,7 @@
 Request-building and response-mapping are covered once in test_requests.py and
 test_mapping.py -- this file only asserts the sync client drives them correctly.
 """
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import ZedToken
 from spicedb import TransportSecurity, RetryPolicy
 
@@ -167,7 +168,7 @@ def test_transient_error_is_retried_then_succeeds(make_client):
     from authzed.api.v1 import schema_service_pb2 as ssp
 
     c = make_client(retry_policy=RetryPolicy(max_retries=2))
-    ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
+    ok = ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t"), schema_text="definition user {}")
     stub = mock.Mock(side_effect=[_SyncRpcError(grpc.StatusCode.UNAVAILABLE), ok])
     with mock.patch.object(c._schema, "ReadSchema", stub):
         c.read_schema()
@@ -269,7 +270,7 @@ def test_read_relationships_returns_a_plain_iterator(make_client):
 
     c = make_client()
     page = [
-        psp.ReadRelationshipsResponse(
+        psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
             relationship=Relationship.from_triple(
                 f"document:{i}", "viewer", "user:jimmy"
             )._to_proto()
@@ -293,7 +294,7 @@ def test_read_relationships_stops_when_page_is_short(make_client):
     stub = mock.Mock(
         return_value=_FakeSyncCall(
             [
-                psp.ReadRelationshipsResponse(
+                psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
                     relationship=Relationship.from_triple(
                         "document:a", "viewer", "user:jimmy"
                     )._to_proto()
@@ -313,7 +314,7 @@ def test_streaming_retries_establishment_only_before_first_yield(make_client):
     c = make_client(retry_policy=RetryPolicy(max_retries=3))
 
     def _one_then_fail():
-        yield psp.ReadRelationshipsResponse(
+        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
             relationship=Relationship.from_triple(
                 "document:a", "viewer", "user:jimmy"
             )._to_proto()

@@ -298,7 +298,9 @@ if isinstance(err, SpiceDBError):
 Errors raised by local validation, before any RPC, are `LocalValidationError`:
 an `InvalidArgumentError` and also a `ValueError`, so `except ValueError`
 around parsing input works. A server `INVALID_ARGUMENT` is a plain
-`InvalidArgumentError`.
+`InvalidArgumentError`. A response the client cannot interpret (a missing
+required field, a cursor that does not advance) raises `InternalError`, which
+is not retried: treat it as a server or proxy bug, not a transient error.
 
 Native errors are `grpc.RpcError`s: existing `except grpc.RpcError` handlers
 and `err.code()` / `err.details()` keep working, including for local

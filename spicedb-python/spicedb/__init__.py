@@ -62,6 +62,7 @@ from spicedb.errors import (
     SpiceDBError,
     UnauthenticatedError,
     UnavailableError,
+    InternalError,
 )
 from spicedb.types import (
     SchemaTypeReference,
@@ -159,6 +160,7 @@ __all__ = [
     "LocalValidationError",
     "FailedPreconditionError",
     "UnavailableError",
+    "InternalError",
     "CancelledError",
     "DeadlineExceededError",
     "ResourceExhaustedError",

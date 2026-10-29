@@ -1223,10 +1223,12 @@ class RelationReference:
     def _from_proto(
         cls, proto: schema_service_pb2.ReflectionRelationReference
     ) -> "RelationReference":
-        """Create from a proto ReflectionRelationReference."""
+        """Create from a proto ReflectionRelationReference (a server response)."""
+        from spicedb import _wire
+
         return cls(
-            definition_name=proto.definition_name,
-            relation_name=proto.relation_name,
+            definition_name=_wire.text(proto.definition_name, "ReflectionRelationReference.definition_name"),
+            relation_name=_wire.text(proto.relation_name, "ReflectionRelationReference.relation_name"),
             is_permission=proto.is_permission,
         )
 

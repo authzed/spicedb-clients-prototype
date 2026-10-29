@@ -4,6 +4,7 @@ The deprecated-field fallbacks below are the reason this logic is worth
 extracting: they are subtle, they protect against over-granting access, and
 duplicating them per flavor would be a security-relevant drift risk.
 """
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import ZedToken
 
 import pytest
@@ -56,7 +57,7 @@ def test_check_results_maps_permissionship_per_item():
 def test_check_results_conditional_has_permission_is_false():
     """T1 (mapper angle): CONDITIONAL_PERMISSION must map to has_permission ==
     False, never True -- a conditional result is not a grant."""
-    resp = psp.CheckBulkPermissionsResponse(
+    resp = psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
         pairs=[
             psp.CheckBulkPermissionsPair(
                 item=psp.CheckBulkPermissionsResponseItem(
@@ -76,7 +77,7 @@ def test_check_results_conditional_has_permission_is_false():
 def test_check_results_missing_context_carries_server_values():
     """T2: missing_context must carry the server's exact
     missing_required_context contents, not merely be non-empty."""
-    resp = psp.CheckBulkPermissionsResponse(
+    resp = psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
         pairs=[
             psp.CheckBulkPermissionsPair(
                 item=psp.CheckBulkPermissionsResponseItem(
@@ -96,7 +97,7 @@ def test_check_results_missing_context_carries_server_values():
 
 
 def test_check_results_missing_context_empty_when_not_conditional():
-    resp = psp.CheckBulkPermissionsResponse(
+    resp = psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
         pairs=[
             psp.CheckBulkPermissionsPair(
                 item=psp.CheckBulkPermissionsResponseItem(
@@ -141,7 +142,7 @@ def test_check_results_checked_at_populated_from_response():
 def test_check_results_raises_typed_error_on_item_error():
     from google.rpc import status_pb2
 
-    resp = psp.CheckBulkPermissionsResponse(
+    resp = psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
         pairs=[
             psp.CheckBulkPermissionsPair(
                 error=status_pb2.Status(code=7, message="nope")
@@ -160,7 +161,7 @@ def test_check_results_raises_when_response_has_fewer_pairs_than_request_items()
     nothing about count. A short response would otherwise silently desync
     results[i] from relationships[i] for every item after the gap -- one
     resource's answer attributed to another."""
-    resp = psp.CheckBulkPermissionsResponse(
+    resp = psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
         pairs=[
             psp.CheckBulkPermissionsPair(
                 item=psp.CheckBulkPermissionsResponseItem(
@@ -180,7 +181,7 @@ def test_check_results_raises_on_malformed_pair_instead_of_shrinking_results():
     """A CheckBulkPermissionsPair whose `response` oneof is unset (neither
     `item` nor `error`) must fail loudly, not silently fall through to the
     default (zero-value) item."""
-    resp = psp.CheckBulkPermissionsResponse(pairs=[psp.CheckBulkPermissionsPair()])
+    resp = psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), pairs=[psp.CheckBulkPermissionsPair()])
     expected = _request_items(1)
     for pair, item in zip(resp.pairs, expected):
         pair.request.CopyFrom(item)
@@ -190,7 +191,7 @@ def test_check_results_raises_on_malformed_pair_instead_of_shrinking_results():
 
 def test_lookup_subject_falls_back_to_deprecated_top_level_fields():
     """Servers that don't populate `subject` must still map correctly."""
-    resp = psp.LookupSubjectsResponse(
+    resp = psp.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
         subject_object_id="jimmy",
         permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
     )
@@ -205,7 +206,7 @@ def test_lookup_subject_falls_back_to_deprecated_excluded_ids():
     Callers MUST still see the exclusions -- dropping them would over-grant on a
     wildcard match.
     """
-    resp = psp.LookupSubjectsResponse(
+    resp = psp.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
         subject_object_id="*",
         permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
         excluded_subject_ids=["banned"],
@@ -217,7 +218,7 @@ def test_lookup_subject_falls_back_to_deprecated_excluded_ids():
 
 
 def test_lookup_subject_prefers_modern_fields_over_deprecated():
-    resp = psp.LookupSubjectsResponse(
+    resp = psp.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
         subject=psp.ResolvedSubject(
             subject_object_id="modern",
             permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
@@ -228,7 +229,7 @@ def test_lookup_subject_prefers_modern_fields_over_deprecated():
 
 
 def test_lookup_resource_maps_has_permission_with_no_partial_caveat():
-    resp = psp.LookupResourcesResponse(
+    resp = psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
         resource_object_id="doc1",
         permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
     )
@@ -242,7 +243,7 @@ def test_lookup_resource_conditional_permission_carries_partial_caveat():
     """A conditional result is NOT a full grant -- a caller that loses
     `partial_caveat` here would treat it as one.
     """
-    resp = psp.LookupResourcesResponse(
+    resp = psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
         resource_object_id="doc2",
         permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
         partial_caveat_info=core_pb2.PartialCaveatInfo(

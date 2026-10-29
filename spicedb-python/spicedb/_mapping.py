@@ -15,9 +15,9 @@ from collections.abc import Sequence
 
 from authzed.api.v1 import permission_service_pb2, watch_service_pb2
 
-from spicedb.errors import SpiceDBError, error_from_status_proto
+from spicedb import _wire
+from spicedb.errors import error_from_status_proto
 from spicedb.types import (
-    ObjectRef,
     PermissionSetCursor,
     PermissionSetRef,
     PermissionSetMember,
@@ -43,6 +43,7 @@ from spicedb.types import (
     _debug_information,
     context_from_struct,
     _partial_caveat_from_proto,
+    _permission_tree_from_proto,
     _permissionship_from_proto,
     _resolved_subject_from_proto,
 )
@@ -77,7 +78,7 @@ def check_results(
     """
     expected_count = len(expected_items)
     if len(resp.pairs) != expected_count:
-        raise SpiceDBError(
+        raise _wire.malformed(
             f"check_bulk_permissions returned {len(resp.pairs)} pair(s) for "
             f"{expected_count} request item(s)"
         )
@@ -87,13 +88,13 @@ def check_results(
     # context cannot silently compare equal to a present empty context.
     for i, (pair, expected) in enumerate(zip(resp.pairs, expected_items)):
         if not pair.HasField("request") or pair.request != expected:
-            error = SpiceDBError(
+            error = _wire.malformed(
                 f"check item {offset + i}: missing or mismatched echoed request"
             )
             error.input_index = offset + i
             raise error
 
-    checked_at = ZedToken(resp.checked_at.token)
+    checked_at = _wire.token(resp, "checked_at", "CheckBulkPermissionsResponse")
     results: list[CheckResult] = []
     for i, pair in enumerate(resp.pairs):
         if pair.HasField("error"):
@@ -116,9 +117,9 @@ def check_results(
             # unreachable in practice. Mirrors spicedb-rust's
             # malformed-oneof guard: fail loudly instead of falling through
             # to the item field's default (zero) value.
-            error = SpiceDBError(
-                f"check item {offset + i}: malformed CheckBulkPermissionsPair "
-                "(neither item nor error set)"
+            error = _wire.malformed(
+                f"check item {offset + i}: CheckBulkPermissionsPair has "
+                "neither item nor error"
             )
             error.input_index = offset + i
             raise error
@@ -141,10 +142,10 @@ def lookup_resource(
     resp: permission_service_pb2.LookupResourcesResponse,
 ) -> LookupResource:
     return LookupResource(
-        resource_id=resp.resource_object_id,
+        resource_id=_wire.text(resp.resource_object_id, "LookupResourcesResponse.resource_object_id"),
         permissionship=_permissionship_from_proto(resp.permissionship),
         partial_caveat=_partial_caveat_from_proto(resp),
-        looked_up_at=ZedToken(resp.looked_up_at.token),
+        looked_up_at=_wire.token(resp, "looked_up_at", "LookupResourcesResponse"),
         after_result_cursor=resp.after_result_cursor.token or None
         if resp.HasField("after_result_cursor")
         else None,
@@ -163,10 +164,13 @@ def lookup_subject(
             permissionship=_permissionship_from_proto(resp.permissionship),
             partial_caveat=_partial_caveat_from_proto(resp),
         )
+    _wire.text(subject.subject_id, "LookupSubjectsResponse.subject.subject_object_id")
 
     excluded: list[ResolvedSubject] = []
     if resp.excluded_subjects:
         excluded = [_resolved_subject_from_proto(e) for e in resp.excluded_subjects]
+        for value in excluded:
+            _wire.text(value.subject_id, "LookupSubjectsResponse.excluded_subjects.subject_object_id")
     elif resp.excluded_subject_ids:
         # Deprecated field: IDs only, no permissionship/caveat info.
         excluded = [
@@ -180,14 +184,26 @@ def lookup_subject(
     return LookupSubject(
         subject=subject,
         excluded_subjects=excluded,
-        looked_up_at=ZedToken(resp.looked_up_at.token),
+        looked_up_at=_wire.token(resp, "looked_up_at", "LookupSubjectsResponse"),
     )
+
+
+def _update_operation(value):
+    from spicedb.types import _UPDATE_OP_MAP, UpdateOperation
+
+    return _UPDATE_OP_MAP.get(value, UpdateOperation.UNSPECIFIED)
 
 
 def watch_event(resp: watch_service_pb2.WatchResponse) -> WatchEvent:
     return WatchEvent(
-        updates=[Update._from_proto(u) for u in resp.updates],
-        changes_through=ZedToken(resp.changes_through.token),
+        updates=[
+            Update(
+                _update_operation(u.operation),
+                _wire.relationship(u, "relationship", "WatchResponse.updates"),
+            )
+            for u in resp.updates
+        ],
+        changes_through=_wire.token(resp, "changes_through", "WatchResponse"),
         is_checkpoint=resp.is_checkpoint,
         transaction_metadata=context_from_struct(resp.optional_transaction_metadata)
         if resp.HasField("optional_transaction_metadata")
@@ -203,7 +219,7 @@ def check_result(resp):
     return CheckResult(
         permissionship=_check_permissionship_from_proto(resp.permissionship),
         missing_context=list(resp.partial_caveat_info.missing_required_context),
-        checked_at=ZedToken(resp.checked_at.token),
+        checked_at=_wire.token(resp, "checked_at", "CheckPermissionResponse"),
         debug_trace=_debug_information(resp),
         expiration=resp.optional_expires_at.ToDatetime(tzinfo=timezone.utc)
         if resp.HasField("optional_expires_at")
@@ -211,31 +227,30 @@ def check_result(resp):
     )
 
 
-def permission_set_change(value):
-    parent = (
-        PermissionSetRef(
-            ObjectRef._unchecked(value.parent_set.object_type, value.parent_set.object_id),
-            value.parent_set.permission_or_relation,
-        )
-        if value.HasField("parent_set")
-        else None
+def _set_ref(value, field, what):
+    ref = _wire.need(value, field, what)
+    return PermissionSetRef(
+        _wire.object_ref(value, field, what),
+        _wire.text(ref.permission_or_relation, f"{what}.{field}.permission_or_relation"),
     )
-    child = None
+
+
+def permission_set_change(value, what="PermissionSetChange"):
+    parent = _set_ref(value, "parent_set", what)
     if value.HasField("child_set"):
-        child = PermissionSetRef(
-            ObjectRef._unchecked(value.child_set.object_type, value.child_set.object_id),
-            value.child_set.permission_or_relation,
-        )
+        child = _set_ref(value, "child_set", what)
     elif value.HasField("child_member"):
         child = PermissionSetMember(
-            ObjectRef._unchecked(value.child_member.object_type, value.child_member.object_id),
+            _wire.object_ref(value, "child_member", what),
             value.child_member.optional_permission_or_relation or None,
         )
+    else:
+        raise _wire.malformed(f"{what} has neither child_set nor child_member")
     operation = {
         1: PermissionSetOperation.ADDED,
         2: PermissionSetOperation.REMOVED,
     }.get(value.operation, PermissionSetOperation.UNSPECIFIED)
-    return PermissionSetChange(ZedToken(value.at_revision.token), operation, parent, child)
+    return PermissionSetChange(_wire.token(value, "at_revision", what), operation, parent, child)
 
 
 def permission_set_event(response) -> PermissionSetEvent:
@@ -243,14 +258,20 @@ def permission_set_event(response) -> PermissionSetEvent:
     if variant == "change":
         return permission_set_change(response.change)
     if variant == "completed_revision":
-        return PermissionSetCheckpoint(ZedToken(response.completed_revision.token))
+        return PermissionSetCheckpoint(_wire.token(response, "completed_revision", "WatchPermissionSetsResponse"))
     if variant == "lookup_permission_sets_required":
         return PermissionSetsLookupRequired(
-            ZedToken(response.lookup_permission_sets_required.required_lookup_at.token)
+            _wire.token(
+                response.lookup_permission_sets_required,
+                "required_lookup_at",
+                "WatchPermissionSetsResponse.lookup_permission_sets_required",
+            )
         )
     if variant == "breaking_schema_change":
         return PermissionSetSchemaChange(
-            ZedToken(response.breaking_schema_change.change_at.token),
+            _wire.token(
+                response.breaking_schema_change, "change_at", "WatchPermissionSetsResponse.breaking_schema_change"
+            ),
             tuple(
                 WatchedPermission(
                     value.resource_type,
@@ -265,23 +286,18 @@ def permission_set_event(response) -> PermissionSetEvent:
 
 
 def permission_set_lookup(response) -> PermissionSetLookup:
-    value = response.cursor
-    cursor = (
-        PermissionSetCursor(
-            value.limit,
-            ZedToken(value.token.token) if value.HasField("token") else None,
-            value.starting_index,
-            value.completed_members,
-            value.starting_key,
-            value.cursor,
-        )
-        if response.HasField("cursor")
-        else None
+    what = "LookupPermissionSetsResponse"
+    change = permission_set_change(_wire.need(response, "change", what), f"{what}.change")
+    value = _wire.need(response, "cursor", what)
+    cursor = PermissionSetCursor(
+        value.limit,
+        ZedToken(value.token.token) if value.HasField("token") else None,
+        value.starting_index,
+        value.completed_members,
+        value.starting_key,
+        value.cursor,
     )
-    return PermissionSetLookup(
-        permission_set_change(response.change) if response.HasField("change") else None,
-        cursor,
-    )
+    return PermissionSetLookup(change, cursor)
 
 
 def permission_set_download(response) -> PermissionSetDownload:
@@ -290,5 +306,26 @@ def permission_set_download(response) -> PermissionSetDownload:
         response.timestamp.ToDatetime(tzinfo=timezone.utc)
         if response.HasField("timestamp")
         else None,
-        ZedToken(response.at_revision.token),
+        _wire.token(response, "at_revision", "DownloadPermissionSetsResponse"),
     )
+
+
+def _check_tree(node, what: str) -> None:
+    _wire.object_ref(node, "expanded_object", what)
+    _wire.text(node.expanded_relation, f"{what}.expanded_relation")
+    kind = node.WhichOneof("tree_type")
+    if kind == "intermediate":
+        for i, child in enumerate(node.intermediate.children):
+            _check_tree(child, f"{what}.intermediate.children[{i}]")
+    elif kind == "leaf":
+        for i, subject in enumerate(node.leaf.subjects):
+            _wire.object_ref(subject, "object", f"{what}.leaf.subjects[{i}]")
+    else:
+        raise _wire.malformed(f"{what} has neither intermediate nor leaf")
+
+
+def permission_tree(response):
+    """The expand response's tree, every node checked before any is mapped."""
+    root = _wire.need(response, "tree_root", "ExpandPermissionTreeResponse")
+    _check_tree(root, "ExpandPermissionTreeResponse.tree_root")
+    return _permission_tree_from_proto(root)

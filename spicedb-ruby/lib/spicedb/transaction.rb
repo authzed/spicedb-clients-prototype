@@ -16,6 +16,8 @@ module SpiceDB
 
   # A write precondition: +operation+ is :must_match or :must_not_match.
   Precondition = Data.define(:operation, :filter) do
+    include DeepHash
+
     def initialize(operation:, filter:)
       raise InvalidArgumentError, 'precondition: operation must be :must_match or :must_not_match' unless %i[must_match must_not_match].include?(operation)
       raise InvalidArgumentError, 'precondition: expected Filter' unless filter.is_a?(Filter)

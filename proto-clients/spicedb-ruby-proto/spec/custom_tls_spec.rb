@@ -119,4 +119,26 @@ RSpec.describe "SpiceDBProto::Client TLS material" do
       end.to raise_error(ArgumentError, /client_cert/)
     end
   end
+
+  describe ".validate_connection!" do
+    # The same refusals, in the same order, without creating any gRPC object,
+    # for callers that open the channel later.
+    it "applies every constructor refusal and creates nothing" do
+      expect(GRPC::Core::Channel).not_to receive(:new)
+      expect(GRPC::Core::ChannelCredentials).not_to receive(:new)
+
+      expect do
+        SpiceDBProto::Client.validate_connection!("evil.example.com:1234", insecure: true, ca_cert: "pem")
+      end.to raise_error(SpiceDBProto::InsecureRemoteHostError, /allow_insecure_remote_credentials/)
+      expect do
+        SpiceDBProto::Client.validate_connection!("localhost:50051", insecure: true, ca_cert: "pem")
+      end.to raise_error(ArgumentError, /insecure: true and TLS material/)
+      expect do
+        SpiceDBProto::Client.validate_connection!("spicedb.example.com:443", client_cert: "pem")
+      end.to raise_error(ArgumentError, /client_key/)
+      expect(SpiceDBProto::Client.validate_connection!("localhost:50051", insecure: true)).to be_nil
+      expect(SpiceDBProto::Client.validate_connection!("evil.example.com:1234", insecure: true,
+                                                                                 allow_insecure_remote_credentials: true)).to be_nil
+    end
+  end
 end

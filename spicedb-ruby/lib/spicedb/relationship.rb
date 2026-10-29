@@ -13,14 +13,18 @@ module SpiceDB
   # Caveat context keys are sorted, expiration is RFC 3339 in UTC (fractional
   # seconds only when nonzero), and a subject relation of "..." is a direct
   # subject.
+  #
+  # +relation+ may be a Symbol; it is stored as a String. +to_h+ is deep.
   Relationship = Data.define(:resource, :relation, :subject, :caveat, :expiration) do
+    include DeepHash
+
     def initialize(resource:, relation:, subject:, caveat: nil, expiration: nil)
-      raise InvalidArgumentError, 'resource: expected ObjectRef' unless resource.is_a?(ObjectRef)
-      raise InvalidArgumentError, 'subject: expected SubjectRef' unless subject.is_a?(SubjectRef)
+      raise InvalidArgumentError, "resource: expected ObjectRef, got #{Values.received(resource)}" unless resource.is_a?(ObjectRef)
+      raise InvalidArgumentError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
       raise InvalidArgumentError, 'caveat: expected Caveat' unless caveat.nil? || caveat.is_a?(Caveat)
       raise InvalidArgumentError, 'expiration: expected Time' unless expiration.nil? || expiration.is_a?(Time)
 
-      super(resource: resource, relation: Values.text(relation, 'relation'), subject: subject,
+      super(resource: resource, relation: Values.name(relation, 'relation'), subject: subject,
             caveat: caveat, expiration: Values.snapshot(expiration))
     end
 

@@ -40,6 +40,7 @@ var wantExamples = []string{
 	"bulk_operations",
 	"call_deadlines",
 	"check_permission",
+	"concurrency_and_forking",
 	"custom_tls",
 	"delete_relationships",
 	"error_mapping",

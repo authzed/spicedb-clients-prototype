@@ -45,7 +45,7 @@ RSpec.describe SpiceDB::Testing::Store do
     stream = store.watch
     expect(store.calls_of(:watch).length).to eq(1)
     expect { stream.to_a }.to raise_error(SpiceDB::Error) { |error| expect(error.code).to eq(codes::UNIMPLEMENTED) }
-    expect { store.lookup_subjects(resource: resource, permission: 'view', subject_type: 'user', consistency: full) { |_| nil } }
+    expect { store.experimental_lookup_permission_sets { |_| nil } }
       .to raise_error(SpiceDB::Error) { |error| expect(error.code).to eq(codes::UNIMPLEMENTED) }
   end
 

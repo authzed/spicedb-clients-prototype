@@ -12,7 +12,7 @@ module SpiceDB
     end
 
     def require_proto_client!
-      return if @proto_client
+      return if @proto_client || @connect
 
       raise SpiceDB::Error,
             'proto client not available — ensure the spicedb_proto gem is installed and buf-generated stubs exist'
@@ -83,14 +83,14 @@ module SpiceDB
     end
 
     def call_expand_permission_tree(consistency, resource_type, resource_id, permission, timeout_seconds)
-      resp = invoke(@proto_client.permissions, :expand_permission_tree,
+      resp = invoke(proto_client.permissions, :expand_permission_tree,
                     Authzed::Api::V1::ExpandPermissionTreeRequest.new(
                       consistency: build_consistency(consistency),
                       resource: Authzed::Api::V1::ObjectReference.new(
                         object_type: resource_type,
                         object_id: resource_id
                       ),
-                      permission: permission
+                      permission: Values.name(permission, 'permission')
                     ),
                     timeout_seconds)
 
@@ -127,7 +127,7 @@ module SpiceDB
       end
 
       owner = make_stream { nil }
-      call = @proto_client.permissions.import_bulk_relationships(requests, **stub_kwargs(budget), return_op: true)
+      call = proto_client.permissions.import_bulk_relationships(requests, **stub_kwargs(budget), return_op: true)
       owner.attach(call)
       begin
         response = call.execute
@@ -148,7 +148,7 @@ module SpiceDB
     end
 
     def call_register_relationship_counter(name, filter, timeout_seconds)
-      invoke(@proto_client.experimental, :experimental_register_relationship_counter,
+      invoke(proto_client.experimental, :experimental_register_relationship_counter,
              Authzed::Api::V1::ExperimentalRegisterRelationshipCounterRequest.new(
                name: name,
                relationship_filter: filter_to_proto(filter)
@@ -157,7 +157,7 @@ module SpiceDB
     end
 
     def call_count_relationships(name, timeout_seconds)
-      resp = invoke(@proto_client.experimental, :experimental_count_relationships,
+      resp = invoke(proto_client.experimental, :experimental_count_relationships,
                     Authzed::Api::V1::ExperimentalCountRelationshipsRequest.new(
                       name: name
                     ),
@@ -180,7 +180,7 @@ module SpiceDB
     end
 
     def call_unregister_relationship_counter(name, timeout_seconds)
-      invoke(@proto_client.experimental, :experimental_unregister_relationship_counter,
+      invoke(proto_client.experimental, :experimental_unregister_relationship_counter,
              Authzed::Api::V1::ExperimentalUnregisterRelationshipCounterRequest.new(
                name: name
              ),

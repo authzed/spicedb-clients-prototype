@@ -1,12 +1,25 @@
 # frozen_string_literal: true
 
 module SpiceDB
+  # Makes a native value's +to_h+ deep: nested native values (a
+  # relationship's resource and subject, a subject's object, ...) are Hashes
+  # too, so +item.to_h[:relationship][:subject][:object][:object_id]+ works as
+  # it did on a protobuf message's +to_h+. Data#to_h alone is shallow.
+  module DeepHash
+    def to_h(&)
+      hash = self.class.members.to_h { |member| [member, Values.deep_hash(public_send(member))] }
+      block_given? ? hash.to_h(&) : hash
+    end
+  end
+
   # Copies values at API boundaries so frozen records own their nested data.
   module Values
     module_function
 
     def record(*members, &body)
       Data.define(*members) do
+        include DeepHash
+
         define_method(:initialize) { |**values| super(**Values.token_fields(Values.snapshot(values))) }
         class_eval(&body) if body
       end
@@ -28,10 +41,62 @@ module SpiceDB
       end
     end
 
+    # A nonempty String, frozen. Only Strings are accepted; see #name and #id
+    # for the Symbol and Integer conversions.
     def text(value, path)
-      raise InvalidArgumentError, "#{path}: expected a nonempty string" unless value.is_a?(String) && !value.empty?
+      return value.dup.freeze if value.is_a?(String) && !value.empty?
 
-      value.dup.freeze
+      raise InvalidArgumentError, "#{path}: expected a nonempty String, got #{received(value)}"
+    end
+
+    # A type, relation, permission or caveat name: a nonempty String or a
+    # Symbol, converted with +to_s+ (+permission: :view+ is "view").
+    def name(value, path)
+      return text(value.to_s, path) if value.is_a?(Symbol) && !value.empty?
+      return text(value, path) if value.is_a?(String) && !value.empty?
+
+      raise InvalidArgumentError, "#{path}: expected a nonempty String or Symbol, got #{received(value)}"
+    end
+
+    # An object ID: a nonempty String or an Integer (a database primary key),
+    # converted with +to_s+ (+object_id: 42+ is "42").
+    def id(value, path)
+      return value.to_s.freeze if value.is_a?(Integer)
+      return text(value, path) if value.is_a?(String) && !value.empty?
+
+      raise InvalidArgumentError, "#{path}: expected a nonempty String or Integer, got #{received(value)}"
+    end
+
+    # +value+ with a Symbol converted to a String, for fields (filters) that
+    # have always accepted any value and are validated by the server.
+    def loose_name(value) = value.is_a?(Symbol) ? value.to_s : value
+
+    # +value+ with an Integer converted to a String; see #loose_name.
+    def loose_id(value) = value.is_a?(Integer) ? value.to_s : value
+
+    # nil, or #name of +value+.
+    def optional_name(value, path) = value.nil? ? nil : name(value, path)
+
+    # nil, or #id of +value+.
+    def optional_id(value, path) = value.nil? ? nil : id(value, path)
+
+    # Names the class (and a short inspection) of a rejected value.
+    def received(value)
+      shown = value.inspect
+      shown = "#{shown[0, 40]}..." if shown.length > 43
+      "#{value.class} (#{shown})"
+    end
+
+    # The deep Hash form of a native value: nested native values become
+    # Hashes too, Arrays and Hashes are walked, and everything else (Strings,
+    # Symbols, Times, ZedTokens, ...) is returned as is.
+    def deep_hash(value)
+      case value
+      when DeepHash then value.to_h
+      when Array then value.map { |item| deep_hash(item) }
+      when Hash then value.transform_values { |item| deep_hash(item) }
+      else value
+      end
     end
 
     def json(value, path = 'context', ancestors = [])
@@ -67,37 +132,48 @@ module SpiceDB
     end
   end
 
+  # +object_type+ may be a Symbol and +object_id+ an Integer; both are stored
+  # as Strings.
   ObjectRef = Data.define(:object_type, :object_id) do # rubocop:disable Lint/DataDefineOverride
+    include DeepHash
+
     def initialize(object_type:, object_id:)
-      super(object_type: Values.text(object_type, 'object_type'), object_id: Values.text(object_id, 'object_id'))
+      super(object_type: Values.name(object_type, 'object_type'), object_id: Values.id(object_id, 'object_id'))
     end
 
     def to_s = "#{object_type}:#{object_id}"
   end
 
   SubjectRef = Data.define(:object, :relation) do
-    def initialize(object:, relation: nil)
-      raise InvalidArgumentError, 'subject.object: expected ObjectRef' unless object.is_a?(ObjectRef)
-      raise InvalidArgumentError, 'subject.relation: use nil for direct subjects' if relation == '...'
+    include DeepHash
 
-      super(object: object, relation: relation.nil? ? nil : Values.text(relation, 'subject.relation'))
+    def initialize(object:, relation: nil)
+      raise InvalidArgumentError, "subject.object: expected ObjectRef, got #{Values.received(object)}" unless object.is_a?(ObjectRef)
+      raise InvalidArgumentError, 'subject.relation: use nil for direct subjects' if relation.to_s == '...' && !relation.nil?
+
+      super(object: object, relation: Values.optional_name(relation, 'subject.relation'))
     end
 
     def to_s = relation ? "#{object}##{relation}" : object.to_s
   end
 
   Caveat = Data.define(:name, :context) do
+    include DeepHash
+
     def initialize(name:, context: nil)
-      super(name: Values.text(name, 'caveat.name'), context: Values.context(context))
+      super(name: Values.name(name, 'caveat.name'), context: Values.context(context))
     end
   end
 
+  # +permission+ may be a Symbol (+permission: :view+); it is stored as a String.
   PermissionCheck = Data.define(:resource, :permission, :subject, :context) do
-    def initialize(resource:, permission:, subject:, context: nil)
-      raise InvalidArgumentError, 'resource: expected ObjectRef' unless resource.is_a?(ObjectRef)
-      raise InvalidArgumentError, 'subject: expected SubjectRef' unless subject.is_a?(SubjectRef)
+    include DeepHash
 
-      super(resource: resource, permission: Values.text(permission, 'permission'), subject: subject,
+    def initialize(resource:, permission:, subject:, context: nil)
+      raise InvalidArgumentError, "resource: expected ObjectRef, got #{Values.received(resource)}" unless resource.is_a?(ObjectRef)
+      raise InvalidArgumentError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
+
+      super(resource: resource, permission: Values.name(permission, 'permission'), subject: subject,
             context: Values.context(context))
     end
   end

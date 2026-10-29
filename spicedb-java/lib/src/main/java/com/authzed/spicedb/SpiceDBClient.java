@@ -530,6 +530,7 @@ public final class SpiceDBClient implements SpiceDBApi {
         },
         ReadRelationshipsResponse::getAfterResultCursor,
         ProtoConv::fromProto,
+        "read",
         options.cursor(),
         response -> true,
         requestLimit,
@@ -661,6 +662,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                     .transport(options.transport())
                     .build(),
                 deadline);
+        var sent = cursor;
         count += result.deletedCount();
         pages++;
         token = result.revision();
@@ -668,6 +670,15 @@ public final class SpiceDBClient implements SpiceDBApi {
         if (options.onProgress() != null)
           options.onProgress().accept(new DeleteResult(token, count, result.completed(), cursor));
         if (result.completed()) return new DeleteResult(token, count, true, cursor);
+        // A partial page that returns the cursor it was sent would repeat the same request
+        // forever. (A partial page without a cursor is valid: the next page re-evaluates the
+        // filter against what remains.)
+        if (cursor != null && !cursor.isEmpty() && cursor.equals(sent)) {
+          var error =
+              ErrorMapper.newError(Status.Code.INTERNAL, "delete page did not advance cursor");
+          error.attachDeleteProgress(new DeleteProgress(0, token, cursor, 0, false));
+          throw error;
+        }
       } catch (SpiceDBException error) {
         var prior = error.deleteProgress();
         error.attachDeleteProgress(
@@ -727,6 +738,7 @@ public final class SpiceDBClient implements SpiceDBApi {
         },
         LookupResourcesResponse::getAfterResultCursor,
         ProtoConv::fromProto,
+        "lookup",
         options.cursor(),
         response ->
             options.permissionshipFilter() == LookupPermissionshipFilter.ALL
@@ -1287,10 +1299,19 @@ public final class SpiceDBClient implements SpiceDBApi {
     }
   }
 
+  /**
+   * Watches relationship changes; a null {@code startRevision} starts at head. The client-wide
+   * retry policy and stream-retry setting never reopen a watch: a failure before the first event
+   * (UNAVAILABLE included) is thrown, since a reopened watch without a start revision would begin
+   * at a later revision and skip the changes between. Only {@link WatchOptions.Builder#retryPolicy}
+   * or a {@link ClientOperation#WATCH} operation policy opts in to reopening before the first
+   * event; a watch that delivered an event is never reopened.
+   */
   public Stream<WatchEvent> updates(List<String> objectTypes, ZedToken startRevision) {
     return updates(objectTypes, startRevision, WatchOptions.builder().build());
   }
 
+  /** Watches relationship changes with options; see {@link #updates(List, ZedToken)}. */
   public Stream<WatchEvent> updates(
       List<String> objectTypes, ZedToken startRevision, WatchOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
@@ -1321,7 +1342,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                 r.getSchemaUpdated()),
         options.timeout(),
         0,
-        retryFor(ClientOperation.WATCH, options.retryPolicy()));
+        watchRetry(ClientOperation.WATCH, options.retryPolicy()));
   }
 
   // -----------------------------------------------------------------------
@@ -1488,7 +1509,11 @@ public final class SpiceDBClient implements SpiceDBApi {
         false);
   }
 
-  /** Experimental closeable permission-set watch; null starts at head. */
+  /**
+   * Experimental closeable permission-set watch; null starts at head. Like {@link #updates(List,
+   * ZedToken)}, it is reopened before its first event only under a per-call or {@link
+   * ClientOperation#WATCH_PERMISSION_SETS} retry policy, never the client-wide one.
+   */
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
       ZedToken startRevision) {
     return experimentalWatchPermissionSets(startRevision, CallOptions.builder().build());
@@ -1511,7 +1536,7 @@ public final class SpiceDBClient implements SpiceDBApi {
         Materialize::event,
         options.timeout(),
         0,
-        retryFor(ClientOperation.WATCH_PERMISSION_SETS, options.retryPolicy()));
+        watchRetry(ClientOperation.WATCH_PERMISSION_SETS, options.retryPolicy()));
   }
 
   /** Experimental snapshot lookup with explicit opaque continuation. */
@@ -1682,6 +1707,18 @@ public final class SpiceDBClient implements SpiceDBApi {
    */
   private RetryPolicy retryFor(ClientOperation operation, RetryPolicy perCall) {
     return perCall != null ? perCall : operationRetryPolicies.get(operation);
+  }
+
+  private static final RetryPolicy NEVER_REOPEN = RetryPolicy.builder().maxRetries(0).build();
+
+  /**
+   * A watch's retry policy: only a per-call or per-operation policy may reopen it. The client-wide
+   * policy (the default included) and the stream-retry setting never do, since a reopened watch
+   * without a start revision begins at a later revision and silently skips the changes between.
+   */
+  private RetryPolicy watchRetry(ClientOperation operation, RetryPolicy perCall) {
+    var policy = retryFor(operation, perCall);
+    return policy != null ? policy : NEVER_REOPEN;
   }
 
   private RetrySettings retrySettings(RetryPolicy override) {
@@ -1948,6 +1985,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       java.util.function.Function<Cursor, Iterator<P>> open,
       java.util.function.Function<P, Cursor> cursorOf,
       java.util.function.Function<P, T> convert,
+      String what,
       String startCursor,
       java.util.function.Predicate<P> include,
       int pageSize,
@@ -1964,6 +2002,10 @@ public final class SpiceDBClient implements SpiceDBApi {
                   startCursor == null || startCursor.isEmpty()
                       ? null
                       : Cursor.newBuilder().setToken(startCursor).build();
+              // The cursor sent with the open page and the last cursor that page returned: a full
+              // page whose last cursor is missing or unchanged would re-request itself forever.
+              String sentToken = startCursor == null ? "" : startCursor;
+              String lastToken = "";
               int count;
               boolean opened, done;
 
@@ -1974,7 +2016,8 @@ public final class SpiceDBClient implements SpiceDBApi {
                     var response = page.next();
                     count++;
                     var next = cursorOf.apply(response);
-                    if (next != null && !next.getToken().isEmpty()) cursor = next;
+                    lastToken = next == null ? "" : next.getToken();
+                    if (!lastToken.isEmpty()) cursor = next;
                     if (include.test(response)) {
                       pending = response;
                       return true;
@@ -1984,6 +2027,12 @@ public final class SpiceDBClient implements SpiceDBApi {
                     done = true;
                     return false;
                   }
+                  if (opened && (lastToken.isEmpty() || lastToken.equals(sentToken))) {
+                    done = true;
+                    throw ErrorMapper.newError(
+                        Status.Code.INTERNAL, what + " page did not advance cursor");
+                  }
+                  sentToken = cursor == null ? "" : cursor.getToken();
                   page = openStreamWithRetry(perCall, () -> open.apply(cursor));
                   opened = true;
                   count = 0;

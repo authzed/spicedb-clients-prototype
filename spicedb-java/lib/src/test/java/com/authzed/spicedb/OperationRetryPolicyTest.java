@@ -111,6 +111,62 @@ class OperationRetryPolicyTest {
     }
   }
 
+  private static final class FailingPermissionSetWatch
+      extends com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc
+          .WatchPermissionSetsServiceImplBase {
+    final AtomicInteger calls = new AtomicInteger();
+
+    @Override
+    public void watchPermissionSets(
+        com.authzed.api.materialize.v0.WatchPermissionSetsRequest request,
+        StreamObserver<com.authzed.api.materialize.v0.WatchPermissionSetsResponse> out) {
+      calls.incrementAndGet();
+      out.onError(Status.UNAVAILABLE.asRuntimeException());
+    }
+  }
+
+  @Test
+  void theClientWidePolicyNeverReopensAWatch() throws Exception {
+    // Neither the default client nor an explicit retrying client-wide policy with stream retries
+    // reopens either watch; only a per-call or per-operation policy does.
+    for (var options :
+        List.of(
+            ClientOptions.builder().build(),
+            ClientOptions.builder()
+                .retryPolicy(RETRY_THREE)
+                .retries(Retries.ENABLED)
+                .streamRetries(StreamRetries.ENABLED)
+                .build())) {
+      var watch = new FailingWatch();
+      var sets = new FailingPermissionSetWatch();
+      try (var client = client(options, watch, sets)) {
+        try (var events = client.updates(List.of(), null)) {
+          assertThrows(UnavailableException.class, () -> events.iterator().hasNext());
+        }
+        assertEquals(1, watch.calls.get());
+        try (var events = client.experimentalWatchPermissionSets(null)) {
+          assertThrows(UnavailableException.class, () -> events.iterator().hasNext());
+        }
+        assertEquals(1, sets.calls.get());
+
+        try (var events =
+            client.updates(
+                List.of(), null, WatchOptions.builder().retryPolicy(RETRY_ONCE).build())) {
+          assertThrows(UnavailableException.class, () -> events.iterator().hasNext());
+        }
+        assertEquals(3, watch.calls.get(), "a per-call policy reopens the watch once");
+        try (var events =
+            client.experimentalWatchPermissionSets(
+                null, CallOptions.builder().retryPolicy(RETRY_ONCE).build())) {
+          assertThrows(UnavailableException.class, () -> events.iterator().hasNext());
+        }
+        assertEquals(3, sets.calls.get(), "a per-call policy reopens the watch once");
+      } finally {
+        stop();
+      }
+    }
+  }
+
   @Test
   void anOperationPolicyOverridesTheClientWidePolicyForThatOperationOnly() throws Exception {
     var reads = new AtomicInteger();

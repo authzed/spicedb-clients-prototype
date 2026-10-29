@@ -46,8 +46,8 @@ public final class WatchOptions {
   }
 
   /**
-   * The retry policy overriding the client's for this call, or {@code null} for the client's. See
-   * {@link Builder#retryPolicy}.
+   * The retry policy for this watch, or {@code null} for the {@link ClientOperation#WATCH}
+   * operation policy, else never reopening. See {@link Builder#retryPolicy}.
    */
   public RetryPolicy retryPolicy() {
     return retryPolicy;
@@ -77,9 +77,10 @@ public final class WatchOptions {
     private RetryPolicy retryPolicy = null;
 
     /**
-     * Overrides the client's retry policy for this one call, including stream establishment
-     * (reopening before the first item). A policy with {@code maxRetries(0)} exempts this call,
-     * such as one supervised watch, while the client keeps retrying everything else.
+     * Sets the retry policy for this one watch, opting in to reopening it before its first event.
+     * Without this or a {@link ClientOperation#WATCH} operation policy the watch is never reopened:
+     * the client-wide policy does not apply, since a reopened watch without a start revision would
+     * begin at a later revision and skip the changes between.
      *
      * <p>Mutations are not retried by default. Only a write whose transaction holds only touches
      * and no preconditions, and a schema write, are idempotent on replay and may opt in; every

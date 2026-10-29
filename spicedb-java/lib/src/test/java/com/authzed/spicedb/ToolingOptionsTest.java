@@ -393,16 +393,17 @@ class ToolingOptionsTest {
   void streamEstablishmentRetryHasItsOwnSwitch() throws Exception {
     var calls = new AtomicInteger();
     var service =
-        new WatchServiceGrpc.WatchServiceImplBase() {
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
           @Override
-          public void watch(WatchRequest req, StreamObserver<WatchResponse> resp) {
+          public void readRelationships(
+              ReadRelationshipsRequest req, StreamObserver<ReadRelationshipsResponse> resp) {
             calls.incrementAndGet();
             resp.onError(Status.UNAVAILABLE.asRuntimeException());
           }
         };
     try (var h = new Harness(service)) {
       var retrying = h.client(fastRetries(RetryPolicy.builder()));
-      try (var s = retrying.updates(List.of(), null)) {
+      try (var s = retrying.readRelationships(Consistency.full(), Filter.of("document"))) {
         assertThrows(UnavailableException.class, () -> s.findFirst());
       }
       assertEquals(4, calls.get(), "default: three retries of stream establishment");
@@ -410,7 +411,7 @@ class ToolingOptionsTest {
       calls.set(0);
       var noStreamRetry =
           h.client(ClientOptions.builder().streamRetries(StreamRetries.DISABLED).build());
-      try (var s = noStreamRetry.updates(List.of(), null)) {
+      try (var s = noStreamRetry.readRelationships(Consistency.full(), Filter.of("document"))) {
         assertThrows(UnavailableException.class, () -> s.findFirst());
       }
       assertEquals(1, calls.get());

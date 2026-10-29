@@ -161,8 +161,9 @@ authzed-java stubs have no deadline and no retries. spicedb-java:
   you already have a policy, so the two do not stack.
 - overrides that policy for one call with `.retryPolicy(...)` on the
   operation's options: for example
-  `WatchOptions.builder().retryPolicy(RetryPolicy.builder().maxRetries(0).build())`
-  to never reopen a supervised watch, or a policy on a touch-only `write` or a
+  `WatchOptions.builder().retryPolicy(RetryPolicy.builder().maxRetries(3).build())`
+  to let one watch reopen before its first event (the client-wide policy never
+  reopens a watch), or a policy on a touch-only `write` or a
   `writeSchema` to retry those idempotent writes. Other mutations reject the
   opt-in.
 - sets that override for every call of one operation with

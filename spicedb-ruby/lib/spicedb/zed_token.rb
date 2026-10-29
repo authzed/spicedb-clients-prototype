@@ -4,7 +4,7 @@ module SpiceDB
   # An opaque revision value; serialization preserves the exact supplied string.
   class ZedToken
     def initialize(value)
-      raise InvalidArgumentError, 'ZedToken: expected a string' unless value.is_a?(String)
+      raise LocalValidationError, 'ZedToken: expected a string' unless value.is_a?(String)
 
       @value = value.dup.freeze
       freeze
@@ -16,7 +16,7 @@ module SpiceDB
     def hash = [ZedToken, @value].hash
 
     def self.validate(value)
-      raise InvalidArgumentError, 'revision: expected ZedToken' unless value.is_a?(self)
+      raise LocalValidationError, 'revision: expected ZedToken' unless value.is_a?(self)
 
       value
     end

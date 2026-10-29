@@ -11,7 +11,7 @@ module SpiceDB
     include DeepHash
 
     def initialize(relationship:, cursor: nil, read_at: nil)
-      raise InvalidArgumentError, 'relationship: expected Relationship' unless relationship.is_a?(Relationship)
+      raise LocalValidationError, 'relationship: expected Relationship' unless relationship.is_a?(Relationship)
 
       super(relationship: relationship, cursor: Values.snapshot(cursor), read_at: read_at.nil? ? nil : ZedToken.validate(read_at))
     end
@@ -23,7 +23,7 @@ module SpiceDB
     include DeepHash
 
     def initialize(relationship:, cursor: nil)
-      raise InvalidArgumentError, 'relationship: expected Relationship' unless relationship.is_a?(Relationship)
+      raise LocalValidationError, 'relationship: expected Relationship' unless relationship.is_a?(Relationship)
 
       super(relationship: relationship, cursor: Values.snapshot(cursor))
     end

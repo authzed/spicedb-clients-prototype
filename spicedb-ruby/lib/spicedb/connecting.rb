@@ -36,8 +36,8 @@ module SpiceDB
     #   (an http:// URL needs a port; https:// is refused here)
     # @param token [String] the preshared key for authentication
     # @param default_timeout [Numeric] seconds applied to every unary call that
-    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
-    #   applied to streaming calls.
+    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}), and to each page
+    #   of a relationship read, lookup or export. Not applied to watch or imports.
     # @param remote_credentials [RemoteCredentials] explicit opt-in to send
     #   credentials in cleartext to a non-loopback endpoint.
     # @yield [client] optionally yields the client for block-scoped usage
@@ -67,8 +67,8 @@ module SpiceDB
     #   "https://grpc.example.com[:port]" (port 443 by default; http:// is refused here)
     # @param token [String] the preshared key for authentication
     # @param default_timeout [Numeric] seconds applied to every unary call that
-    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
-    #   applied to streaming calls.
+    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}), and to each page
+    #   of a relationship read, lookup or export. Not applied to watch or imports.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
     def new_system_tls(endpoint, token, **, &)
@@ -102,8 +102,8 @@ module SpiceDB
     # @param client_cert [String, nil] PEM certificate chain identifying this client
     # @param client_key [String, nil] PEM private key for +client_cert+
     # @param default_timeout [Numeric] seconds applied to every unary call that
-    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
-    #   applied to streaming calls.
+    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}), and to each page
+    #   of a relationship read, lookup or export. Not applied to watch or imports.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
     # @raise [ArgumentError] if all three of +ca_cert+, +client_cert+ and
@@ -113,7 +113,7 @@ module SpiceDB
     #   if exactly one of +client_cert+/+client_key+ is supplied.
     def new_custom_tls(endpoint, token, ca_cert: nil, client_cert: nil, client_key: nil, **, &)
       if ca_cert.nil? && client_cert.nil? && client_key.nil?
-        raise InvalidArgumentError,
+        raise LocalValidationError,
               'spicedb: new_custom_tls needs at least one of ca_cert:, client_cert: or ' \
               'client_key: -- with none of them it would silently be new_system_tls, which ' \
               'uses the roots compiled into gRPC. Call new_system_tls directly if that is ' \

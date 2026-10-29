@@ -166,13 +166,31 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
                        "the per-call timeout: 0.2 must override the large client default (elapsed=#{elapsed.round(2)}s)"
   end
 
-  it 'does not cut a streaming call off at the (tiny) unary default' do
+  it 'bounds a relationship-read page by the client default deadline' do
+    # Root DESIGN.md, "Treat a deadline as a budget": a finite paged read
+    # applies the client default to each page request, so a server that
+    # stalls mid-read fails the read instead of hanging it.
     server, port = start_server
     begin
-      # default_timeout is far smaller than the server's stall. If
-      # read_relationships inherited it, this would raise
-      # DeadlineExceededError instead of yielding the item.
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.1)
+      filter = SpiceDB::Filter.new(resource_type: 'document')
+      start = Time.now
+      expect do
+        run_with_watchdog { client.read_relationships(filter, consistency: SpiceDB::Consistency.full).to_a }
+      end.to raise_error(SpiceDB::DeadlineExceededError)
+      elapsed = Time.now - start
+      client.close
+    ensure
+      server.stop
+    end
+    expect(elapsed).to be < STALL_SECONDS
+  end
+
+  it 'lets a relationship read outlive the stall when the client default is disabled' do
+    server, port = start_server
+    begin
+      client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.1,
+                                                                               default_deadline: SpiceDB::DefaultDeadline::DISABLED)
       filter = SpiceDB::Filter.new(resource_type: 'document')
       start = Time.now
       got = run_with_watchdog { client.read_relationships(filter, consistency: SpiceDB::Consistency.full).to_a }
@@ -182,9 +200,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
       server.stop
     end
     expect(got.map { |rel| rel.resource.object_id }).to eq(['a'])
-    expect(elapsed).to be >= STALL_SECONDS,
-                       'the stream must outlive the tiny unary default -- it should have waited out the ' \
-                       "server's #{STALL_SECONDS}s stall (elapsed=#{elapsed.round(2)}s)"
+    expect(elapsed).to be >= STALL_SECONDS
   end
 
   it 'does not bound import_relationships (client-streaming) by the unary default' do

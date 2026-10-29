@@ -5,8 +5,8 @@ module SpiceDB
     include DeepHash
 
     def initialize(kind:, name: nil)
-      raise InvalidArgumentError, 'relation filter: invalid kind' unless %i[any direct named].include?(kind)
-      raise InvalidArgumentError, 'relation filter: name requires named kind' if kind != :named && name
+      raise LocalValidationError, 'relation filter: invalid kind' unless %i[any direct named].include?(kind)
+      raise LocalValidationError, 'relation filter: name requires named kind' if kind != :named && name
 
       super(kind: kind, name: kind == :named ? Values.name(name, 'relation.name') : nil)
     end
@@ -32,7 +32,7 @@ module SpiceDB
     include DeepHash
 
     def initialize(subject_type:, subject_id: nil, relation: SubjectRelationFilter.any)
-      raise InvalidArgumentError, 'subject.relation: expected SubjectRelationFilter' unless relation.is_a?(SubjectRelationFilter)
+      raise LocalValidationError, 'subject.relation: expected SubjectRelationFilter' unless relation.is_a?(SubjectRelationFilter)
 
       super(subject_type: Values.name(subject_type, 'subject_type'), subject_id: Values.snapshot(Values.loose_id(subject_id)), relation: relation)
     end
@@ -49,8 +49,8 @@ module SpiceDB
     include DeepHash
 
     def initialize(resource_type:, resource_id: nil, resource_id_prefix: nil, relation: nil, subject: nil)
-      raise InvalidArgumentError, 'resource_id and resource_id_prefix are mutually exclusive' if resource_id && resource_id_prefix
-      raise InvalidArgumentError, 'subject: expected SubjectFilter' unless subject.nil? || subject.is_a?(SubjectFilter)
+      raise LocalValidationError, 'resource_id and resource_id_prefix are mutually exclusive' if resource_id && resource_id_prefix
+      raise LocalValidationError, 'subject: expected SubjectFilter' unless subject.nil? || subject.is_a?(SubjectFilter)
 
       super(**Values.snapshot({ resource_type: Values.loose_name(resource_type), resource_id: Values.loose_id(resource_id),
                                 resource_id_prefix: Values.loose_id(resource_id_prefix), relation: Values.loose_name(relation),
@@ -67,7 +67,7 @@ module SpiceDB
     # Any/Direct/Named subject relation distinction. Unset fields match
     # anything; caveats and expiration never affect matching.
     def matches?(relationship)
-      raise InvalidArgumentError, 'matches?: expected Relationship' unless relationship.respond_to?(:resource) && relationship.respond_to?(:subject)
+      raise LocalValidationError, 'matches?: expected Relationship' unless relationship.respond_to?(:resource) && relationship.respond_to?(:subject)
 
       relationship.resource.object_type == resource_type &&
         (resource_id.nil? || resource_id == relationship.resource.object_id) &&

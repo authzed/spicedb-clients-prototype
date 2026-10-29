@@ -46,7 +46,7 @@ module SpiceDB
     def text(value, path)
       return value.dup.freeze if value.is_a?(String) && !value.empty?
 
-      raise InvalidArgumentError, "#{path}: expected a nonempty String, got #{received(value)}"
+      raise LocalValidationError, "#{path}: expected a nonempty String, got #{received(value)}"
     end
 
     # A type, relation, permission or caveat name: a nonempty String or a
@@ -55,7 +55,7 @@ module SpiceDB
       return text(value.to_s, path) if value.is_a?(Symbol) && !value.empty?
       return text(value, path) if value.is_a?(String) && !value.empty?
 
-      raise InvalidArgumentError, "#{path}: expected a nonempty String or Symbol, got #{received(value)}"
+      raise LocalValidationError, "#{path}: expected a nonempty String or Symbol, got #{received(value)}"
     end
 
     # An object ID: a nonempty String or an Integer (a database primary key),
@@ -64,7 +64,7 @@ module SpiceDB
       return value.to_s.freeze if value.is_a?(Integer)
       return text(value, path) if value.is_a?(String) && !value.empty?
 
-      raise InvalidArgumentError, "#{path}: expected a nonempty String or Integer, got #{received(value)}"
+      raise LocalValidationError, "#{path}: expected a nonempty String or Integer, got #{received(value)}"
     end
 
     # +value+ with a Symbol converted to a String, for fields (filters) that
@@ -101,7 +101,7 @@ module SpiceDB
 
     def json(value, path = 'context', ancestors = [])
       if value.is_a?(Hash) || value.is_a?(Array)
-        raise InvalidArgumentError, "#{path}: cyclic JSON" if ancestors.any? { |parent| parent.equal?(value) }
+        raise LocalValidationError, "#{path}: cyclic JSON" if ancestors.any? { |parent| parent.equal?(value) }
 
         ancestors += [value]
       end
@@ -110,23 +110,23 @@ module SpiceDB
       when String then value.dup.freeze
       when Integer, Float
         unless value.to_f.finite? && (value.is_a?(Float) || value.to_f.to_i == value)
-          raise InvalidArgumentError, "#{path}: number cannot be represented exactly"
+          raise LocalValidationError, "#{path}: number cannot be represented exactly"
         end
 
         value
       when Array then value.each_with_index.map { |item, index| json(item, "#{path}[#{index}]", ancestors) }.freeze
       when Hash
         value.to_h do |key, item|
-          raise InvalidArgumentError, "#{path}: JSON keys must be strings" unless key.is_a?(String)
+          raise LocalValidationError, "#{path}: JSON keys must be strings" unless key.is_a?(String)
 
           [key.dup.freeze, json(item, "#{path}.#{key}", ancestors)]
         end.freeze
-      else raise InvalidArgumentError, "#{path}: unsupported JSON type #{value.class}"
+      else raise LocalValidationError, "#{path}: unsupported JSON type #{value.class}"
       end
     end
 
     def context(value)
-      raise InvalidArgumentError, 'context: expected a JSON hash' unless value.nil? || value.is_a?(Hash)
+      raise LocalValidationError, 'context: expected a JSON hash' unless value.nil? || value.is_a?(Hash)
 
       json(value)
     end
@@ -148,8 +148,8 @@ module SpiceDB
     include DeepHash
 
     def initialize(object:, relation: nil)
-      raise InvalidArgumentError, "subject.object: expected ObjectRef, got #{Values.received(object)}" unless object.is_a?(ObjectRef)
-      raise InvalidArgumentError, 'subject.relation: use nil for direct subjects' if relation.to_s == '...' && !relation.nil?
+      raise LocalValidationError, "subject.object: expected ObjectRef, got #{Values.received(object)}" unless object.is_a?(ObjectRef)
+      raise LocalValidationError, 'subject.relation: use nil for direct subjects' if relation.to_s == '...' && !relation.nil?
 
       super(object: object, relation: Values.optional_name(relation, 'subject.relation'))
     end
@@ -170,8 +170,8 @@ module SpiceDB
     include DeepHash
 
     def initialize(resource:, permission:, subject:, context: nil)
-      raise InvalidArgumentError, "resource: expected ObjectRef, got #{Values.received(resource)}" unless resource.is_a?(ObjectRef)
-      raise InvalidArgumentError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
+      raise LocalValidationError, "resource: expected ObjectRef, got #{Values.received(resource)}" unless resource.is_a?(ObjectRef)
+      raise LocalValidationError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
 
       super(resource: resource, permission: Values.name(permission, 'permission'), subject: subject,
             context: Values.context(context))

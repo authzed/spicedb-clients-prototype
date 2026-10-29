@@ -124,8 +124,14 @@ Create a `lib/spicedb_proto/client.rb` file with:
    `host[:port]` (`unix:` targets pass unchanged), `http://host:port` and
    `https://host[:port]`, reducing each to the `host:port` the C-core dials,
    since the C-core does not understand `http(s)://` targets. Plaintext needs an
-   explicit port, with or without a scheme; TLS defaults to 443. Raises `InvalidEndpointError` (an `ArgumentError`)
-   naming the problem and the accepted forms for any other scheme, userinfo, a
+   explicit port, with or without a scheme; TLS defaults to 443. It also
+   accepts `dns:///host[:port]`, which the C-core dials through its DNS
+   resolver (client-side load balancing), with the same port rule; the
+   remote-plaintext check in `.validate_connection!` runs on its host. A DNS
+   server authority (`dns://8.8.8.8/host:port`) and the slashless
+   `dns:host:port` are refused. Raises `InvalidEndpointError` (an `ArgumentError`)
+   naming the problem and the accepted forms for any other scheme or gRPC
+   target form (`ipv4:`, `xds:`), userinfo, a
    path, query or fragment, or a non-numeric port. `insecure: true` with
    `https://`, or `insecure: false` with `http://`, is refused the same way.
 

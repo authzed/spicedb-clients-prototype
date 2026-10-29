@@ -80,6 +80,7 @@ example must be executed by CI and must be able to fail".
 | `bulk_operations/` | Bulk checks, check_all, check_any, and import |
 | `call_deadlines/` | Constructing a client with `default_timeout:`, a per-call `timeout:` override, and confirming bulk import isn't bounded by the unary default |
 | `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `endpoint_forms/` | Real calls through every accepted plaintext endpoint form -- `host:port`, `http://host:port`, `dns:///host:port` and a `unix:` socket -- and the gRPC target forms refused at construction |
 | `insecure_opt_in/` | Why `new_plaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
 | `retry_policy/` | Which calls are retried for you and which are not, counted server-side; replacing the policy (`retry_policy:`) and disabling retries (`retries: Retries::DISABLED`) |
 | `unrepresentable_values/` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |

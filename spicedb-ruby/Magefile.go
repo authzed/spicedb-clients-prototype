@@ -43,6 +43,7 @@ var wantExamples = []string{
 	"concurrency_and_forking",
 	"custom_tls",
 	"delete_relationships",
+	"endpoint_forms",
 	"error_mapping",
 	"expand_permission_tree",
 	"insecure_opt_in",

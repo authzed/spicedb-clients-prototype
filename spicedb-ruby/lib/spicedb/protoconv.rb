@@ -93,7 +93,7 @@ module SpiceDB
     def check_bulk_to_proto(checks, results, context: nil)
       checks = checks.to_a
       results = results.to_a
-      raise InvalidArgumentError, "check_bulk: #{checks.length} checks but #{results.length} results" unless checks.length == results.length
+      raise LocalValidationError, "check_bulk: #{checks.length} checks but #{results.length} results" unless checks.length == results.length
 
       response = Authzed::Api::V1::CheckBulkPermissionsResponse.new
       checks.each_with_index do |check, index|

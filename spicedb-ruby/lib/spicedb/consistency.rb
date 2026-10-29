@@ -13,12 +13,12 @@ module SpiceDB
     # Strategy wraps a consistency requirement for read operations.
     Strategy = Data.define(:type, :revision) do
       def initialize(type:, revision: nil)
-        raise InvalidArgumentError, 'unknown consistency strategy' unless %i[full min_latency at_least snapshot].include?(type)
+        raise LocalValidationError, 'unknown consistency strategy' unless %i[full min_latency at_least snapshot].include?(type)
 
         if %i[at_least snapshot].include?(type)
           revision = ZedToken.validate(revision)
         elsif !revision.nil?
-          raise InvalidArgumentError, 'this consistency strategy does not accept a revision'
+          raise LocalValidationError, 'this consistency strategy does not accept a revision'
         end
         super
       end

@@ -50,9 +50,11 @@ constructor:
 | `https://spicedb.example.com:8443` | `new_system_tls`, `new_custom_tls` | port 8443 |
 | `http://localhost:50051` | `new_plaintext` | port 50051 (an `http://` URL needs a port) |
 | `unix:///var/run/spicedb.sock` | `new_plaintext` | the socket |
+| `dns:///spicedb.example.com:50051` | any (plaintext needs a port; TLS defaults to 443) | every address the name resolves to, through gRPC's DNS resolver |
 
-Anything else raises `SpiceDB::InvalidArgumentError` at construction, naming
-the problem: another scheme (`ftp://`, `dns:///`), a path, query, fragment or
+Anything else raises `SpiceDB::LocalValidationError` (an
+`InvalidArgumentError`, also caught by `rescue ArgumentError`) at construction, naming
+the problem: another scheme (`ftp://`, `ipv4:`, `xds:///`, `dns://8.8.8.8/...`), a path, query, fragment or
 userinfo, a non-numeric port, a plaintext endpoint without a port
 (`localhost` or `http://localhost`; write `localhost:50051`), or a scheme that
 disagrees with the constructor (`new_plaintext('https://...')`). Plaintext to a

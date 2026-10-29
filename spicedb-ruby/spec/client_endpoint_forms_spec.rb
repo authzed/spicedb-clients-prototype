@@ -20,7 +20,24 @@ RSpec.describe SpiceDB::Client do
       end
     end
 
+    it 'accepts dns:///host:port gRPC targets, with the loopback check on the host' do
+      %w[dns:///localhost:50101 dns:///127.0.0.1:50101 DNS:///[::1]:50101].each do |endpoint|
+        expect { described_class.new_plaintext(endpoint, 'testtoken').close }.not_to raise_error
+      end
+      %w[dns:///spicedb.example.com dns:///spicedb.example.com:8443].each do |endpoint|
+        expect { described_class.new_system_tls(endpoint, 'testtoken').close }.not_to raise_error
+      end
+      expect { described_class.new_plaintext('dns:///example.com:50051', 'testtoken') }
+        .to raise_error(SpiceDB::InvalidArgumentError, /RemoteCredentials::ALLOW_PLAINTEXT/)
+    end
+
     {
+      'dns:///localhost' => %r{a plaintext endpoint needs an explicit port, e\.g\. dns:///localhost:50051},
+      'dns://8.8.8.8/localhost:50051' => %r{a dns target must be dns:///host:port},
+      'dns:localhost:50051' => %r{a dns target must be dns:///host:port},
+      'dns:///localhost:50051/x' => /a path is not supported/,
+      'xds:///localhost:50051' => /unsupported scheme "xds"/,
+      'ipv4:127.0.0.1:50051' => /not a valid host and port/,
       'http://localhost' => %r{a plaintext endpoint needs an explicit port, e\.g\. http://localhost:50051},
       'localhost' => /a plaintext endpoint needs an explicit port, e\.g\. localhost:50051/,
       '127.0.0.1' => /a plaintext endpoint needs an explicit port/,
@@ -34,7 +51,7 @@ RSpec.describe SpiceDB::Client do
     }.each do |endpoint, reason|
       it "rejects #{endpoint.inspect} at construction, naming the problem and the accepted forms" do
         expect { described_class.new_plaintext(endpoint, 'testtoken') }
-          .to raise_error(SpiceDB::InvalidArgumentError, /#{reason.source}.*expected host:port/)
+          .to raise_error(SpiceDB::InvalidArgumentError, /#{reason.source}.*expected host:port.*dns:.*unix:/)
       end
     end
 

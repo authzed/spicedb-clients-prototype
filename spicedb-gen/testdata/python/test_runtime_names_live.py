@@ -74,7 +74,8 @@ def test_sync_runtime_names_live() -> None:
         with tc.lookup_subjects_by_name(full(), "document", doc, "view", "user") as stream:
             assert sorted(s.subject.subject_id for s in stream) == sorted([alice, bob])
         with tc.lookup_subjects_by_name(full(), "document", doc, "viewer", "team", "member") as stream:
-            assert [s.subject.subject_id for s in stream] == [eng]
+            # team#member is recursive, so SpiceDB may report the set more than once.
+            assert {s.subject.subject_id for s in stream} == {eng}
         # An unreachable subject type has no results, as SpiceDB answers.
         assert list(tc.lookup_resources_by_name(full(), "document", "view", parse_object("organization:acme"))) == []
         assert list(tc.lookup_subjects_by_name(full(), "document", doc, "view", "organization")) == []

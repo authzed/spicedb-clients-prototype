@@ -585,42 +585,7 @@ class {{$srt.ClassName}}:
 {{assignCall (printf "%s: Final" $p.ConstName) $p.RefClassName (list (quote $p.ResourceType) (quote $p.Permission))}}
 {{- end}}
 
-# --- Relation and permission names ---
-{{range $def := .Definitions}}
-
-class {{$def.RelationsClass}}:
-    """Relation names on {{$def.Name}}."""
-{{range $r := $def.Relations}}
-{{assign 4 (printf "%s: Final" $r.ConstName) (quote $r.Name)}}
-{{- end}}
-
-
-class {{$def.PermissionsClass}}:
-    """Permission names on {{$def.Name}}."""
-{{range $p := $def.Permissions}}
-{{assign 4 (printf "%s: Final" $p.ConstName) (quote $p.Name)}}
-{{- end}}
-
-
-{{tuple (printf "%s: Final[tuple[str, ...]]" $def.RelationNames) $def.RelationNameList}}
-{{tuple (printf "%s: Final[tuple[str, ...]]" $def.PermissionNames) $def.PermissionNameList}}
-{{end}}
-
-
-# --- Schema-level names and lookups ---
-
-
-class DefinitionNames:
-    """Definition names in the schema."""
-{{range $def := .Definitions}}
-{{assign 4 (printf "%s: Final" $def.ConstName) (quote $def.Name)}}
-{{- end}}
-
-
-{{tuple "DEFINITION_NAMES: Final[tuple[str, ...]]" .DefinitionNameList}}
-
-{{textConst "SCHEMA_TEXT: Final[str]" .SchemaText}}
-"""The schema this module was generated from, e.g. for write_schema at startup."""
+{{template "names" .}}
 
 {{if .Definitions}}{{alias "DefinitionClass" (defClasses .Definitions)}}
 {{alias "SchemaObject" (defNames .Definitions)}}

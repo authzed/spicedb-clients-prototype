@@ -25,9 +25,9 @@ func TestEveryGeneratorDocumentsItsOptions(t *testing.T) {
 	}
 }
 
-// Go, Java and TypeScript list --<lang>.names-only in --help.
+// Go, Java, TypeScript and Python list --<lang>.names-only in --help.
 func TestNamesOnlyIsDescribed(t *testing.T) {
-	for _, lang := range []string{"go", "java", "typescript"} {
+	for _, lang := range []string{"go", "java", "typescript", "python"} {
 		d, ok := generator.Registry[lang].(generator.OptionDescriber)
 		if !ok {
 			t.Fatalf("%s generator does not describe its options", lang)

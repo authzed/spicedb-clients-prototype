@@ -25,6 +25,10 @@ func init() {
 // DefaultModule is the name of the emitted types module (permissions.py).
 const DefaultModule = "permissions"
 
+// DefaultNamesOnlyModule is the module --python.names-only writes (names.py)
+// unless --python.module names another.
+const DefaultNamesOnlyModule = "names"
+
 // Generator implements generator.LanguageGenerator for Python.
 type Generator struct{}
 
@@ -273,11 +277,23 @@ func parseRenames(v string) (map[string]string, error) {
 //     identifiers (e.g. `definition subject` and the Subject protocol).
 //     Renames change Python identifiers only; the schema names sent to
 //     SpiceDB never change.
+//   - names-only (--python.names-only): emit only the name constants, name
+//     tuples and SCHEMA_TEXT into one module (default "names.py", or
+//     --python.module), importing only the standard library, so a shared
+//     package can use the names without depending on the client.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	module := DefaultModule
+	moduleSet := false
+	namesOnly := false
 	renames := map[string]string{}
 	for k, v := range opts {
 		switch k {
+		case generator.NamesOnlyOption:
+			b, err := generator.BoolOption("python", k, v)
+			if err != nil {
+				return nil, err
+			}
+			namesOnly = b
 		case "rename":
 			r, err := parseRenames(v)
 			if err != nil {
@@ -289,6 +305,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 				return nil, fmt.Errorf("--python.module=%q must be a Python identifier other than a keyword, \"sync\" or \"aio\"", v)
 			}
 			module = v
+			moduleSet = true
 		default:
 			return nil, fmt.Errorf("unknown Python option --python.%s", k)
 		}
@@ -326,6 +343,10 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		}
 	}
 
+	if namesOnly && !moduleSet {
+		module = DefaultNamesOnlyModule
+	}
+
 	tmpl, err := template.New("permissions.py.tmpl").Funcs(template.FuncMap{
 		"alias":      formatAlias,
 		"bracket":    bracket,
@@ -342,6 +363,14 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
+	}
+
+	if namesOnly {
+		var names bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&names, "names_only.py.tmpl", data); err != nil {
+			return nil, fmt.Errorf("executing template names_only.py.tmpl: %w", err)
+		}
+		return []generator.GeneratedFile{{Path: module + ".py", Content: tidy(names.Bytes())}}, nil
 	}
 
 	var types bytes.Buffer
@@ -1259,5 +1288,6 @@ func (g *Generator) Options() []generator.Option {
 	return []generator.Option{
 		{Name: "module", Value: "<name>", Description: "Python package name the generated sync/aio modules import from."},
 		{Name: "rename", Value: "<definition>=<ClassName>[,...]", Description: "Class-name stem for a definition whose generated names collide; schema names on the wire are unchanged."},
+		generator.NamesOnlyOptionDescription,
 	}
 }

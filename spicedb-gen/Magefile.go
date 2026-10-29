@@ -508,6 +508,9 @@ func PythonIntegrationTest() error {
 		return err
 	}
 	fmt.Println("    (every marked line fails to type-check)")
+	if err := verifyPythonNamesOnly(); err != nil {
+		return err
+	}
 
 	endpoint := os.Getenv("SPICEDB_ENDPOINT")
 	if endpoint == "" {
@@ -582,7 +585,26 @@ func pythonGeneratedPaths() []string {
 // PythonTypeErrors verifies the Python negative type fixtures against
 // already-generated code in testdata/python/testdata, without SpiceDB.
 func PythonTypeErrors() error {
-	return verifyPythonTypeErrors("testdata/python", "type_errors.py")
+	if err := verifyPythonTypeErrors("testdata/python", "type_errors.py"); err != nil {
+		return err
+	}
+	return verifyPythonNamesOnly()
+}
+
+// verifyPythonNamesOnly runs the --python.names-only fixture
+// (testdata/python-names) with `python3 -I -S`, so no site-packages are
+// importable: it passes only while names.py imports the standard library
+// alone. It then type-checks names.py with mypy --strict. A unit test keeps
+// names.py current with the generator.
+func verifyPythonNamesOnly() error {
+	fmt.Println("==> Running the names-only output with no site-packages...")
+	if err := sh.RunV("python3", "-I", "-S", "testdata/python-names/check_names.py"); err != nil {
+		return fmt.Errorf("names-only Python output does not load without the client: %w", err)
+	}
+	if err := runInDir("testdata/python", "uv", "run", "mypy", "--strict", "../python-names/names.py"); err != nil {
+		return fmt.Errorf("mypy --strict failed on the names-only output: %w", err)
+	}
+	return nil
 }
 
 // verifyPythonTypeErrors runs pyright over file with JSON output and requires

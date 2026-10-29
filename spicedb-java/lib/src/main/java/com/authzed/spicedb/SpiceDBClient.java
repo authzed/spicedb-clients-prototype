@@ -64,6 +64,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   private SpiceDBClient(
       Channel base, ManagedChannel owned, Metadata metadata, ClientOptions options) {
     ProtobufRuntime.requireSupported();
+    GrpcRuntime.requireSupported();
     this.channel = owned;
     Duration defaultTimeout = options.defaultTimeout();
     if (defaultTimeout == null || defaultTimeout.isZero() || defaultTimeout.isNegative())
@@ -103,6 +104,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   /** See {@link #fromChannel(Channel)}. */
   public static SpiceDBClient fromChannel(Channel channel, ClientOptions options) {
     ProtobufRuntime.requireSupported();
+    GrpcRuntime.requireSupported();
     if (channel == null) throw new InvalidArgumentException("channel must not be null");
     if (options == null) throw new InvalidArgumentException("options must not be null");
     if (options.caCertificate() != null
@@ -148,6 +150,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       ClientOptions options,
       Consumer<ManagedChannelBuilder<?>> channelCustomizer) {
     ProtobufRuntime.requireSupported();
+    GrpcRuntime.requireSupported();
     if (options == null) throw new InvalidArgumentException("options must not be null");
     if (channelCustomizer == null)
       throw new InvalidArgumentException("channelCustomizer must not be null");
@@ -192,6 +195,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       ClientOptions options,
       Consumer<ManagedChannelBuilder<?>> channelCustomizer) {
     ProtobufRuntime.requireSupported();
+    GrpcRuntime.requireSupported();
     if (options == null) throw new InvalidArgumentException("options must not be null");
     if (channelCustomizer == null)
       throw new InvalidArgumentException("channelCustomizer must not be null");
@@ -226,6 +230,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       ManagedChannelBuilder<?> testChannelBuilder,
       ClientOption... options) {
     ProtobufRuntime.requireSupported();
+    GrpcRuntime.requireSupported();
     // Detect the two well-known named options by reference -- see root DESIGN.md, "RULE:
     // Credentials over insecure transport require an explicit opt-in", and the public security
     // notes on create(...) and ClientOption#apply above (not just this comment) for what this

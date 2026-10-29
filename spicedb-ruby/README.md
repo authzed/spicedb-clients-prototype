@@ -56,6 +56,11 @@ used it, so:
 - If the parent did make a call, any call in a child raises
   `SpiceDB::ForkedClientError` (code FAILED_PRECONDITION), explaining the fix,
   instead of hanging or failing inside gRPC.
+- Building a fresh client in the child does **not** help once the parent has
+  used gRPC (through any client, including `connect!` in the master): gRPC
+  refuses all use in that child, and the fresh client raises
+  `ForkedClientError` too. The recipe below therefore connects only in the
+  workers.
 - With grpc's own fork support (`GRPC_ENABLE_FORK_SUPPORT=1`, Linux only, and
   `GRPC.prefork` / `GRPC.postfork_child` / `GRPC.postfork_parent` around each
   fork), a client connected in the parent keeps working in the children.
@@ -104,6 +109,13 @@ double with every client method. It answers checks from registered results, a
 resolver callback (`store.check_resolver = SpiceDB::Testing::Store::GRANT_ALL`),
 or its stored relationships, and serves `lookup_resources` and
 `lookup_subjects`. See [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md#test).
+
+The double does **not** evaluate the schema. A permission such as
+`permission view = reader + writer + parent_folder->read` is granted only by a
+stored relationship whose relation is literally `view`, or by the check
+resolver; storing `document:1#reader@user:alice` does not grant `view`. To
+test real permission logic, model it in the resolver, or run SpiceDB itself
+(`spicedb serve-testing`, or a container) for schema-accurate results.
 
 ## Examples and development
 

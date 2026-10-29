@@ -37,7 +37,7 @@ tasks.withType<JavaCompile> {
 
 spotless {
     java {
-        target("src/main/java/**/Permissions.java")
+        target("src/main/java/**/Permissions.java", "names_only/**/Permissions.java")
         googleJavaFormat("1.22.0")
     }
 }
@@ -49,4 +49,14 @@ tasks.register<JavaCompile>("compileTypeErrors") {
     classpath = sourceSets["main"].compileClasspath + sourceSets["main"].output
     destinationDirectory.set(layout.buildDirectory.dir("type-errors"))
     options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-processing", "-Xmaxerrs", "100000"))
+}
+
+// Compiles the --java.names-only output and a class using it with an EMPTY classpath: no
+// spicedb-java, no proto tier. It passes only while the names-only output needs nothing beyond
+// the JDK, which is what lets a shared API package depend on it alone.
+tasks.register<JavaCompile>("compileNamesOnly") {
+    source = fileTree("names_only")
+    classpath = files()
+    destinationDirectory.set(layout.buildDirectory.dir("names-only"))
+    options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
 }

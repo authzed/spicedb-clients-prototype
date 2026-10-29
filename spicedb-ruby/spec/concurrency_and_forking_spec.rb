@@ -152,6 +152,36 @@ RSpec.describe SpiceDB::Client do
       expect(out.strip).to eq('SpiceDB::UnavailableError').or eq('SpiceDB::DeadlineExceededError')
     end
 
+    [
+      ['the parent connected a client', "SpiceDB::Client.new_plaintext('127.0.0.1:1', 'token').proto_client"],
+      ['the parent used gRPC directly', "GRPC::Core::Channel.new('127.0.0.1:1', {}, :this_channel_is_insecure)"]
+    ].each do |label, parent_use|
+      it "raises ForkedClientError for a new client built in a child when #{label}" do
+        out = run_ruby(<<~RUBY)
+          require 'spicedb'
+          #{parent_use}
+          reader, writer = IO.pipe
+          pid = fork do
+            fresh = SpiceDB::Client.new_plaintext('127.0.0.1:1', 'token') # built in the child
+            results = [-> { fresh.connect!(timeout: 0.5) }, -> { fresh.read_schema(timeout: 0.5) }].map do |call|
+              call.call
+              'no error'
+            rescue SpiceDB::Error => e
+              [e.class.name, e.message.include?('does not help'), e.message.include?('on_worker_boot')].join(' ')
+            rescue StandardError => e
+              "untyped \#{e.class}"
+            end
+            writer.puts results.join(',')
+            exit!(0)
+          end
+          Process.wait(pid)
+          writer.close
+          print reader.read
+        RUBY
+        expect(out.strip).to eq('SpiceDB::ForkedClientError true true,SpiceDB::ForkedClientError true true')
+      end
+    end
+
     it 'raises ForkedClientError in a child when the parent had already connected' do
       out = run_ruby(<<~RUBY)
         require 'spicedb'

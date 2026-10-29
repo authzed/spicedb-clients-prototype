@@ -13,7 +13,7 @@ will observe, with before/after code. Snippets assume
 |---|---|---|
 | Java | 17 | |
 | protobuf-java | 4.33.2 | The version the protocol classes were generated with; they refuse an older runtime. Spring Boot 4.1 manages 4.34.2, so a Spring Boot host needs no override. authzed-java 1.6.0 needed 4.33.5. |
-| gRPC (`io.grpc:*`) | 1.80.0 | One version for every `io.grpc` artifact. The client declares 1.84.0 (through `grpc-bom`); Spring Boot 4.1.0 manages 1.80.0, which works. authzed-java 1.6.0 needed 1.78.0. |
+| gRPC (`io.grpc:*`) | 1.80.0 | The version the service stubs were generated with. Tested from 1.80.0 to 1.84.0; one version for every `io.grpc` artifact. The client declares 1.84.0 (through `grpc-bom`); Spring Boot 4.1 resolves 1.80.0, which works with no override. authzed-java 1.6.0 needed 1.78.0. |
 | proto-google-common-protos | 2.65.0 | |
 | SpiceDB | 1.30 | Older-server behavior is reachable only through `TransportOptions` (see "Transport-level data"). |
 
@@ -30,6 +30,10 @@ fails at build time, so the client checks at construction: the first
 `SpiceDBClient` factory call throws `IllegalStateException` naming the version
 found and the property to raise, `<protobuf-java.version>` in Maven or Spring
 Boot. In Gradle, require `com.google.protobuf:protobuf-java:4.33.2` or later.
+The same applies to gRPC: a grpc-java older than 1.80.0 makes the first
+factory call throw `IllegalStateException` naming the version found and
+`<grpc.version>` (or `io.grpc:grpc-bom`) to raise. If the gRPC version cannot be
+read from the class path, for example in a repackaged jar, that check is skipped.
 
 ## Legacy-to-new member map
 

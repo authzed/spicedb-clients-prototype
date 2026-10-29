@@ -243,11 +243,18 @@ mod endpoint_forms {
         let mock = MockPermissionsService::new();
         let calls = mock.check_bulk_permissions_calls();
         let addr = spawn_permissions_server(mock).await;
-        match SpiceDBClient::builder(format!("https://{addr}"), "t")
-            .build()
-            .await
-        {
-            Err(SpiceDBError::Transport(_)) => {}
+        let endpoint = format!("https://{addr}");
+        match SpiceDBClient::builder(&endpoint, "t").build().await {
+            Err(err @ SpiceDBError::Transport(_)) => {
+                // The TLS mismatch is named, with the endpoint, not as a
+                // bare "transport error".
+                let shown = err.to_string();
+                assert!(shown.contains(&endpoint), "{shown}");
+                assert!(
+                    shown.len() > format!("transport error: connecting to {endpoint}: ").len(),
+                    "{shown}"
+                );
+            }
             Err(other) => panic!("expected a TLS transport failure, got {other:?}"),
             Ok(_) => panic!("a TLS client must not connect to a plaintext server"),
         }
@@ -347,6 +354,89 @@ mod endpoint_forms {
             .await;
         assert!(lazy_tls.is_ok(), "{:?}", lazy_tls.err());
     }
+
+    /// Under the default loopback-only policy, a malformed URL is reported as
+    /// what is wrong with it, not as a remote-plaintext refusal; with the
+    /// opt-in, a path or query is not reported as a port problem.
+    #[tokio::test]
+    async fn malformed_endpoints_name_the_actual_problem() {
+        for (endpoint, problem) in [
+            ("http://127.0.0.1:50066/x", "path"),
+            ("http://127.0.0.1:50066?x=1", "query"),
+            ("http://127.0.0.1:50066#x", "fragment"),
+            ("http://127.0.0.1:50066@evil.com", "userinfo"),
+            ("http://127.0.0.1:nope", "port"),
+            ("http://127.0.0.1", "http://host:50051"),
+            ("ftp://127.0.0.1:50066", "scheme"),
+        ] {
+            for policy in [
+                RemoteCredentialsPolicy::LoopbackOnly,
+                RemoteCredentialsPolicy::AllowInsecureRemote,
+            ] {
+                let result = SpiceDBClient::builder(endpoint, "t")
+                    .remote_credentials_policy(policy)
+                    .build()
+                    .await;
+                match result {
+                    Err(SpiceDBError::InvalidArgument(msg)) => {
+                        assert!(msg.contains(problem), "{endpoint} {policy:?}: {msg}");
+                        assert!(!msg.contains("AllowInsecureRemote"), "{msg}");
+                    }
+                    Err(other) => panic!("{endpoint} {policy:?}: {other:?}"),
+                    Ok(_) => panic!("{endpoint} {policy:?} must be refused"),
+                }
+            }
+        }
+    }
+
+    /// An `http://` URL must name its port; `https://` defaults to 443.
+    #[tokio::test]
+    async fn scheme_url_ports() {
+        match SpiceDBClient::builder("http://spicedb", "t")
+            .remote_credentials_policy(RemoteCredentialsPolicy::AllowInsecureRemote)
+            .build()
+            .await
+        {
+            Err(SpiceDBError::InvalidArgument(msg)) => {
+                assert!(msg.contains("http://host:50051"), "{msg}")
+            }
+            Err(other) => panic!("{other:?}"),
+            Ok(_) => panic!("http:// without a port must be refused"),
+        }
+        let tls = SpiceDBClient::builder("https://spicedb.example.com", "t")
+            .connect_mode(ConnectMode::Lazy)
+            .build()
+            .await;
+        assert!(tls.is_ok(), "{:?}", tls.err());
+    }
+
+    /// A connection failure displays the endpoint and its cause (refused,
+    /// DNS), and `source()` still walks to the underlying error.
+    #[tokio::test]
+    async fn connection_errors_name_the_endpoint_and_cause() {
+        for (endpoint, cause) in [
+            ("http://127.0.0.1:1", "refused"),
+            ("http://spicedb.invalid:50051", "dns"),
+        ] {
+            let err = match SpiceDBClient::builder(endpoint, "t")
+                .remote_credentials_policy(RemoteCredentialsPolicy::AllowInsecureRemote)
+                .connect_mode(ConnectMode::Eager)
+                .build()
+                .await
+            {
+                Err(err @ SpiceDBError::Transport(_)) => err,
+                Err(other) => panic!("expected Transport for {endpoint}, got {other:?}"),
+                Ok(_) => panic!("{endpoint} must fail to connect"),
+            };
+            let shown = format!("{err}");
+            assert!(
+                shown.starts_with(&format!("transport error: connecting to {endpoint}: ")),
+                "{shown}"
+            );
+            assert!(shown.to_lowercase().contains(cause), "{shown}");
+            assert!(Error::source(&err).is_some(), "source chain kept");
+        }
+    }
 }
 
 /// Regression tests for root DESIGN.md, "RULE: Credentials over insecure
@@ -402,8 +492,11 @@ mod insecure_host_guard {
             )
             .await
             {
+                // Refused as malformed (userinfo), before the credentials
+                // policy is consulted, so the message names the real problem.
                 Err(SpiceDBError::InvalidArgument(msg)) => {
-                    assert!(msg.contains("AllowInsecureRemote"), "{msg}");
+                    assert!(msg.contains("userinfo"), "{msg}");
+                    assert!(!msg.contains("AllowInsecureRemote"), "{msg}");
                 }
                 Err(other) => panic!("expected InvalidArgument for {endpoint:?}, got {other:?}"),
                 Ok(_) => panic!("expected {endpoint:?} to be refused"),

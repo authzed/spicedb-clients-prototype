@@ -83,10 +83,21 @@ let client = SpiceDBClient::builder(std::env::var("SPICEDB_URL")?, token)
     .await?;
 ```
 
-- `http://host[:port]` is plaintext, `https://host[:port]` is TLS, and
+- `http://host:port` is plaintext, `https://host[:port]` is TLS, and
   `host:port` is TLS unless you call `.plaintext()`. Any other scheme fails at
   construction with `InvalidArgument`. `new_plaintext` and `new_system_tls`
   require the scheme, if any, to agree with them.
+- Ports: an `http://` URL must name its port (`http://spicedb:50051`);
+  `http://spicedb` fails at construction instead of dialing port 80. An
+  `https://` URL without a port uses 443. A `host:port` endpoint should name
+  its port; an omitted one is the transport default (80 plaintext, 443 TLS).
+- A malformed endpoint (a path such as `/v1`, a query, a fragment, `user@`,
+  a bad port) fails at construction with `InvalidArgument` naming that
+  problem. The remote-plaintext refusal is only for a well-formed remote host.
+- A connection failure is `SpiceDBError::Transport` and reads like
+  `transport error: connecting to http://spicedb:50051: tcp connect error:
+  Connection refused (os error 61)`; `source()` still reaches the I/O, DNS or
+  TLS error.
 - Plaintext to a host that is not loopback needs
   `.remote_credentials_policy(RemoteCredentialsPolicy::AllowInsecureRemote)`;
   without it, `http://spicedb:50051` fails at construction. The loopback check

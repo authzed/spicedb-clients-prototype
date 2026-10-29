@@ -171,7 +171,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     registration, and grant-all is one line); then the stored relationships,
     where a relationship on the resource whose relation is the permission's
     name and whose subject matches exactly or by wildcard grants it; anything
-    else is no permission. The double does not evaluate a schema. The resolver
+    else is no permission. The double does not evaluate a schema, and each
+    double's docs and AI guide say so, pointing schema-logic tests at SpiceDB
+    itself (`serve-testing` or a container). The resolver
     sees the check with the call's default context merged in (the check's own
     keys win), returns a result or declines (falling through), and never
     fails: failures come from the fault hooks. A wildcard matches only direct
@@ -253,6 +255,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Streams and imports have no default lifetime timeout, but accept explicit
     total deadlines. Finite lookups and exports support deadlines even when
     their underlying RPC streams.
+  - Finite paged reads (relationship reads, lookups, exports) apply the client
+    default deadline to each page request, from opening it to receiving its
+    last item, so a server that stalls mid-read fails the read instead of
+    hanging it. A caller's total deadline still bounds the whole operation and
+    wins when earlier. Long-lived streams (watch) keep no default.
   - A named mode disables the client default deadline. The caller's own deadline
     or cancellation still applies. Zero or negative durations are never used as
     a magic "disabled" value.
@@ -405,6 +412,13 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     existing handlers keep catching. MIGRATION.md states the interop either
     way. The verbatim server-message field always has a value: for local
     errors it is the error's message.
+  - A response the client cannot interpret (a missing required field, a
+    cursor that does not advance) fails with `INTERNAL`, which no retry policy
+    treats as retryable by default. Clients never skip such a response or fill
+    its missing fields with empty values: a skipped item makes a full page look
+    short and silently ends a paged read early.
+  - Local cancellation surfaces as the client's cancelled error, never as the
+    platform's own abort exception, whose fields may resemble a status code.
   - Provide a public constructor for native errors from a code and message, so
     test doubles produce errors that every predicate treats like real ones.
   - Wrapper errors (bulk item, deletion progress) report their inner status
@@ -423,7 +437,15 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     `http://` and `https://` URLs (the scheme selects plaintext or TLS and must
     agree with the constructor). Any other form fails at construction with an
     error naming the expected format: an endpoint never builds a client whose
-    every call fails. The loopback check runs on the parsed host.
+    every call fails. The loopback check runs on the parsed host. An
+    `http://` URL needs an explicit port (no client silently dials port 80);
+    an `https://` URL without one uses 443. The same holds for a bare host:
+    plaintext needs a port, TLS defaults to 443. Malformed forms (path, query,
+    userinfo, non-numeric port) fail with an error naming that problem,
+    checked before the remote-plaintext policy, whose message appears only
+    for a well-formed remote host.
+  - Connection errors display the endpoint and the root cause (refused, DNS,
+    TLS), not only a generic transport category.
   - Clients that connect lazily offer a startup readiness check (an
     eager-connect option or an awaitable connect/ready call), so a wrong or
     unreachable endpoint can still fail at startup.
@@ -469,6 +491,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Generated code exposes definition-name constants and the schema text it
     was generated from, so callers need neither a hand-kept name list nor a
     copy of the schema file to write it at startup.
+  - A names-only mode emits the name constants and schema text with no client
+    dependency, so a shared API package can use the names alone.
 
 - **Make generated values composable with the native layer in both directions.**
   - Typed permissions, permission refs and relationships expose their resource

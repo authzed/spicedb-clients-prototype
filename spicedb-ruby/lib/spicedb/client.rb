@@ -463,9 +463,22 @@ module SpiceDB
       end
       raise Error, 'client is closed' if @closed
 
+      # A new client in a child: gRPC refuses it if an ancestor process
+      # already used gRPC, whichever client did.
+      used = SpiceDB.grpc_used_pid
+      if used && used != pid && !SpiceDB.grpc_fork_support?
+        raise ForkedClientError.new(ForkedClientError.fresh_client_message(used, pid), connected_pid: used, current_pid: pid)
+      end
+
       adopt_connection(@connect.call)
     rescue ArgumentError => e
       raise InvalidArgumentError, e.message
+    rescue RuntimeError => e
+      # gRPC used before the fork in a way this library could not observe
+      # (another gRPC client in the parent): grpc's own refusal, typed.
+      raise unless ForkedClientError.grpc_fork_refusal?(e)
+
+      raise ForkedClientError.new(ForkedClientError.fresh_client_message(nil, pid), current_pid: pid)
     end
 
     def not_ready(target, timeout, failed)
@@ -475,6 +488,7 @@ module SpiceDB
     end
 
     def adopt_connection(connection)
+      SpiceDB.note_grpc_use
       @connected_pid = Process.pid
       @proto_client = connection
     end

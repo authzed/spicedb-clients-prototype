@@ -19,6 +19,11 @@
   older than 4.33.2 throws `IllegalStateException` naming the version found and
   the `protobuf-java.version` property to raise, instead of failing at the
   first call.
+- Every constructor also checks the grpc-java runtime: one older than 1.80.0
+  (the version the service stubs were generated with) throws
+  `IllegalStateException` naming the version found and the `grpc.version`
+  property or `grpc-bom` to raise. The check is skipped when the version cannot
+  be read. Tested with gRPC 1.80.0 through 1.84.0.
 - New `README.md` (installation before publication, first call), and
   MIGRATION.md opens with a Requirements section and a legacy-to-new member map.
 

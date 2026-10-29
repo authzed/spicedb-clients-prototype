@@ -88,6 +88,17 @@ func TypeScriptIntegrationTest() error {
 	if err := runInDir("testdata/typescript", "pnpm", "run", "typecheck"); err != nil {
 		return fmt.Errorf("type-check failed: %w", err)
 	}
+	if err := sh.RunV("./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "typescript",
+		"--typescript.names-only",
+		"--out", "testdata/typescript-names/names.gen.ts",
+	); err != nil {
+		return fmt.Errorf("code generation with --typescript.names-only failed: %w", err)
+	}
+	if err := verifyTypeScriptNamesOnly(); err != nil {
+		return err
+	}
 
 	endpoint := os.Getenv("SPICEDB_ENDPOINT")
 	if endpoint == "" {
@@ -130,7 +141,45 @@ func TypeScriptTypeErrors() error {
 	if err := verifyTypeScriptTypeErrors("testdata/typescript/type_errors.ts"); err != nil {
 		return err
 	}
-	return runInDir("testdata/typescript", "pnpm", "run", "typecheck")
+	if err := runInDir("testdata/typescript", "pnpm", "run", "typecheck"); err != nil {
+		return err
+	}
+	return verifyTypeScriptNamesOnly()
+}
+
+// verifyTypeScriptNamesOnly type-checks the --typescript.names-only fixture
+// (testdata/typescript-names) in a temporary directory with no node_modules
+// above it, so an import of @spicedb/* (or any package) cannot resolve: the
+// names-only output must type-check with no client dependency. It uses the
+// fixture project's tsc.
+func verifyTypeScriptNamesOnly() error {
+	fmt.Println("==> Type-checking the names-only output with no packages installed...")
+	tsc, err := filepath.Abs("testdata/typescript/node_modules/.bin/tsc")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "spicedb-gen-names-only-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	entries, err := os.ReadDir("testdata/typescript-names")
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join("testdata/typescript-names", e.Name()))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(tmp, e.Name()), b, 0o644); err != nil {
+			return err
+		}
+	}
+	if err := runInDir(tmp, tsc, "-p", "."); err != nil {
+		return fmt.Errorf("names-only TypeScript does not type-check without the client: %w", err)
+	}
+	return nil
 }
 
 // verifyTypeScriptTypeErrors checks that every @ts-expect-error in file
@@ -198,6 +247,19 @@ func GoIntegrationTest() error {
 		return err
 	}
 	fmt.Println("    (every marked line fails to compile)")
+	if err := sh.RunV(
+		"./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "go",
+		"--go.package=apinames",
+		"--go.names-only",
+		"--out", "testdata/go-names/names.gen.go",
+	); err != nil {
+		return fmt.Errorf("code generation with --go.names-only failed: %w", err)
+	}
+	if err := verifyGoNamesOnly(); err != nil {
+		return err
+	}
 
 	// 5. Start SpiceDB via docker-compose
 	fmt.Println("==> Starting SpiceDB...")
@@ -235,11 +297,12 @@ func JavaIntegrationTest() error {
 		return err
 	}
 	defer os.Remove(javaGenerated)
+	defer os.Remove(javaNamesOnlyGenerated)
 
 	// 3. Verify generated code and tests compile, and that the generated file is
 	// already google-java-format clean (spotlessCheck never rewrites it).
 	fmt.Println("==> Compiling generated code and tests, checking google-java-format...")
-	if err := runInDir("testdata/java", "./gradlew", "compileTestJava", "spotlessCheck"); err != nil {
+	if err := runInDir("testdata/java", "./gradlew", "compileTestJava", "compileNamesOnly", "spotlessCheck"); err != nil {
 		return fmt.Errorf("compilation or formatting check failed: %w", err)
 	}
 
@@ -286,7 +349,12 @@ func JavaIntegrationTest() error {
 
 const javaGenerated = "testdata/java/src/main/java/com/authzed/spicedb/gen/test/Permissions.java"
 
-// generateJava builds the CLI and generates Permissions.java from sample.zed.
+// javaNamesOnlyGenerated is the --java.names-only output, which the
+// compileNamesOnly task compiles with an empty classpath.
+const javaNamesOnlyGenerated = "testdata/java/names_only/com/authzed/spicedb/gen/names/Permissions.java"
+
+// generateJava builds the CLI and generates Permissions.java from sample.zed,
+// plus the names-only Permissions.java.
 func generateJava() error {
 	fmt.Println("==> Building spicedb-gen...")
 	if err := Build(); err != nil {
@@ -302,6 +370,16 @@ func generateJava() error {
 	); err != nil {
 		return fmt.Errorf("code generation failed: %w", err)
 	}
+	if err := sh.RunV(
+		"./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "java",
+		"--java.package=com.authzed.spicedb.gen.names",
+		"--java.names-only",
+		"--out", javaNamesOnlyGenerated,
+	); err != nil {
+		return fmt.Errorf("code generation with --java.names-only failed: %w", err)
+	}
 	return nil
 }
 
@@ -312,8 +390,13 @@ func JavaTypeErrors() error {
 		return err
 	}
 	defer os.Remove(javaGenerated)
+	defer os.Remove(javaNamesOnlyGenerated)
 	if err := runInDir("testdata/java", "./gradlew", "spotlessCheck"); err != nil {
 		return fmt.Errorf("generated Java is not google-java-format clean: %w", err)
+	}
+	// The names-only output compiles with an empty classpath: no spicedb-java.
+	if err := runInDir("testdata/java", "./gradlew", "compileNamesOnly", "--rerun-tasks"); err != nil {
+		return fmt.Errorf("names-only Java does not compile without spicedb-java: %w", err)
 	}
 	return verifyJavaTypeErrors("testdata/java", "type_errors/com/authzed/spicedb/gen/test/TypeErrors.java")
 }
@@ -599,7 +682,27 @@ func runInDir(dir, name string, args ...string) error {
 // GoTypeErrors verifies the Go negative type fixtures against the checked-in
 // generated code, without starting SpiceDB.
 func GoTypeErrors() error {
-	return verifyGoTypeErrors("testdata/go", "type_errors_test.go")
+	if err := verifyGoTypeErrors("testdata/go", "type_errors_test.go"); err != nil {
+		return err
+	}
+	return verifyGoNamesOnly()
+}
+
+// verifyGoNamesOnly builds and tests the --go.names-only fixture
+// (testdata/go-names), a module whose go.mod requires nothing: it builds only
+// while the names-only output imports the standard library alone.
+func verifyGoNamesOnly() error {
+	fmt.Println("==> Testing the names-only output in a module with no requirements...")
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = "testdata/go-names"
+	// No -mod=mod: a non-standard import must fail, not be added to go.mod.
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=readonly")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("names-only Go output does not build without the client: %w", err)
+	}
+	return nil
 }
 
 // verifyGoTypeErrors compiles dir's tests with the typeerror tag, reporting

@@ -33,7 +33,7 @@ use spicedb::{consistency, ObjectRef, PermissionCheck, Relationship, SpiceDBClie
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // host:port, http://host[:port] (plaintext) or https://host[:port] (TLS).
+    // host:port, http://host:port (plaintext) or https://host[:port] (TLS; 443 by default).
     let client = SpiceDBClient::builder("http://localhost:50051", "somerandomkeyhere")
         .build()
         .await?;
@@ -55,6 +55,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+Endpoint ports: an `http://` URL must name its port (`http://spicedb:50051`,
+since nothing serves SpiceDB's plaintext gRPC on port 80), an `https://` URL
+without one uses 443, and a `host:port` endpoint should always name it.
+Malformed endpoints fail at construction with an error naming the problem,
+and connection failures name the endpoint and the cause (refused, DNS, TLS).
 
 Build the client once and share it: `SpiceDBClient` is a cheap
 `Clone + Send + Sync` handle. A remote plaintext host needs

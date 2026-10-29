@@ -42,7 +42,8 @@ use. Build it in a Rails initializer (a constant), not per request or per
 policy object. It opens its channel on first use, so under Puma
 `preload_app!` (or Unicorn) it works in each worker as long as the master
 makes **no SpiceDB call**; put boot-time calls, such as the readiness check `client.connect!(timeout: 10)`, in `on_worker_boot`. A call in
-a child whose parent already connected raises `SpiceDB::ForkedClientError`.
+a child whose parent already used gRPC raises `SpiceDB::ForkedClientError`,
+even from a client built in the child.
 See [README.md, "Concurrency and forking"](README.md#concurrency-and-forking).
 
 Names may be Symbols (`permission: :view`) and object IDs Integers
@@ -218,6 +219,10 @@ operations are recorded and raise a `SpiceDB::Error` with code
 returning a permissionship, `true`/`false`, or `nil` to defer), then stored
 relationships named like the permission (`doc:1#view@user:*` grants every
 user `view`); lookups return the stored objects that resolution grants.
+The double does not evaluate the schema: `view = reader + writer +
+parent_folder->read` is granted only by a stored `view` relationship or the
+resolver, never by a stored `reader`. Model permission logic in the resolver,
+or test it against `spicedb serve-testing` (or a container).
 Its errors have the client's classes, codes and messages (the server's message
 for server failures). `set_reflect_schema_result` and `set_response_metadata`
 register what reflection and `call_options:` capture return. `store.calls_of(:write)`

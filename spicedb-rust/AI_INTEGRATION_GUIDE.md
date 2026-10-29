@@ -50,7 +50,7 @@ let client = SpiceDBClient::new_system_tls(
 // SpiceDBClient is a cheap Clone + Send + Sync handle; share it, don't reconnect.
 ```
 
-Endpoints are `host:port`, `http://host[:port]` or `https://host[:port]`. With
+Endpoints are `host:port`, `http://host:port` or `https://host[:port]`. With
 `SpiceDBClient::builder(url, token).build()` the URL's scheme selects plaintext
 or TLS, so a deployment's `SPICEDB_URL=http://spicedb:50051` setting can be
 passed as is (a remote `http://` host still needs
@@ -274,6 +274,14 @@ relaying an error to another party; `err.reason()` is SpiceDB's
 server status, so the server's message appears once.
 
 ## Test
+
+The in-memory double does not evaluate your schema. A permission such as
+`view = reader + writer + parent->read` is granted on the double only by a
+stored relationship whose relation is named `view`, or by a check resolver
+you install; the double never derives it from `reader`, `writer` or `parent`.
+Use the double for code that consumes check and lookup results (model the
+permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
+or a container) for tests of the permission logic in the schema.
 
 ```rust
 let fake = InMemorySpiceDB::with_relationships([

@@ -120,11 +120,16 @@ func extractLangOptions(args []string) (remaining []string, langArgs []string) {
 		arg := args[i]
 		// Match --word.word pattern (lang-specific flags contain a dot after --)
 		if strings.HasPrefix(arg, "--") && strings.Contains(arg[2:], ".") {
-			langArgs = append(langArgs, arg)
-			// If no = in the arg, the next arg is the value
-			if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			switch {
+			case strings.Contains(arg, "="):
+				langArgs = append(langArgs, arg)
+			case i+1 < len(args) && !strings.HasPrefix(args[i+1], "-"):
+				// No = in the arg: the next arg is the value.
+				langArgs = append(langArgs, arg, args[i+1])
 				i++
-				langArgs = append(langArgs, args[i])
+			default:
+				// A bare boolean flag such as --go.names-only.
+				langArgs = append(langArgs, arg+"=true")
 			}
 		} else {
 			remaining = append(remaining, arg)

@@ -35,7 +35,7 @@ pub enum SpiceDBProtoClientError {
     /// `panic = "abort"`).
     InvalidToken(String),
     /// Refused because `endpoint` is not one of the accepted forms --
-    /// `host:port`, `http://host[:port]` or `https://host[:port]` -- or because
+    /// `host:port`, `http://host:port` or `https://host[:port]` -- or because
     /// its URL scheme disagrees with the transport the caller chose (`http://`
     /// with TLS, `https://` with `insecure`). Raised at construction, so an
     /// endpoint never builds a client whose every call fails. The message
@@ -72,7 +72,7 @@ pub enum ConnectMode {
 }
 
 const ENDPOINT_FORMS: &str =
-    "expected host:port, http://host[:port] (plaintext) or https://host[:port] (TLS)";
+    "expected host:port, http://host:port (plaintext, for example http://host:50051) or https://host[:port] (TLS, port 443 by default)";
 
 fn invalid_endpoint(endpoint: &str, reason: &str) -> SpiceDBProtoClientError {
     SpiceDBProtoClientError::InvalidEndpoint(format!(
@@ -102,6 +102,96 @@ fn split_scheme(endpoint: &str) -> Result<Option<(EndpointScheme, &str)>, SpiceD
     Ok(Some((scheme, rest.strip_suffix('/').unwrap_or(rest))))
 }
 
+/// Checks an endpoint's form before any policy is applied, so an error names
+/// the actual problem: the scheme (already split off by [`split_scheme`]),
+/// then a path, query or fragment, userinfo, the host, and the port. Returns
+/// the authority (host and optional port) the transport dials. Only an
+/// endpoint that passes this is judged by the loopback/credentials policy.
+///
+/// Ports: `host:port` keeps its existing rule (an absent port is the
+/// transport default). An `http://` URL must name its port, since nothing
+/// serves SpiceDB's plaintext gRPC on port 80; an `https://` URL without one
+/// uses 443, the standard port for TLS-fronted endpoints.
+fn validate_form<'a>(
+    endpoint: &str,
+    scheme: Option<EndpointScheme>,
+    rest: &'a str,
+) -> Result<&'a str, SpiceDBProtoClientError> {
+    // Where the authority ends: the first '/', '?' or '#'. What follows is a
+    // path, query or fragment, none of which an endpoint can carry. A URL may
+    // end in one '/', as deployment URLs often do.
+    let (authority, tail) = match rest.find(['/', '?', '#']) {
+        Some(i) => rest.split_at(i),
+        None => (rest, ""),
+    };
+    match tail.chars().next() {
+        None => {}
+        Some('/') if tail == "/" && scheme.is_some() => {}
+        Some('?') => return Err(invalid_endpoint(endpoint, "a query is not supported")),
+        Some('#') => return Err(invalid_endpoint(endpoint, "a fragment is not supported")),
+        Some(_) => return Err(invalid_endpoint(endpoint, "a path is not supported")),
+    }
+    if authority.is_empty() {
+        return Err(invalid_endpoint(endpoint, "no host"));
+    }
+    if authority.contains('@') {
+        return Err(invalid_endpoint(
+            endpoint,
+            "userinfo (user@) is not supported",
+        ));
+    }
+    // Split off the port. A bare IPv6 literal ("::1") has no port; a
+    // bracketed one may ("[::1]:50051").
+    let bare_ipv6 = matches!(authority.parse::<IpAddr>(), Ok(IpAddr::V6(_)));
+    let (host, port) = if bare_ipv6 {
+        (authority, None)
+    } else if let Some(after) = authority.strip_prefix('[') {
+        match after.split_once(']') {
+            Some((_, "")) => (authority, None),
+            Some((_, rest)) => match rest.strip_prefix(':') {
+                Some(port) => (&authority[..authority.len() - port.len() - 1], Some(port)),
+                None => return Err(invalid_endpoint(endpoint, "not a valid host and port")),
+            },
+            None => return Err(invalid_endpoint(endpoint, "not a valid host and port")),
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() || host == "[]" {
+        return Err(invalid_endpoint(endpoint, "no host"));
+    }
+    match port {
+        Some(port) if port.is_empty() || port.parse::<u16>().is_err() => {
+            return Err(invalid_endpoint(
+                endpoint,
+                &format!("the port \"{port}\" is not a number from 0 to 65535"),
+            ))
+        }
+        None if scheme == Some(EndpointScheme::Http) => {
+            return Err(invalid_endpoint(
+                endpoint,
+                "an http:// URL needs an explicit port, as in http://host:50051 \
+                 (without one it would dial port 80)",
+            ))
+        }
+        _ => {}
+    }
+    // Last, the transport's own URI parser judges the host's characters
+    // (whitespace, non-ASCII, ...).
+    if format!("http://{}", transport_authority(authority))
+        .parse::<Uri>()
+        .ok()
+        .and_then(|u| u.host().map(str::to_owned))
+        .is_none_or(|h| h.is_empty())
+    {
+        return Err(invalid_endpoint(endpoint, "not a valid host and port"));
+    }
+    Ok(authority)
+}
+
 /// The scheme of an endpoint written as an `http://` or `https://` URL, or
 /// `None` for the `host:port` form (and for anything construction rejects).
 /// The idiomatic client uses it to let the scheme select plaintext or TLS.
@@ -119,7 +209,7 @@ impl fmt::Display for SpiceDBProtoClientError {
             Self::UnixSocketNotSupported(msg) => write!(f, "{msg}"),
             Self::InvalidToken(msg) => write!(f, "{msg}"),
             Self::InvalidEndpoint(msg) => write!(f, "{msg}"),
-            Self::Transport(e) => write!(f, "{e}"),
+            Self::Transport(e) => write!(f, "transport error: {}", transport_cause(e)),
         }
     }
 }
@@ -133,6 +223,31 @@ impl std::error::Error for SpiceDBProtoClientError {
             | Self::InvalidEndpoint(_) => None,
             Self::Transport(e) => Some(e),
         }
+    }
+}
+
+/// The informative part of a transport error's source chain, for messages.
+///
+/// tonic's own `Display` is just "transport error"; the cause (connection
+/// refused, a DNS failure, a TLS handshake failure) sits several sources
+/// down. This joins the distinct messages along the chain, skipping tonic's
+/// generic ones, so `refused` reads e.g. "tcp connect error: Connection
+/// refused (os error 61)". `source()` is untouched.
+pub fn transport_cause(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut next = Some(error);
+    while let Some(e) = next {
+        let text = e.to_string();
+        let generic = text.is_empty() || text == "transport error";
+        if !generic && !parts.iter().any(|p| p == &text) {
+            parts.push(text);
+        }
+        next = e.source();
+    }
+    if parts.is_empty() {
+        "transport error".to_string()
+    } else {
+        parts.join(": ")
     }
 }
 
@@ -393,7 +508,7 @@ impl SpiceDBProtoClient {
     /// endpoint is dialed. [`ConnectMode::Eager`] makes a plaintext client
     /// fail at construction when the server is unreachable.
     ///
-    /// `endpoint` is `host:port`, `http://host[:port]` or
+    /// `endpoint` is `host:port`, `http://host:port` or
     /// `https://host[:port]`. A URL's scheme must agree with `insecure`
     /// (`http` with `true`, `https` with `false`); any other scheme, a
     /// disagreeing one, or an endpoint that is not a bare authority (userinfo,
@@ -444,7 +559,11 @@ impl SpiceDBProtoClient {
         // A URL endpoint's scheme selects the transport, so it must agree
         // with the one the caller chose; never prefix a second scheme. The
         // guard and the dialer below both use the authority split off here.
-        let authority = match split_scheme(endpoint)? {
+        //
+        // The endpoint's form is checked first, in full, so a malformed one is
+        // reported as what is wrong with it; only a well-formed endpoint
+        // reaches the loopback/credentials policy.
+        let (scheme, rest) = match split_scheme(endpoint)? {
             Some((EndpointScheme::Http, _)) if !insecure => {
                 return Err(invalid_endpoint(
                     endpoint,
@@ -457,12 +576,10 @@ impl SpiceDBProtoClient {
                     "https:// selects TLS, but this client was configured for plaintext",
                 ))
             }
-            Some((_, authority)) => authority,
-            None => endpoint,
+            Some((scheme, rest)) => (Some(scheme), rest),
+            None => (None, endpoint),
         };
-        if authority.is_empty() {
-            return Err(invalid_endpoint(endpoint, "no host"));
-        }
+        let authority = validate_form(endpoint, scheme, rest)?;
         if insecure && !allow_insecure_remote_credentials && !is_loopback_authority(authority) {
             return Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(
                 format!(
@@ -485,35 +602,8 @@ impl SpiceDBProtoClient {
             format!("https://{}", authority)
         };
 
-        // Parse once, here, and refuse anything that is not a bare authority
-        // rather than letting the transport dial something else or accept an
-        // endpoint whose every call then fails. Endpoint::from_shared would
-        // accept a path or query and route every RPC under it.
-        let parsed: Uri = uri
-            .parse()
-            .map_err(|_| invalid_endpoint(endpoint, "not a valid host and port"))?;
-        if authority.contains('@') {
-            return Err(invalid_endpoint(endpoint, "userinfo is not supported"));
-        }
-        if parsed.host().is_none_or(str::is_empty) {
-            return Err(invalid_endpoint(endpoint, "no host"));
-        }
-        // The URI grammar admits any port text; a port must be a number.
-        let after_host = authority
-            .rsplit_once(']')
-            .map_or(authority.as_str(), |(_, p)| p);
-        if let Some((_, port)) = after_host.rsplit_once(':') {
-            if port.parse::<u16>().is_err() {
-                return Err(invalid_endpoint(endpoint, "the port is not a number"));
-            }
-        }
-        if !matches!(parsed.path(), "" | "/") || parsed.query().is_some() {
-            return Err(invalid_endpoint(
-                endpoint,
-                "a path or query is not supported",
-            ));
-        }
-
+        // validate_form already refused anything that is not a bare
+        // authority, so the transport dials exactly the host the guard vetted.
         let mut ep = Endpoint::from_shared(uri)?;
 
         if !insecure {

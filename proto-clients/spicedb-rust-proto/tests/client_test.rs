@@ -255,7 +255,7 @@ mod insecure_host_guard {
     #[tokio::test]
     async fn refuses_insecure_non_loopback_without_opt_in() {
         let result = SpiceDBProtoClient::new_with_options(
-            "evil example.com:1234",
+            "evil.example.com:1234",
             "super-secret-token",
             true,
             false,
@@ -264,7 +264,7 @@ mod insecure_host_guard {
 
         match result {
             Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)) => {
-                assert!(msg.contains("evil example.com:1234"), "{msg}");
+                assert!(msg.contains("evil.example.com:1234"), "{msg}");
                 assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
             }
             Err(other @ SpiceDBProtoClientError::InvalidToken(_)) => {
@@ -358,21 +358,23 @@ mod insecure_host_guard {
                 .await;
 
         match result {
-            Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)) => {
+            // A userinfo part is a malformed endpoint, reported as such
+            // before the credentials policy is consulted.
+            Err(SpiceDBProtoClientError::InvalidEndpoint(msg)) => {
                 assert!(msg.contains(&endpoint), "{msg}");
-                assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
+                assert!(msg.contains("userinfo"), "{msg}");
             }
             Err(other @ SpiceDBProtoClientError::InvalidToken(_)) => {
-                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
+                panic!("expected InvalidEndpoint, got {other:?}")
             }
             Err(other @ SpiceDBProtoClientError::UnixSocketNotSupported(_)) => {
-                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
+                panic!("expected InvalidEndpoint, got {other:?}")
             }
-            Err(other @ SpiceDBProtoClientError::InvalidEndpoint(_)) => {
-                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
+            Err(other @ SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_)) => {
+                panic!("expected InvalidEndpoint naming the userinfo, got {other:?}")
             }
             Err(SpiceDBProtoClientError::Transport(e)) => panic!(
-                "expected InsecureRemoteHostNotAllowed (proving the guard ran before any \
+                "expected InvalidEndpoint (proving the guard ran before any \
                  URI/transport work), but got a Transport error instead: {e}"
             ),
             Ok(client) => {
@@ -484,11 +486,11 @@ mod insecure_host_guard {
         ] {
             let result = SpiceDBProtoClient::new_with_options(endpoint, "t", true, false).await;
             assert!(
-                matches!(
-                    result,
-                    Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_))
-                ),
-                "{endpoint:?} must be refused with a Result, not panic or succeed"
+                // Not valid URI hosts (an IDN must be punycode), so a form
+                // error rather than the credentials policy.
+                matches!(result, Err(SpiceDBProtoClientError::InvalidEndpoint(_))),
+                "{endpoint:?} must be refused with a Result, not panic or succeed: {:?}",
+                result.err()
             );
         }
     }
@@ -695,5 +697,115 @@ mod insecure_host_guard {
         )
         .await;
         assert!(reachable.is_ok(), "{:?}", reachable.err());
+    }
+
+    /// A malformed endpoint is reported as what is wrong with it -- before
+    /// the credentials policy, with or without the opt-in, and on either
+    /// transport -- never as "remote plaintext" or a port problem it does not
+    /// have.
+    #[tokio::test]
+    async fn malformed_endpoints_name_the_actual_problem() {
+        for (endpoint, problem) in [
+            ("http://127.0.0.1:50066/x", "path"),
+            ("http://127.0.0.1:50066/x/y", "path"),
+            ("127.0.0.1:50066/x", "path"),
+            ("http://127.0.0.1:50066?x=1", "query"),
+            ("http://127.0.0.1:50066/?x=1", "path"),
+            ("http://127.0.0.1:50066#frag", "fragment"),
+            ("http://127.0.0.1:50066@evil.com", "userinfo"),
+            ("http://user@127.0.0.1:50066", "userinfo"),
+            ("127.0.0.1:443@evil.com", "userinfo"),
+            ("http://127.0.0.1:port", "port"),
+            ("http://127.0.0.1:", "port"),
+            ("http://127.0.0.1:70000", "port"),
+            ("http://127.0.0.1", "explicit port"),
+            ("http://spicedb", "explicit port"),
+            ("http://[::1]", "explicit port"),
+            ("grpc://127.0.0.1:50066", "scheme"),
+            ("http://:50066", "no host"),
+            ("http://evil host:50066", "not a valid host"),
+        ] {
+            for allow_remote in [false, true] {
+                let result =
+                    SpiceDBProtoClient::new_with_options(endpoint, "t", true, allow_remote).await;
+                match result {
+                    Err(SpiceDBProtoClientError::InvalidEndpoint(msg)) => {
+                        assert!(
+                            msg.contains(problem),
+                            "{endpoint:?} (allow_remote={allow_remote}) must name {problem:?}: {msg}"
+                        );
+                        assert!(!msg.contains("allow_insecure_remote_credentials"), "{msg}");
+                    }
+                    other => panic!(
+                        "expected InvalidEndpoint for {endpoint:?} (allow_remote={allow_remote}), \
+                         got {:?}",
+                        other.err()
+                    ),
+                }
+            }
+        }
+    }
+
+    /// The credentials-policy refusal is reserved for a well-formed remote
+    /// host, in either endpoint form.
+    #[tokio::test]
+    async fn policy_refusal_is_only_for_well_formed_remote_hosts() {
+        for endpoint in [
+            "http://spicedb:50051",
+            "spicedb:50051",
+            "http://10.0.0.5:50051/",
+        ] {
+            let result = SpiceDBProtoClient::new_with_options(endpoint, "t", true, false).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_))
+                ),
+                "{endpoint:?}: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    /// An `https://` URL without a port is accepted (port 443); `host:port`
+    /// keeps its existing rule.
+    #[tokio::test]
+    async fn https_url_without_a_port_is_accepted() {
+        let result = SpiceDBProtoClient::new_with_connect_mode(
+            "https://spicedb.example.com",
+            "t",
+            false,
+            false,
+            spicedb_proto::ConnectMode::Lazy,
+        )
+        .await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    /// A connection failure's Display names its cause, not tonic's bare
+    /// "transport error", and `source()` still reaches it.
+    #[tokio::test]
+    async fn transport_errors_display_their_cause() {
+        for (endpoint, cause) in [("127.0.0.1:1", "refused"), ("spicedb.invalid:50051", "dns")] {
+            let err = match SpiceDBProtoClient::new_with_connect_mode(
+                endpoint,
+                "t",
+                true,
+                true,
+                spicedb_proto::ConnectMode::Eager,
+            )
+            .await
+            {
+                Err(err @ SpiceDBProtoClientError::Transport(_)) => err,
+                other => panic!("expected Transport for {endpoint:?}, got {:?}", other.err()),
+            };
+            let shown = err.to_string();
+            assert!(
+                shown.to_lowercase().contains(cause),
+                "{endpoint:?}: {shown}"
+            );
+            assert_ne!(shown, "transport error: transport error");
+            assert!(std::error::Error::source(&err).is_some());
+        }
     }
 }

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Paged `read_relationships` and `export_relationships` fail with `INTERNAL`
+  ("... page did not advance continuation cursor") when a full page ends with
+  an empty cursor or the cursor that was sent, as `lookup_resources` already
+  did, instead of re-requesting the same page forever. Previously only a
+  missing cursor was caught.
+- The client-wide retry policy (the default, and with
+  `StreamRetryMode::Enabled`) no longer reopens `updates` or
+  `watch_permission_sets` when opening fails: a watch reopened without a start
+  revision begins at a later revision and silently skips the changes in
+  between, so the failure is returned. A per-call or per-operation retry
+  policy still opts a watch in to reopening before its first event.
 - `testing::InMemorySpiceDB` serves every service the client calls, so every
   `SpiceDBClient` method reaches it: operations it does not model (lookups,
   expand, watch, schema introspection, counters, Materialize) are recorded,

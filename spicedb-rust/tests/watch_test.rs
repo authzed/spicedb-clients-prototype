@@ -256,7 +256,8 @@ async fn updates_retries_transient_establishment_failures() {
     // The mock fails the first two `Watch` establishment attempts with
     // UNAVAILABLE (transient), then succeeds on the third and streams one
     // update. This proves `updates()` retries stream *establishment*, not
-    // just in-stream message reads.
+    // just in-stream message reads, when the call opts in with its own retry
+    // policy (the client-wide policy never reopens a watch).
     let responses = vec![watch_response(
         proto::relationship_update::Operation::Touch,
         rel_proto("document", "readme", "viewer", "user", "carol"),
@@ -275,7 +276,13 @@ async fn updates_retries_transient_establishment_failures() {
     .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(spicedb::UpdatesRequest::new(object_types.to_vec()));
+    let stream = client.updates(
+        spicedb::UpdatesRequest::new(object_types.to_vec()).with_options(
+            spicedb::WatchOptions::new().with_call_options(
+                spicedb::CallOptions::new().with_retry_policy(spicedb::RetryPolicy::new()),
+            ),
+        ),
+    );
     tokio::pin!(stream);
 
     // The retry backoff (100ms, 200ms) means this can take a few hundred ms;

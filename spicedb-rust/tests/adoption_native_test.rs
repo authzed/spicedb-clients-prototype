@@ -701,13 +701,14 @@ async fn stream_establishment_retries_can_be_disabled_for_watch() {
         .retry_policy(fast.clone())
         .build()
         .unwrap();
+    // The client-wide policy never reopens a watch, even with stream retries
+    // enabled: a reopened watch would skip changes.
     let mut stream = Box::pin(default.updates(UpdatesRequest::new(vec![])));
-    assert!(stream.next().await.unwrap().is_err());
     assert_eq!(
-        seen.calls.swap(0, Ordering::SeqCst),
-        4,
-        "1 attempt + 3 retries"
+        stream.next().await.unwrap().unwrap_err().code(),
+        Code::Unavailable
     );
+    assert_eq!(seen.calls.swap(0, Ordering::SeqCst), 1);
 
     let supervised = SpiceDBClient::from_channel(channel)
         .retry_policy(fast)

@@ -52,6 +52,12 @@ impl SpiceDBClient {
     /// The most specific retry policy wins: the per-call policy, then the
     /// client's policy for this operation, then the client-wide policy. A
     /// per-call or per-operation policy also governs stream establishment.
+    ///
+    /// The client-wide policy (and its stream-retry mode) never reopens a
+    /// watch: a watch reopened without a start revision begins at a later
+    /// revision and silently skips the changes in between. Only a per-call or
+    /// per-operation policy opts a watch in to reopening before its first
+    /// event.
     pub(crate) fn plan(
         &self,
         operation: Operation,
@@ -59,12 +65,16 @@ impl SpiceDBClient {
         call: &CallOptions,
     ) -> Plan {
         let operation_retry = self.operation_retry.get(&operation).cloned();
+        let is_watch = matches!(
+            operation,
+            Operation::Updates | Operation::WatchPermissionSets
+        );
         let (retry, stream_retries) = match (&call.retry, &operation_retry) {
             (Some(policy), _) => (Some(Arc::new(policy.clone())), true),
             (None, Some(policy)) => (Some(policy.clone()), true),
             (None, None) => (
                 self.retry.clone(),
-                self.stream_retries == crate::options::StreamRetryMode::Enabled,
+                !is_watch && self.stream_retries == crate::options::StreamRetryMode::Enabled,
             ),
         };
         Plan {
@@ -148,6 +158,22 @@ fn page_request_limit(
     match paging {
         crate::options::Paging::SingleRequest => limit.unwrap_or(0),
         _ => page_size.get(),
+    }
+}
+
+/// Fails a paged operation whose full page ended with a cursor that is
+/// missing, empty, or equal to the one sent: requesting the next page with it
+/// would fetch the same page again, forever.
+fn ensure_cursor_advanced(
+    what: &str,
+    next: Option<&proto::Cursor>,
+    sent: Option<&proto::Cursor>,
+) -> Result<(), SpiceDBError> {
+    match next {
+        Some(c) if !c.token.is_empty() && Some(c) != sent => Ok(()),
+        _ => Err(error::internal(format!(
+            "{what} page did not advance continuation cursor"
+        ))),
     }
 }
 
@@ -976,6 +1002,7 @@ impl SpiceDBClient {
                 let mut cursor = request.options.cursor.map(|token| proto::Cursor { token });
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
+                    let previous_cursor = cursor.clone();
                     let response = open_stream(|| async {
                         permissions
                             .clone()
@@ -1008,11 +1035,7 @@ impl SpiceDBClient {
                     if single || remaining == 0 || count < page_size {
                         break;
                     }
-                    if cursor.is_none() {
-                        Err(error::internal(
-                            "read page omitted continuation cursor".into(),
-                        ))?;
-                    }
+                    ensure_cursor_advanced("read", cursor.as_ref(), previous_cursor.as_ref())?;
                 }
             },
         )
@@ -1089,11 +1112,7 @@ impl SpiceDBClient {
                     if single || remaining == 0 || count < page_size {
                         break;
                     }
-                    if cursor.as_ref().is_none_or(|c| c.token.is_empty()) || cursor == previous_cursor {
-                        Err(error::internal(
-                            "lookup page did not advance continuation cursor".into(),
-                        ))?;
-                    }
+                    ensure_cursor_advanced("lookup", cursor.as_ref(), previous_cursor.as_ref())?;
                 }
             },
         )
@@ -1210,6 +1229,7 @@ impl SpiceDBClient {
                 let mut cursor = request.options.cursor.map(|token| proto::Cursor { token });
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
+                    let previous_cursor = cursor.clone();
                     let response = open_stream(|| async {
                         permissions
                             .clone()
@@ -1245,16 +1265,22 @@ impl SpiceDBClient {
                     if remaining == 0 || count < page_size {
                         break;
                     }
-                    if cursor.is_none() {
-                        Err(error::internal(
-                            "export page omitted continuation cursor".into(),
-                        ))?;
-                    }
+                    ensure_cursor_advanced("export", cursor.as_ref(), previous_cursor.as_ref())?;
                 }
             },
         )
     }
     /// Watch has no default lifetime deadline and never restarts automatically.
+    ///
+    /// The client-wide retry policy (including the default and
+    /// [`StreamRetryMode`](crate::StreamRetryMode)) never reopens a watch: a
+    /// watch reopened without a start revision would begin at a later
+    /// revision and silently skip the changes in between, so a failure to
+    /// open it is returned. A per-call
+    /// ([`CallOptions::with_retry_policy`](crate::CallOptions::with_retry_policy))
+    /// or per-operation (`Operation::Updates`) retry policy opts in to
+    /// reopening before the first event. Once an event has been yielded the
+    /// watch is never reopened; resume with `with_start_revision`.
     pub fn updates(
         &self,
         request: UpdatesRequest,
@@ -1490,6 +1516,11 @@ impl SpiceDBClient {
         .await
     }
     /// Experimental Materialize stream. Drop to release; resume explicitly using the last revision.
+    ///
+    /// Like [`updates`](Self::updates), it is never reopened under the
+    /// client-wide retry policy; only a per-call or per-operation
+    /// (`Operation::WatchPermissionSets`) policy opts in to reopening before
+    /// the first event.
     pub fn watch_permission_sets(
         &self,
         request: WatchPermissionSetsRequest,

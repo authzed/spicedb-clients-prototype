@@ -157,14 +157,15 @@ obj = authz.parse_object("organization:acme")             # Organization("acme")
 admins = authz.subject_set_by_name("organization", "acme", "can_admin")  # the subject organization:acme#can_admin
 rel = authz.relationship_from_triple("organization:acme", "member", "user:alice")  # schema-checked
 tc.touch(rel)
-allowed = tc.check_by_name(min_latency(), "organization", org_id, perm_name, authz.parse_object(subject)).has_permission
+allowed = tc.check_by_name(min_latency(), "organization", org_id, perm_name, authz.parse_subject(subject)).has_permission  # "user:alice" or "group:eng#member"
 results = tc.check_bulk_by_name(min_latency(), [("organization", org_id, "view", User(user_id))])
 with tc.lookup_subjects_by_name(min_latency(), "organization", org_id, "view", "user") as stream:
     members = [s.subject.subject_id for s in stream]
 ```
 
-  `authz.SchemaObject` is the union of every generated object class and
-  `authz.SubjectSet` of every subject-set class, for annotating such code.
+  `authz.SchemaObject` is the union of every generated object class,
+  `authz.SubjectSet` of every subject-set class and `authz.SchemaSubject` of
+  everything `parse_subject` returns, for annotating such code.
   `authz.DefinitionNames.ORGANIZATION` and `authz.DEFINITION_NAMES` name the
   definitions; `authz.SCHEMA_TEXT` is the schema the module was generated
   from, so `tc.write_schema(authz.SCHEMA_TEXT)` at startup needs no `.zed`

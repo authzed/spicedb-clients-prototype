@@ -4,8 +4,10 @@ plugins {
 }
 
 allprojects {
-    group = "com.authzed"
-    version = "0.1.0-SNAPSHOT"
+    // Shared with the proto tier (com.authzed.spicedb:spicedb-java-proto), which
+    // lib depends on at this same version. Change both builds together.
+    group = "com.authzed.spicedb"
+    version = "0.1.0"
 
     repositories {
         mavenCentral()

@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Publishing, dependency floors and Spring Boot hosts
+
+- Both builds apply `maven-publish`: `gradle publishToMavenLocal` installs
+  `com.authzed.spicedb:spicedb-java` (was `com.authzed:lib:0.1.0-SNAPSHOT`) and
+  `com.authzed.spicedb:spicedb-java-proto`, both at 0.1.0, with sources jars.
+  The client's POM names the proto artifact with its version (it was
+  versionless, so Maven rejected the POM and dropped every transitive
+  dependency), and every dependency in both POMs carries its resolved version.
+  A Maven or Gradle consumer needs only the client coordinate.
+- The protocol classes are generated with protoc v33.2 (pinned in
+  `buf.gen.yaml`, with grpc-java v1.80.0), lowering the protobuf-java floor from
+  4.36.2 to 4.33.2. A Spring Boot 4.1 host, which manages protobuf-java 4.34.2
+  and gRPC 1.80.0, now works with no override.
+- Every `SpiceDBClient` constructor checks the protobuf-java runtime first: one
+  older than 4.33.2 throws `IllegalStateException` naming the version found and
+  the `protobuf-java.version` property to raise, instead of failing at the
+  first call.
+- New `README.md` (installation before publication, first call), and
+  MIGRATION.md opens with a Requirements section and a legacy-to-new member map.
+
+### Channel options, filter-only delete and the test double
+
+- `createPlaintext(endpoint, key, options, channelCustomizer)` and
+  `createSystemTls(endpoint, key, options, channelCustomizer)` take a
+  `Consumer<ManagedChannelBuilder<?>>` beside `ClientOptions`, so keepalive and
+  other channel settings no longer need `create(..., ClientOption...)`.
+- `deleteRelationships(Filter)` (also on `PermissionsApi`, `SpiceDBApi` and the
+  double) sends the raw filter-only request: one all-or-nothing delete with the
+  server's default limit.
+- `InMemorySpiceDB` resolves checks: a registered result, then a
+  `CheckResolver` (`setCheckResolver`, `InMemorySpiceDB.grantAll()`), then
+  stored relationships named after the permission (exact subject or `type:*`
+  wildcard; caveated matches are conditional), then no permission. Unregistered
+  checks that a stored relationship grants now return `HAS_PERMISSION` instead
+  of `NO_PERMISSION`.
+- `InMemorySpiceDB.lookupResources` and `lookupSubjects` now return results
+  (they threw `UNIMPLEMENTED`): every object of the requested type the stored
+  relationships mention that check resolution grants, honoring the
+  permissionship filter, limit and cursor, with recording and the `CALL`/`ITEM`
+  fault hooks.
+
 ### Paging and watch fixes
 
 - A paged read or lookup whose full page ends without an after-result cursor,

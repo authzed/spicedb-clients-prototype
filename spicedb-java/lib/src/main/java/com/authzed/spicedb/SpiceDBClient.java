@@ -21,6 +21,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -62,6 +63,7 @@ public final class SpiceDBClient implements SpiceDBApi {
    */
   private SpiceDBClient(
       Channel base, ManagedChannel owned, Metadata metadata, ClientOptions options) {
+    ProtobufRuntime.requireSupported();
     this.channel = owned;
     Duration defaultTimeout = options.defaultTimeout();
     if (defaultTimeout == null || defaultTimeout.isZero() || defaultTimeout.isNegative())
@@ -100,6 +102,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   /** See {@link #fromChannel(Channel)}. */
   public static SpiceDBClient fromChannel(Channel channel, ClientOptions options) {
+    ProtobufRuntime.requireSupported();
     if (channel == null) throw new InvalidArgumentException("channel must not be null");
     if (options == null) throw new InvalidArgumentException("options must not be null");
     if (options.caCertificate() != null
@@ -122,14 +125,41 @@ public final class SpiceDBClient implements SpiceDBApi {
    */
   public static SpiceDBClient createPlaintext(
       String endpoint, String presharedKey, ClientOptions options) {
+    return createPlaintext(endpoint, presharedKey, options, NO_CHANNEL_CUSTOMIZATION);
+  }
+
+  /**
+   * Like {@link #createPlaintext(String, String, ClientOptions)}, then passes the channel builder
+   * to {@code channelCustomizer} before the channel is built, for transport settings {@code
+   * ClientOptions} does not cover, such as keepalive:
+   *
+   * <pre>{@code
+   * SpiceDBClient.createPlaintext(endpoint, key, options,
+   *     b -> b.keepAliveTime(60, TimeUnit.SECONDS).keepAliveTimeout(10, TimeUnit.SECONDS));
+   * }</pre>
+   *
+   * <p>The customizer runs after the endpoint guard and the plaintext decision. It must not change
+   * the transport security (for example by calling {@code useTransportSecurity()}); the client's
+   * guards cannot see what it does.
+   */
+  public static SpiceDBClient createPlaintext(
+      String endpoint,
+      String presharedKey,
+      ClientOptions options,
+      Consumer<ManagedChannelBuilder<?>> channelCustomizer) {
+    ProtobufRuntime.requireSupported();
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (channelCustomizer == null)
+      throw new InvalidArgumentException("channelCustomizer must not be null");
     if (options.caCertificate() != null
         || options.clientCertificate() != null
         || options.clientKey() != null)
       throw new InvalidArgumentException("TLS certificates cannot be used with plaintext");
     requireInsecureTransportAllowed(
         endpoint, true, options.remotePlaintextCredentials() == RemotePlaintextCredentials.ALLOW);
-    var managed = ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build();
+    var builder = ManagedChannelBuilder.forTarget(endpoint).usePlaintext();
+    channelCustomizer.accept(builder);
+    var managed = builder.build();
     return new SpiceDBClient(managed, managed, bearerMetadata(presharedKey), options);
   }
 
@@ -139,7 +169,32 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public static SpiceDBClient createSystemTls(
       String endpoint, String presharedKey, ClientOptions options) {
+    return createSystemTls(endpoint, presharedKey, options, NO_CHANNEL_CUSTOMIZATION);
+  }
+
+  /**
+   * Like {@link #createSystemTls(String, String, ClientOptions)}, then passes the channel builder
+   * to {@code channelCustomizer} before the channel is built, for transport settings {@code
+   * ClientOptions} does not cover, such as keepalive:
+   *
+   * <pre>{@code
+   * SpiceDBClient.createSystemTls(endpoint, key, options,
+   *     b -> b.keepAliveTime(60, TimeUnit.SECONDS).keepAliveWithoutCalls(true));
+   * }</pre>
+   *
+   * <p>The customizer runs after the TLS configuration from {@code options} is applied. It must not
+   * change the transport security (for example by calling {@code usePlaintext()}, which would send
+   * the key in cleartext); the client's guards cannot see what it does.
+   */
+  public static SpiceDBClient createSystemTls(
+      String endpoint,
+      String presharedKey,
+      ClientOptions options,
+      Consumer<ManagedChannelBuilder<?>> channelCustomizer) {
+    ProtobufRuntime.requireSupported();
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (channelCustomizer == null)
+      throw new InvalidArgumentException("channelCustomizer must not be null");
     var builder = io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(endpoint);
     try {
       var tls = io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts.forClient();
@@ -150,6 +205,7 @@ public final class SpiceDBClient implements SpiceDBApi {
     } catch (java.io.IOException | IllegalArgumentException e) {
       throw new InvalidArgumentException("invalid TLS configuration", e);
     }
+    channelCustomizer.accept(builder);
     var managed = builder.build();
     return new SpiceDBClient(managed, managed, bearerMetadata(presharedKey), options);
   }
@@ -169,6 +225,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       Duration defaultTimeout,
       ManagedChannelBuilder<?> testChannelBuilder,
       ClientOption... options) {
+    ProtobufRuntime.requireSupported();
     // Detect the two well-known named options by reference -- see root DESIGN.md, "RULE:
     // Credentials over insecure transport require an explicit opt-in", and the public security
     // notes on create(...) and ClientOption#apply above (not just this comment) for what this
@@ -205,6 +262,8 @@ public final class SpiceDBClient implements SpiceDBApi {
   static SpiceDBClient forChannel(ManagedChannel channel, ClientOptions options) {
     return new SpiceDBClient(channel, channel, new Metadata(), options);
   }
+
+  private static final Consumer<ManagedChannelBuilder<?>> NO_CHANNEL_CUSTOMIZATION = builder -> {};
 
   @FunctionalInterface
   public interface ClientOption {
@@ -542,6 +601,21 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   public record DeleteResult(
       ZedToken revision, long deletedCount, boolean completed, String resumeCursor) {}
+
+  /**
+   * Deletes every relationship matching {@code filter} in one all-or-nothing request with the
+   * server's default limit, exactly what a raw {@code DeleteRelationships} request carrying only a
+   * filter does: if more relationships match than the server's limit, nothing is deleted and the
+   * call fails with {@code INVALID_ARGUMENT}. Same as {@link #deleteRelationships(Filter,
+   * DeleteOptions)} with {@code PartialDeletion.DISALLOWED}. To delete any number of matches in
+   * batches, use {@link #deleteAllRelationshipsNonAtomic(Filter)}.
+   */
+  public DeleteResult deleteRelationships(Filter filter) {
+    return deleteRelationships(filter, ALL_OR_NOTHING_DELETE);
+  }
+
+  private static final DeleteOptions ALL_OR_NOTHING_DELETE =
+      DeleteOptions.builder().partialDeletion(PartialDeletion.DISALLOWED).build();
 
   public DeleteResult deleteRelationships(Filter filter, int limit) {
     return deleteRelationships(filter, limit, DeleteOptions.builder().build());

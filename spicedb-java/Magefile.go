@@ -331,6 +331,26 @@ func Lint() error {
 	return sh.RunV("gradle", "spotlessCheck")
 }
 
+// libJARs returns the lib module's main JARs in dir: spicedb-java-<v>.jar since
+// the module is published as com.authzed.spicedb:spicedb-java, and lib-<v>.jar
+// in baselines built before that. Sources and javadoc JARs are skipped.
+func libJARs(dir string) ([]string, error) {
+	var out []string
+	for _, pattern := range []string{"spicedb-java-*.jar", "lib-*.jar"} {
+		matches, err := filepath.Glob(filepath.Join(dir, pattern))
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			if strings.HasSuffix(m, "-sources.jar") || strings.HasSuffix(m, "-javadoc.jar") {
+				continue
+			}
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
 // ApiCompat checks for breaking API changes against the given base git ref.
 func ApiCompat(baseRef string) error {
 	// Find japicmp JAR in tools/ dir
@@ -347,7 +367,7 @@ func ApiCompat(baseRef string) error {
 		return fmt.Errorf("current build failed: %w", err)
 	}
 
-	currentJARs, err := filepath.Glob("lib/build/libs/lib-*.jar")
+	currentJARs, err := libJARs("lib/build/libs")
 	if err != nil || len(currentJARs) == 0 {
 		return fmt.Errorf("current JAR not found in lib/build/libs/")
 	}
@@ -376,7 +396,7 @@ func ApiCompat(baseRef string) error {
 		return fmt.Errorf("baseline build failed: %w", err)
 	}
 
-	baselineJARs, _ := filepath.Glob(filepath.Join(baselineDir, "lib", "build", "libs", "lib-*.jar"))
+	baselineJARs, _ := libJARs(filepath.Join(baselineDir, "lib", "build", "libs"))
 	if len(baselineJARs) == 0 {
 		return fmt.Errorf("baseline JAR not found in worktree")
 	}

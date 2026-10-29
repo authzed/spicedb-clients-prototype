@@ -73,6 +73,11 @@ try (var tc = TypedClient.createSystemTls("spicedb.example.com:443", System.gete
 `createPlaintext` is for local development; a non-loopback plaintext target
 additionally needs
 `ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build()`.
+Keepalive and other channel settings go beside the options on the native
+constructors: `SpiceDBClient.createSystemTls(endpoint, token, options, b ->
+b.keepAliveTime(60, TimeUnit.SECONDS))`, then `new TypedClient(client, true)`.
+Install the artifacts and check the protobuf-java floor (4.33.2; Spring Boot 4.1
+needs no override) as [README.md](README.md) describes.
 For an existing `io.grpc.Channel` (in-process, SpiceDB's test server), use
 `new TypedClient(SpiceDBClient.fromChannel(channel), true)`; `close` never shuts a
 supplied channel down.
@@ -212,6 +217,11 @@ client.readSchema(
 com.authzed.api.v1.Relationship wire = ProtoConv.toProto(r); // protocol-shaped output
 ```
 
+Deletes: `client.deleteRelationships(filter)` is one all-or-nothing request (the
+raw filter-only `DeleteRelationships`); `deleteRelationships(filter, limit)` may
+delete part of the matches; `deleteAllRelationshipsNonAtomic(filter)` deletes
+any number in batches.
+
 Every operation's options accept `.transport(...)`. Use `ProtoConv` with
 protobuf's `JsonFormat` for protocol-shaped JSON.
 
@@ -253,19 +263,30 @@ db.failNext(
 List<InMemorySpiceDB.Call> writes = db.callsOf(ClientOperation.WRITE);
 String resumeAfterTwo = InMemorySpiceDB.cursorAfter(2);
 db.setReadSchemaRevision(InMemorySpiceDB.SchemaRevision.OMITTED);
+// Checks with no registered result: a resolver (null declines), or grant everything.
+db.setCheckResolver(
+    check ->
+        check.permission().equals("view")
+            ? new CheckResult(Permissionship.HAS_PERMISSION, List.of(), null, null, null)
+            : null);
+db.setCheckResolver(InMemorySpiceDB.grantAll());
 ```
 
 Depend on `PermissionsApi` (`write`, `readRelationships`, `deleteRelationships`,
 `check`, `checkBulk`, `importRelationships`, `exportRelationships`, `readSchema`,
 `writeSchema`, `reflectSchema`), or on `SpiceDBApi` for the client's full method set;
 both `SpiceDBClient` and `InMemorySpiceDB` implement both, and a `TypedClient` provides
-one through `tc.client()`. Operations the double cannot run in memory (lookups, expand,
+one through `tc.client()`. Checks resolve in order: registered result, resolver, then a
+stored relationship whose relation is the permission's name (exact subject or `type:*`
+wildcard), else no permission; the double never evaluates the schema. `lookupResources`
+and `lookupSubjects` apply that resolution to every object of the requested type the
+stored relationships mention. Operations the double cannot run in memory (expand,
 watch, schema analysis, experimental calls) are recorded and throw `UNIMPLEMENTED` unless
 the fault hook fails them first. The double applies
 preconditions, `CREATE` conflicts and filter semantics like the server. It
 records every call (`calls()`, `callsOf(op)`: arguments and options) and
 injects faults with `setFaultHook` (before a call, each import batch, the
-import commit, each read/export item) or `failNext`; a failed write or import
+import commit, each read/export/lookup item) or `failNext`; a failed write or import
 applies nothing.
 For integration tests, run `authzed/spicedb serve-testing` and assert both
 granted and denied cases.

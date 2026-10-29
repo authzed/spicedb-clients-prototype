@@ -20,6 +20,13 @@ public interface PermissionsApi {
   Stream<ReadRelationship> readRelationships(
       Consistency consistency, Filter filter, ReadOptions options);
 
+  /**
+   * One all-or-nothing delete with the server's default limit: the raw {@code DeleteRelationships}
+   * request that carries only a filter. Same as {@link #deleteRelationships(Filter, DeleteOptions)}
+   * with {@code PartialDeletion.DISALLOWED}.
+   */
+  SpiceDBClient.DeleteResult deleteRelationships(Filter filter);
+
   SpiceDBClient.DeleteResult deleteRelationships(Filter filter, int limit);
 
   SpiceDBClient.DeleteResult deleteRelationships(Filter filter, int limit, DeleteOptions options);

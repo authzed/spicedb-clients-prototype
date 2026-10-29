@@ -14,6 +14,15 @@
 
 ## Unreleased
 
+### Closing an aio stream no longer cancels the consumer's task
+
+- `AsyncStream.aclose()` from another task, while a consumer awaits the
+  stream's next item, now raises `spicedb.errors.CancelledError` (code
+  `CANCELLED`) in that consumer, as closing a sync `Stream` from another
+  thread already did. Before, it cancelled the consumer's whole task, which
+  surfaced as `asyncio.CancelledError` and ended the task. Cancelling the
+  consumer's task yourself still propagates `asyncio.CancelledError`.
+
 ### Malformed responses fail with INTERNAL
 
 - New `InternalError` (code `INTERNAL`, not retryable by default); a server

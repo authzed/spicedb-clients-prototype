@@ -333,6 +333,11 @@ also classifies raw `grpc.RpcError`, `asyncio.CancelledError` and
 `TimeoutError`. Tests construct errors with
 `SpiceDBError.from_code(grpc.StatusCode.FAILED_PRECONDITION, "...")`.
 
+Closing a stream while another thread or task waits on it raises
+`spicedb.errors.CancelledError` (code `CANCELLED`) in the waiter; cancelling
+an asyncio task still raises `asyncio.CancelledError`, and `code_of` reports
+both as `CANCELLED`.
+
 A response the client cannot interpret (a missing relationship, object, ID or
 revision, an expand node with neither children nor subjects, a cursor that
 does not advance) raises `InternalError` (code `INTERNAL`, not retried by

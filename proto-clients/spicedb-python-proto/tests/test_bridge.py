@@ -171,6 +171,30 @@ def test_bridge_tree_drops_canonical_modules_and_keeps_the_rest(tmp_path):
     assert data["tool"]["uv"]["build-backend"]["module-name"] == ["authzed", "grpcutil"]
 
 
+@pytest.mark.parametrize(
+    "deps",
+    [
+        '["grpcio[protobuf]>=1.63", "protobuf>=5"]',
+        '[\n  "grpcio[protobuf]>=1.63",  # extras contain ] too\n  \'typing-extensions\', "protobuf>=5"\n]',
+    ],
+)
+def test_rewrite_pyproject_keeps_dependencies_with_extras(tmp_path, deps):
+    # A dependency's extras ("pkg[extra]") contain "]"; the array ends at the
+    # bracket that closes it, not at the first "]" inside a string or comment.
+    import tomllib
+
+    text = f'[project]\nname = "authzed"\ndependencies = {deps}\n\n[tool.other]\nkeep = ["x"]\n'
+    before = tomllib.loads(text)["project"]["dependencies"]
+    out = bridge._rewrite_pyproject(text, "spicedb-python-proto>=0.1.0", tmp_path)
+    data = tomllib.loads(out)
+    assert data["project"]["dependencies"] == [*before, "spicedb-python-proto>=0.1.0"]
+    assert data["tool"]["other"] == {"keep": ["x"]}
+    # Only the array changed; everything around it is byte-for-byte intact.
+    start, end = text.index("dependencies"), text.index("\n\n[tool.other]")
+    assert out.startswith(text[:start]) and out.endswith(text[end:])
+    assert bridge._rewrite_pyproject(out, "spicedb-python-proto>=0.1.0", tmp_path) == out
+
+
 def test_bridge_tree_is_idempotent(tmp_path):
     make_checkout(tmp_path)
     bridge.bridge_tree(tmp_path, "spicedb-python-proto>=0.1.0")

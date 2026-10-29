@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import { InMemorySpiceDB, InvalidArgumentError, LookupPermissionshipFilter, full, relationship, type SpiceDBClientInterface } from "@spicedb/client";
 import {
-    TypedClient, Document, User, Team, Organization, NotInSchemaError, SubjectNotAllowedError, PermissionRef, SchemaText, Definitions, DefinitionNames,
-    definitionByName, permissionRefByName, subjectSetByName, checksFor,
+    TypedClient, Document, User, Team, Organization, Invitation, UserWildcard, NotInSchemaError, SubjectNotAllowedError, PermissionRef, SchemaText,
+    Definitions, DefinitionNames, definitionByName, permissionRefByName, subjectSetByName, checksFor, objectByName, parseObject, relationshipFromTriple,
     type DefinitionName, type AnyResourceRef, type AnySubject,
 } from "./permissions";
 
@@ -105,6 +105,45 @@ describe("runtime names: subject sets, any object, checks and lookups", () => {
         expect(() => subjectSetByName("team", "x", "toString")).toThrow(NotInSchemaError);
     });
 
+    it("builds objects from names and type:id text", () => {
+        expect(String(objectByName("document", "readme"))).toBe("document:readme");
+        expect(objectByName("document", "readme")._ref).toBe("DocumentRef");
+        expect(parseObject("organization:acme")._ref).toBe("OrganizationRef");
+        expect(String(parseObject("organization:acme"))).toBe("organization:acme");
+        expect(() => objectByName("folder", "x")).toThrow(NotInSchemaError);
+        expect(() => parseObject("folder:x")).toThrow(NotInSchemaError);
+        expect(() => objectByName("document", "")).toThrow(InvalidArgumentError);
+        for (const bad of ["document", "document:", ":x"]) expect(() => parseObject(bad)).toThrow(InvalidArgumentError);
+        expect(() => subjectSetByName("team", "", "member")).toThrow(InvalidArgumentError);
+    });
+
+    it("builds schema-checked relationships from tuple text", () => {
+        const same = (a: { toString(): string }, b: { toString(): string }) => expect(a.toString()).toBe(b.toString());
+        same(relationshipFromTriple("document:readme", "viewer", "user:alice"), Document("readme").viewer(User("alice")));
+        same(relationshipFromTriple("document:readme", "viewer", "team:eng#member"), Document("readme").viewer(Team("eng").member()));
+        same(relationshipFromTriple("organization:acme", "creator", "user:*"), Organization("acme").creator(UserWildcard()));
+        same(relationshipFromTriple("document:readme", "editor", "user:bob#..."), Document("readme").editor(User("bob")));
+        const at = new Date("2030-01-02T03:04:05Z");
+        same(relationshipFromTriple("invitation:i1", "inviter", "user:alice", { expiration: at }), Invitation("i1").inviter(User("alice").withExpiration(at)));
+        same(
+            relationshipFromTriple("document:readme", "viewer", "user:alice", { caveat: { name: "ip_range", context: { allowed_cidr: "10.0.0.0/8" } } }),
+            Document("readme").viewer(User("alice").withIpRange({ allowedCidr: "10.0.0.0/8" })),
+        );
+
+        expect(() => relationshipFromTriple("folder:x", "viewer", "user:alice")).toThrow(NotInSchemaError);
+        expect(() => relationshipFromTriple("document:x", "viewer", "robot:r")).toThrow(NotInSchemaError);
+        expect(() => relationshipFromTriple("document:x", "view", "user:alice")).toThrow(NotInSchemaError); // a permission
+        expect(() => relationshipFromTriple("document:x", "editor", "team:eng#member")).toThrow(SubjectNotAllowedError);
+        expect(() => relationshipFromTriple("document:x", "viewer", "user:*")).toThrow(SubjectNotAllowedError);
+        expect(() => relationshipFromTriple("organization:x", "creator", "user:alice")).toThrow(SubjectNotAllowedError);
+        expect(() => relationshipFromTriple("invitation:x", "inviter", "user:alice")).toThrow(SubjectNotAllowedError);
+        expect(() => relationshipFromTriple("document:x", "editor", "user:alice", { expiration: at })).toThrow(SubjectNotAllowedError);
+        expect(() => relationshipFromTriple("document:x", "editor", "user:alice", { caveat: { name: "ip_range" } })).toThrow(SubjectNotAllowedError);
+        expect(() => relationshipFromTriple("document", "viewer", "user:alice")).toThrow(InvalidArgumentError);
+        expect(() => relationshipFromTriple("document:x", "viewer", "alice")).toThrow(InvalidArgumentError);
+        expect(() => relationshipFromTriple("document:x", "viewer", "team:eng#")).toThrow(InvalidArgumentError);
+    });
+
     it("covers every definition ref with AnyResourceRef", () => {
         const refs: AnyResourceRef[] = DefinitionNames.map(name => definitionByName(name).ref("x"));
         expect(refs.map(r => r._type)).toEqual([...DefinitionNames]);
@@ -123,7 +162,19 @@ describe("runtime names: subject sets, any object, checks and lookups", () => {
         expect(result!.hasPermission()).toBe(true);
         await expect(tc.checkByName(full(), "document", "d1", "nope", User("alice"))).rejects.toThrow(NotInSchemaError);
         await expect(tc.checkByName(full(), "document", "d1", "view", Organization("o1"))).rejects.toThrow(SubjectNotAllowedError);
+        await expect(tc.checkByName(full(), "organization", "o1", "view", UserWildcard())).rejects.toThrow(SubjectNotAllowedError);
         expect(db.callsOf("check")).toHaveLength(2);
+
+        const results = await tc.checkBulkByName(full(), [
+            { definition: "document", id: "d1", permission: "view", subject: User("alice") },
+            { definition: "document", id: "d1", permission: "view", subject: User("bob") },
+        ]);
+        expect(results.map(r => r.hasPermission())).toEqual([true, false]);
+        await expect(tc.checkBulkByName(full(), [
+            { definition: "document", id: "d1", permission: "view", subject: User("alice") },
+            { definition: "document", id: "d1", permission: "share", subject: User("alice") },
+        ])).rejects.toThrow(NotInSchemaError);
+        expect(db.callsOf("checkBulk")).toHaveLength(2);
     });
 
     it("looks up by relation, and returns nothing without a call when the subject type cannot reach", async () => {
@@ -132,17 +183,18 @@ describe("runtime names: subject sets, any object, checks and lookups", () => {
         expect((await drain(tc.lookupResourcesByName(full(), "document", "viewer", User("alice")))).map(r => r.resourceId)).toEqual(["d1"]);
         expect(await drain(tc.lookupResourcesByName(full(), "document", "view", Organization("o1")))).toEqual([]);
         expect(await drain(tc.lookupResourcesByName(full(), "document", "view", Team("eng")))).toEqual([]);
+        expect(() => tc.lookupResourcesByName(full(), "organization", "view", UserWildcard())).toThrow(SubjectNotAllowedError);
         expect(db.callsOf("lookupResources")).toHaveLength(1);
 
         expect((await drain(tc.lookupSubjectsByName(full(), "document", "d1", "viewer", "user"))).map(s => s.subject.subjectId)).toEqual(["alice"]);
-        for (const type of ["organization", "team", "organization#member"])
-            expect(await drain(tc.lookupSubjectsByName(full(), "document", "d1", "view", type))).toEqual([]);
+        for (const [type, relation] of [["organization", undefined], ["team", undefined], ["organization", "member"]] as const)
+            expect(await drain(tc.lookupSubjectsByName(full(), "document", "d1", "view", type, relation))).toEqual([]);
         expect(db.callsOf("lookupSubjects")).toHaveLength(1);
         expect(() => tc.lookupSubjectsByName(full(), "folder", "d1", "view", "user")).toThrow(NotInSchemaError);
         expect(() => tc.lookupSubjectsByName(full(), "document", "d1", "nope", "user")).toThrow(NotInSchemaError);
         expect(() => tc.lookupSubjectsByName(full(), "document", "d1", "view", "folder")).toThrow(NotInSchemaError);
-        expect(() => tc.lookupSubjectsByName(full(), "document", "d1", "view", "team#owner")).toThrow(NotInSchemaError);
-        expect(() => tc.lookupSubjectsByName(full(), "document", "d1", "view", "team#member", { subjectRelation: "other" })).toThrow(InvalidArgumentError);
+        expect(() => tc.lookupSubjectsByName(full(), "document", "d1", "view", "team", "owner")).toThrow(NotInSchemaError);
+        expect(() => tc.lookupSubjectsByName(full(), "document", "d1", "view", "team", "member", { subjectRelation: "other" })).toThrow(InvalidArgumentError);
         expect(db.callsOf("lookupSubjects")).toHaveLength(1);
     });
 });

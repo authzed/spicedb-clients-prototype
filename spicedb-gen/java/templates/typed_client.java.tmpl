@@ -560,6 +560,130 @@ public final class Permissions {
     }
   }
 
+  /**
+   * Validates a by-name check or lookup: the names, and a wildcard subject of a reachable type.
+   * Returns whether the subject's type and relation can reach the target.
+   */
+  private static boolean reachable(String definition, String name, Subject subject) {
+    resolveByName(definition, name);
+    Objects.requireNonNull(subject, "subject");
+    if (!reaches(definition + "#" + name, subjectPosition(subject))) {
+      return false;
+    }
+    if (subject.id().equals("*")) {
+      throw new SubjectNotAllowedException(
+          definition + "#" + name + " cannot be checked or looked up for the wildcard " + subject);
+    }
+    return true;
+  }
+
+  private static TypedCheck checkTarget(
+      String definition, String id, String name, Subject subject) {
+    if (!reachable(definition, name, subject)) {
+      throw new SubjectNotAllowedException(
+          definition + "#" + name + " cannot be reached by " + subjectString(subject));
+    }
+    return new TypedCheck(new Permission<>(definition, id, name, Subject.class), subject);
+  }
+
+  /** One {@link TypedClient#checkBulkByName} item, with names received at run time. */
+  public record NamedCheck(String definition, String id, String permission, Subject subject) {}
+
+  /**
+   * The typed object for a definition name and ID received at run time: {@code
+   * objectByName("document", "readme")} equals {@code Document("readme")}.
+   *
+   * @throws NotInSchemaException if the schema has no such definition
+   */
+  public static DefinitionRef objectByName(String definition, String id) {
+    var d = definitionByName(definition);
+    return d.ref(new ObjectRef(definition, id).objectId());
+  }
+
+  /**
+   * The typed object for {@code type:id} text: {@code parseObject("document:readme")} equals {@code
+   * Document("readme")}.
+   *
+   * @throws NotInSchemaException if the schema has no such definition
+   */
+  public static DefinitionRef parseObject(String text) {
+    var object = objectText(text, "object reference");
+    return objectByName(object.objectType(), object.objectId());
+  }
+
+  private static ObjectRef objectText(String text, String what) {
+    var i = Objects.requireNonNull(text, what).indexOf(':');
+    if (i < 1 || i == text.length() - 1) {
+      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+          "invalid " + what + " (want type:id): " + text);
+    }
+    return new ObjectRef(text.substring(0, i), text.substring(i + 1));
+  }
+
+  /**
+   * A schema-checked relationship from tuple text received at run time, such as {@code
+   * relationshipFromTriple("document:readme", "viewer", "user:alice")}; see {@link
+   * #relationshipFromTriple(String, String, String, String, Map, Instant)}.
+   */
+  public static TypedRelationship relationshipFromTriple(
+      String resource, String relation, String subject) {
+    return relationshipFromTriple(resource, relation, subject, null, null, null);
+  }
+
+  /**
+   * A schema-checked relationship from tuple text received at run time. {@code resource} is {@code
+   * type:id} and {@code subject} is {@code type:id} or {@code type:id#relation} ({@code #...} is
+   * direct). The subject, with the caveat and expiration given (each may be null), must be a shape
+   * the relation admits, exactly as SpiceDB checks a write.
+   *
+   * @throws NotInSchemaException if the schema has no such definition or relation
+   * @throws SubjectNotAllowedException if the relation does not admit the subject's shape
+   */
+  public static TypedRelationship relationshipFromTriple(
+      String resource,
+      String relation,
+      String subject,
+      String caveatName,
+      Map<String, Object> caveatContext,
+      Instant expiration) {
+    var r = objectText(resource, "resource");
+    var hash = Objects.requireNonNull(subject, "subject").indexOf('#');
+    var rawRelation = hash < 0 ? null : subject.substring(hash + 1);
+    if (rawRelation != null && rawRelation.isEmpty()) {
+      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+          "invalid subject (empty relation): " + subject);
+    }
+    var subjectRelation = "...".equals(rawRelation) ? null : rawRelation;
+    var s = objectText(hash < 0 ? subject : subject.substring(0, hash), "subject");
+    var d = definitionByName(r.objectType());
+    definitionByName(s.objectType());
+    if (!d.relationNames().contains(Objects.requireNonNull(relation, "relation"))) {
+      throw new NotInSchemaException(r.objectType() + " has no relation " + relation);
+    }
+    var rule =
+        s.objectType()
+            + (s.objectId().equals("*") ? ":*" : "")
+            + (subjectRelation == null ? "" : "#" + subjectRelation)
+            + (caveatName == null ? "" : "[" + caveatName + "]")
+            + (expiration == null ? "" : "[expiration]");
+    if (!admitsShape(r.objectType() + "#" + relation + "@" + rule)) {
+      throw new SubjectNotAllowedException(
+          r.objectType() + "#" + relation + " does not admit " + rule);
+    }
+    var built =
+        Relationship.of(
+            r,
+            relation,
+            subjectRelation == null ? SubjectRef.direct(s) : SubjectRef.named(s, subjectRelation));
+    if (caveatName != null) {
+      built = built.withCaveat(caveatName, caveatContext == null ? Map.of() : caveatContext);
+    }
+    if (expiration != null) {
+      built = built.withExpiration(expiration);
+    }
+    return new TypedRelationship(built, null);
+  }
+
   private static String subjectPosition(Subject subject) {
     return subject.subRelation().isEmpty()
         ? subject.definitionName()
@@ -995,11 +1119,12 @@ public final class Permissions {
 
     /**
      * Looks up resources by definition and permission (or relation) names received at run time. The
-     * names are validated against the schema before any call is made. When the subject's type cannot
-     * reach the permission in the schema, the stream is empty and no call is made, as SpiceDB would
-     * find nothing.
+     * names are validated against the schema before any call is made. When the subject's type
+     * cannot reach the permission in the schema, the stream is empty and no call is made, as
+     * SpiceDB would find nothing.
      *
      * @throws NotInSchemaException if the schema has no such definition, permission or relation
+     * @throws SubjectNotAllowedException for a wildcard subject of a type that reaches it
      */
     public Stream<LookupResult.LookupResource> lookupResources(
         Consistency c, String definition, String permission, Subject subject) {
@@ -1012,10 +1137,7 @@ public final class Permissions {
         String permission,
         Subject subject,
         LookupOptions options) {
-      resolveByName(definition, permission);
-      if (!reaches(
-          definition + "#" + permission,
-          subjectPosition(Objects.requireNonNull(subject, "subject")))) {
+      if (!reachable(definition, permission, subject)) {
         return Stream.empty();
       }
       return client.lookupResources(c, definition, permission, subjectRef(subject), options);
@@ -1044,18 +1166,12 @@ public final class Permissions {
     }
 
     /**
-     * Looks up subjects by names received at run time: a definition, resource ID, permission (or
-     * relation) and a subject type written {@code "type"} or {@code "type#relation"} (such as {@code
-     * "team#member"}). The names are validated against the schema before any call is made. When the
-     * subject type cannot reach the permission in the schema, the stream is empty and no call is made.
-     *
-     * @throws NotInSchemaException if the schema has no such definition, permission, relation or
-     *     subject type
+     * Looks up direct subjects of a type by names received at run time; see {@link
+     * #lookupSubjects(Consistency, String, String, String, String, String, LookupOptions)}.
      */
     public Stream<LookupResult.LookupSubject> lookupSubjects(
         Consistency c, String definition, String id, String permission, String subjectType) {
-      return lookupSubjects(
-          c, definition, id, permission, subjectType, LookupOptions.builder().build());
+      return lookupSubjects(c, definition, id, permission, subjectType, null);
     }
 
     public Stream<LookupResult.LookupSubject> lookupSubjects(
@@ -1064,32 +1180,101 @@ public final class Permissions {
         String id,
         String permission,
         String subjectType,
+        String subjectRelation) {
+      return lookupSubjects(
+          c,
+          definition,
+          id,
+          permission,
+          subjectType,
+          subjectRelation,
+          LookupOptions.builder().build());
+    }
+
+    /**
+     * Looks up subjects by names received at run time: a definition, resource ID, permission (or
+     * relation), subject type and subject relation ({@code "member"} for {@code team#member}; null,
+     * empty or {@code "..."} for direct subjects). The names are validated against the schema
+     * before any call is made. When the subject type and relation cannot reach the permission in
+     * the schema, the stream is empty and no call is made.
+     *
+     * @throws NotInSchemaException if the schema has no such definition, permission, relation or
+     *     subject type
+     */
+    public Stream<LookupResult.LookupSubject> lookupSubjects(
+        Consistency c,
+        String definition,
+        String id,
+        String permission,
+        String subjectType,
+        String subjectRelation,
         LookupOptions options) {
       Objects.requireNonNull(options, "options");
       resolveByName(definition, permission);
-      var hash = Objects.requireNonNull(subjectType, "subjectType").indexOf('#');
-      var type = hash < 0 ? subjectType : subjectType.substring(0, hash);
-      var relation = hash < 0 ? null : subjectType.substring(hash + 1);
-      var subjectDefinition = definitionByName(type);
+      var relation =
+          subjectRelation == null || subjectRelation.isEmpty() || subjectRelation.equals("...")
+              ? null
+              : subjectRelation;
+      var subjectDefinition = definitionByName(subjectType);
       if (relation != null
           && !subjectDefinition.relationNames().contains(relation)
           && !subjectDefinition.permissionNames().contains(relation)) {
-        throw new NotInSchemaException(type + " has no relation or permission " + relation);
+        throw new NotInSchemaException(subjectType + " has no relation or permission " + relation);
       }
       if (options.subjectRelation() != null
           && !Objects.equals(options.subjectRelation(), relation)) {
         throw new com.authzed.spicedb.errors.InvalidArgumentException(
-            "subjectRelation conflicts with the subject type " + subjectType);
+            "options.subjectRelation conflicts with subjectRelation " + subjectRelation);
       }
-      if (!reaches(definition + "#" + permission, subjectType)) {
+      var position = relation == null ? subjectType : subjectType + "#" + relation;
+      if (!reaches(definition + "#" + permission, position)) {
         return Stream.empty();
       }
       return client.lookupSubjects(
           c,
           new ObjectRef(definition, Objects.requireNonNull(id, "id")),
           permission,
-          type,
+          subjectType,
           options.toBuilder().subjectRelation(relation).build());
+    }
+
+    /**
+     * Checks a permission or relation named at run time, such as {@code checkByName(c, "document",
+     * "readme", "view", parseObject("user:alice"))}.
+     *
+     * @throws NotInSchemaException if the schema has no such definition, permission or relation
+     * @throws SubjectNotAllowedException if the subject's type cannot reach it, or is a wildcard
+     */
+    public CheckResult checkByName(
+        Consistency c, String definition, String id, String permission, Subject subject) {
+      return checkByName(c, definition, id, permission, subject, CheckOptions.builder().build());
+    }
+
+    public CheckResult checkByName(
+        Consistency c,
+        String definition,
+        String id,
+        String permission,
+        Subject subject,
+        CheckOptions options) {
+      return check(c, checkTarget(definition, id, permission, subject), options);
+    }
+
+    /**
+     * Checks items named at run time in one native bulk check; results are in input order. Every
+     * item is validated as in {@link #checkByName} before any call is made.
+     */
+    public List<CheckResult> checkBulkByName(Consistency c, List<NamedCheck> checks) {
+      return checkBulkByName(c, checks, CheckOptions.builder().build());
+    }
+
+    public List<CheckResult> checkBulkByName(
+        Consistency c, List<NamedCheck> checks, CheckOptions options) {
+      var typed = new ArrayList<TypedCheck>(checks.size());
+      for (var check : checks) {
+        typed.add(checkTarget(check.definition(), check.id(), check.permission(), check.subject()));
+      }
+      return checkBulk(c, typed, options);
     }
 
     /** Writes a typed transaction atomically. Named so it never shadows the native write. */

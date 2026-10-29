@@ -17,6 +17,16 @@ func TestReachingSubjectPositions(t *testing.T) {
 	require.Equal(t, []string{"organization#can_admin", "user"}, r["invitation#accept"], "permission subject sets expand")
 	require.Equal(t, []string{"organization"}, r["invitation#org"])
 	require.Equal(t, []string{"team#member", "organization#can_admin"}, s.SubjectSetPositions())
+
+	rules := s.SubjectRules()
+	for _, want := range []string{
+		"document#viewer@user", "document#viewer@user[ip_range]", "document#viewer@team#member",
+		"organization#creator@user:*", "invitation#timed_grant@organization#can_admin[expiration]",
+		"invitation#inviter@user[expiration]",
+	} {
+		require.Contains(t, rules, want)
+	}
+	require.NotContains(t, rules, "invitation#inviter@user")
 }
 
 func TestReachingSubjectPositionsTerminatesOnCycles(t *testing.T) {

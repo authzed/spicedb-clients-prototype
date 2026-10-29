@@ -35,6 +35,12 @@ tasks.withType<JavaCompile> {
     options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-processing"))
 }
 
+// The generated Permissions.java (the only main source) must compile warning-free under every
+// lint, since applications commonly build with -Xlint:all -Werror.
+tasks.named<JavaCompile>("compileJava") {
+    options.compilerArgs.add("-Werror")
+}
+
 spotless {
     java {
         target("src/main/java/**/Permissions.java", "names_only/**/Permissions.java")

@@ -1187,7 +1187,10 @@ export function permissionRefByName(definition: string, permission: string): Per
     return definitionByName(definition).permissionRef(permission);
 }
 
-const subjectSetMakers: Readonly<Record<string, (id: string) => AnySubject>> = Object.freeze({
+/** Any generated subject set ref (`definition:id#relation`), as {@link subjectSetByName} returns it. */
+export type AnySubjectSet = TeamMemberRef | OrganizationCanAdminRef;
+
+const subjectSetMakers: Readonly<Record<string, (id: string) => AnySubjectSet>> = Object.freeze({
     "team#member": (id: string) => makeTeamMemberRef(id),
     "organization#can_admin": (id: string) => makeOrganizationCanAdminRef(id),
 });
@@ -1198,14 +1201,135 @@ const subjectSetMakers: Readonly<Record<string, (id: string) => AnySubject>> = O
  * definition or relation, and for a relation or permission that no relation in
  * the schema admits as a subject.
  */
-export function subjectSetByName(definition: string, id: string, relation: string): AnySubject {
+export function subjectSetByName(definition: string, id: string, relation: string): AnySubjectSet {
     const info = definitionByName(definition);
     const key = `${definition}#${relation}`;
     const make = Object.prototype.hasOwnProperty.call(subjectSetMakers, key) ? subjectSetMakers[key] : undefined;
-    if (make !== undefined) return make(id);
+    if (make !== undefined) {
+        requireId(definition, id);
+        return make(id);
+    }
     if (!info.relationNames.includes(relation) && !info.permissionNames.includes(relation))
         throw new NotInSchemaError(`${definition} has no relation or permission named "${relation}"`);
     throw new NotInSchemaError(`${key} is not a subject anywhere in the schema`);
+}
+
+function requireId(type: string, id: string): void {
+    if (!id) throw new InvalidArgumentError(`${type}: object ID must be nonempty`);
+}
+
+function objectText(text: string, what: string): { readonly type: string; readonly id: string } {
+    const i = text.indexOf(":");
+    if (i < 1 || i === text.length - 1) throw new InvalidArgumentError(`invalid ${what} (want type:id): ${text}`);
+    return { type: text.slice(0, i), id: text.slice(i + 1) };
+}
+
+/**
+ * The typed object for a definition name and ID received at runtime:
+ * `objectByName("document", "readme")` is `Document("readme")`. Throws
+ * NotInSchemaError for an unknown definition and InvalidArgumentError for an
+ * empty ID.
+ */
+export function objectByName(definition: string, id: string): AnyResourceRef {
+    const info = definitionByName(definition);
+    requireId(definition, id);
+    return info.ref(id);
+}
+
+/**
+ * The typed object for `type:id` text: `parseObject("document:readme")` is
+ * `Document("readme")`. Throws InvalidArgumentError for malformed text and
+ * NotInSchemaError for an unknown definition.
+ */
+export function parseObject(text: string): AnyResourceRef {
+    const { type, id } = objectText(text, "object reference");
+    return objectByName(type, id);
+}
+
+/** `definition#relation@shape` for every subject shape every relation admits (see {@link relationshipFromTriple}). */
+const subjectRules: ReadonlySet<string> = new Set([
+    "team#member@user",
+    "team#member@team#member",
+    "document#viewer@user",
+    "document#viewer@user[ip_range]",
+    "document#viewer@user[time_window]",
+    "document#viewer@team#member",
+    "document#editor@user",
+    "document#owner@user",
+    "organization#admin@user",
+    "organization#member@user",
+    "organization#creator@user:*",
+    "organization#guest@user",
+    "organization#guest@user:*",
+    "invitation#org@organization",
+    "invitation#grant@organization#can_admin",
+    "invitation#timed_grant@organization#can_admin[expiration]",
+    "invitation#inviter@user[expiration]",
+]);
+
+/** The caveat and expiration of a relationship built by {@link relationshipFromTriple}. */
+export interface TripleOptions {
+    readonly caveat?: { readonly name: string; readonly context?: JSONObject };
+    readonly expiration?: Date;
+}
+
+/**
+ * A schema-checked relationship from text received at runtime:
+ * `relationshipFromTriple("document:readme", "viewer", "user:alice")`.
+ * `resource` is `type:id` and `subject` is `type:id` or `type:id#relation`
+ * (`#...` is direct). The subject, with the caveat and expiration given, must
+ * be a shape the relation admits, exactly as SpiceDB checks a write. Throws
+ * InvalidArgumentError for malformed text, NotInSchemaError for an unknown
+ * definition or relation, and SubjectNotAllowedError for a subject the
+ * relation does not admit.
+ */
+export function relationshipFromTriple(
+    resource: string,
+    relation: string,
+    subject: string,
+    options?: TripleOptions,
+): TypedRelationship {
+    const r = objectText(resource, "resource");
+    const hash = subject.indexOf("#");
+    const rawRelation = hash < 0 ? undefined : subject.slice(hash + 1);
+    if (rawRelation === "") throw new InvalidArgumentError(`invalid subject (empty relation): ${subject}`);
+    const subjectRelation = rawRelation === "..." ? undefined : rawRelation;
+    const s = objectText(hash < 0 ? subject : subject.slice(0, hash), "subject");
+    if (!relation) throw new InvalidArgumentError("relation must be nonempty");
+    const info = definitionByName(r.type);
+    definitionByName(s.type);
+    if (!info.relationNames.includes(relation))
+        throw new NotInSchemaError(`${r.type} has no relation named "${relation}"`);
+    const caveat = options?.caveat;
+    const expiration = options?.expiration;
+    const rule =
+        s.type +
+        (s.id === "*" ? ":*" : "") +
+        (subjectRelation === undefined ? "" : `#${subjectRelation}`) +
+        (caveat === undefined ? "" : `[${caveat.name}]`) +
+        (expiration === undefined ? "" : "[expiration]");
+    if (!subjectRules.has(`${r.type}#${relation}@${rule}`))
+        throw new SubjectNotAllowedError(`${r.type}#${relation} does not admit ${rule}`);
+    return new TypedRelationship(() => ({
+        resource: { objectType: r.type, objectId: r.id },
+        relation,
+        subject: {
+            object: { objectType: s.type, objectId: s.id },
+            ...(subjectRelation === undefined ? {} : { relation: subjectRelation }),
+        },
+        ...(caveat === undefined
+            ? {}
+            : { caveat: { name: caveat.name, ...(caveat.context === undefined ? {} : { context: caveat.context }) } }),
+        ...(expiration === undefined ? {} : { expiration }),
+    }));
+}
+
+/** One {@link TypedClient.checkBulkByName} item, with names received at runtime. */
+export interface NamedCheck {
+    readonly definition: string;
+    readonly id: string;
+    readonly permission: string;
+    readonly subject: AnySubject;
 }
 
 /** For each relation and permission, the subject positions ("type" or "type#relation") that can reach it. */
@@ -1248,6 +1372,29 @@ function resolveByName(definition: string, name: string): void {
 }
 
 async function* noResults<T>(): AsyncGenerator<T, void, undefined> {}
+
+/**
+ * Validates a by-name check or lookup: the names (NotInSchemaError), and a
+ * wildcard subject of a reachable type (SubjectNotAllowedError). Returns
+ * whether the subject's type and relation can reach the target.
+ */
+function reachable(definition: string, name: string, s: AnySubject): boolean {
+    resolveByName(definition, name);
+    definitionByName(s._type);
+    if (!reaches(definition, name, subjectPosition(s))) return false;
+    if (s._id === "*")
+        throw new SubjectNotAllowedError(
+            `${definition}#${name} cannot be checked or looked up for the wildcard ${subjectString(s)}`,
+        );
+    return true;
+}
+
+/** The permission a by-name check resolves to; throws SubjectNotAllowedError for a subject that cannot reach it. */
+function checkTarget(definition: string, id: string, name: string, s: AnySubject): Permission {
+    if (!reachable(definition, name, s))
+        throw new SubjectNotAllowedError(`${definition}#${name} cannot be reached by ${subjectString(s)}`);
+    return new Permission(definition, id, name);
+}
 
 // --- TypedClient ---
 /**
@@ -1487,9 +1634,8 @@ export class TypedClient {
      * Checks a permission or relation named at runtime, as a policy layer that
      * receives type names at runtime does. The names, and the subject's type,
      * must be in the schema (NotInSchemaError otherwise); a subject whose type
-     * cannot reach the permission throws SubjectNotAllowedError before any
-     * call. For several checks, pass `permissionByName` results to
-     * `checkBulkTyped`.
+     * cannot reach the permission, or a wildcard, throws SubjectNotAllowedError
+     * before any call.
      */
     async checkByName(
         c: Consistency,
@@ -1499,11 +1645,22 @@ export class TypedClient {
         s: AnySubject,
         options?: CheckOptions,
     ): Promise<CheckResult> {
-        resolveByName(definition, permission);
-        definitionByName(s._type);
-        if (!reaches(definition, permission, subjectPosition(s)))
-            throw new SubjectNotAllowedError(`${definition}#${permission} cannot be reached by ${subjectString(s)}`);
-        return this.client.check(new Permission(definition, id, permission).checkRequest(s, c), options);
+        return this.client.check(checkTarget(definition, id, permission, s).checkRequest(s, c), options);
+    }
+
+    /**
+     * Checks items named at runtime in one native bulk check; results are in
+     * input order. Every item is validated as in `checkByName` before any call.
+     */
+    async checkBulkByName(
+        c: Consistency,
+        checks: readonly NamedCheck[],
+        options?: CheckOptions,
+    ): Promise<readonly CheckResult[]> {
+        const requests = checks.map((check) =>
+            checkTarget(check.definition, check.id, check.permission, check.subject).checkRequest(check.subject, c),
+        );
+        return this.client.checkBulk(requests, options);
     }
 
     /**
@@ -1511,7 +1668,8 @@ export class TypedClient {
      * names, as a policy layer that receives type names at runtime does. Both
      * names, and the subject's type, must be in the schema (NotInSchemaError
      * otherwise). When the subject's type cannot reach the permission, the
-     * result is empty and no call is made, as SpiceDB would find nothing.
+     * result is empty and no call is made, as SpiceDB would find nothing; a
+     * wildcard subject of a reachable type throws SubjectNotAllowedError.
      */
     lookupResourcesByName(
         c: Consistency,
@@ -1520,9 +1678,7 @@ export class TypedClient {
         s: AnySubject,
         options?: LookupResourcesOptions,
     ): AsyncIterableIterator<LookupResource> {
-        resolveByName(definition, permission);
-        definitionByName(s._type);
-        if (!reaches(definition, permission, subjectPosition(s))) return noResults<LookupResource>();
+        if (!reachable(definition, permission, s)) return noResults<LookupResource>();
         const requestOptions = requestFields(options);
         return this.client.lookupResources(
             { ...requestOptions, resourceType: definition, permission, subject: subjectRef(s), consistency: c },
@@ -1532,10 +1688,11 @@ export class TypedClient {
 
     /**
      * Looks up subjects by runtime names: a definition, resource ID, permission
-     * (or relation) and subject type written `"type"` or `"type#relation"`
-     * (such as `"team#member"`). Names not in the schema throw
-     * NotInSchemaError before any call. When the subject type cannot reach the
-     * permission, the result is empty and no call is made.
+     * (or relation), subject type and optional subject relation (`"member"`
+     * for `team#member`; omitted or `"..."` for direct subjects). Names not in
+     * the schema throw NotInSchemaError before any call. When the subject type
+     * and relation cannot reach the permission, the result is empty and no
+     * call is made.
      */
     lookupSubjectsByName(
         c: Consistency,
@@ -1543,12 +1700,15 @@ export class TypedClient {
         id: string,
         permission: string,
         subjectType: string,
+        subjectRelation?: string,
         options?: LookupSubjectsOptions,
     ): AsyncIterableIterator<LookupSubject> {
         resolveByName(definition, permission);
-        const hash = subjectType.indexOf("#");
-        const type = hash < 0 ? subjectType : subjectType.slice(0, hash);
-        const relation = hash < 0 ? undefined : subjectType.slice(hash + 1);
+        const type = subjectType;
+        const relation =
+            subjectRelation === undefined || subjectRelation === "..." || subjectRelation === ""
+                ? undefined
+                : subjectRelation;
         const info = definitionByName(type);
         if (
             relation !== undefined &&
@@ -1558,9 +1718,10 @@ export class TypedClient {
             throw new NotInSchemaError(`${type} has no relation or permission named "${relation}"`);
         if (options?.subjectRelation !== undefined && options.subjectRelation !== relation)
             throw new InvalidArgumentError(
-                `subjectRelation "${options.subjectRelation}" conflicts with subject type "${subjectType}"`,
+                `options.subjectRelation "${options.subjectRelation}" conflicts with subjectRelation "${subjectRelation ?? ""}"`,
             );
-        if (!reaches(definition, permission, subjectType)) return noResults<LookupSubject>();
+        if (!reaches(definition, permission, relation === undefined ? type : `${type}#${relation}`))
+            return noResults<LookupSubject>();
         const requestOptions = requestFields(options);
         return this.client.lookupSubjects(
             {

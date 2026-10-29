@@ -59,6 +59,42 @@ func (s *Schema) ReachingSubjectPositions() map[string][]string {
 	return out
 }
 
+// SubjectRule is the shape of one subject a relation admits, written
+// "type", "type:*" or "type#relation", then "[caveat]" and "[expiration]"
+// when the subject carries them: "user[ip_range]", "user:*",
+// "team#member[expiration]".
+func SubjectRule(st SubjectType) string {
+	rule := st.Definition
+	if st.Wildcard {
+		rule += ":*"
+	}
+	if st.Relation != "" {
+		rule += "#" + st.Relation
+	}
+	if st.CaveatName != "" {
+		rule += "[" + st.CaveatName + "]"
+	}
+	if st.Expiration {
+		rule += "[expiration]"
+	}
+	return rule
+}
+
+// SubjectRules returns, in schema order, "definition#relation@rule" for every
+// subject shape every relation admits, so generated code can validate a
+// relationship built from text exactly as SpiceDB validates a write.
+func (s *Schema) SubjectRules() []string {
+	var out []string
+	for _, def := range s.Definitions {
+		for _, r := range def.Relations {
+			for _, st := range r.AllowedSubjects {
+				out = append(out, SubjectPosition(def.Name, r.Name)+"@"+SubjectRule(st))
+			}
+		}
+	}
+	return out
+}
+
 // SubjectSetPositions returns, in schema order, every "definition#relation"
 // that some relation admits or some permission reaches as a subject set. Only
 // these can be built as subjects by name; a relation never used as a subject

@@ -1652,14 +1652,156 @@ func SubjectSetByName(definition, id, relation string) (Subject, error) {
 	}
 	switch definition + "#" + relation {
 	case "team#member":
+		if _, err := rel.NewObject(definition, id); err != nil {
+			return nil, err
+		}
 		return TeamMemberRef{id: id}, nil
 	case "organization#can_admin":
+		if _, err := rel.NewObject(definition, id); err != nil {
+			return nil, err
+		}
 		return OrganizationCanAdminRef{id: id}, nil
 	}
 	if !d.has(relation) {
 		return nil, fmt.Errorf("%w: %s has no relation or permission %q", ErrNotInSchema, definition, relation)
 	}
 	return nil, fmt.Errorf("%w: %s#%s is not a subject anywhere in the schema", ErrNotInSchema, definition, relation)
+}
+
+// ObjectByName returns the typed object for a definition name and ID received
+// at runtime: ObjectByName("document", "readme") is Document("readme"). It
+// fails with an error wrapping ErrNotInSchema for an unknown definition and
+// rel.ErrInvalidResource for an empty ID.
+func ObjectByName(definition, id string) (DefinitionRef, error) {
+	d, err := DefinitionByName(definition)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := rel.NewObject(definition, id); err != nil {
+		return nil, err
+	}
+	return d.Ref(id), nil
+}
+
+// ParseObject returns the typed object for "type:id" text:
+// ParseObject("document:readme") is Document("readme"). It fails with
+// rel.ErrInvalidResource for malformed text and an error wrapping
+// ErrNotInSchema for an unknown definition.
+func ParseObject(text string) (DefinitionRef, error) {
+	definition, id, ok := strings.Cut(text, ":")
+	if !ok {
+		return nil, fmt.Errorf("%q is not type:id: %w", text, rel.ErrInvalidResource)
+	}
+	return ObjectByName(definition, id)
+}
+
+// subjectRules holds "definition#relation@shape" for every subject shape
+// every relation admits (see RelationshipFromTriple).
+var subjectRules = map[string]bool{
+	"team#member@user":                                          true,
+	"team#member@team#member":                                   true,
+	"document#viewer@user":                                      true,
+	"document#viewer@user[ip_range]":                            true,
+	"document#viewer@user[time_window]":                         true,
+	"document#viewer@team#member":                               true,
+	"document#editor@user":                                      true,
+	"document#owner@user":                                       true,
+	"organization#admin@user":                                   true,
+	"organization#member@user":                                  true,
+	"organization#creator@user:*":                               true,
+	"organization#guest@user":                                   true,
+	"organization#guest@user:*":                                 true,
+	"invitation#org@organization":                               true,
+	"invitation#grant@organization#can_admin":                   true,
+	"invitation#timed_grant@organization#can_admin[expiration]": true,
+	"invitation#inviter@user[expiration]":                       true,
+}
+
+// TripleOption sets the caveat or expiration of a relationship built by
+// RelationshipFromTriple.
+type TripleOption func(*rel.Relationship) error
+
+// TripleCaveat attaches the named caveat and its context.
+func TripleCaveat(name string, context map[string]any) TripleOption {
+	return func(r *rel.Relationship) error {
+		c, err := r.WithCaveat(name, context)
+		if err == nil {
+			*r = c
+		}
+		return err
+	}
+}
+
+// TripleExpiration sets the relationship's expiration.
+func TripleExpiration(t time.Time) TripleOption {
+	return func(r *rel.Relationship) error {
+		*r = r.WithExpiration(t)
+		return nil
+	}
+}
+
+// RelationshipFromTriple builds a schema-checked relationship from text
+// received at runtime: RelationshipFromTriple("document:readme", "viewer",
+// "user:alice"). resource is "type:id" and subject "type:id" or
+// "type:id#relation" ("#..." is direct). The subject, with the caveat and
+// expiration options given, must be a shape the relation admits, exactly as
+// SpiceDB checks a write. It fails with a rel validation error for malformed
+// text, an error wrapping ErrNotInSchema for an unknown definition or
+// relation, and one wrapping ErrSubjectNotAllowed for a subject the relation
+// does not admit.
+func RelationshipFromTriple(resource, relation, subject string, opts ...TripleOption) (TypedRelationship, error) {
+	rType, rID, ok := strings.Cut(resource, ":")
+	if !ok {
+		return TypedRelationship{}, fmt.Errorf("resource %q is not type:id: %w", resource, rel.ErrInvalidResource)
+	}
+	sObject, sRel, _ := strings.Cut(subject, "#")
+	if sRel == "..." {
+		sRel = ""
+	}
+	sType, sID, ok := strings.Cut(sObject, ":")
+	if !ok {
+		return TypedRelationship{}, fmt.Errorf("subject %q is not type:id or type:id#relation: %w", subject, rel.ErrInvalidSubject)
+	}
+	r, err := relationship(rType, rID, relation, sType, sID, sRel)
+	if err != nil {
+		return TypedRelationship{}, err
+	}
+	for _, opt := range opts {
+		if err := opt(&r); err != nil {
+			return TypedRelationship{}, err
+		}
+	}
+	d, err := DefinitionByName(rType)
+	if err != nil {
+		return TypedRelationship{}, err
+	}
+	if _, err := DefinitionByName(sType); err != nil {
+		return TypedRelationship{}, err
+	}
+	known := false
+	for _, n := range d.relations {
+		known = known || n == relation
+	}
+	if !known {
+		return TypedRelationship{}, fmt.Errorf("%w: %s has no relation %q", ErrNotInSchema, rType, relation)
+	}
+	rule := sType
+	if sID == "*" {
+		rule += ":*"
+	}
+	if sRel != "" {
+		rule += "#" + sRel
+	}
+	if c := r.CaveatName(); c != "" {
+		rule += "[" + c + "]"
+	}
+	if r.Expiration() != nil {
+		rule += "[expiration]"
+	}
+	if !subjectRules[rType+"#"+relation+"@"+rule] {
+		return TypedRelationship{}, fmt.Errorf("%w: %s#%s does not admit %s", ErrSubjectNotAllowed, rType, relation, rule)
+	}
+	return TypedRelationship{r: r}, nil
 }
 
 // reachingSubjects maps each "definition#relation" or "definition#permission"
@@ -1707,6 +1849,41 @@ func resolveByName(definition, name string) error {
 		return fmt.Errorf("%w: %s has no permission or relation %q", ErrNotInSchema, definition, name)
 	}
 	return nil
+}
+
+// target validates a by-name check or lookup: the definition and its
+// permission or relation name (ErrNotInSchema otherwise). It reports whether
+// subject's type and relation can reach it, and fails with
+// ErrSubjectNotAllowed for a reachable type in a shape no check admits (a
+// wildcard).
+func target(definition, name string, subject Subject) (reachable bool, err error) {
+	if err := resolveByName(definition, name); err != nil {
+		return false, err
+	}
+	if subject == nil {
+		return false, fmt.Errorf("%w: subject is required", ErrSubjectNotAllowed)
+	}
+	sType, sID, sRel := subject.subjectRef()
+	if !reaches(definition, name, schemaPosition(sType, sRel)) {
+		return false, nil
+	}
+	if sID == "*" {
+		return false, fmt.Errorf("%w: %s#%s cannot be checked or looked up for the wildcard %s", ErrSubjectNotAllowed, definition, name, subjectString(subject))
+	}
+	return true, nil
+}
+
+// checkTarget is the Permission a by-name check resolves to, failing with
+// ErrSubjectNotAllowed for a subject that cannot reach it.
+func checkTarget(definition, id, name string, subject Subject) (Permission, error) {
+	ok, err := target(definition, name, subject)
+	if err != nil {
+		return Permission{}, err
+	}
+	if !ok {
+		return Permission{}, fmt.Errorf("%w: %s#%s cannot be reached by %s", ErrSubjectNotAllowed, definition, name, subjectString(subject))
+	}
+	return Permission{resourceType: definition, resourceID: id, permission: name}, nil
 }
 
 func schemaPosition(definition, relation string) string {
@@ -1962,6 +2139,41 @@ func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm P
 	return tc.Interface.Check(ctx, check, opts...)
 }
 
+// CheckByName checks a permission or relation named at runtime:
+// CheckByName(ctx, tc, cs, "document", "readme", "view", subject). The names
+// fail with ErrNotInSchema, and a subject whose type and relation cannot reach
+// the permission (or a wildcard) with ErrSubjectNotAllowed, before any RPC.
+func CheckByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, definition, id, permission string, subject Subject, opts ...client.CheckOption) (client.CheckResult, error) {
+	perm, err := checkTarget(definition, id, permission, subject)
+	if err != nil {
+		return client.CheckResult{}, err
+	}
+	return Check(ctx, tc, cs, perm, subject, opts...)
+}
+
+// NamedCheck is one CheckBulkByName item, with names received at runtime.
+type NamedCheck struct {
+	Definition string
+	ID         string
+	Permission string
+	Subject    Subject
+}
+
+// CheckBulkByName checks items named at runtime in one native bulk check;
+// results are in input order. Every item is validated as in CheckByName
+// before any RPC; a failure is a *client.BulkCheckError with its index.
+func CheckBulkByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, checks []NamedCheck, opts ...client.CheckOption) ([]client.CheckResult, error) {
+	typed := make([]TypedCheck, len(checks))
+	for i, c := range checks {
+		perm, err := checkTarget(c.Definition, c.ID, c.Permission, c.Subject)
+		if err != nil {
+			return nil, &client.BulkCheckError{Index: i, Err: err}
+		}
+		typed[i] = TypedCheck{Permission: perm, Subject: c.Subject}
+	}
+	return CheckBulk(ctx, tc, cs, typed, opts...)
+}
+
 // TypedCheck pairs a permission with the subject to check it for.
 type TypedCheck struct {
 	Permission Permission
@@ -2018,16 +2230,14 @@ func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strate
 // or relation name known only at runtime. Names the schema does not define
 // fail the stream with an error wrapping ErrNotInSchema before any RPC. When
 // the subject's type cannot reach the permission or relation in the schema,
-// the stream is empty and no RPC is made, as SpiceDB would find nothing.
+// the stream is empty and no RPC is made, as SpiceDB would find nothing; a
+// wildcard subject of a reachable type fails with ErrSubjectNotAllowed.
 func LookupResourcesByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, definition, permission string, subject Subject, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {
-	if err := resolveByName(definition, permission); err != nil {
+	ok, err := target(definition, permission, subject)
+	if err != nil {
 		return failedStream[client.LookupResource](err)
 	}
-	if subject == nil {
-		return failedStream[client.LookupResource](fmt.Errorf("%w: subject is required", ErrSubjectNotAllowed))
-	}
-	sType, _, sRel := subject.subjectRef()
-	if !reaches(definition, permission, schemaPosition(sType, sRel)) {
+	if !ok {
 		return emptyStream[client.LookupResource]()
 	}
 	return LookupResources(ctx, tc, cs, PermissionRef{resourceType: definition, permission: permission}, subject, opts...)
@@ -2051,24 +2261,28 @@ func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strateg
 }
 
 // LookupSubjectsByName is LookupSubjects for names known only at runtime: a
-// definition, resource id, permission or relation, and a subject type written
-// "type" or "type#relation" (such as "team#member"). Names the schema does not
-// define fail the stream with an error wrapping ErrNotInSchema before any RPC.
-// When the subject type cannot reach the permission or relation in the
-// schema, the stream is empty and no RPC is made.
-func LookupSubjectsByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, definition, id, permission, subjectType string, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {
+// definition, resource id, permission or relation, a subject type and a
+// subject relation ("" or "..." for direct subjects, or a relation such as
+// "member" for team#member). Names the schema does not define fail the stream
+// with an error wrapping ErrNotInSchema before any RPC. When the subject type
+// and relation cannot reach the permission or relation in the schema, the
+// stream is empty and no RPC is made.
+func LookupSubjectsByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, definition, id, permission, subjectType, subjectRelation string, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {
 	if err := resolveByName(definition, permission); err != nil {
 		return failedStream[client.LookupSubject](err)
 	}
-	sType, sRel, hasRel := strings.Cut(subjectType, "#")
+	sType, sRel := subjectType, subjectRelation
+	if sRel == "..." {
+		sRel = ""
+	}
 	sd, err := DefinitionByName(sType)
 	if err != nil {
 		return failedStream[client.LookupSubject](err)
 	}
-	if hasRel && !sd.has(sRel) {
+	if sRel != "" && !sd.has(sRel) {
 		return failedStream[client.LookupSubject](fmt.Errorf("%w: %s has no relation or permission %q", ErrNotInSchema, sType, sRel))
 	}
-	if !reaches(definition, permission, subjectType) {
+	if !reaches(definition, permission, schemaPosition(sType, sRel)) {
 		return emptyStream[client.LookupSubject]()
 	}
 	resource, err := rel.NewObject(definition, id)

@@ -50,6 +50,8 @@ type TemplateData struct {
 	Reaching []ReachingData
 	// SubjectSets lists every subject set a caller can build by name.
 	SubjectSets []SubjectSetData
+	// SubjectRules lists "definition#relation@shape" for every admitted subject shape.
+	SubjectRules []string
 }
 
 // ReachingData pairs a "definition#name" position with the subject positions
@@ -59,9 +61,10 @@ type ReachingData struct {
 	Subjects []string
 }
 
-// SubjectSetData is one "definition#relation" subject set and its ref maker.
+// SubjectSetData is one "definition#relation" subject set, its ref type and maker.
 type SubjectSetData struct {
 	Position string
+	RefType  string
 	Maker    string
 }
 
@@ -474,7 +477,8 @@ var reservedModuleNames = []string{
 	"ReadRelationshipsRequest", "SpiceDBClientOptions", "JSONObject", "JSONValue", "WriteResult", "RelationshipUpdate", "Precondition",
 	"Consistency", "SpiceDBClientInterface", "SchemaText", "Definitions", "DefinitionNames", "DefinitionName", "DefinitionInfo",
 	"AnyResourceRef", "definitionByName", "permissionRefByName", "subjectSetByName", "reachingSubjects", "reaches",
-	"resolveByName", "subjectPosition", "subjectSetMakers", "noResults", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
+	"resolveByName", "subjectPosition", "subjectSetMakers", "noResults", "objectByName", "parseObject", "AnySubjectSet",
+	"subjectRules", "TripleOptions", "relationshipFromTriple", "NamedCheck", "checkTarget", "objectText", "requireId", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
 	"Promise", "Function", "RegExp", "BigInt", "Math", "Reflect", "Proxy", "Intl", "Record", "Readonly", "Partial",
 }
 
@@ -845,7 +849,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	for _, p := range s.SubjectSetPositions() {
 		for _, rt := range refTypes {
 			if !rt.Wildcard && rt.Caveat == "" && !rt.Expiration && schema.SubjectPosition(rt.Definition, rt.Relation) == p {
-				subjectSets = append(subjectSets, SubjectSetData{Position: p, Maker: rt.Maker})
+				subjectSets = append(subjectSets, SubjectSetData{Position: p, RefType: rt.TypeName, Maker: rt.Maker})
 				break
 			}
 		}
@@ -854,6 +858,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	return TemplateData{
 		Reaching:       reaching,
 		SubjectSets:    subjectSets,
+		SubjectRules:   s.SubjectRules(),
 		CaveatContexts: caveatContexts,
 		RefTypes:       refTypes,
 		Definitions:    definitions,

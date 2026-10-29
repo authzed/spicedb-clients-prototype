@@ -320,7 +320,7 @@ sealed permits non-sealed when`) {
 var fixedTypes = []string{
 	"Subject", "Permission", "PermissionRef", "TypedCheck", "TypedRelationship", "RelationshipKey",
 	"Deletable", "Txn", "TypedClient", "NotInSchemaException", "SubjectNotAllowedException",
-	"Definition", "Definitions", "DefinitionRef",
+	"Definition", "Definitions", "DefinitionRef", "NamedCheck",
 	// Native types referenced by simple name.
 	"CallOptions", "CheckOptions", "CheckResult", "ClientOptions", "Consistency", "DeleteAllOptions",
 	"DeleteOptions", "ExportOptions", "Filter", "ImportOptions", "LookupOptions", "LookupResult",
@@ -333,7 +333,8 @@ var fixedTypes = []string{
 }
 
 var fixedStaticMethods = []string{"withSubject", "withSubjectAnyRelation", "checksFor", "subjectRef", "subjectString", "resourceFilter", "notAllowed", "definitionByName", "permissionRefByName",
-	"subjectSetByName", "reaches", "resolveByName", "subjectPosition", "notASubjectSet"}
+	"subjectSetByName", "reaches", "resolveByName", "subjectPosition", "notASubjectSet", "reachable", "checkTarget",
+	"objectByName", "parseObject", "objectText", "relationshipFromTriple", "admitsShape"}
 
 // fixedStaticFields are the always-generated static fields of Permissions.
 var fixedStaticFields = []string{"SCHEMA"}
@@ -911,7 +912,6 @@ func (b *builder) renderRuntimeNameBlocks() []string {
 		w.line("public static Subject subjectSetByName(String definition, String id, String relation) {")
 		w.indent()
 		w.line("var d = definitionByName(definition);")
-		w.line(`Objects.requireNonNull(id, "id");`)
 		var cases [][2]string
 		for _, p := range b.s.SubjectSetPositions() {
 			def, rel, _ := strings.Cut(p, "#")
@@ -926,7 +926,7 @@ func (b *builder) renderRuntimeNameBlocks() []string {
 			for _, c := range cases {
 				w.line("case " + javaString(c[0]) + ":")
 				w.indent()
-				w.line("return new " + c[1] + "(id);")
+				w.line("return new " + c[1] + "(new ObjectRef(definition, id).objectId());")
 				w.dedent()
 			}
 			w.line("default:")
@@ -937,6 +937,34 @@ func (b *builder) renderRuntimeNameBlocks() []string {
 			w.line("}")
 		} else {
 			w.line("throw notASubjectSet(d, relation);")
+		}
+		w.dedent()
+		w.line("}")
+		blocks = append(blocks, w.String())
+	}
+	{
+		w := newWriter(2)
+		w.line("/** Whether {@code rule}, \"definition#relation@shape\", is a subject shape the schema admits. */")
+		w.line("private static boolean admitsShape(String rule) {")
+		w.indent()
+		rules := b.s.SubjectRules()
+		if len(rules) > 0 {
+			w.line("switch (rule) {")
+			w.indent()
+			for _, r := range rules {
+				w.line("case " + javaString(r) + ":")
+			}
+			w.indent()
+			w.line("return true;")
+			w.dedent()
+			w.line("default:")
+			w.indent()
+			w.line("return false;")
+			w.dedent()
+			w.dedent()
+			w.line("}")
+		} else {
+			w.line("return false;")
 		}
 		w.dedent()
 		w.line("}")

@@ -177,7 +177,7 @@ definition doc {
 	flat := squash(out)
 	assert.Contains(t, flat, `"doc#view": {"group#member", "user"},`, "subject sets expand to their members")
 	assert.Contains(t, flat, `"doc#parent": {"group"},`)
-	assert.Contains(t, flat, `case "group#member": return GroupMemberRef{id: id}, nil`)
+	assert.Contains(t, flat, `case "group#member": if _, err := rel.NewObject(definition, id); err != nil { return nil, err } return GroupMemberRef{id: id}, nil`)
 	assert.NotContains(t, flat, `case "doc#viewer":`, "a relation never used as a subject set has no subject set")
 }
 

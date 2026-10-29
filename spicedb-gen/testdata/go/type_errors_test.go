@@ -55,7 +55,14 @@ func typeErrors() {
 	// LookupResourcesByName takes a typed subject, not a tuple string
 	_ = LookupResourcesByName(context.Background(), NewTypedClient(nil), consistency.Full(), "document", "view", "user:alice") // should not compile
 	// LookupSubjectsByName takes a runtime subject type name, not a sentinel
-	_ = LookupSubjectsByName(context.Background(), NewTypedClient(nil), consistency.Full(), "document", "x", "view", UserType) // should not compile
+	_ = LookupSubjectsByName(context.Background(), NewTypedClient(nil), consistency.Full(), "document", "x", "view", UserType, "") // should not compile
+	// By-name entry points report schema errors; their results cannot be used unchecked
+	var _ DefinitionRef = ParseObject("user:alice")                                        // should not compile
+	var _ TypedRelationship = RelationshipFromTriple("document:x", "viewer", "user:alice") // should not compile
+	// RelationshipFromTriple takes options, not a bare caveat name or time
+	_, _ = RelationshipFromTriple("document:x", "viewer", "user:alice", "ip_range") // should not compile
+	// CheckByName takes a generated subject, not tuple text
+	_, _ = CheckByName(context.Background(), NewTypedClient(nil), consistency.Full(), "document", "x", "view", "user:alice") // should not compile
 	// SubjectSetByName reports schema errors; a subject set is not an object ref
 	var _ Subject = SubjectSetByName("team", "eng", "member") // should not compile
 	var _ DefinitionRef = Team("eng").Member()                // should not compile

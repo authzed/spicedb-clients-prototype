@@ -1,5 +1,5 @@
 import { full, atLeast, TransportSecurity } from "@spicedb/client";
-import { TypedClient, TypedTransaction, Document, User, Team, Organization, Invitation, UserWildcard, Permission, subjectSetByName, type TeamMemberRef, type AnyResourceRef } from "./permissions";
+import { TypedClient, TypedTransaction, Document, User, Team, Organization, Invitation, UserWildcard, Permission, subjectSetByName, parseObject, relationshipFromTriple, type TeamMemberRef, type AnyResourceRef, type DocumentRef } from "./permissions";
 
 declare const tc: TypedClient;
 
@@ -88,3 +88,11 @@ const notAnObject: AnyResourceRef = Team("eng").member();
 tc.lookupSubjectsByName(full(), "document", "x", "view", User);
 // @ts-expect-error checkByName takes a generated subject, not a tuple string
 tc.checkByName(full(), "document", "x", "view", "user:alice");
+// @ts-expect-error an object built by name is any definition's ref, not a specific one
+const byNameObject: DocumentRef = parseObject("document:x");
+// @ts-expect-error relationshipFromTriple takes options, not a bare caveat name
+relationshipFromTriple("document:x", "viewer", "user:alice", "ip_range");
+// @ts-expect-error a caveat option needs its name
+relationshipFromTriple("document:x", "viewer", "user:alice", { caveat: { context: {} } });
+// @ts-expect-error checkBulkByName items need every name
+tc.checkBulkByName(full(), [{ definition: "document", id: "x", subject: User("alice") }]);

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { LookupPermissionshipFilter, Tracing, TransportSecurity, RemoteCredentials, ZedToken, InvalidArgumentError } from "@spicedb/client";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { full, type Relationship } from "@spicedb/client";
-import { TypedClient, Document, User, Team, Organization, definitionByName, subjectSetByName } from "./permissions";
+import { TypedClient, Document, User, Team, Organization, definitionByName, subjectSetByName, parseObject, relationshipFromTriple } from "./permissions";
 
 // The full sample schema, shared with adoption.test.ts: test files run in
 // parallel against one SpiceDB, so they must all write the same schema.
@@ -168,19 +168,25 @@ describe("TypedClient", () => {
     describe("runtime names", () => {
         it("writes, checks and looks up by name against the server", async () => {
             const eng = subjectSetByName("team", "rn-eng", "member");
+            const alice = parseObject("user:rn-alice");
             await tc.touch([
-                definitionByName("document").ref("rn-doc").relationshipByName("viewer", eng),
-                definitionByName("team").ref("rn-eng").relationshipByName("member", User("rn-alice")),
+                relationshipFromTriple("document:rn-doc", "viewer", "team:rn-eng#member"),
+                definitionByName("team").ref("rn-eng").relationshipByName("member", alice),
             ]);
-            expect((await tc.checkByName(full(), "document", "rn-doc", "view", User("rn-alice"))).hasPermission()).toBe(true);
+            expect((await tc.checkByName(full(), "document", "rn-doc", "view", alice)).hasPermission()).toBe(true);
             expect((await tc.checkByName(full(), "document", "rn-doc", "viewer", eng)).hasPermission()).toBe(true);
+            const bulk = await tc.checkBulkByName(full(), [
+                { definition: "document", id: "rn-doc", permission: "view", subject: alice },
+                { definition: "document", id: "rn-doc", permission: "edit", subject: alice },
+            ]);
+            expect(bulk.map(r => r.hasPermission())).toEqual([true, false]);
 
             const docs: string[] = [];
             for await (const r of tc.lookupResourcesByName(full(), "document", "viewer", eng)) docs.push(r.resourceId);
             expect(docs).toEqual(["rn-doc"]);
 
             const sets: string[] = [];
-            for await (const s of tc.lookupSubjectsByName(full(), "document", "rn-doc", "viewer", "team#member")) sets.push(s.subject.subjectId);
+            for await (const s of tc.lookupSubjectsByName(full(), "document", "rn-doc", "viewer", "team", "member")) sets.push(s.subject.subjectId);
             expect(sets).toEqual(["rn-eng"]);
             const users: string[] = [];
             for await (const s of tc.lookupSubjectsByName(full(), "document", "rn-doc", "view", "user")) users.push(s.subject.subjectId);

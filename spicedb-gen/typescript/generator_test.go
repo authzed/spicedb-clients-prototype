@@ -208,13 +208,18 @@ func TestSchemaLevelNameLookups(t *testing.T) {
 	assert.Contains(t, output, `lookupResourcesByName(c: Consistency, definition: string, permission: string, s: AnySubject, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource> {`)
 	// Subject sets, checks and subject lookups by runtime names, with the
 	// reachability table that short-circuits unreachable subject types.
-	assert.Contains(t, output, `export function subjectSetByName(definition: string, id: string, relation: string): AnySubject {`)
+	assert.Contains(t, output, `export function subjectSetByName(definition: string, id: string, relation: string): AnySubjectSet {`)
+	assert.Contains(t, output, `export type AnySubjectSet = TeamMemberRef | OrganizationCanAdminRef;`)
+	assert.Contains(t, output, `export function relationshipFromTriple(resource: string, relation: string, subject: string, options?: TripleOptions): TypedRelationship {`)
+	assert.Contains(t, output, `"invitation#inviter@user[expiration]"`)
+	assert.Contains(t, output, `export function parseObject(text: string): AnyResourceRef {`)
 	assert.Contains(t, output, `"team#member": (id: string) => makeTeamMemberRef(id),`)
 	assert.Contains(t, output, `"organization#can_admin": (id: string) => makeOrganizationCanAdminRef(id),`)
 	assert.Contains(t, output, `"document#view": ["team#member", "user"],`)
 	assert.Contains(t, output, `"invitation#accept": ["organization#can_admin", "user"],`)
 	assert.Contains(t, output, `async checkByName(c: Consistency, definition: string, id: string, permission: string, s: AnySubject, options?: CheckOptions): Promise<CheckResult> {`)
-	assert.Contains(t, output, `lookupSubjectsByName(c: Consistency, definition: string, id: string, permission: string, subjectType: string, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject> {`)
+	assert.Contains(t, output, "subjectRelation?: string,")
+	assert.Contains(t, output, `async checkBulkByName(c: Consistency, checks: readonly NamedCheck[], options?: CheckOptions): Promise<readonly CheckResult[]> {`)
 }
 
 func TestSchemaTextConstant(t *testing.T) {

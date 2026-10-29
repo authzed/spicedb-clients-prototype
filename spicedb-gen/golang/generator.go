@@ -47,6 +47,8 @@ type TemplateData struct {
 	Reaching []ReachingData
 	// SubjectSets lists every subject set a caller can build by name.
 	SubjectSets []SubjectSetData
+	// SubjectRules lists "definition#relation@shape" for every admitted subject shape.
+	SubjectRules []string
 	// SchemaLiteral is the source schema as a Go string literal.
 	SchemaLiteral string
 }
@@ -693,7 +695,9 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 		"ErrNotInSchema", "ErrSubjectNotAllowed", "SchemaText", "Definitions", "DefinitionNames", "Definition",
 		"DefinitionByName", "PermissionRefByName", "LookupResourcesByName", "definitionsByName",
 		"DefinitionRef", "SubjectSetByName", "LookupSubjectsByName", "reachingSubjects", "reaches",
-		"resolveByName", "schemaPosition", "emptyStream", "failedStream"} {
+		"resolveByName", "schemaPosition", "emptyStream", "failedStream", "ObjectByName", "ParseObject",
+		"subjectRules", "TripleOption", "TripleCaveat", "TripleExpiration", "RelationshipFromTriple", "target",
+		"checkTarget", "CheckByName", "NamedCheck", "CheckBulkByName"} {
 		n.claim("", fixed, "generated support code")
 	}
 	if n.err != nil {
@@ -720,6 +724,7 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 
 	return TemplateData{
 		Reaching:           reaching,
+		SubjectRules:       s.SubjectRules(),
 		SubjectSets:        subjectSets,
 		CaveatContextTypes: caveatContextTypes,
 		SubjectRefTypes:    subjectRefTypes,

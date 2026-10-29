@@ -127,6 +127,7 @@ class PermissionRef:
 
     _resource_type: str
     _permission: str
+    _admits: ClassVar[Any] = None
 
     @property
     def resource_type(self) -> str:
@@ -138,6 +139,16 @@ class PermissionRef:
 
     def __str__(self) -> str:
         return f"{self._resource_type}#{self._permission}"
+
+    def _admit(self, subject: Subject) -> SubjectRef:
+        """The native subject of a lookup_resources of this permission.
+
+        Raises SubjectNotAllowedError when the schema cannot grant this
+        permission to subject.
+        """
+        if self._admits is None or not isinstance(subject, self._admits):
+            raise SubjectNotAllowedError(f"{self} cannot be looked up for {subject}")
+        return _subject(subject)
 
 
 def checks_for(subject: Subject, *permissions: Permission) -> list[PermissionCheck]:
@@ -563,6 +574,8 @@ class {{$srt.ClassName}}:
 @dataclass(frozen=True)
 {{bracket 0 (printf "class %s" $c.RefClassName) (list "PermissionRef") ":"}}
     """{{$c.Describe}} on any resource, for lookup_resources."""
+
+{{assign 4 "_admits: ClassVar[Any]" (or $c.SubjectUnion "None")}}
 {{- end}}
 {{end}}
 
@@ -591,3 +604,65 @@ class {{$def.PermissionsClass}}:
 {{tuple (printf "%s: Final[tuple[str, ...]]" $def.RelationNames) $def.RelationNameList}}
 {{tuple (printf "%s: Final[tuple[str, ...]]" $def.PermissionNames) $def.PermissionNameList}}
 {{end}}
+
+
+# --- Schema-level names and lookups ---
+
+
+class DefinitionNames:
+    """Definition names in the schema."""
+{{range $def := .Definitions}}
+{{assign 4 (printf "%s: Final" $def.ConstName) (quote $def.Name)}}
+{{- end}}
+
+
+{{tuple "DEFINITION_NAMES: Final[tuple[str, ...]]" .DefinitionNameList}}
+
+{{textConst "SCHEMA_TEXT: Final[str]" .SchemaText}}
+"""The schema this module was generated from, e.g. for write_schema at startup."""
+
+{{alias "DefinitionClass" (defClasses .Definitions)}}
+
+{{if .Definitions}}_DEFINITIONS: Final[dict[str, DefinitionClass]] = {
+{{- range $def := .Definitions}}
+    "{{$def.Name}}": {{$def.ClassName}},
+{{- end}}
+}
+{{else}}_DEFINITIONS: Final[dict[str, DefinitionClass]] = {}
+{{end}}
+
+def definition_by_name(name: str) -> DefinitionClass:
+    """The generated class of the named definition, for names received at
+    runtime: definition_by_name("document")("doc1").permission_by_name("view").
+
+    Raises NotInSchemaError for a name the schema does not define.
+    """
+    cls = _DEFINITIONS.get(name)
+    if cls is None:
+        raise NotInSchemaError(f"schema has no definition {name!r}")
+    return cls
+
+
+{{if .StaticPermRefs}}_PERMISSION_REFS: Final[dict[tuple[str, str], PermissionRef]] = {
+    (ref.resource_type, ref.name): ref
+    for ref in [
+{{- range $p := .StaticPermRefs}}
+        {{$p.ConstName}},
+{{- end}}
+    ]
+}
+{{else}}_PERMISSION_REFS: Final[dict[tuple[str, str], PermissionRef]] = {}
+{{end}}
+
+def permission_ref_by_name(definition: str, permission: str) -> PermissionRef:
+    """The named permission on a definition, without a resource ID, for
+    lookup_resources with names received at runtime.
+
+    Raises NotInSchemaError for a definition or permission the schema lacks.
+    """
+    if definition not in _DEFINITIONS:
+        raise NotInSchemaError(f"schema has no definition {definition!r}")
+    ref = _PERMISSION_REFS.get((definition, permission))
+    if ref is None:
+        raise NotInSchemaError(f"{definition} has no permission {permission!r}")
+    return ref

@@ -86,6 +86,8 @@ func TestSyncAndAioAreEquivalent(t *testing.T) {
 		"async def ", "def ",
 		"await ", "",
 		"AsyncStream", "Stream",
+		"AsyncClientProtocol", "ClientProtocol",
+		"AsyncInMemoryClient", "InMemoryClient",
 		"spicedb.aio", "spicedb.sync",
 		"grpc.aio.Channel", "grpc.Channel",
 		"import grpc.aio\n", "import grpc\n",
@@ -207,6 +209,10 @@ func TestCollisionsFailGeneration(t *testing.T) {
 		"definition vs name constants": {
 			zed:  "definition doc {}\ndefinition doc_relations {}",
 			want: []string{"DocRelations", "relation names of doc", "definition doc_relations"},
+		},
+		"definition vs schema-level names": {
+			zed:  "definition definition_names {}",
+			want: []string{"DefinitionNames", "generated support code", "definition definition_names"},
 		},
 		"userset subject vs definition": {
 			zed:  "definition user {}\ndefinition team {\n relation member: user\n}\ndefinition team_member {}\ndefinition doc {\n relation viewer: team#member\n}",
@@ -438,4 +444,52 @@ func TestCelTypeToPyType(t *testing.T) {
 	} {
 		assert.Equal(t, expected, celTypeToPyType(input), "input=%q", input)
 	}
+}
+
+// TestSchemaLevelNamesAndLookups: code that receives definition and permission
+// names at runtime gets validated lookups, name constants and the schema text.
+func TestSchemaLevelNamesAndLookups(t *testing.T) {
+	files := generate(t, testSchema(t), nil)
+	types := files["permissions.py"]
+	for _, want := range []string{
+		"class DefinitionNames:\n",
+		`    DOCUMENT: Final = "document"`,
+		"DEFINITION_NAMES: Final[tuple[str, ...]] = (\n    \"user\",\n",
+		"SCHEMA_TEXT: Final[str] = (\n    \"use expiration\\n\"\n",
+		`    '    allowed_cidr == "0.0.0.0/0"\n'`,
+		"def definition_by_name(name: str) -> DefinitionClass:",
+		`    "document": Document,`,
+		"def permission_ref_by_name(definition: str, permission: str) -> PermissionRef:",
+		"        DOCUMENT_VIEW,\n",
+		"    _admits: ClassVar[Any] = DocumentViewSubject\n",
+	} {
+		assert.Contains(t, types, want)
+	}
+	for _, name := range []string{"sync.py", "aio.py"} {
+		assert.Contains(t, files[name], "def lookup_resources_by_name(", name)
+		assert.Contains(t, files[name], "        p = permission_ref_by_name(resource_type, permission)\n", name)
+	}
+	assert.Contains(t, files["sync.py"], "    def __init__(self, client: ClientProtocol) -> None:")
+	assert.Contains(t, files["aio.py"], "    def __init__(self, client: AsyncClientProtocol) -> None:")
+
+	// The schema text is embedded exactly, whatever it contains.
+	text := "definition user {}\n// it's \"quoted\" \\ and\ttabbed\n"
+	out := generate(t, parse(t, text), nil)["permissions.py"]
+	assert.Contains(t, out, `SCHEMA_TEXT: Final[str] = 'definition user {}\n// it\'s "quoted" \\ and\ttabbed\n'`)
+}
+
+func TestTextConst(t *testing.T) {
+	assert.Equal(t, `X = ""`, textConst("X", ""))
+	assert.Equal(t, `X = "a\nb\n"`, textConst("X", "a\nb\n"))
+	assert.Equal(t, `X = 'say "hi"'`, textConst("X", `say "hi"`))
+	assert.Equal(t, `X = "it's"`, textConst("X", "it's"))
+	assert.Equal(t, `X = "\x00\\"`, textConst("X", "\x00\\"))
+	a := strings.Repeat("a", 50)
+	assert.Equal(t, "X = (\n    \""+a+"\\n\"\n    \""+a+"\\n\"\n)", textConst("X", a+"\n"+a+"\n"))
+	short := strings.Repeat("c", 40)
+	assert.Equal(t, "LONGER_NAME: Final[str] = (\n    \""+short+"\\n"+short+"\"\n)",
+		textConst("LONGER_NAME: Final[str]", short+"\n"+short),
+		"lines that fit together are one literal, as ruff format joins them")
+	long := strings.Repeat("b", 100)
+	assert.Equal(t, `X = "`+long+`"`, textConst("X", long), "a single line is never split")
 }

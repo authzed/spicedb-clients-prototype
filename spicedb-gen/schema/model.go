@@ -4,6 +4,9 @@ package schema
 type Schema struct {
 	Definitions []Definition
 	Caveats     []CaveatDefinition
+	// Text is the schema source exactly as given to ParseString or ParseFile,
+	// so generators can embed the schema they were generated from.
+	Text string
 }
 
 // Definition represents a single object definition in a SpiceDB schema.

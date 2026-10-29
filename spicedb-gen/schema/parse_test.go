@@ -294,3 +294,10 @@ definition document {
 	_, err = schema.ParseString("caveat c(a int) {\n\tfoo(a)\n}\n\ndefinition user {\n\tpermission view = +\n}")
 	require.ErrorContains(t, err, "line 6")
 }
+
+func TestParseKeepsSchemaText(t *testing.T) {
+	text := "caveat c(x int) { x == 1 }\n\ndefinition user {}\n"
+	s, err := schema.ParseString(text)
+	require.NoError(t, err)
+	assert.Equal(t, text, s.Text, "the original text, not the opaque-caveat rewrite")
+}

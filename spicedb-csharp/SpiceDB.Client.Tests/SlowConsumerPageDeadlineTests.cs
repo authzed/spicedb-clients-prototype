@@ -35,6 +35,22 @@ public class SlowConsumerPageDeadlineTests
         Subject = new() { Object = new() { ObjectType = "user", ObjectId = "alice" } },
     };
 
+    /// <summary>
+    /// Released once per item the caller has finished processing. The fakes send item i only
+    /// after the caller has handled item i - 1, as a server whose page does not fit the
+    /// transport's buffers does, so the call is still open, with items outstanding, while
+    /// the caller works. Without this the whole small page would arrive and the call complete
+    /// before the caller's first item, and a deadline that wrongly counted the caller's
+    /// processing would never fire.
+    /// </summary>
+    private static SemaphoreSlim s_pulled = new(0);
+
+    private static async Task<bool> Pulled(int item, ServerCallContext context)
+    {
+        if (item > 0) await s_pulled.WaitAsync(context.CancellationToken);
+        return true;
+    }
+
     // A full page of Items for a request without a cursor; an empty page after it.
     private static bool FirstPage(Cursor? cursor) => string.IsNullOrEmpty(cursor?.Token);
 
@@ -43,21 +59,21 @@ public class SlowConsumerPageDeadlineTests
         public override async Task ReadRelationships(ReadRelationshipsRequest request, IServerStreamWriter<ReadRelationshipsResponse> stream, ServerCallContext context)
         {
             if (!FirstPage(request.OptionalCursor)) return;
-            for (var i = 0; i < Items; i++) await stream.WriteAsync(new() { Relationship = Rel(i), AfterResultCursor = new() { Token = $"c{i}" } });
+            for (var i = 0; i < Items && await Pulled(i, context); i++) await stream.WriteAsync(new() { Relationship = Rel(i), AfterResultCursor = new() { Token = $"c{i}" } });
         }
         public override async Task LookupResources(LookupResourcesRequest request, IServerStreamWriter<LookupResourcesResponse> stream, ServerCallContext context)
         {
             if (!FirstPage(request.OptionalCursor)) return;
-            for (var i = 0; i < Items; i++) await stream.WriteAsync(new() { ResourceObjectId = $"doc{i}", Permissionship = LookupPermissionship.HasPermission, AfterResultCursor = new() { Token = $"c{i}" } });
+            for (var i = 0; i < Items && await Pulled(i, context); i++) await stream.WriteAsync(new() { ResourceObjectId = $"doc{i}", Permissionship = LookupPermissionship.HasPermission, AfterResultCursor = new() { Token = $"c{i}" } });
         }
         public override async Task LookupSubjects(LookupSubjectsRequest request, IServerStreamWriter<LookupSubjectsResponse> stream, ServerCallContext context)
         {
-            for (var i = 0; i < Items; i++) await stream.WriteAsync(new() { Subject = new() { SubjectObjectId = $"user{i}", Permissionship = LookupPermissionship.HasPermission } });
+            for (var i = 0; i < Items && await Pulled(i, context); i++) await stream.WriteAsync(new() { Subject = new() { SubjectObjectId = $"user{i}", Permissionship = LookupPermissionship.HasPermission } });
         }
         public override async Task ExportBulkRelationships(ExportBulkRelationshipsRequest request, IServerStreamWriter<ExportBulkRelationshipsResponse> stream, ServerCallContext context)
         {
             if (!FirstPage(request.OptionalCursor)) return;
-            for (var i = 0; i < Items; i++)
+            for (var i = 0; i < Items && await Pulled(i, context); i++)
             {
                 var response = new ExportBulkRelationshipsResponse { AfterResultCursor = new() { Token = $"c{i}" } };
                 response.Relationships.Add(Rel(i));
@@ -70,7 +86,7 @@ public class SlowConsumerPageDeadlineTests
     {
         public override async Task LookupPermissionSets(M.LookupPermissionSetsRequest request, IServerStreamWriter<M.LookupPermissionSetsResponse> stream, ServerCallContext context)
         {
-            for (var i = 0; i < Items; i++)
+            for (var i = 0; i < Items && await Pulled(i, context); i++)
                 await stream.WriteAsync(new()
                 {
                     Change = new()
@@ -102,6 +118,7 @@ public class SlowConsumerPageDeadlineTests
     /// <summary>Consumes every item slowly and returns how many there were.</summary>
     private static async Task<int> SlowlyConsume<T>(Func<SpiceDBClient, IAsyncEnumerable<T>> read)
     {
+        s_pulled = new(0);
         var (app, client) = await StartAsync();
         try
         {
@@ -110,6 +127,7 @@ public class SlowConsumerPageDeadlineTests
             {
                 count++;
                 await Task.Delay(PerItem);
+                s_pulled.Release();
             }
             return count;
         }

@@ -1,6 +1,6 @@
 """Opaque native SpiceDB revision."""
 from dataclasses import dataclass
-from spicedb.errors import InvalidArgumentError
+from spicedb.errors import LocalValidationError
 
 @dataclass(frozen=True, slots=True, init=False)
 class ZedToken:
@@ -9,7 +9,7 @@ class ZedToken:
 
     def __init__(self, value: str) -> None:
         if not isinstance(value, str):
-            raise InvalidArgumentError("ZedToken: expected string")
+            raise LocalValidationError("ZedToken: expected string")
         object.__setattr__(self, "_value", value)
 
     def __str__(self) -> str:
@@ -17,5 +17,5 @@ class ZedToken:
 
 def _token_string(value: ZedToken) -> str:
     if not isinstance(value, ZedToken):
-        raise InvalidArgumentError("revision: expected ZedToken")
+        raise LocalValidationError("revision: expected ZedToken")
     return str(value)

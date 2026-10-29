@@ -59,7 +59,7 @@ from spicedb._client_base import ClientConfig, _positive, write_is_idempotent, c
 from spicedb._streams import Stream
 from spicedb.consistency import Consistency
 from spicedb.errors import (
-    InvalidArgumentError,
+    LocalValidationError,
     SpiceDBError,
     to_spicedb_error,
 )
@@ -105,7 +105,7 @@ def _cursor(value: str | None, field: str):
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise InvalidArgumentError(f"{field}: expected nonempty cursor string")
+        raise LocalValidationError(f"{field}: expected nonempty cursor string")
     return core.Cursor(token=value)
 
 
@@ -179,7 +179,7 @@ class SpiceDBClient(ClientConfig):
         still apply. ``close()`` never closes the channel.
         """
         if not isinstance(channel, grpc.Channel):
-            raise InvalidArgumentError("channel: expected grpc.Channel")
+            raise LocalValidationError("channel: expected grpc.Channel")
         client = cls.__new__(cls)
         client._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
         client._endpoint = None
@@ -443,7 +443,7 @@ class SpiceDBClient(ClientConfig):
         metadata = _snapshot(metadata)
         _positive(page_size, "page_size")
         if on_progress is not None and not callable(on_progress):
-            raise InvalidArgumentError("on_progress: expected callable")
+            raise LocalValidationError("on_progress: expected callable")
         self._ensure_channel()
         acknowledged = None
         cursor = None
@@ -1134,7 +1134,7 @@ class SpiceDBClient(ClientConfig):
         budget = Budget(timeout)
         _positive(limit, "limit")
         if limit > 0xFFFFFFFF:
-            raise InvalidArgumentError("limit: exceeds uint32")
+            raise LocalValidationError("limit: exceeds uint32")
         request = permission_sets.LookupPermissionSetsRequest(
             limit=limit,
             optional_at_revision=core.ZedToken(token=_token_string(at_revision))

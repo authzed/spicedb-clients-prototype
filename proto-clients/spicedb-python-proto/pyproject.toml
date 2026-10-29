@@ -5,8 +5,10 @@ description = "SpiceDB proto client for Python (internal)"
 requires-python = ">=3.11"
 # Floors are the lowest versions that actually work (root DESIGN.md, "Document
 # the path off the legacy libraries"):
-# - protobuf: the generated modules call ValidateProtobufRuntimeVersion with
-#   gencode 7.36.2, which rejects any older runtime.
+# - protobuf: the bindings are generated as gencode 5.26.1 (buf.gen.yaml pins
+#   the plugins), the oldest 5.x gencode, so hosts on protobuf 5.x, 6.x and 7.x
+#   all install without a protobuf upgrade. Verified by running this package's
+#   and spicedb-python's suites at protobuf 5.26.1, 5.29.x, 6.33.x and 7.36.x.
 # - grpcio: 1.73.0 is the oldest release whose transport rejects an
 #   authority-bearing unix target ("unix://evil.com/x.sock"). The plaintext
 #   credential guard classifies every unix: target as loopback and relies on
@@ -19,7 +21,7 @@ requires-python = ">=3.11"
 dependencies = [
     "googleapis-common-protos>=1.56.1",
     "grpcio>=1.73.0",
-    "protobuf>=7.36.2",
+    "protobuf>=5.26.1",
 ]
 
 [project.optional-dependencies]

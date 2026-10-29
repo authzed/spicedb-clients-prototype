@@ -77,7 +77,7 @@ current native APIs.
     package/module name is a generator option.
 
 - **Offer a names-only mode** (root DESIGN.md, "Generate every schema position
-  a caller can name"). `--<lang>.names-only` (Go, TypeScript, Java) emits only
+  a caller can name"). `--<lang>.names-only` (Go, TypeScript, Java, Python) emits only
   the definition, relation and permission name constants, their name lists and
   the schema text, with the same identifiers as the full output (renames
   apply, collisions still fail). It imports nothing beyond the language's
@@ -369,9 +369,25 @@ and options forwarding rather than just generated text fragments.
   returns the definition's class (`DefinitionClass`, a union of the classes),
   `permission_ref_by_name(definition, permission)` returns the static
   `PermissionRef`, and `TypedClient.lookup_resources_by_name(c, resource_type,
-  permission, subject, ...)` validates both names and the subject (each ref
-  carries its permission's admission union) before any call; unknown names
-  raise `NotInSchemaError`, unreachable subjects `SubjectNotAllowedError`.
+  permission, subject, ...)` validates both names and the subject before any
+  call. More runtime-name entry points, each validated against the schema
+  before any call: `object_by_name(definition, id)` and
+  `parse_object("type:id")` return the typed object (`SchemaObject`, the
+  union of definition classes); `subject_set_by_name(definition, id,
+  relation)` returns the userset subject class (`SubjectSet`, the union of
+  userset classes) for a relation or permission some relation admits as a
+  subject; `relationship_from_triple(resource, relation, subject, *, caveat,
+  expiration)` returns a `TypedRelationship` whose subject shape (type,
+  relation, wildcard, caveat, expiration) is one the relation admits, using
+  the generated `_SUBJECT_RULES` table; `TypedClient.check_by_name`,
+  `check_bulk_by_name` and `lookup_subjects_by_name(c, resource_type,
+  resource_id, permission, subject_type, subject_relation=None, ...)`.
+  By-name lookups and checks accept relations as well as permissions. A
+  by-name lookup whose subject type and relation cannot reach the target
+  (judged from its admission union) returns an empty stream without a call,
+  as SpiceDB answers; a reachable type in an inadmissible shape (a wildcard)
+  raises `SubjectNotAllowedError`. Unknown names raise `NotInSchemaError`,
+  malformed text and IDs `LocalValidationError`.
   `DefinitionNames.D` and `DEFINITION_NAMES` name the definitions, and
   `SCHEMA_TEXT` holds the schema source exactly as given to the generator
   (`schema.Schema.Text`), one literal per source line.
@@ -398,3 +414,14 @@ and options forwarding rather than just generated text fragments.
 - Negative type fixtures mark each forbidden line `# should not type-check`.
   The Magefile runs pyright with JSON output and requires an error on every
   marked line and on no other line.
+- The generated package is clean under pyright and under mypy, both default
+  and `--strict` (`mage pythonMypy`, part of `pythonIntegrationTest`), since
+  applications commonly run either checker over their whole tree. Context
+  managers' `__exit__`/`__aexit__` return `None`.
+- `--python.names-only` writes `names.py` (or `--python.module`) importing only
+  `__future__` and `typing`: per definition `DRelations`, `DPermissions`,
+  `D_RELATION_NAMES` and `D_PERMISSION_NAMES`, plus `DefinitionNames`,
+  `DEFINITION_NAMES` and `SCHEMA_TEXT`, rendered by the same template block as
+  the full module. `testdata/python-names/names.py` is checked current by a
+  unit test, and `mage pythonTypeErrors` runs `check_names.py` beside it with
+  `python3 -I -S` (no site-packages) and mypy `--strict`.

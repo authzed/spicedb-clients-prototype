@@ -401,6 +401,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Keep the server's status message verbatim in its own field. The display
     message may add operation context, but callers that forward errors must be
     able to reproduce exactly what the server said.
+  - Where the language has a standard invalid-input exception that callers
+    already catch around parsing (Python's `ValueError`), local validation
+    errors are also that type; server invalid-argument errors are not.
   - Native errors interoperate with the ecosystem's standard status inspection in
     both directions. A native error reports its matching transport status code
     through the language's status accessor, including errors for local
@@ -493,6 +496,16 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     lookup of a definition by name, a resource-less permission ref by
     definition and permission name, and a lookup of resources by runtime names,
     each validated against the schema.
+  - String-keyed code reaches every typed value without hand-written
+    dispatch: a typed object from a type name and ID or from `type:id` text, a
+    subject set from type, ID and relation, a typed relationship from tuple
+    text whose subject the relation admits, checks and bulk checks by name,
+    and lookups of subjects as well as resources by name, plus a type naming
+    the union of generated objects.
+  - By-name lookups accept relations as well as permissions, as SpiceDB does.
+    When the subject's type and relation cannot reach the target, they return
+    an empty result without a call, which is SpiceDB's answer; unknown names
+    still fail.
   - Generated code exposes definition-name constants and the schema text it
     was generated from, so callers need neither a hand-kept name list nor a
     copy of the schema file to write it at startup.

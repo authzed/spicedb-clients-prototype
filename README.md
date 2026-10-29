@@ -31,9 +31,10 @@ cd spicedb-gen && go build -o spicedb-gen ./cmd/spicedb-gen   # or: go install .
 ```
 
 For a shared API package that needs the schema's names but must not depend on
-the client library, `--go.names-only`, `--typescript.names-only` or
-`--java.names-only` emits only the definition, relation and permission name
-constants and the schema text, importing nothing beyond the standard library:
+the client library, `--go.names-only`, `--typescript.names-only`,
+`--java.names-only` or `--python.names-only` emits only the definition,
+relation and permission name constants and the schema text, importing nothing
+beyond the standard library:
 
 ```bash
 ./spicedb-gen --schema schema.zed --lang go --go.package=apinames --go.names-only --out api/names.gen.go

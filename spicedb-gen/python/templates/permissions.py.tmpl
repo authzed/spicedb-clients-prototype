@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, ClassVar, Final, Protocol, TypeAlias
+from typing import Any, ClassVar, Final, Protocol, TypeAlias, get_args
 
 from spicedb import (
     Caveat,
     Filter,
     InvalidArgumentError,
+    LocalValidationError,
     ObjectRef,
     PermissionCheck,
     Precondition,
@@ -50,7 +51,7 @@ class Subject(Protocol):
 
 def _object(object_type: str, object_id: str) -> ObjectRef:
     if not object_id:
-        raise InvalidArgumentError(f"{object_type}: object id is required")
+        raise LocalValidationError(f"{object_type}: object id is required")
     return ObjectRef(object_type, object_id)
 
 
@@ -239,7 +240,7 @@ class TypedRelationship(_RelationshipValue):
             if not (
                 r.resource.object_type and r.relation and r.subject.object.object_type
             ):
-                raise InvalidArgumentError(
+                raise LocalValidationError(
                     "relationship: type and relation are required"
                 )
             _object(r.resource.object_type, r.resource.object_id)
@@ -584,45 +585,16 @@ class {{$srt.ClassName}}:
 {{assignCall (printf "%s: Final" $p.ConstName) $p.RefClassName (list (quote $p.ResourceType) (quote $p.Permission))}}
 {{- end}}
 
-# --- Relation and permission names ---
-{{range $def := .Definitions}}
+{{template "names" .}}
 
-class {{$def.RelationsClass}}:
-    """Relation names on {{$def.Name}}."""
-{{range $r := $def.Relations}}
-{{assign 4 (printf "%s: Final" $r.ConstName) (quote $r.Name)}}
-{{- end}}
-
-
-class {{$def.PermissionsClass}}:
-    """Permission names on {{$def.Name}}."""
-{{range $p := $def.Permissions}}
-{{assign 4 (printf "%s: Final" $p.ConstName) (quote $p.Name)}}
-{{- end}}
-
-
-{{tuple (printf "%s: Final[tuple[str, ...]]" $def.RelationNames) $def.RelationNameList}}
-{{tuple (printf "%s: Final[tuple[str, ...]]" $def.PermissionNames) $def.PermissionNameList}}
+{{if .Definitions}}{{alias "DefinitionClass" (defClasses .Definitions)}}
+{{alias "SchemaObject" (defNames .Definitions)}}
+{{else}}DefinitionClass: TypeAlias = Any
+SchemaObject: TypeAlias = Any
 {{end}}
-
-
-# --- Schema-level names and lookups ---
-
-
-class DefinitionNames:
-    """Definition names in the schema."""
-{{range $def := .Definitions}}
-{{assign 4 (printf "%s: Final" $def.ConstName) (quote $def.Name)}}
-{{- end}}
-
-
-{{tuple "DEFINITION_NAMES: Final[tuple[str, ...]]" .DefinitionNameList}}
-
-{{textConst "SCHEMA_TEXT: Final[str]" .SchemaText}}
-"""The schema this module was generated from, e.g. for write_schema at startup."""
-
-{{alias "DefinitionClass" (defClasses .Definitions)}}
-
+{{if .SubjectSets}}{{alias "SubjectSet" (setNames .SubjectSets)}}
+{{else}}SubjectSet: TypeAlias = Any
+{{end}}
 {{if .Definitions}}_DEFINITIONS: Final[dict[str, DefinitionClass]] = {
 {{- range $def := .Definitions}}
     "{{$def.Name}}": {{$def.ClassName}},
@@ -666,3 +638,130 @@ def permission_ref_by_name(definition: str, permission: str) -> PermissionRef:
     if ref is None:
         raise NotInSchemaError(f"{definition} has no permission {permission!r}")
     return ref
+
+
+def object_by_name(definition: str, object_id: str) -> SchemaObject:
+    """The typed object for a definition name and ID received at runtime:
+    object_by_name("document", "readme") == Document("readme").
+
+    Raises NotInSchemaError for a definition the schema lacks and
+    LocalValidationError (a ValueError) for an ID SpiceDB would reject.
+    """
+    cls = definition_by_name(definition)
+    _object(definition, object_id)
+    return cls(object_id)
+
+
+def parse_object(text: str) -> SchemaObject:
+    """The typed object for "type:id" text: parse_object("document:readme")
+    == Document("readme").
+
+    Raises LocalValidationError (a ValueError) for malformed text and
+    NotInSchemaError for a type the schema does not define.
+    """
+    ref = ObjectRef.parse(text)
+    return object_by_name(ref.object_type, ref.object_id)
+
+
+{{if .SubjectSets}}_SUBJECT_SETS: Final[dict[str, type[SubjectSet]]] = {
+{{- range $ss := .SubjectSets}}
+    "{{$ss.Key}}": {{$ss.ClassName}},
+{{- end}}
+}
+{{else}}_SUBJECT_SETS: Final[dict[str, type[SubjectSet]]] = {}
+{{end}}
+
+def subject_set_by_name(definition: str, object_id: str, relation: str) -> SubjectSet:
+    """The typed subject set for names received at runtime:
+    subject_set_by_name("team", "eng", "member") == TeamMember("eng"), the
+    subject team:eng#member.
+
+    Raises NotInSchemaError for a definition the schema lacks or a relation
+    or permission that no relation admits as a subject, and
+    LocalValidationError (a ValueError) for an ID SpiceDB would reject.
+    """
+    definition_by_name(definition)
+    cls = _SUBJECT_SETS.get(f"{definition}#{relation}")
+    if cls is None:
+        raise NotInSchemaError(
+            f"{definition}#{relation} is not a subject set in the schema"
+        )
+    _object(definition, object_id)
+    return cls(object_id)
+
+
+def _lookup_target(definition: str, resource_id: str, name: str) -> Permission:
+    """The checkable permission or relation named on definition."""
+    obj = definition_by_name(definition)(resource_id)
+    try:
+        return obj.permission_by_name(name)
+    except NotInSchemaError:
+        pass
+    try:
+        return obj.relation_by_name(name)
+    except NotInSchemaError:
+        pass
+    raise NotInSchemaError(f"{definition} has no permission or relation {name!r}")
+
+
+def _reaches(target: Permission, subject_type: str, subject_relation: str) -> bool:
+    """Whether any subject of this type and relation can reach target."""
+    admits = target._admits
+    if admits is None:
+        return False
+    members = get_args(admits) or (admits,)
+    return any(
+        m._type == subject_type and m._relation == subject_relation for m in members
+    )
+
+
+{{tuple "_RELATIONS: Final[tuple[str, ...]]" .RelationKeys}}
+
+{{tuple "_SUBJECT_RULES: Final[tuple[str, ...]]" .SubjectRules}}
+
+
+def _subject_rule(r: Relationship) -> str:
+    s = r.subject
+    rule = s.object.object_type
+    if s.object.object_id == "*":
+        rule += ":*"
+    if s.relation:
+        rule += f"#{s.relation}"
+    if r.caveat is not None:
+        rule += f"[{r.caveat.name}]"
+    if r.expiration is not None:
+        rule += "[expiration]"
+    return rule
+
+
+def relationship_from_triple(
+    resource: str,
+    relation: str,
+    subject: str,
+    *,
+    caveat: Caveat | None = None,
+    expiration: datetime | None = None,
+) -> TypedRelationship:
+    """A schema-checked relationship from tuple text received at runtime:
+    relationship_from_triple("document:readme", "viewer", "user:alice").
+
+    resource is "type:id" and subject "type:id" or "type:id#relation"
+    ("#..." is direct). The subject, with the caveat and expiration given,
+    must be one the relation admits, exactly as SpiceDB checks a write.
+    Raises LocalValidationError (a ValueError) for malformed text,
+    NotInSchemaError for an unknown definition or relation, and
+    SubjectNotAllowedError for a subject the relation does not admit.
+    """
+    r = Relationship.from_triple(
+        resource, relation, subject, caveat=caveat, expiration=expiration
+    )
+    for definition in (r.resource.object_type, r.subject.object.object_type):
+        definition_by_name(definition)
+    key = f"{r.resource.object_type}#{r.relation}"
+    if key not in _RELATIONS:
+        raise NotInSchemaError(
+            f"{r.resource.object_type} has no relation {r.relation!r}"
+        )
+    if f"{key}@{_subject_rule(r)}" not in _SUBJECT_RULES:
+        raise SubjectNotAllowedError(f"{key} does not admit {_subject_rule(r)}")
+    return TypedRelationship(r)

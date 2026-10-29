@@ -93,6 +93,9 @@ func TestSyncAndAioAreEquivalent(t *testing.T) {
 		"import grpc.aio\n", "import grpc\n",
 		"AsyncIterable, ", "",
 		"Iterable[Relationship] | AsyncIterable[Relationship]", "Iterable[Relationship]",
+		"AsyncGenerator[Any, None]", "Generator[Any, None, None]",
+		"import AsyncGenerator\n", "import Generator\n",
+		"    return\n    yield\n", "    yield from ()\n",
 	)
 	assert.Equal(t, files["sync.py"], normalize.Replace(files["aio.py"]))
 }
@@ -318,9 +321,24 @@ func TestTypedTransactionExposesUpdatesAndAnyRelationFilter(t *testing.T) {
 	assert.Contains(t, types, "It always constrains the subject relation")
 }
 
+// The context-manager exits return None: mypy rejects an `-> bool` __exit__
+// that always returns False (exit-return), so generated code would fail
+// mypy in applications that check their whole tree.
+func TestContextManagerExitReturnsNone(t *testing.T) {
+	files := generate(t, testSchema(t), nil)
+	assert.Contains(t, files["sync.py"], "    def __exit__(self, *exc: object) -> None:\n")
+	assert.Contains(t, files["aio.py"], "    async def __aexit__(self, *exc: object) -> None:\n")
+	for _, name := range []string{"sync.py", "aio.py"} {
+		assert.NotContains(t, files[name], "-> bool:\n        self.close()", name)
+	}
+}
+
 func TestEmptySchema(t *testing.T) {
 	files := generate(t, &schema.Schema{}, nil)
 	assert.Contains(t, files["permissions.py"], "class Permission:")
+	assert.Contains(t, files["permissions.py"], "SchemaObject: TypeAlias = Any\n")
+	assert.Contains(t, files["permissions.py"], "SubjectSet: TypeAlias = Any\n")
+	assert.Contains(t, files["permissions.py"], "_SUBJECT_RULES: Final[tuple[str, ...]] = ()\n")
 	for _, name := range []string{"sync.py", "aio.py"} {
 		assert.Contains(t, files[name], "class TypedClient:", name)
 		assert.NotContains(t, files[name], "@overload", name)
@@ -462,12 +480,26 @@ func TestSchemaLevelNamesAndLookups(t *testing.T) {
 		"def permission_ref_by_name(definition: str, permission: str) -> PermissionRef:",
 		"        DOCUMENT_VIEW,\n",
 		"    _admits: ClassVar[Any] = DocumentViewSubject\n",
+		"SchemaObject: TypeAlias = User | Team | Document | Organization | Invitation\n",
+		"SubjectSet: TypeAlias = TeamMember | OrganizationCanAdmin\n",
+		"    \"team#member\": TeamMember,\n",
+		"def subject_set_by_name(definition: str, object_id: str, relation: str) -> SubjectSet:",
+		"def object_by_name(definition: str, object_id: str) -> SchemaObject:",
+		"def parse_object(text: str) -> SchemaObject:",
+		"def relationship_from_triple(\n",
+		"    \"organization#creator\",\n",
+		"    \"document#viewer@user[ip_range]\",\n",
+		"    \"organization#creator@user:*\",\n",
+		"    \"invitation#grant@organization#can_admin\",\n",
+		"    \"invitation#timed_grant@organization#can_admin[expiration]\",\n",
 	} {
 		assert.Contains(t, types, want)
 	}
 	for _, name := range []string{"sync.py", "aio.py"} {
 		assert.Contains(t, files[name], "def lookup_resources_by_name(", name)
-		assert.Contains(t, files[name], "        p = permission_ref_by_name(resource_type, permission)\n", name)
+		assert.Contains(t, files[name], "        target = _lookup_target(resource_type, \"\", permission)\n", name)
+		assert.Contains(t, files[name], "    def lookup_subjects_by_name(\n", name)
+		assert.Contains(t, files[name], "_no_results)\n", name)
 	}
 	assert.Contains(t, files["sync.py"], "    def __init__(self, client: ClientProtocol) -> None:")
 	assert.Contains(t, files["aio.py"], "    def __init__(self, client: AsyncClientProtocol) -> None:")

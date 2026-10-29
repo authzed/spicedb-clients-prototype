@@ -62,7 +62,7 @@ from spicedb._client_base import ClientConfig, _positive, write_is_idempotent, c
 from spicedb._streams import AsyncStream
 from spicedb.consistency import Consistency
 from spicedb.errors import (
-    InvalidArgumentError,
+    LocalValidationError,
     SpiceDBError,
     EventLoopBindingError,
     DeadlineExceededError,
@@ -110,7 +110,7 @@ def _cursor(value: str | None, field: str):
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise InvalidArgumentError(f"{field}: expected nonempty cursor string")
+        raise LocalValidationError(f"{field}: expected nonempty cursor string")
     return core.Cursor(token=value)
 
 
@@ -185,7 +185,7 @@ class SpiceDBClient(ClientConfig):
         still apply. ``close()`` never closes the channel.
         """
         if not isinstance(channel, grpc.aio.Channel):
-            raise InvalidArgumentError("channel: expected grpc.aio.Channel")
+            raise LocalValidationError("channel: expected grpc.aio.Channel")
         client = cls.__new__(cls)
         client._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
         client._endpoint = None
@@ -203,7 +203,10 @@ class SpiceDBClient(ClientConfig):
         loop = asyncio.get_running_loop()
         if self._loop is not None and loop is not self._loop:
             raise EventLoopBindingError(
-                "client is bound to another event loop; use spicedb.sync for synchronous code"
+                "this spicedb.aio client is bound to the event loop it was first used on; "
+                "create one client per event loop (for example in each loop's startup "
+                "or lifespan hook), or use spicedb.sync.SpiceDBClient if the calling "
+                "code is synchronous"
             )
         self._loop = loop
         if self._channel is None:
@@ -462,7 +465,7 @@ class SpiceDBClient(ClientConfig):
         metadata = _snapshot(metadata)
         _positive(page_size, "page_size")
         if on_progress is not None and not callable(on_progress):
-            raise InvalidArgumentError("on_progress: expected callable")
+            raise LocalValidationError("on_progress: expected callable")
         self._ensure_channel()
         acknowledged = None
         cursor = None
@@ -1209,7 +1212,7 @@ class SpiceDBClient(ClientConfig):
         budget = Budget(timeout)
         _positive(limit, "limit")
         if limit > 0xFFFFFFFF:
-            raise InvalidArgumentError("limit: exceeds uint32")
+            raise LocalValidationError("limit: exceeds uint32")
         request = permission_sets.LookupPermissionSetsRequest(
             limit=limit,
             optional_at_revision=core.ZedToken(token=_token_string(at_revision))

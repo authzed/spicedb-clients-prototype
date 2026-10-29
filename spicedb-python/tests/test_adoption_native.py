@@ -366,7 +366,7 @@ async def test_lookup_limit_never_shrinks_the_page(client_type):
         requests.append((request.optional_limit, request.optional_cursor.token))
         start = int(request.optional_cursor.token or "0")
         return _Call([
-            psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+            psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 resource_object_id=str(i),
                 permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
                 after_result_cursor=core_pb2.Cursor(token=str(i + 1)),
@@ -708,7 +708,7 @@ async def test_single_request_paging(client_type):
     def read(request, **kwargs):
         reads.append(request)
         return _Call([
-            psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
+            psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
                 relationship=Relationship.from_tuple(f"document:{i}#viewer@user:u")._to_proto(),
                 after_result_cursor=core_pb2.Cursor(token=str(i + 1)),
             )
@@ -727,7 +727,7 @@ async def test_single_request_paging(client_type):
     def lookup(request, **kwargs):
         lookups.append(request)
         return _Call([
-            psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+            psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 resource_object_id=str(i), permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
                 after_result_cursor=core_pb2.Cursor(token=f"c{i}"),
             )
@@ -756,7 +756,7 @@ def test_wrapped_item_and_progress_errors_report_the_server_message_once():
     check = PermissionCheck(ObjectRef("document", "a"), "view", SubjectRef(ObjectRef("user", "u")))
     request = psp.CheckBulkPermissionsRequestItem(
         resource=check.resource._to_proto(), permission="view", subject=check.subject._to_proto())
-    client._permissions.CheckBulkPermissions = Mock(return_value=psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
+    client._permissions.CheckBulkPermissions = Mock(return_value=psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
         pairs=[psp.CheckBulkPermissionsPair(request=request, error=status)]))
     with pytest.raises(FailedPreconditionError) as caught:
         client.check_bulk([check], consistency=full())
@@ -821,7 +821,7 @@ def test_bulk_item_errors_returned_never_grant():
 
 def test_delete_partial_modes():
     client = _sync()
-    client._permissions.DeleteRelationships = Mock(return_value=psp.DeleteRelationshipsResponse(deleted_at=_core_tok.ZedToken(token="t"), 
+    client._permissions.DeleteRelationships = Mock(return_value=psp.DeleteRelationshipsResponse(deleted_at=_core_tok.ZedToken(token="t"),
         deletion_progress=psp.DeleteRelationshipsResponse.DELETION_PROGRESS_COMPLETE))
     with pytest.raises(InvalidArgumentError):
         client.delete_relationships(Filter("document"))

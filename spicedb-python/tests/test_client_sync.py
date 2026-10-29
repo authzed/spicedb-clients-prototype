@@ -270,7 +270,7 @@ def test_read_relationships_returns_a_plain_iterator(make_client):
 
     c = make_client()
     page = [
-        psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
+        psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
             relationship=Relationship.from_triple(
                 f"document:{i}", "viewer", "user:jimmy"
             )._to_proto()
@@ -294,7 +294,7 @@ def test_read_relationships_stops_when_page_is_short(make_client):
     stub = mock.Mock(
         return_value=_FakeSyncCall(
             [
-                psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
+                psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
                     relationship=Relationship.from_triple(
                         "document:a", "viewer", "user:jimmy"
                     )._to_proto()
@@ -314,7 +314,7 @@ def test_streaming_retries_establishment_only_before_first_yield(make_client):
     c = make_client(retry_policy=RetryPolicy(max_retries=3))
 
     def _one_then_fail():
-        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
+        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
             relationship=Relationship.from_triple(
                 "document:a", "viewer", "user:jimmy"
             )._to_proto()

@@ -19,6 +19,7 @@ The last test covers clause 2, and needs a server that emits a permissionship
 this client has never heard of -- which is why it stands up a stand-in rather
 than using the real SpiceDB.
 """
+from authzed.api.v1 import core_pb2 as core_pb2_revision
 from spicedb import TransportSecurity
 
 from spicedb import ObjectRef, SubjectRef, PermissionCheck, Caveat, SubjectFilter
@@ -68,7 +69,7 @@ class _FutureServer(permission_service_pb2_grpc.PermissionsServiceServicer):
     """Answers with a permissionship from a SpiceDB newer than this client."""
 
     async def CheckPermission(self, request, context):
-        return permission_service_pb2.CheckPermissionResponse(permissionship=4242)
+        return permission_service_pb2.CheckPermissionResponse(checked_at=core_pb2_revision.ZedToken(token="t"), permissionship=4242)
 
 
 async def test_unknown_server_permissionship_neither_raises_nor_grants() -> None:

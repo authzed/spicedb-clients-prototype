@@ -91,7 +91,7 @@ class _StallingHandlers:
 
     def read_relationships(self, request: bytes, context: grpc.ServicerContext):
         time.sleep(_STALL_SECONDS)
-        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
+        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
             relationship=Relationship.from_triple(
                 "document:a", "viewer", "user:jimmy"
             )._to_proto()

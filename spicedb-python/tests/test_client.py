@@ -408,11 +408,11 @@ class TestLookupResourcesYieldsPermissionshipAndPartialCaveat:
     async def test_maps_has_and_conditional_results(self, make_client):
         client = make_client()
         client._permissions.LookupResources = _async_stream(
-            permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+            permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 resource_object_id="doc1",
                 permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
             ),
-            permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+            permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 resource_object_id="doc2",
                 permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
                 partial_caveat_info=core_pb2.PartialCaveatInfo(
@@ -452,7 +452,7 @@ class TestLookupSubjectsWildcardSubjectExposesExcludedSubjects:
     async def test_wildcard_excluded_subjects_surfaced(self, make_client):
         client = make_client()
         client._permissions.LookupSubjects = _async_stream(
-            permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+            permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 subject=permission_service_pb2.ResolvedSubject(
                     subject_object_id="*",
                     permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
@@ -496,7 +496,7 @@ class TestLookupSubjectsNonWildcardHasNoExcludedSubjects:
     async def test_no_excluded_subjects(self, make_client):
         client = make_client()
         client._permissions.LookupSubjects = _async_stream(
-            permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+            permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 subject=permission_service_pb2.ResolvedSubject(
                     subject_object_id="alice",
                     permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
@@ -692,7 +692,7 @@ class TestDeleteRelationships:
 
 
 def _rel_response(doc_id: str, cursor_token: str):
-    return permission_service_pb2.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
+    return permission_service_pb2.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
         relationship=core_pb2.Relationship(
             resource=core_pb2.ObjectReference(object_type="document", object_id=doc_id),
             relation="viewer",
@@ -738,7 +738,7 @@ class TestReadRelationshipsEstablishmentRetry:
 
 class TestLookupResourcesEstablishmentRetry:
     def _response(self, doc_id: str, cursor_token: str):
-        return permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+        return permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             resource_object_id=doc_id,
             permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
             after_result_cursor=core_pb2.Cursor(token=cursor_token),
@@ -783,7 +783,7 @@ class TestLookupResourcesEstablishmentRetry:
 
 class TestLookupSubjectsEstablishmentRetry:
     def _response(self, subject_id: str):
-        return permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+        return permission_service_pb2.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             subject=permission_service_pb2.ResolvedSubject(
                 subject_object_id=subject_id,
                 permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,

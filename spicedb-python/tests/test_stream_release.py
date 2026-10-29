@@ -104,7 +104,7 @@ class _ParkingPermissions(psp_grpc.PermissionsServiceServicer):
 
     def ReadRelationships(self, request, context):
         self._parked.on_open(context)
-        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"), 
+        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
             relationship=_relationship(),
             after_result_cursor=core_pb2.Cursor(token="cursor-1"),
         )
@@ -112,7 +112,7 @@ class _ParkingPermissions(psp_grpc.PermissionsServiceServicer):
 
     def LookupResources(self, request, context):
         self._parked.on_open(context)
-        yield psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+        yield psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             resource_object_id="doc1",
             permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
             after_result_cursor=core_pb2.Cursor(token="cursor-1"),
@@ -121,7 +121,7 @@ class _ParkingPermissions(psp_grpc.PermissionsServiceServicer):
 
     def LookupSubjects(self, request, context):
         self._parked.on_open(context)
-        yield psp.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+        yield psp.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             subject=psp.ResolvedSubject(
                 subject_object_id="user1",
                 permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,

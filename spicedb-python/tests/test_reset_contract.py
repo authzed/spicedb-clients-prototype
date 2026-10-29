@@ -136,7 +136,7 @@ def test_recursive_trace_native_values_and_absence():
         trace_operation_id="operation",
         source="server",
     )
-    response = p.CheckPermissionResponse(checked_at=_core_tok.ZedToken(token="t"), 
+    response = p.CheckPermissionResponse(checked_at=_core_tok.ZedToken(token="t"),
         permissionship=2,
         debug_trace=d.DebugInformation(schema_used="schema", check=trace),
     )
@@ -246,7 +246,7 @@ def test_one_budget_across_retries_and_chunks(monkeypatch):
 
     def bulk(request, **kwargs):
         now[0] += 0.6
-        return p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
+        return p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
             pairs=[
                 p.CheckBulkPermissionsPair(
                     item=p.CheckBulkPermissionsResponseItem(permissionship=2),
@@ -693,7 +693,7 @@ async def test_lookup_subjects_omits_unsupported_concrete_limit_by_default(
     class Call:
         def __iter__(self):
             for name in ("alice", "bob", "carol"):
-                yield p.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"), 
+                yield p.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                     subject=p.ResolvedSubject(subject_object_id=name, permissionship=1)
                 )
 
@@ -773,7 +773,7 @@ async def test_bulk_rejects_unmatched_echoed_requests(asynchronous, corruption):
     ]
 
     def respond(request, **kwargs):
-        response = p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
+        response = p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
             pairs=[
                 p.CheckBulkPermissionsPair(
                     request=item,
@@ -817,7 +817,7 @@ def test_bulk_matched_error_and_bad_echo_keep_absolute_index():
         full(),
         [CHECK, PermissionCheck(ObjectRef("document", "two"), "view", CHECK.subject)],
     ).items
-    response = p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
+    response = p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
         pairs=[
             p.CheckBulkPermissionsPair(
                 request=expected[0],

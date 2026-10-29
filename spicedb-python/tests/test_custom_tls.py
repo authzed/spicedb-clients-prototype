@@ -145,7 +145,7 @@ def certs() -> Certs:
 def _check_bulk(request: bytes, context) -> bytes:
     req = psp.CheckBulkPermissionsRequest()
     req.ParseFromString(request)
-    return psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), 
+    return psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
         pairs=[
             psp.CheckBulkPermissionsPair(
                 request=item,

@@ -25,12 +25,18 @@ from spicedb import (
 # --- Errors ---
 
 
-class NotInSchemaError(ValueError):
-    """A by-name lookup named a permission or relation the schema lacks."""
+class NotInSchemaError(LocalValidationError):
+    """A by-name lookup named a permission or relation the schema lacks.
+
+    A LocalValidationError, so also an InvalidArgumentError and a ValueError.
+    """
 
 
-class SubjectNotAllowedError(ValueError):
-    """The schema does not admit the subject in this position."""
+class SubjectNotAllowedError(LocalValidationError):
+    """The schema does not admit the subject in this position.
+
+    A LocalValidationError, so also an InvalidArgumentError and a ValueError.
+    """
 
 
 # --- Base value types ---
@@ -595,6 +601,8 @@ SchemaObject: TypeAlias = Any
 {{if .SubjectSets}}{{alias "SubjectSet" (setNames .SubjectSets)}}
 {{else}}SubjectSet: TypeAlias = Any
 {{end}}
+{{alias "SchemaSubject" .SchemaSubjectMembers}}
+
 {{if .Definitions}}_DEFINITIONS: Final[dict[str, DefinitionClass]] = {
 {{- range $def := .Definitions}}
     "{{$def.Name}}": {{$def.ClassName}},
@@ -688,6 +696,42 @@ def subject_set_by_name(definition: str, object_id: str, relation: str) -> Subje
         )
     _object(definition, object_id)
     return cls(object_id)
+
+
+{{if .Wildcards}}_WILDCARDS: Final[dict[str, SchemaSubject]] = {
+{{- range $w := .Wildcards}}
+    "{{$w.Key}}": {{$w.ClassName}}(),
+{{- end}}
+}
+{{else}}_WILDCARDS: Final[dict[str, SchemaSubject]] = {}
+{{end}}
+
+def parse_subject(text: str) -> SchemaSubject:
+    """The typed subject for "type:id" or "type:id#relation" text ("#..." is
+    direct): parse_subject("user:alice") == User("alice"),
+    parse_subject("team:eng#member") == TeamMember("eng"), and "type:*" is
+    the wildcard subject where the schema allows that wildcard.
+
+    Raises LocalValidationError (a ValueError) for malformed text and
+    NotInSchemaError for a type or relation the schema lacks, a relation or
+    permission that no relation admits as a subject, or a wildcard the schema
+    never allows.
+    """
+    ref = SubjectRef.parse(text)
+    definition, object_id = ref.object.object_type, ref.object.object_id
+    if ref.relation is not None:
+        if object_id == "*":
+            raise LocalValidationError(
+                f"subject: invalid {text!r}; a wildcard has no relation"
+            )
+        return subject_set_by_name(definition, object_id, ref.relation)
+    if object_id != "*":
+        return object_by_name(definition, object_id)
+    definition_by_name(definition)
+    wildcard = _WILDCARDS.get(definition)
+    if wildcard is None:
+        raise NotInSchemaError(f"{definition}:* is not a subject in the schema")
+    return wildcard
 
 
 def _lookup_target(definition: str, resource_id: str, name: str) -> Permission:

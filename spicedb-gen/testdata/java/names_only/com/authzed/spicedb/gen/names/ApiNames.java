@@ -10,15 +10,15 @@ import java.util.List;
 public final class ApiNames {
   private ApiNames() {}
 
-  public static final String DOCUMENT_TYPE = Permissions.Definitions.DOCUMENT;
-  public static final String VIEW = Permissions.DocumentPermissions.VIEW;
-  public static final String ORG_ADMIN = Permissions.OrganizationRelations.ADMIN;
+  public static final String DOCUMENT_TYPE = PermissionNames.Definitions.DOCUMENT;
+  public static final String VIEW = PermissionNames.DocumentPermissions.VIEW;
+  public static final String ORG_ADMIN = PermissionNames.OrganizationRelations.ADMIN;
 
   public static List<String> definitions() {
-    return Permissions.Definitions.names();
+    return PermissionNames.Definitions.names();
   }
 
   public static String schema() {
-    return Permissions.SCHEMA;
+    return PermissionNames.SCHEMA;
   }
 }

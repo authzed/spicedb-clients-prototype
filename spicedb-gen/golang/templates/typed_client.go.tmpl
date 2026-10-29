@@ -6,7 +6,6 @@ package {{.Package}}
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 	"strings"
@@ -43,12 +42,22 @@ type DefinitionRef interface {
 	isDefinitionRef()
 }
 
+// Both are local validation failures: each also matches client.ErrInvalidArgument
+// under errors.Is, like every input the client rejects before a call.
 var (
 	// ErrNotInSchema reports a permission or relation name the schema does not define.
-	ErrNotInSchema = errors.New("not in schema")
+	ErrNotInSchema error = &schemaError{"not in schema"}
 	// ErrSubjectNotAllowed reports a subject the schema does not allow on a relation.
-	ErrSubjectNotAllowed = errors.New("subject not allowed by schema")
+	ErrSubjectNotAllowed error = &schemaError{"subject not allowed by schema"}
 )
+
+// schemaError is a schema validation sentinel; it is an invalid argument.
+type schemaError struct{ msg string }
+
+func (e *schemaError) Error() string { return e.msg }
+
+// Is reports that a schema validation failure is an invalid argument.
+func (e *schemaError) Is(target error) bool { return target == client.ErrInvalidArgument }
 
 // Permission is a checkable permission (or relation) on a specific resource.
 type Permission struct {
@@ -797,6 +806,41 @@ func ParseObject(text string) (DefinitionRef, error) {
 		return nil, fmt.Errorf("%q is not type:id: %w", text, rel.ErrInvalidResource)
 	}
 	return ObjectByName(definition, id)
+}
+
+// ParseSubject returns the typed subject for "type:id" or "type:id#relation"
+// text ("#..." is direct): ParseSubject("user:alice") is User("alice"),
+// ParseSubject("team:eng#member") is Team("eng").Member(), and "type:*" is
+// the wildcard ref where the schema allows that wildcard. It fails with
+// rel.ErrInvalidSubject for malformed text and an error wrapping
+// ErrNotInSchema for an unknown definition or relation, a relation or
+// permission no relation admits as a subject, or a wildcard the schema never
+// allows.
+func ParseSubject(text string) (Subject, error) {
+	object, relation, hasRelation := strings.Cut(text, "#")
+	definition, id, ok := strings.Cut(object, ":")
+	if !ok || definition == "" || id == "" || (hasRelation && relation == "") {
+		return nil, fmt.Errorf("%q is not type:id or type:id#relation: %w", text, rel.ErrInvalidSubject)
+	}
+	if relation != "" && relation != "..." {
+		if id == "*" {
+			return nil, fmt.Errorf("%q: a wildcard has no relation: %w", text, rel.ErrInvalidSubject)
+		}
+		return SubjectSetByName(definition, id, relation)
+	}
+	if id != "*" {
+		return ObjectByName(definition, id)
+	}
+	if _, err := DefinitionByName(definition); err != nil {
+		return nil, err
+	}
+	switch definition {
+{{- range .Definitions}}{{if .WildcardType}}
+	case "{{.Name}}":
+		return {{.PascalName}}Wildcard(), nil
+{{- end}}{{end}}
+	}
+	return nil, fmt.Errorf("%w: %s:* is not a subject anywhere in the schema", ErrNotInSchema, definition)
 }
 
 // subjectRules holds "definition#relation@shape" for every subject shape

@@ -1246,6 +1246,33 @@ export function parseObject(text: string): AnyResourceRef {
     return objectByName(type, id);
 }
 
+/**
+ * The typed subject for `type:id` or `type:id#relation` text (`#...` is
+ * direct): `parseSubject("user:alice")` is `User("alice")`,
+ * `parseSubject("team:eng#member")` is `Team("eng").member()`, and `type:*` is
+ * the wildcard ref where the schema allows that wildcard. Throws
+ * InvalidArgumentError for malformed text and NotInSchemaError for an unknown
+ * definition or relation, a relation or permission that no relation admits as
+ * a subject, or a wildcard the schema never allows.
+ */
+export function parseSubject(text: string): AnyResourceRef | AnySubjectSet | UserWildcardRef {
+    const hash = text.indexOf("#");
+    const relation = hash < 0 ? undefined : text.slice(hash + 1);
+    if (relation === "") throw new InvalidArgumentError(`invalid subject (empty relation): ${text}`);
+    const { type, id } = objectText(hash < 0 ? text : text.slice(0, hash), "subject");
+    if (relation !== undefined && relation !== "...") {
+        if (id === "*") throw new InvalidArgumentError(`invalid subject (a wildcard has no relation): ${text}`);
+        return subjectSetByName(type, id, relation);
+    }
+    if (id !== "*") return objectByName(type, id);
+    definitionByName(type);
+    switch (type) {
+        case "user":
+            return UserWildcard();
+    }
+    throw new NotInSchemaError(`${type}:* is not a subject anywhere in the schema`);
+}
+
 /** `definition#relation@shape` for every subject shape every relation admits (see {@link relationshipFromTriple}). */
 const subjectRules: ReadonlySet<string> = new Set([
     "team#member@user",

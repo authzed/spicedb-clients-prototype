@@ -65,12 +65,20 @@ current native APIs.
   - String-keyed entry points (root DESIGN.md, "String-keyed code reaches
     every typed value"), in every target: an object from a definition name and
     ID and from `type:id` text; a subject set from definition, ID and a
-    relation or permission that some relation admits as a subject; a
+    relation or permission that some relation admits as a subject; a subject
+    from `type:id[#relation]` text (`#...` is direct), which is the object, the
+    subject set, or for `type:*` the wildcard ref where the schema allows that
+    wildcard; a
     relationship from tuple text whose subject shape (type, wildcard,
     relation, caveat, expiration) is one the relation admits; checks and bulk
     checks by name; resource and subject lookups by name; and one type naming
     every generated object (and, where the language has unions, every subject
     set). Unknown names fail with the not-in-schema error before any call.
+  - The not-in-schema and subject-not-allowed errors are the target client's
+    local-validation type with the invalid-argument code: Go's sentinels match
+    `client.ErrInvalidArgument` under `errors.Is`, Java's exceptions extend
+    `LocalValidationException`, Python's errors extend `LocalValidationError`
+    (so also `ValueError`), and TypeScript's extend `InvalidArgumentError`.
   - By-name checks and lookups accept relations as well as permissions. Each
     target embeds, per relation and permission, the subject positions
     (`type` or `type#relation`) that reach it, following subject sets
@@ -102,7 +110,13 @@ current native APIs.
   standard library, never the client library or proto tier, so a shared API
   package can depend on it alone. Caveat names have no constants in either
   mode. Each target has a fixture that builds the output with no client
-  available.
+  available. A project may use both outputs (the names in a shared module,
+  the client elsewhere), so their default qualifying names differ: Go's
+  names-only package defaults to `permissionnames` (full: `permissions`),
+  Java's class to `PermissionNames` (full: `Permissions`), Python's module to
+  `names` (full: `permissions`) and TypeScript's file to `names.gen.ts`.
+  Python and TypeScript modules are namespaced and their imports can be
+  aliased, so identical member names never clash there.
 
 - **Make every option discoverable.** Each generator implements
   `generator.OptionDescriber`; `spicedb-gen --help` lists every language's
@@ -163,15 +177,18 @@ and options forwarding rather than just generated text fragments.
   implements (`DefinitionName()`, `ID()`, `Filter()`, the by-name methods; it
   embeds `Subject`, so every object is a dynamic subject); `ObjectByName(d,
   id)` and `ParseObject("type:id")` → `DefinitionRef`; `SubjectSetByName(d,
-  id, r)` → `Subject` (the generated userset ref); `RelationshipFromTriple(
+  id, r)` → `Subject` (the generated userset ref); `ParseSubject(
+  "type:id[#relation]")` → `Subject` (the `DRef`, userset ref or
+  `DWildcard()`); `RelationshipFromTriple(
   resource, relation, subject, ...TripleOption)` with `TripleCaveat(name,
   ctx)` and `TripleExpiration(t)`, validated against the generated
   `subjectRules` table; `CheckByName`, `CheckBulkByName([]NamedCheck)`
   (failures are `*client.BulkCheckError` with the index); `LookupResourcesByName`
   and `LookupSubjectsByName(ctx, tc, cs, d, id, p, subjectType,
   subjectRelation, opts...)` (`""` or `"..."` for direct). Unknown names wrap
-  `ErrNotInSchema`, inadmissible subjects `ErrSubjectNotAllowed`, malformed
-  text and empty IDs `rel.ErrInvalidResource`/`rel.ErrInvalidSubject`.
+  `ErrNotInSchema`, inadmissible subjects `ErrSubjectNotAllowed` (both also
+  match `client.ErrInvalidArgument`), malformed text and empty IDs
+  `rel.ErrInvalidResource`/`rel.ErrInvalidSubject`.
   `TypedClient` embeds `client.Interface`, so native methods such as `Ready`
   are promoted without a forwarder; the capability parity test checks it.
 - `TypedClient` embeds `client.Interface`; `NewTypedClient` accepts any
@@ -189,7 +206,8 @@ and options forwarding rather than just generated text fragments.
   without changing the schema names sent to SpiceDB, e.g.
   `--go.rename=subject=SubjectDef` for a schema with `definition subject`.
   `--go.package` sets the package name, and output is gofmt-formatted.
-- `--go.names-only` writes `names.gen.go` with no imports: `Definitions`,
+- `--go.names-only` writes `names.gen.go` (package `permissionnames` unless
+  `--go.package` names one) with no imports: `Definitions`,
   `DefinitionNames()`, `SchemaText`, and per definition `DRelations`,
   `DPermissions`, `DRelationNames()` and `DPermissionNames()`.
   `testdata/go-names` is a module whose go.mod requires nothing; `mage
@@ -255,6 +273,8 @@ and options forwarding rather than just generated text fragments.
   object ref (each is also an `AnySubject`) and `AnySubjectSet` the union of
   userset refs; `objectByName(d, id)` and `parseObject("type:id")` →
   `AnyResourceRef`; `subjectSetByName(d, id, r)` → `AnySubjectSet`;
+  `parseSubject("type:id[#relation]")` → `AnyResourceRef | AnySubjectSet`
+  or a wildcard ref;
   `relationshipFromTriple(resource, relation, subject, { caveat?, expiration?
   })` (`TripleOptions`); `TypedClient.checkByName(c, d, id, p, s, options?)`,
   `checkBulkByName(c, NamedCheck[], options?)` and `lookupSubjectsByName(c, d,
@@ -330,25 +350,28 @@ and options forwarding rather than just generated text fragments.
   runtime type name is also a dynamic subject. `permissionRefByName(type, p)` →
   `PermissionRef<?>` without a resource ID. `PermissionRef` carries `subjectType`
   (the check-admission interface) and `admits(Subject)`.
-  `TypedClient.lookupResources(Consistency, String type, String p, Subject[,
-  LookupOptions])` validates both names and the subject before calling; it takes a
-  generated `Subject`, never a native `SubjectRef`, and does not overload the
-  `PermissionRef<S>` form, so a statically wrong subject still fails to compile.
-  Unknown names throw `NotInSchemaException`; an inadmissible subject throws
-  `SubjectNotAllowedException`. Lookups by name cover relations as well as
+  `TypedClient.lookupResourcesByName(Consistency, String type, String p,
+  Subject[, LookupOptions])` validates both names and the subject before calling;
+  it takes a generated `Subject`, never a native `SubjectRef`, and is named apart
+  from the `PermissionRef<S>` form, so a statically wrong subject still fails to
+  compile. Unknown names throw `NotInSchemaException`; an inadmissible subject
+  throws `SubjectNotAllowedException`. Both extend the native
+  `LocalValidationException` (code `INVALID_ARGUMENT`). Lookups by name cover relations as well as
   permissions; see the cross-language rule above for unreachable subjects.
 - String-keyed entry points: `DefinitionRef` is the sealed interface naming
   every generated object; `objectByName(d, id)` and `parseObject("type:id")` →
   `DefinitionRef`; `subjectSetByName(d, id, r)` → `Subject` (the userset
-  record); `relationshipFromTriple(resource, relation, subject)` and the
+  record); `parseSubject("type:id[#relation]")` → `Subject` (the `DRef`,
+  userset record or wildcard record); `relationshipFromTriple(resource,
+  relation, subject)` and the
   overload adding `caveatName`, `caveatContext` and `expiration` (each
   nullable), checked by the generated `admitsShape` table;
   `TypedClient.checkByName(c, d, id, p, subject[, CheckOptions])`,
   `checkBulkByName(c, List<NamedCheck>[, CheckOptions])` and
-  `lookupSubjects(c, d, id, p, subjectType[, subjectRelation[,
+  `lookupSubjectsByName(c, d, id, p, subjectType[, subjectRelation[,
   LookupOptions]])`. A `Permission<?>` from `permissionByName` also checks
   through `forDynamicSubject` and `check(c, TypedCheck)`. Malformed text and
-  empty IDs throw the native `InvalidArgumentException`. `TypedClient`
+  empty IDs throw the native `LocalValidationException`. `TypedClient`
   forwards `awaitReady(Duration)`.
 - Constants: `Definitions` holds an `UPPER_SNAKE` constant per definition plus
   `names()` (schema order), and `SCHEMA` holds the schema text exactly as given to
@@ -381,9 +404,12 @@ and options forwarding rather than just generated text fragments.
   1.22.0, the version spicedb-java uses) verifies it. `--java.formatter="<cmd>"`
   pipes the output through a formatter command, for names long enough to need
   wrapping the writer does not model.
-- `--java.names-only` writes a `Permissions` class (in `--java.package`) that
-  imports only `java.util.List`: the `DRelations`/`DPermissions` classes,
-  `Definitions` and `SCHEMA`, rendered exactly as in the full class. `mage
+- `--java.names-only` writes a `PermissionNames` class (in `--java.package`;
+  `--java.names-class=<Name>` renames it, and is rejected without names-only)
+  that imports only `java.util.List`: the `DRelations`/`DPermissions` classes,
+  `Definitions` and `SCHEMA`, rendered exactly as in the full class. It is not
+  `Permissions`, so a project using both outputs never has two classes of that
+  name; a class name that a nested class already uses fails generation. `mage
   javaTypeErrors` runs the fixture's `compileNamesOnly` task, which compiles it
   and `testdata/java/names_only` with an empty classpath, and `spotlessCheck`
   covers it.
@@ -442,7 +468,9 @@ and options forwarding rather than just generated text fragments.
   union of definition classes); `subject_set_by_name(definition, id,
   relation)` returns the userset subject class (`SubjectSet`, the union of
   userset classes) for a relation or permission some relation admits as a
-  subject; `relationship_from_triple(resource, relation, subject, *, caveat,
+  subject; `parse_subject("type:id[#relation]")` returns either, or for
+  `type:*` the wildcard class where the schema allows it (`SchemaSubject`,
+  the union of all three); `relationship_from_triple(resource, relation, subject, *, caveat,
   expiration)` returns a `TypedRelationship` whose subject shape (type,
   relation, wildcard, caveat, expiration) is one the relation admits, using
   the generated `_SUBJECT_RULES` table; `TypedClient.check_by_name`,
@@ -453,7 +481,8 @@ and options forwarding rather than just generated text fragments.
   (judged from its admission union) returns an empty stream without a call,
   as SpiceDB answers; a reachable type in an inadmissible shape (a wildcard)
   raises `SubjectNotAllowedError`. Unknown names raise `NotInSchemaError`,
-  malformed text and IDs `LocalValidationError`.
+  malformed text and IDs `LocalValidationError`; both schema errors subclass
+  `LocalValidationError`.
   `DefinitionNames.D` and `DEFINITION_NAMES` name the definitions, and
   `SCHEMA_TEXT` holds the schema source exactly as given to the generator
   (`schema.Schema.Text`), one literal per source line.

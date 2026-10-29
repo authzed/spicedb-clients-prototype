@@ -503,10 +503,12 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     each validated against the schema.
   - String-keyed code reaches every typed value without hand-written
     dispatch: a typed object from a type name and ID or from `type:id` text, a
-    subject set from type, ID and relation, a typed relationship from tuple
-    text whose subject the relation admits, checks and bulk checks by name,
-    and lookups of subjects as well as resources by name, plus a type naming
-    the union of generated objects.
+    subject set from type, ID and relation, a typed subject (object, subject
+    set or allowed wildcard) from `type:id[#relation]` text, a typed
+    relationship from tuple text whose subject the relation admits, checks
+    and bulk checks by name, and lookups of subjects as well as resources by
+    name, plus a type naming the union of generated objects. Schema
+    rejections of these names are local validation errors.
   - By-name lookups accept relations as well as permissions, as SpiceDB does.
     When the subject's type and relation cannot reach the target, they return
     an empty result without a call, which is SpiceDB's answer; unknown names

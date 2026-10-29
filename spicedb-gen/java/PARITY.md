@@ -20,7 +20,7 @@ introduced omissions. It rejects native signatures for the three explicit schema
 exceptions: `check`, `lookupResources`, `lookupSubjects`. Those capabilities remain
 directly available through their generated schema-aware signatures (plus
 `check(Consistency, TypedCheck)` for runtime-validated pairs and
-`lookupResources(Consistency, String, String, Subject[, LookupOptions])` for runtime names, which
+`lookupResourcesByName(Consistency, String, String, Subject[, LookupOptions])` for runtime names, which
 takes a generated `Subject` rather than a native `SubjectRef`); adding permissive native
 overloads would bypass subject constraints. `close` keeps owned-versus-borrowed lifecycle
 semantics. Because native `check(PermissionCheck)` is deliberately absent, `TypedClient`

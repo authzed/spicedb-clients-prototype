@@ -43,7 +43,7 @@ tasks.named<JavaCompile>("compileJava") {
 
 spotless {
     java {
-        target("src/main/java/**/Permissions.java", "names_only/**/Permissions.java")
+        target("src/main/java/**/Permissions.java", "names_only/**/PermissionNames.java")
         googleJavaFormat("1.22.0")
     }
 }

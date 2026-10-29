@@ -41,7 +41,7 @@ One client per process, shared by every thread: it is safe for concurrent
 use. Build it in a Rails initializer (a constant), not per request or per
 policy object. It opens its channel on first use, so under Puma
 `preload_app!` (or Unicorn) it works in each worker as long as the master
-makes **no SpiceDB call**; put boot-time calls in `on_worker_boot`. A call in
+makes **no SpiceDB call**; put boot-time calls, such as the readiness check `client.connect!(timeout: 10)`, in `on_worker_boot`. A call in
 a child whose parent already connected raises `SpiceDB::ForkedClientError`.
 See [README.md, "Concurrency and forking"](README.md#concurrency-and-forking).
 

@@ -83,6 +83,41 @@ RSpec.describe SpiceDB::Client do
       .to raise_error(SpiceDB::InvalidArgumentError, /client_key/)
   end
 
+  describe '#connect!' do
+    it 'fails within the timeout for an unreachable endpoint' do
+      client = described_class.new_plaintext('127.0.0.1:1', 'token') # nothing listens on port 1
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { client.connect!(timeout: 1) }.to raise_error(SpiceDB::Error) do |error|
+        expect([SpiceDB::UnavailableError, SpiceDB::DeadlineExceededError]).to include(error.class)
+        expect(error.message).to include('127.0.0.1:1')
+        expect(error.server_message).to eq(error.message)
+      end
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 3
+      client.close
+    end
+
+    it 'reports a refused connection as UNAVAILABLE' do
+      client = described_class.new_plaintext('127.0.0.1:1', 'token')
+      expect { client.connect!(timeout: 2) }.to raise_error(SpiceDB::UnavailableError, /could not connect/) do |error|
+        expect(error.code).to eq(GRPC::Core::StatusCodes::UNAVAILABLE)
+      end
+      client.close
+    end
+
+    it 'validates its timeout before connecting' do
+      client = described_class.new_plaintext('localhost:50051', 'token')
+      expect { client.connect!(timeout: 0) }.to raise_error(SpiceDB::InvalidArgumentError, /got Integer \(0\)/)
+      expect(client.instance_variable_get(:@proto_client)).to be_nil
+    end
+
+    it 'is a no-op on the test double' do
+      require_relative '../lib/spicedb/testing'
+      store = SpiceDB::Testing::Store.new
+      expect(store.connect!).to be(store)
+      expect(store.calls).to be_empty
+    end
+  end
+
   describe 'across a fork', if: Process.respond_to?(:fork) do
     # Each scenario runs in a fresh Ruby process: once this spec process has
     # used grpc, no forked child of it can.

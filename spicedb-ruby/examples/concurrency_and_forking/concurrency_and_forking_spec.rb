@@ -38,6 +38,7 @@ RSpec.describe 'Concurrency and forking' do
       client = SpiceDB::Client.new_plaintext(#{SPICEDB_ENDPOINT.inspect}, #{SPICEDB_TOKEN.inspect}) # e.g. a Rails initializer
       reader, writer = IO.pipe
       pid = fork do # e.g. a Puma worker
+        client.connect!(timeout: 5) # on_worker_boot: fail at startup if SpiceDB is unreachable
         writer.puts client.read_schema.schema.include?('definition document')
         exit!(0)
       end
@@ -48,6 +49,13 @@ RSpec.describe 'Concurrency and forking' do
     out, err, status = Open3.capture3(RbConfig.ruby, '-W0', '-e', script)
     expect(status.success?).to be(true), err
     expect(out.strip).to eq('true')
+  end
+
+  it 'checks readiness at startup' do
+    expect(client.connect!(timeout: 5)).to be(client)
+    unreachable = SpiceDB::Client.new_plaintext('127.0.0.1:1', SPICEDB_TOKEN)
+    expect { unreachable.connect!(timeout: 1) }.to raise_error(SpiceDB::UnavailableError)
+    unreachable.close
   end
 
   it 'explains a client that was already connected before the fork', if: Process.respond_to?(:fork) do

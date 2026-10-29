@@ -22,6 +22,7 @@
 - `SpiceDB::Testing::Store#lookup_resources` and `#lookup_subjects` work in memory instead of raising UNIMPLEMENTED: they enumerate stored objects of the requested type (as resource or subject, in first-appearance order) and return those check resolution grants, with conditional results, the permissionship filter, limits, cursors (`Store.cursor_after`) and per-item fault hooks.
 - MIGRATION.md opens with a Requirements section (Ruby >= 3.2, grpc >= 1.73, google-protobuf >= 3.25; works on google-protobuf 3.25 through 4.36, where the `authzed` gem no longer loads), kept in step with the gemspecs by a spec, and adds a legacy-to-new member table and a grpc-to-native error class table.
 - `SpiceDBProto::Client.validate_connection!` runs every constructor refusal without creating a gRPC object; `SpiceDBProto::Client#initialize` calls it first.
+- `SpiceDB::Client#connect!(timeout: 10)` is a startup readiness check for the lazily connecting client: it opens the connection in the calling process and waits until the channel is ready, raising `UnavailableError` for an unreachable or refusing endpoint and `DeadlineExceededError` for one still connecting when the timeout passes. Call it in each worker (`on_worker_boot`), not the master. `SpiceDB::Testing::Store#connect!` is a no-op, and `SpiceDBProto::Client#channel` exposes the shared channel.
 
 ### Full-client test double (2026-10-28)
 

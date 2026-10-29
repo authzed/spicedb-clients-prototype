@@ -270,7 +270,8 @@ and options forwarding rather than just generated text fragments.
   reserved names in the collision registry.
 - `TypedClient` wraps a `SpiceDBApi` (constructors and `client()`), so it wraps
   both `SpiceDBClient` and the in-memory double; the generated factories still build
-  an owned `SpiceDBClient`.
+  an owned `SpiceDBClient` and mirror every native `createPlaintext`/`createSystemTls`
+  overload, including the channel-customizer one for keepalive.
 - Any remaining collision (between types, static members, members of one record, or
   with the hand-written runtime and the native types it names) fails generation with
   both sources named, as does an identifier that is a Java reserved word; nothing is

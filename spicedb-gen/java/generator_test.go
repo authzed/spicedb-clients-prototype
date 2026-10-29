@@ -475,6 +475,10 @@ func TestRuntimeNameSurface(t *testing.T) {
 		"public TypedClient(SpiceDBApi client)",
 		"public TypedClient(SpiceDBApi client, boolean ownsClient)",
 		"public SpiceDBApi client()",
+		// Native filter-only delete and channel-customizer factories are forwarded.
+		"public DeleteResult deleteRelationships(Filter filter) {",
+		"SpiceDBClient.createPlaintext(endpoint, token, options, channelCustomizer)",
+		"SpiceDBClient.createSystemTls(endpoint, token, options, channelCustomizer)",
 		// Schema-level runtime-name lookups.
 		"public static Definition definitionByName(String name)",
 		`case "document":`,

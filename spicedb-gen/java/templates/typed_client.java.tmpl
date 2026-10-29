@@ -637,6 +637,34 @@ public final class Permissions {
       return new TypedClient(SpiceDBClient.createSystemTls(endpoint, token, options), true);
     }
 
+    /**
+     * Like {@link #createPlaintext(String, String, ClientOptions)}, passing the channel builder to
+     * {@code channelCustomizer} for settings {@code ClientOptions} does not cover, such as
+     * keepalive. The customizer must not change the transport security.
+     */
+    public static TypedClient createPlaintext(
+        String endpoint,
+        String token,
+        ClientOptions options,
+        java.util.function.Consumer<io.grpc.ManagedChannelBuilder<?>> channelCustomizer) {
+      return new TypedClient(
+          SpiceDBClient.createPlaintext(endpoint, token, options, channelCustomizer), true);
+    }
+
+    /**
+     * Like {@link #createSystemTls(String, String, ClientOptions)}, passing the channel builder to
+     * {@code channelCustomizer} for settings {@code ClientOptions} does not cover, such as
+     * keepalive. The customizer must not change the transport security.
+     */
+    public static TypedClient createSystemTls(
+        String endpoint,
+        String token,
+        ClientOptions options,
+        java.util.function.Consumer<io.grpc.ManagedChannelBuilder<?>> channelCustomizer) {
+      return new TypedClient(
+          SpiceDBClient.createSystemTls(endpoint, token, options, channelCustomizer), true);
+    }
+
     public SpiceDBApi client() {
       return client;
     }
@@ -689,6 +717,11 @@ public final class Permissions {
     public Stream<ReadRelationship> readRelationships(
         Consistency consistency, Filter filter, ReadOptions options) {
       return client.readRelationships(consistency, filter, options);
+    }
+
+    /** One all-or-nothing delete with the server's default limit; see the native method. */
+    public DeleteResult deleteRelationships(Filter filter) {
+      return client.deleteRelationships(filter);
     }
 
     public DeleteResult deleteRelationships(Filter filter, int limit) {

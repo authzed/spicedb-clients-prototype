@@ -34,6 +34,87 @@ public final class Permissions {
 {{range .Statics}}
 {{.}}
 {{end}}
+  // --- Schema text, definition names and runtime-name lookups ---
+{{range .SchemaBlocks}}
+{{.}}
+{{end}}
+  /**
+   * A schema definition resolved by {@link #definitionByName}, for code that receives type names at
+   * run time. Every lookup through it is validated against the schema.
+   */
+  public static final class Definition {
+    private final String name;
+    private final java.util.function.Function<String, ? extends DefinitionRef> factory;
+    private final List<String> relationNames;
+    private final List<String> permissionNames;
+
+    private Definition(
+        String name,
+        java.util.function.Function<String, ? extends DefinitionRef> factory,
+        List<String> relationNames,
+        List<String> permissionNames) {
+      this.name = name;
+      this.factory = factory;
+      this.relationNames = relationNames;
+      this.permissionNames = permissionNames;
+    }
+
+    /** The definition name as the schema spells it. */
+    public String name() {
+      return name;
+    }
+
+    /** The relation names, in schema order. */
+    public List<String> relationNames() {
+      return relationNames;
+    }
+
+    /** The permission names, in schema order. */
+    public List<String> permissionNames() {
+      return permissionNames;
+    }
+
+    /** The typed ref for one object of this definition. */
+    public DefinitionRef ref(String id) {
+      return factory.apply(Objects.requireNonNull(id, "id"));
+    }
+
+    /** The type-level filter for this definition's relationships. */
+    public Filter filter() {
+      return Filter.of(name);
+    }
+
+    /** Resolves a permission on one object, validated against the schema. */
+    public Permission<?> permissionByName(String id, String permission) {
+      return ref(id).permissionByName(permission);
+    }
+
+    /** Resolves a relation on one object, for checks, validated against the schema. */
+    public Permission<?> relationByName(String id, String relation) {
+      return ref(id).relationByName(relation);
+    }
+
+    /** Resolves a resource-less permission ref, for lookups, validated against the schema. */
+    public PermissionRef<?> permissionRef(String permission) {
+      return permissionRefByName(name, permission);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      return o instanceof Definition other && name.equals(other.name);
+    }
+
+    @Override
+    public int hashCode() {
+      return name.hashCode();
+    }
+
+    @Override
+    public String toString() {
+      return name;
+    }
+  }
+
   // --- Permissions and checks ---
 
   /** A permission (or relation) on one resource, checkable by subjects of type {@code S}. */
@@ -45,7 +126,7 @@ public final class Permissions {
     }
 
     public PermissionRef<S> ref() {
-      return new PermissionRef<>(resourceType, permission);
+      return new PermissionRef<>(resourceType, permission, subjectType);
     }
 
     /** Pairs this permission with a subject it admits, for {@link TypedClient#checkBulk}. */
@@ -72,11 +153,21 @@ public final class Permissions {
     }
   }
 
-  /** A permission on a resource type, for lookups. */
-  public record PermissionRef<S extends Subject>(String resourceType, String permission) {
+  /**
+   * A permission on a resource type, for lookups. {@code subjectType} is the subjects it admits,
+   * which {@link TypedClient#lookupResources(Consistency, String, String, Subject)} validates
+   * against.
+   */
+  public record PermissionRef<S extends Subject>(
+      String resourceType, String permission, Class<S> subjectType) {
     /** The permission or relation name. */
     public String name() {
       return permission;
+    }
+
+    /** Whether this permission admits {@code subject}, for a subject chosen at run time. */
+    public boolean admits(Subject subject) {
+      return subjectType.isInstance(subject);
     }
 
     @Override
@@ -506,15 +597,20 @@ public final class Permissions {
 
   // --- TypedClient ---
 
+  /**
+   * The schema-aware client. It wraps any {@link SpiceDBApi}: the native {@link SpiceDBClient} or
+   * the in-memory test double.
+   */
   public static final class TypedClient implements AutoCloseable {
-    private final SpiceDBClient client;
+    private final SpiceDBApi client;
     private final boolean ownsClient;
 
-    public TypedClient(SpiceDBClient client) {
+    /** Wraps a client the caller keeps owning; {@link #close()} does not close it. */
+    public TypedClient(SpiceDBApi client) {
       this(client, false);
     }
 
-    public TypedClient(SpiceDBClient client, boolean ownsClient) {
+    public TypedClient(SpiceDBApi client, boolean ownsClient) {
       this.client = Objects.requireNonNull(client);
       this.ownsClient = ownsClient;
     }
@@ -541,7 +637,7 @@ public final class Permissions {
       return new TypedClient(SpiceDBClient.createSystemTls(endpoint, token, options), true);
     }
 
-    public SpiceDBClient client() {
+    public SpiceDBApi client() {
       return client;
     }
 
@@ -838,6 +934,33 @@ public final class Permissions {
         Consistency c, PermissionRef<S> perm, S subject, LookupOptions options) {
       return client.lookupResources(
           c, perm.resourceType(), perm.permission(), subjectRef(subject), options);
+    }
+
+    /**
+     * Looks up resources by definition and permission names received at run time. The names and the
+     * subject are validated against the schema, as {@link Permissions#permissionRefByName} and
+     * {@link PermissionRef#admits} do, before any call is made.
+     *
+     * @throws NotInSchemaException if the schema has no such definition or permission
+     * @throws SubjectNotAllowedException if the permission does not admit the subject
+     */
+    public Stream<LookupResult.LookupResource> lookupResources(
+        Consistency c, String definition, String permission, Subject subject) {
+      return lookupResources(c, definition, permission, subject, LookupOptions.builder().build());
+    }
+
+    public Stream<LookupResult.LookupResource> lookupResources(
+        Consistency c,
+        String definition,
+        String permission,
+        Subject subject,
+        LookupOptions options) {
+      var ref = permissionRefByName(definition, permission);
+      if (!ref.admits(Objects.requireNonNull(subject, "subject"))) {
+        throw notAllowed(definition, permission, subject);
+      }
+      return client.lookupResources(
+          c, ref.resourceType(), ref.permission(), subjectRef(subject), options);
     }
 
     public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(

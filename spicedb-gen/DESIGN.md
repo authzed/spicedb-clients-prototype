@@ -224,6 +224,30 @@ and options forwarding rather than just generated text fragments.
   admit only base shapes; checks (`DRRelationSubject`, `DPSubject`) admit base and
   caveated shapes, the members behind userset subjects, and type sentinels (`DType`,
   `DRType`) for lookups. Sentinels are never writable.
+- Runtime names (root DESIGN.md: code receiving type and permission names at run
+  time stays typed). `Permissions.definitionByName(type)` → `Definition` (`name()`,
+  `ref(id)` → `DefinitionRef`, `filter()`, `relationNames()`, `permissionNames()`,
+  `permissionByName(id, p)`, `relationByName(id, r)`, `permissionRef(p)`); every
+  `DRef` implements the sealed `DefinitionRef extends Subject`, so a ref built from a
+  runtime type name is also a dynamic subject. `permissionRefByName(type, p)` →
+  `PermissionRef<?>` without a resource ID. `PermissionRef` carries `subjectType`
+  (the check-admission interface) and `admits(Subject)`.
+  `TypedClient.lookupResources(Consistency, String type, String p, Subject[,
+  LookupOptions])` validates both names and the subject before calling; it takes a
+  generated `Subject`, never a native `SubjectRef`, and does not overload the
+  `PermissionRef<S>` form, so a statically wrong subject still fails to compile.
+  Unknown names throw `NotInSchemaException`; an inadmissible subject throws
+  `SubjectNotAllowedException`. Lookups by name cover permissions, not relations.
+- Constants: `Definitions` holds an `UPPER_SNAKE` constant per definition plus
+  `names()` (schema order), and `SCHEMA` holds the schema text exactly as given to
+  the generator (caveat bodies included), written as `String.join("\n", lines...)`
+  so a schema over the 64 KiB constant-pool limit still compiles; non-ASCII and
+  control characters are `\u` escapes. `Definition`, `Definitions`,
+  `DefinitionRef`, `SCHEMA`, `definitionByName` and `permissionRefByName` are
+  reserved names in the collision registry.
+- `TypedClient` wraps a `SpiceDBApi` (constructors and `client()`), so it wraps
+  both `SpiceDBClient` and the in-memory double; the generated factories still build
+  an owned `SpiceDBClient`.
 - Any remaining collision (between types, static members, members of one record, or
   with the hand-written runtime and the native types it names) fails generation with
   both sources named, as does an identifier that is a Java reserved word; nothing is

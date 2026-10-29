@@ -16,6 +16,14 @@ func testdataPath(name string) string {
 	return filepath.Join(filepath.Dir(file), "..", "testdata", name)
 }
 
+func TestParseKeepsSchemaText(t *testing.T) {
+	// The original text, caveat bodies included, not the opaque form the compiler sees.
+	src := "caveat c(a int) {\n\tfoo(a) == 1\n}\n\ndefinition user {}\n"
+	s, err := schema.ParseString(src)
+	require.NoError(t, err)
+	assert.Equal(t, src, s.Text)
+}
+
 func TestParseFile(t *testing.T) {
 	s, err := schema.ParseFile(testdataPath("sample.zed"))
 	require.NoError(t, err)

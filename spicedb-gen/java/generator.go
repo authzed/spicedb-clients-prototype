@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"unicode/utf16"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
@@ -163,6 +164,9 @@ type TemplateData struct {
 	Sentinels      []string
 	Definitions    []string
 	Statics        []string
+	// SchemaBlocks are the schema-level members: the SCHEMA text, the Definitions name constants,
+	// definitionByName and permissionRefByName.
+	SchemaBlocks []string
 
 	// Inventory used by tests.
 	SubjectTypes   []string
@@ -295,18 +299,22 @@ sealed permits non-sealed when`) {
 var fixedTypes = []string{
 	"Subject", "Permission", "PermissionRef", "TypedCheck", "TypedRelationship", "RelationshipKey",
 	"Deletable", "Txn", "TypedClient", "NotInSchemaException", "SubjectNotAllowedException",
+	"Definition", "Definitions", "DefinitionRef",
 	// Native types referenced by simple name.
 	"CallOptions", "CheckOptions", "CheckResult", "ClientOptions", "Consistency", "DeleteAllOptions",
 	"DeleteOptions", "ExportOptions", "Filter", "ImportOptions", "LookupOptions", "LookupResult",
 	"Materialize", "ObjectRef", "PermissionCheck", "PermissionSetOptions", "ReadOptions",
-	"Relationship", "ReadRelationship", "ExportedRelationship", "PermissionsApi", "SpiceDBClient", "SubjectRef", "SubjectRelationFilter", "Transaction",
+	"Relationship", "ReadRelationship", "ExportedRelationship", "PermissionsApi", "SpiceDBApi", "SpiceDBClient", "SubjectRef", "SubjectRelationFilter", "Transaction",
 	"WatchOptions", "WriteOptions", "WriteResult", "ZedToken", "DeleteResult", "SchemaResult",
 	"ReflectSchemaResult", "ComputablePermissionsResult", "DependentRelationsResult",
 	"DiffSchemaResult", "ExpandResult", "WatchEvent", "CountResult", "Instant", "List", "Map",
 	"Objects", "Optional", "Stream", "Collection", "ArrayList", "HashMap", "String", "Object",
 }
 
-var fixedStaticMethods = []string{"withSubject", "withSubjectAnyRelation", "checksFor", "subjectRef", "subjectString", "resourceFilter", "notAllowed"}
+var fixedStaticMethods = []string{"withSubject", "withSubjectAnyRelation", "checksFor", "subjectRef", "subjectString", "resourceFilter", "notAllowed", "definitionByName", "permissionRefByName"}
+
+// fixedStaticFields are the always-generated static fields of Permissions.
+var fixedStaticFields = []string{"SCHEMA"}
 
 // refMembers are the members every definition ref record declares besides schema-derived ones.
 var refMembers = []string{
@@ -453,6 +461,11 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 			return TemplateData{}, err
 		}
 	}
+	for _, f := range fixedStaticFields {
+		if err := b.reg.claim("static field", f, "the generated runtime ("+f+")"); err != nil {
+			return TemplateData{}, err
+		}
+	}
 
 	subRefs := usersetSubRefs(s)
 
@@ -552,6 +565,15 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 			inIface[p] = true
 		}
 	}
+	// Every definition's ref is a DefinitionRef, the type Definition.ref returns for a definition
+	// named at run time.
+	var defRefTypes []string
+	for _, d := range s.Definitions {
+		t := typeNameOf(variantKey{Def: d.Name})
+		defRefTypes = append(defRefTypes, t)
+		implements[t] = append(implements[t], "DefinitionRef")
+		inIface[t] = true
+	}
 
 	// Sentinels.
 	var sentinelKeys []variantKey
@@ -584,6 +606,9 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 	var subjectPermits []string
 	for _, si := range ifaces {
 		subjectPermits = append(subjectPermits, si.name)
+	}
+	if len(defRefTypes) > 0 {
+		subjectPermits = append(subjectPermits, "DefinitionRef")
 	}
 	for _, k := range b.order {
 		if !inIface[typeNameOf(k)] {
@@ -626,6 +651,34 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 				w.blank()
 			}
 			w.line(m)
+		}
+		w.dedent()
+		w.line("}")
+		data.Interfaces = append(data.Interfaces, w.String())
+	}
+	if len(defRefTypes) > 0 {
+		w := newWriter(2)
+		w.line("/** A definition's resource ref, as {@link Definition#ref} returns it for a runtime name. */")
+		w.header("public sealed interface DefinitionRef extends Subject", "permits", dedupSorted(defRefTypes), " {")
+		w.indent()
+		for _, m := range []string{
+			"/** The exact filter for this object. */",
+			"Filter filter();",
+			"",
+			"/** Resolves a permission name validated against the schema. */",
+			"Permission<?> permissionByName(String name);",
+			"",
+			"/** Resolves a relation name, for checks, validated against the schema. */",
+			"Permission<?> relationByName(String name);",
+			"",
+			"/** Builds a relationship by relation name, validating the name and the subject. */",
+			"TypedRelationship relationshipByName(String relation, Subject subject);",
+		} {
+			if m == "" {
+				w.blank()
+			} else {
+				w.line(m)
+			}
 		}
 		w.dedent()
 		w.line("}")
@@ -674,8 +727,147 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 		data.SubjectTypes = append(data.SubjectTypes, dd.RefType)
 	}
 
+	blocks, err := renderSchemaBlocks(s)
+	if err != nil {
+		return TemplateData{}, err
+	}
+	data.SchemaBlocks = blocks
+
 	_ = ifaceSources
 	return data, nil
+}
+
+// renderSchemaBlocks renders the schema-level members: the schema text, the definition-name
+// constants, definitionByName and permissionRefByName.
+func renderSchemaBlocks(s *schema.Schema) ([]string, error) {
+	var blocks []string
+
+	// The schema text. String.join keeps each line its own literal, so a schema over the 64 KiB
+	// constant-pool limit still compiles, and reproduces the text byte for byte.
+	{
+		w := newWriter(2)
+		w.line("/** The schema text this file was generated from, byte for byte. */")
+		if s.Text == "" {
+			w.line(`public static final String SCHEMA = "";`)
+		} else {
+			args := []string{javaText("\n")}
+			for _, l := range strings.Split(s.Text, "\n") {
+				args = append(args, javaText(l))
+			}
+			w.fieldCall("public static final String SCHEMA", "String.join(", args, ")")
+		}
+		blocks = append(blocks, w.String())
+	}
+
+	// Definition-name constants.
+	{
+		consts := newRegistry()
+		_ = consts.claim("member", "names", "the generated names() method")
+		w := newWriter(2)
+		w.line("/** Definition-name constants. */")
+		w.line("public static final class Definitions {")
+		w.indent()
+		w.line("private Definitions() {}")
+		var quoted []string
+		for _, d := range s.Definitions {
+			cn := toUpperSnake(d.Name)
+			if err := consts.claim("field", cn, fmt.Sprintf("definition %q (name constant)", d.Name)); err != nil {
+				return nil, err
+			}
+			w.blank()
+			w.line("public static final String " + cn + " = " + javaString(d.Name) + ";")
+			quoted = append(quoted, javaString(d.Name))
+		}
+		w.blank()
+		w.line("public static List<String> names() {")
+		w.indent()
+		w.call("return List.of(", quoted, ");")
+		w.dedent()
+		w.line("}")
+		w.dedent()
+		w.line("}")
+		blocks = append(blocks, w.String())
+	}
+
+	// definitionByName.
+	{
+		w := newWriter(2)
+		w.line("/**")
+		w.line(" * Resolves a definition name received at run time, such as from a policy expression.")
+		w.line(" *")
+		w.line(" * @throws NotInSchemaException if the schema has no such definition")
+		w.line(" */")
+		w.line("public static Definition definitionByName(String name) {")
+		w.indent()
+		if len(s.Definitions) > 0 {
+			w.line(`switch (Objects.requireNonNull(name, "name")) {`)
+			w.indent()
+			for _, d := range s.Definitions {
+				dp := defIdent(d.Name)
+				w.line("case " + javaString(d.Name) + ":")
+				w.indent()
+				w.call("return new Definition(", []string{
+					javaString(d.Name), typeNameOf(variantKey{Def: d.Name}) + "::new",
+					dp + "Relations.names()", dp + "Permissions.names()",
+				}, ");")
+				w.dedent()
+			}
+			w.line("default:")
+			w.indent()
+		}
+		w.line(`throw new NotInSchemaException("no definition " + name);`)
+		if len(s.Definitions) > 0 {
+			w.dedent()
+			w.dedent()
+			w.line("}")
+		}
+		w.dedent()
+		w.line("}")
+		blocks = append(blocks, w.String())
+	}
+
+	// permissionRefByName.
+	{
+		w := newWriter(2)
+		w.line("/**")
+		w.line(" * Resolves a resource-less permission ref, for lookups, from definition and permission names")
+		w.line(" * received at run time.")
+		w.line(" *")
+		w.line(" * @throws NotInSchemaException if the schema has no such definition or permission")
+		w.line(" */")
+		w.line("public static PermissionRef<?> permissionRefByName(String definition, String permission) {")
+		w.indent()
+		w.line("definitionByName(definition);")
+		var cases [][2]string
+		for _, d := range s.Definitions {
+			dp := defIdent(d.Name)
+			for _, p := range d.Permissions {
+				cases = append(cases, [2]string{d.Name + "#" + p.Name, dp + "_" + toPascalCase(p.Name)})
+			}
+		}
+		if len(cases) > 0 {
+			w.line(`switch (definition + "#" + Objects.requireNonNull(permission, "permission")) {`)
+			w.indent()
+			for _, c := range cases {
+				w.line("case " + javaString(c[0]) + ":")
+				w.indent()
+				w.line("return " + c[1] + ";")
+				w.dedent()
+			}
+			w.line("default:")
+			w.indent()
+		}
+		w.line(`throw new NotInSchemaException(definition + " has no permission " + permission);`)
+		if len(cases) > 0 {
+			w.dedent()
+			w.dedent()
+			w.line("}")
+		}
+		w.dedent()
+		w.line("}")
+		blocks = append(blocks, w.String())
+	}
+	return blocks, nil
 }
 
 func describeVariant(k variantKey) string {
@@ -1149,8 +1341,8 @@ func (b *builder) renderDefinition(d schema.Definition, rels []relInfo, perms []
 			return "", nil, dd, err
 		}
 		sw := newWriter(2)
-		sw.field("public static final PermissionRef<"+p.iface+"> "+name,
-			"new PermissionRef<>("+javaString(d.Name)+", "+javaString(p.name)+")")
+		sw.fieldCall("public static final PermissionRef<"+p.iface+"> "+name,
+			"new PermissionRef<>(", []string{javaString(d.Name), javaString(p.name), p.iface + ".class"}, ")")
 		statics = append(statics, sw.String())
 	}
 	return w.String(), statics, dd, nil
@@ -1258,6 +1450,50 @@ func (w *writer) field(decl, init string) {
 	}
 	w.line(decl + " =")
 	w.b.WriteString(strings.Repeat(" ", w.ind+4) + init + ";\n")
+}
+
+// fieldCall writes `decl = prefix args suffix;` (prefix ends with "(") the way google-java-format
+// does: one line; else break after "=" and write the call at +4, wrapped by call if needed.
+func (w *writer) fieldCall(decl, prefix string, args []string, suffix string) {
+	joined := prefix + strings.Join(args, ", ") + suffix + ";"
+	if w.fits(w.ind, decl+" = "+joined) {
+		w.line(decl + " = " + joined)
+		return
+	}
+	w.line(decl + " =")
+	w.ind += 4
+	w.call(prefix, args, suffix+";")
+	w.ind -= 4
+}
+
+// javaText is a Java string literal for arbitrary text: it escapes quotes, backslashes and control
+// characters, and writes non-ASCII characters as \u escapes so the source compiles under any
+// encoding.
+func javaText(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"':
+			b.WriteString(`\"`)
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r < 0x20 || r >= 0x7f:
+			for _, u := range utf16.Encode([]rune{r}) {
+				fmt.Fprintf(&b, `\u%04x`, u)
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // --- naming helpers ---------------------------------------------------------------------------

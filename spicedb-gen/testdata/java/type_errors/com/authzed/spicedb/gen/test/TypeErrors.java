@@ -56,6 +56,22 @@ class TypeErrors {
     checksFor(Team("eng").member(), Document("x").delete()); // should not compile
   }
 
+  void runtimeNames(TypedClient tc) {
+    // Runtime-name lookups take a generated Subject, never a native SubjectRef.
+    tc.lookupResources(full(), "document", "view", SubjectRef.direct(new ObjectRef("user", "a"))); // should not compile
+    // A runtime-resolved ref is PermissionRef<?>: the static typed lookup cannot take it.
+    tc.lookupResources(full(), permissionRefByName("document", "view"), User("a")); // should not compile
+    // The static typed lookup still rejects a subject its permission does not admit.
+    tc.lookupResources(full(), Document_Delete, Team("eng").member()); // should not compile
+    // A definition resolved by name yields a DefinitionRef, not a specific ref type.
+    DocumentRef doc = definitionByName("document").ref("x"); // should not compile
+    // Definition-name constants and the schema text are constants, not settable.
+    Definitions.DOCUMENT = "doc"; // should not compile
+    SCHEMA = ""; // should not compile
+    // Definition is built only by definitionByName.
+    new Definition("document", DocumentRef::new, List.of(), List.of()); // should not compile
+  }
+
   void txns(TypedClient tc) {
     // writeTxn never shadows the native write.
     tc.write(new Txn()); // should not compile

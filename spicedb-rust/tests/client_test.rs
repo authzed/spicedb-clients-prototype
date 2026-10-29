@@ -508,9 +508,12 @@ mod insecure_host_guard {
     /// point, not merely satisfy the guard: it is item 8 of the loopback
     /// contract. It is not a legal URI authority, so it has to be bracketed
     /// when the transport address is built, and it previously was not.
+    ///
+    /// Plaintext needs a port, so it uses `[::1]:50051` / `http://[::1]:50051`;
+    /// the portless forms are exercised over (lazy) TLS, which defaults to 443.
     #[tokio::test]
     async fn new_plaintext_accepts_bare_ipv6_loopback() {
-        for endpoint in ["::1", "[::1]", "[::1]:50051"] {
+        for endpoint in ["[::1]:50051", "http://[::1]:50051"] {
             let result = SpiceDBClient::new_plaintext(
                 endpoint,
                 "testtoken",
@@ -519,9 +522,38 @@ mod insecure_host_guard {
             .await;
             assert!(
                 result.is_ok(),
-                "bare IPv6 loopback {endpoint:?} must construct a client, got {:?}",
+                "IPv6 loopback {endpoint:?} must construct a client, got {:?}",
                 result.err()
             );
+        }
+        for endpoint in ["::1", "[::1]"] {
+            let result = SpiceDBClient::builder(endpoint, "testtoken")
+                .connect_mode(spicedb::ConnectMode::Lazy)
+                .build()
+                .await;
+            assert!(result.is_ok(), "{endpoint:?}: {:?}", result.err());
+        }
+    }
+
+    /// A plaintext endpoint without a port fails at construction naming
+    /// `host:50051` instead of silently dialing port 80, under either
+    /// credentials policy.
+    #[tokio::test]
+    async fn plaintext_endpoints_without_a_port_are_refused() {
+        for endpoint in ["localhost", "127.0.0.1", "::1", "[::1]", "spicedb"] {
+            for policy in [
+                spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+                spicedb::RemoteCredentialsPolicy::AllowInsecureRemote,
+            ] {
+                match SpiceDBClient::new_plaintext(endpoint, "t", policy).await {
+                    Err(SpiceDBError::InvalidArgument(msg)) => {
+                        assert!(msg.contains("host:50051"), "{endpoint:?}: {msg}");
+                        assert!(!msg.contains("AllowInsecureRemote"), "{msg}");
+                    }
+                    Err(other) => panic!("{endpoint:?}: {other:?}"),
+                    Ok(_) => panic!("{endpoint:?} without a port must be refused"),
+                }
+            }
         }
     }
 

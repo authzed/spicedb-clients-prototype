@@ -386,12 +386,13 @@ impl SpiceDBClient {
     /// credentials policy); a `host:port` endpoint uses TLS unless
     /// [`plaintext`](SpiceDBClientBuilder::plaintext) is set.
     ///
-    /// Ports: an `http://` URL must name its port (`http://spicedb:50051`);
-    /// without one, `build` fails rather than dial port 80. An `https://` URL
-    /// without a port uses 443, the standard port for TLS-fronted endpoints.
-    /// A `host:port` endpoint keeps the transport's rule: an omitted port is
-    /// the scheme default (80 for plaintext, 443 for TLS), so name it.
-    ///
+    /// Ports: a plaintext endpoint must name its port, whether an `http://`
+    /// URL (`http://spicedb:50051`) or a bare host with
+    /// [`plaintext`](SpiceDBClientBuilder::plaintext) (`spicedb:50051`,
+    /// `[::1]:50051`); without one, `build` fails naming `host:50051` rather
+    /// than dial port 80. A TLS endpoint without a port (`https://spicedb.example.com`
+    /// or `spicedb.example.com`) uses 443, the standard port for TLS-fronted
+    /// endpoints.
     ///
     /// ```no_run
     /// # async fn demo() -> Result<(), spicedb::SpiceDBError> {

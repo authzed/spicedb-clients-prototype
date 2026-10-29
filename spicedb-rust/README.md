@@ -56,9 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Endpoint ports: an `http://` URL must name its port (`http://spicedb:50051`,
-since nothing serves SpiceDB's plaintext gRPC on port 80), an `https://` URL
-without one uses 443, and a `host:port` endpoint should always name it.
+Endpoint ports: a plaintext endpoint must name its port, whether an `http://`
+URL or a bare host (`http://spicedb:50051`, `localhost:50051`; nothing serves
+SpiceDB's plaintext gRPC on port 80, so a portless one fails at construction),
+while a TLS endpoint without one (`https://spicedb.example.com`) uses 443.
 Malformed endpoints fail at construction with an error naming the problem,
 and connection failures name the endpoint and the cause (refused, DNS, TLS).
 

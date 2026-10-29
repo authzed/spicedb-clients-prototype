@@ -108,13 +108,14 @@ fn split_scheme(endpoint: &str) -> Result<Option<(EndpointScheme, &str)>, SpiceD
 /// the authority (host and optional port) the transport dials. Only an
 /// endpoint that passes this is judged by the loopback/credentials policy.
 ///
-/// Ports: `host:port` keeps its existing rule (an absent port is the
-/// transport default). An `http://` URL must name its port, since nothing
-/// serves SpiceDB's plaintext gRPC on port 80; an `https://` URL without one
-/// uses 443, the standard port for TLS-fronted endpoints.
+/// Ports: a plaintext endpoint (`http://` URL or bare host) must name its
+/// port, since nothing serves SpiceDB's plaintext gRPC on port 80 and a
+/// silent dial there is a misconfiguration; a TLS endpoint without one uses
+/// 443, the standard port for TLS-fronted endpoints.
 fn validate_form<'a>(
     endpoint: &str,
     scheme: Option<EndpointScheme>,
+    insecure: bool,
     rest: &'a str,
 ) -> Result<&'a str, SpiceDBProtoClientError> {
     // Where the authority ends: the first '/', '?' or '#'. What follows is a
@@ -174,6 +175,13 @@ fn validate_form<'a>(
             return Err(invalid_endpoint(
                 endpoint,
                 "an http:// URL needs an explicit port, as in http://host:50051 \
+                 (without one it would dial port 80)",
+            ))
+        }
+        None if insecure => {
+            return Err(invalid_endpoint(
+                endpoint,
+                "a plaintext endpoint needs an explicit port, as in host:50051 \
                  (without one it would dial port 80)",
             ))
         }
@@ -579,7 +587,7 @@ impl SpiceDBProtoClient {
             Some((scheme, rest)) => (Some(scheme), rest),
             None => (None, endpoint),
         };
-        let authority = validate_form(endpoint, scheme, rest)?;
+        let authority = validate_form(endpoint, scheme, insecure, rest)?;
         if insecure && !allow_insecure_remote_credentials && !is_loopback_authority(authority) {
             return Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(
                 format!(

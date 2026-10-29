@@ -97,10 +97,11 @@ The `src/client.rs` file provides:
    `false`); the scheme is never prefixed a second time. The form is checked
    in full before the loopback/credentials policy: any other scheme, a
    disagreeing one, a path, query or fragment, userinfo, an empty or
-   non-numeric port, an `http://` URL without a port (it would dial 80), or
-   an unparseable host fails with `InvalidEndpoint(String)`, whose message
-   names the problem and the accepted forms. An `https://` URL without a port
-   uses 443; `host:port` keeps the transport's default for an omitted port.
+   non-numeric port, a plaintext endpoint without a port (an `http://` URL or
+   a bare host such as `localhost` or `::1`; it would dial 80), or an
+   unparseable host fails with `InvalidEndpoint(String)`, whose message names
+   the problem (for a missing port, `host:50051`) and the accepted forms. A
+   TLS endpoint without a port, URL or bare host, uses 443.
    Only a well-formed endpoint reaches the guard, which judges its host, so
    `http://127.0.0.1:50051` is loopback and `InsecureRemoteHostNotAllowed`
    means a well-formed remote host. `SpiceDBProtoClientError::Transport`

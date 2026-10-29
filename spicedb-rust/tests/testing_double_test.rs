@@ -719,6 +719,42 @@ mod resolution_and_lookups {
         assert_eq!(ids, ["d1"]);
     }
 
+    /// The double never sends an unspecified permissionship, which the client
+    /// rejects as a malformed response: a resolver or registered `Unspecified`
+    /// answers "no" for checks and bulk checks.
+    #[tokio::test]
+    async fn an_unspecified_answer_reaches_the_client_as_no_permission() {
+        let fake = InMemorySpiceDB::new();
+        fake.set_check_result(
+            &obj("document", "registered"),
+            "view",
+            &obj("user", "alice").into(),
+            Permissionship::Unspecified,
+        );
+        fake.set_check_resolver(|c| {
+            (c.resource().object_id() == "resolved").then(|| Permissionship::Unspecified.into())
+        });
+        for id in ["document:registered", "document:resolved"] {
+            assert_eq!(
+                permissionship(&fake, check(id, "view", "user:alice")).await,
+                Permissionship::NoPermission,
+                "{id}"
+            );
+        }
+        let bulk = fake
+            .client()
+            .unwrap()
+            .check_bulk(BulkCheckRequest::new(vec![
+                check("document:registered", "view", "user:alice"),
+                check("document:resolved", "view", "user:alice"),
+            ]))
+            .await
+            .unwrap();
+        assert!(bulk
+            .iter()
+            .all(|r| r.permissionship == Permissionship::NoPermission));
+    }
+
     /// The resolver receives the check with the call's context merged in (the
     /// check's own keys win), and a conditional answer reaches the caller with
     /// its missing context.

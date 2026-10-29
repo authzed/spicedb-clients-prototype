@@ -85,9 +85,178 @@ async fn drain_error<T>(
     panic!("stream ended after {items} item(s) without failing on the malformed response");
 }
 
+/// A malformed response is INTERNAL, and says the client detected it so it is
+/// not mistaken for an INTERNAL status the server sent.
 fn assert_internal(err: &SpiceDBError) {
     assert_eq!(err.code(), tonic::Code::Internal, "{err}");
-    assert!(err.to_string().contains("malformed response"), "{err}");
+    assert!(err.is_client_detected(), "{err:?}");
+    assert!(err.status().is_none(), "{err:?}");
+    assert!(
+        err.to_string()
+            .contains("client detected malformed response from server: "),
+        "{err}"
+    );
+    assert!(!err.to_string().contains("grpc status"), "{err}");
+}
+
+#[test]
+fn a_client_detected_error_says_so_and_a_server_internal_does_not() {
+    let local = spicedb::error::internal("missing relationship".into());
+    assert_eq!(
+        local.to_string(),
+        "client detected malformed response from server: missing relationship"
+    );
+    assert!(local.is_client_detected());
+    assert_eq!(local.code(), tonic::Code::Internal);
+    assert_eq!(local.message(), "missing relationship");
+    let forwarded = local.to_status();
+    assert_eq!(forwarded.code(), tonic::Code::Internal);
+    assert_eq!(
+        forwarded.message(),
+        "client detected malformed response from server: missing relationship"
+    );
+
+    let server = SpiceDBError::new(tonic::Code::Internal, "boom");
+    assert!(!server.is_client_detected());
+    assert_eq!(server.to_string(), "grpc status 13: boom");
+
+    let wrapped = SpiceDBError::BulkItem {
+        index: 2,
+        source: Box::new(spicedb::error::internal("x".into())),
+    };
+    assert!(wrapped.is_client_detected());
+}
+
+fn check_question() -> spicedb::PermissionCheck {
+    spicedb::PermissionCheck::new(
+        spicedb::ObjectRef::new("document", "a").unwrap(),
+        "view",
+        spicedb::SubjectRef::direct(spicedb::ObjectRef::new("user", "alice").unwrap()),
+        consistency::full(),
+    )
+}
+
+#[tokio::test]
+async fn check_fails_on_an_unspecified_permissionship() {
+    let mock = MockPermissionsService::new();
+    mock.push_check_permission_response(proto::CheckPermissionResponse {
+        checked_at: Some(proto::ZedToken { token: "t".into() }),
+        permissionship: proto::check_permission_response::Permissionship::Unspecified as i32,
+        ..Default::default()
+    });
+    let client = connect(mock).await;
+    let err = client
+        .check(check_question())
+        .await
+        .expect_err("an unspecified permissionship is not an answer");
+    assert_internal(&err);
+    assert!(
+        err.to_string().contains("permissionship is unspecified"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn check_bulk_fails_on_an_item_with_an_unspecified_permissionship() {
+    let item = |permissionship: proto::check_permission_response::Permissionship| {
+        proto::CheckBulkPermissionsPair {
+            request: None,
+            response: Some(proto::check_bulk_permissions_pair::Response::Item(
+                proto::CheckBulkPermissionsResponseItem {
+                    permissionship: permissionship as i32,
+                    partial_caveat_info: None,
+                    debug_trace: None,
+                },
+            )),
+        }
+    };
+    let mock = MockPermissionsService::new();
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: Some(proto::ZedToken { token: "t".into() }),
+        pairs: vec![
+            item(proto::check_permission_response::Permissionship::HasPermission),
+            item(proto::check_permission_response::Permissionship::Unspecified),
+        ],
+    });
+    let calls = mock.check_bulk_permissions_calls();
+    let client = connect(mock).await;
+    let err = client
+        .check_bulk(spicedb::BulkCheckRequest::new(vec![
+            check_question(),
+            check_question(),
+        ]))
+        .await
+        .expect_err("an unspecified item is not an answer");
+    assert_internal(&err);
+    assert!(
+        err.to_string()
+            .contains("check item 1: permissionship is unspecified"),
+        "{err}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "INTERNAL is not retried");
+}
+
+#[tokio::test]
+async fn lookups_fail_on_a_result_with_an_unspecified_permissionship() {
+    for filter in [
+        spicedb::LookupPermissionshipFilter::All,
+        spicedb::LookupPermissionshipFilter::HasPermissionOnly,
+    ] {
+        let mock = MockPermissionsService::new();
+        let row = |id: &str, permissionship: proto::LookupPermissionship| {
+            proto::LookupResourcesResponse {
+                resource_object_id: id.into(),
+                permissionship: permissionship as i32,
+                ..Default::default()
+            }
+        };
+        mock.push_lookup_resources_page(vec![
+            row("a", proto::LookupPermissionship::HasPermission),
+            row("b", proto::LookupPermissionship::Unspecified),
+        ]);
+        let client = connect(mock).await;
+        let (items, err) = drain_error(
+            client.lookup_resources(
+                spicedb::LookupResourcesRequest::new(
+                    "document",
+                    "view",
+                    spicedb::SubjectRef::direct(spicedb::ObjectRef::new("user", "alice").unwrap()),
+                    consistency::full(),
+                )
+                .with_options(
+                    spicedb::LookupResourcesOptions::new().with_permissionship_filter(filter),
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(items, 1, "{filter:?}");
+        assert_internal(&err);
+    }
+
+    let mock = MockPermissionsService::new();
+    let subject =
+        |id: &str, permissionship: proto::LookupPermissionship| proto::LookupSubjectsResponse {
+            subject: Some(proto::ResolvedSubject {
+                subject_object_id: id.into(),
+                permissionship: permissionship as i32,
+                partial_caveat_info: None,
+            }),
+            ..Default::default()
+        };
+    mock.set_lookup_subjects_responses(vec![
+        subject("alice", proto::LookupPermissionship::HasPermission),
+        subject("bob", proto::LookupPermissionship::Unspecified),
+    ]);
+    let client = connect(mock).await;
+    let (items, err) = drain_error(client.lookup_subjects(spicedb::LookupSubjectsRequest::new(
+        spicedb::ObjectRef::new("document", "a").unwrap(),
+        "view",
+        "user",
+        consistency::full(),
+    )))
+    .await;
+    assert_eq!(items, 1);
+    assert_internal(&err);
 }
 
 #[tokio::test]

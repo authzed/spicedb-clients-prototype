@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- A malformed response the client detects now says so: `Display` reads
+  `client detected malformed response from server: missing relationship`
+  instead of `grpc status 13: malformed response: missing relationship`, which
+  read as an `INTERNAL` status the server sent. The code is still `Internal`;
+  the new `SpiceDBError::is_client_detected()` tells the two apart (bulk-item
+  and delete-progress wrappers report their cause's), and `to_status()` keeps
+  the prefix when forwarding. `error::internal` builds a client-detected error.
+- A check, bulk-check item, resource lookup result or subject lookup result
+  whose permissionship is unspecified fails with `Internal` as a
+  client-detected malformed response instead of returning
+  `Permissionship::Unspecified`. Unknown future values still map to
+  `Unspecified`. The `testing` double never sends an unspecified
+  permissionship: a registered result or resolver answer of `Unspecified`
+  reaches the client as `NoPermission`.
+- The AI integration guide notes that projects whose permissions are all
+  computed get little from stored-relation grants on the double.
+- No change for resume cursors: errors carry none in this client; resume
+  from the last item's `after_result_cursor`, which the double sets as the
+  client does.
+
 - The per-page default deadline bounds only waiting on the server, never the
   time the caller spends on items. Reads, resource lookups, exports and
   permission-set lookups receive each page in full within its deadline before

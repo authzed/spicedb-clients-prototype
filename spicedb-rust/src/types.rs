@@ -192,7 +192,19 @@ impl Relationship {
 }
 /// The error for a server response missing a field the client requires.
 pub(crate) fn missing_in_response(what: &str) -> SpiceDBError {
-    crate::error::internal(format!("malformed response: missing {what}"))
+    crate::error::internal(format!("missing {what}"))
+}
+/// Fails a check or lookup result whose permissionship is the proto's
+/// unspecified (zero) value: the server always sets it, so an unset one is a
+/// malformed response, never an answer. Values this client does not know are
+/// left to the mapping functions, which treat them as `Unspecified`.
+pub(crate) fn require_permissionship(value: i32, what: &str) -> Result<(), SpiceDBError> {
+    if value == 0 {
+        return Err(crate::error::internal(format!(
+            "{what} permissionship is unspecified"
+        )));
+    }
+    Ok(())
 }
 pub(crate) fn invalid(field: &str, reason: &str) -> SpiceDBError {
     SpiceDBError::InvalidArgument(format!("{field}: {reason}").into())

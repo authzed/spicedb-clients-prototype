@@ -418,11 +418,13 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     existing handlers keep catching. MIGRATION.md states the interop either
     way. The verbatim server-message field always has a value: for local
     errors it is the error's message.
-  - A response the client cannot interpret (a missing required field, a
-    cursor that does not advance) fails with `INTERNAL`, which no retry policy
+  - A response the client cannot interpret (a missing required field, an
+    unspecified enum the server always sets such as a check's permissionship,
+    a cursor that does not advance) fails with `INTERNAL`, which no retry policy
     treats as retryable by default. Clients never skip such a response or fill
     its missing fields with empty values: a skipped item makes a full page look
-    short and silently ends a paged read early.
+    short and silently ends a paged read early. The error says the client
+    detected it, so it is not mistaken for a status the server sent.
   - Local cancellation surfaces as the client's cancelled error, never as the
     platform's own abort exception, whose fields may resemble a status code.
   - Provide a public constructor for native errors from a code and message, so

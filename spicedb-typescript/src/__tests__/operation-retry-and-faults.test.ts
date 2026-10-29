@@ -90,6 +90,9 @@ describe("client-wide per-operation retry policy", () => {
             expect(() => SpiceDBClient.fromTransport(transport, { operationRetryPolicies: { [name]: noRetries } })).not.toThrow();
         }
         expect(() => SpiceDBClient.fromTransport(transport, { operationRetryPolicies: { raw: noRetries } as never })).toThrow("raw is not a client operation");
+        // Private helpers and inherited members are methods too, but not operations.
+        for (const name of ["stream", "unary", "retryOrThrow", "operation", "effectiveTimeoutMs", "close", "constructor", "toString", "__proto__", "Write"])
+            expect(() => SpiceDBClient.fromTransport(transport, { operationRetryPolicies: JSON.parse(`{${JSON.stringify(name)}: ${JSON.stringify(noRetries)}}`) })).toThrow(`${name} is not a client operation`);
         expect(() => SpiceDBClient.fromTransport(transport, { operationRetryPolicies: { readSchema: { ...retryOnce, initialBackoffMs: 0 } } })).toThrow(InvalidArgumentError);
     });
 

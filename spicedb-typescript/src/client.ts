@@ -26,6 +26,20 @@ export type OperationName =
  * See {@link SpiceDBClientBehaviorOptions.operationRetryPolicies}.
  */
 export type OperationRetryPolicies = { readonly [K in OperationName]?: RetryPolicy };
+/**
+ * Every operation name, as a record so the compiler rejects a missing or extra
+ * key: the set used to validate `operationRetryPolicies` cannot drift from
+ * {@link OperationName}.
+ */
+const OPERATION_NAMES: Readonly<Record<OperationName, true>> = {
+    check: true, checkBulk: true, write: true, readRelationships: true, deleteRelationships: true, deleteAllRelationshipsNonAtomic: true,
+    lookupResources: true, lookupSubjects: true, expandPermissionTree: true, importRelationships: true, exportRelationships: true,
+    readSchema: true, writeSchema: true, reflectSchema: true, computablePermissions: true, dependentRelations: true, diffSchema: true,
+    experimentalRegisterRelationshipCounter: true, experimentalCountRelationships: true, experimentalUnregisterRelationshipCounter: true,
+    watch: true, experimentalCountRelationshipsByFilter: true, experimentalWatchPermissionSets: true, experimentalLookupPermissionSets: true,
+    experimentalDownloadPermissionSets: true, experimentalRoaringLookupResources: true,
+};
+function isOperationName(name: string): name is OperationName { return Object.prototype.hasOwnProperty.call(OPERATION_NAMES, name); }
 /** Operations that are never idempotent on replay, so a per-operation policy with retries is rejected. */
 const NEVER_IDEMPOTENT: ReadonlySet<string> = new Set<OperationName>(["deleteRelationships", "deleteAllRelationshipsNonAtomic", "importRelationships", "experimentalRegisterRelationshipCounter", "experimentalUnregisterRelationshipCounter"]);
 /**
@@ -137,12 +151,12 @@ export class SpiceDBClient implements SpiceDBClientInterface {
         for (const [name, policy] of Object.entries(options.operationRetryPolicies ?? {})) {
             if (policy === undefined)
                 continue;
-            if (typeof (SpiceDBClient.prototype as unknown as Record<string, unknown>)[name] !== "function" || name === "raw" || name === "close" || name === "constructor")
+            if (!isOperationName(name))
                 throw new InvalidArgumentError(`operationRetryPolicies: ${name} is not a client operation`);
             const valid = validRetryPolicy(policy);
             if (NEVER_IDEMPOTENT.has(name) && valid.maxRetries > 0)
                 throw new InvalidArgumentError(`operationRetryPolicies: ${name} cannot be retried: it is not idempotent on replay`);
-            this.operationRetryPolicies.set(name as OperationName, valid);
+            this.operationRetryPolicies.set(name, valid);
         }
         const supplied = (options as { [SUPPLIED_TRANSPORT]?: Transport })[SUPPLIED_TRANSPORT];
         if (supplied !== undefined) {

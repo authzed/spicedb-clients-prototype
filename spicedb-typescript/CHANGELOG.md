@@ -16,6 +16,10 @@
   the n-th matching item (the decimal count, stable for tests).
 - `setReadSchemaRevision(SchemaRevision.Omitted)` makes the double's
   `readSchema` report an empty revision.
+- `operationRetryPolicies` keys are checked against the fixed list of
+  operation names. Previously any method name was accepted, including the
+  client's private helpers (for example `stream` or `unary`), so a policy under
+  such a key was silently never applied; it now throws `InvalidArgumentError`.
 
 ### Tooling and typed-client follow-ups
 

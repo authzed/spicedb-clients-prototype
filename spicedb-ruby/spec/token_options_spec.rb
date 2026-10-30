@@ -12,13 +12,25 @@ RSpec.describe 'native token and option contracts' do
     expect(token).to eq(SpiceDB::ZedToken.new(token.to_s))
     expect(token).to be_frozen
     expect(token.to_s).to be_frozen
-    expect(SpiceDB::ZedToken.new('').to_s).to eq('')
+    expect(SpiceDB::ZedToken.new(' opaque ').to_s).to eq(' opaque ')
     expect { SpiceDB::ZedToken.new(nil) }.to raise_error(SpiceDB::InvalidArgumentError)
   end
 
-  it 'requires native consistency tokens and preserves empty opaque tokens' do
+  # Root DESIGN.md, "Reject unusable credentials and trust material at
+  # construction": a caller-supplied revision token that is empty or
+  # whitespace-only (usually an unset variable) is a local validation error.
+  ['', ' ', "\t\n", "  \r\n  "].each do |blank|
+    it "rejects the caller-supplied token #{blank.inspect} like an empty one" do
+      expect { SpiceDB::ZedToken.new(blank) }
+        .to raise_error(SpiceDB::LocalValidationError, 'ZedToken: must not be empty or whitespace')
+    end
+  end
+
+  it 'requires native consistency tokens and keeps an empty token the server sent' do
     expect { SpiceDB::Consistency.at_least('raw') }.to raise_error(SpiceDB::InvalidArgumentError)
-    token = SpiceDB::ZedToken.new('')
+    token = SpiceDB::ZedToken.from_proto(Authzed::Api::V1::ZedToken.new(token: ''))
+    expect(token.to_s).to eq('')
+    expect(token).to be_frozen
     expect(SpiceDB::Consistency.at_least_or_full(token).revision).to eq(token)
     expect(SpiceDB::Consistency.snapshot(token).to_proto).to eq(at_exact_snapshot: { token: '' })
   end
@@ -50,7 +62,8 @@ RSpec.describe 'native token and option contracts' do
 
   it 'maps exact watch content and native resumption tokens' do
     SpiceDB::Client.new_plaintext('localhost:50051', 'key') do |client|
-      request = client.send(:watch_request, [], SpiceDB::ZedToken.new(''), [SpiceDB::WatchContent::SCHEMA])
+      request = client.send(:watch_request, [], SpiceDB::ZedToken.from_proto(Authzed::Api::V1::ZedToken.new(token: '')),
+                            [SpiceDB::WatchContent::SCHEMA])
       expect(request.optional_update_kinds).to eq([:WATCH_KIND_INCLUDE_SCHEMA_UPDATES])
       expect(request.optional_start_cursor.token).to eq('')
       expect { client.watch(content: [true]) }.to raise_error(SpiceDB::InvalidArgumentError)

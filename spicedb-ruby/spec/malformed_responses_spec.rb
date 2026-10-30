@@ -170,6 +170,41 @@ RSpec.describe 'malformed responses' do
       end
       expect(seen.map(&:resource_id)).to eq(%w[a])
     end
+
+    # Only the unset value is malformed: a permissionship newer than this
+    # client maps to :unspecified, which never grants, and the call succeeds,
+    # so upgrading SpiceDB cannot fail it.
+    describe 'a permissionship newer than the client' do
+      it 'maps a check to :unspecified without failing' do
+        serve_unary(:check_permission) { Authzed::Api::V1::CheckPermissionResponse.new(permissionship: 99) }
+        result = client.check(check, consistency: SpiceDB::Consistency.full)
+        expect([result.permissionship, result.has_permission?]).to eq([:unspecified, false])
+      end
+
+      [SpiceDB::BulkItemErrors::RAISED, SpiceDB::BulkItemErrors::RETURNED].each do |mode|
+        it "maps a bulk-check item to :unspecified without failing (#{mode})" do
+          serve_unary(:check_bulk_permissions) do |request|
+            answers = [:PERMISSIONSHIP_HAS_PERMISSION, 99]
+            Authzed::Api::V1::CheckBulkPermissionsResponse.new(pairs: request.items.each_with_index.map do |item, i|
+              Authzed::Api::V1::CheckBulkPermissionsPair.new(
+                request: item, item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(permissionship: answers[i])
+              )
+            end)
+          end
+          results = client.check_bulk([check, check], consistency: SpiceDB::Consistency.full, item_errors: mode)
+          expect(results.map(&:permissionship)).to eq(%i[has_permission unspecified])
+          expect(results.map(&:error)).to eq([nil, nil])
+        end
+      end
+
+      it 'maps a lookup_resources result to :unspecified without failing' do
+        serve(:lookup_resources, [Authzed::Api::V1::LookupResourcesResponse.new(resource_object_id: 'a', permissionship: 99,
+                                                                                after_result_cursor: cursor)])
+        found = client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice,
+                                        consistency: SpiceDB::Consistency.full).to_a
+        expect(found.map(&:permissionship)).to eq(%i[unspecified])
+      end
+    end
   end
 
   describe 'an unspecified lookup_subjects permissionship' do

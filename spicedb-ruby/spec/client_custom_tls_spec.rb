@@ -263,6 +263,43 @@ RSpec.describe 'SpiceDB::Client.new_custom_tls argument validation' do
     client.close
   end
 
+  # A client certificate is checked against its key at construction, so a
+  # key from another pair names the inputs instead of failing the first
+  # handshake.
+  describe 'a client key from a different key pair' do
+    def self_signed(key)
+      cert = TestPki.base_cert('/CN=spicedb mismatched client', key.public_key, 9)
+      cert.issuer = cert.subject
+      cert.sign(key, OpenSSL::Digest.new('SHA256'))
+      cert
+    end
+
+    {
+      'an RSA key from another pair' => -> { OpenSSL::PKey::RSA.new(2048) },
+      'an EC key' => -> { OpenSSL::PKey::EC.generate('prime256v1') }
+    }.each do |name, other_key|
+      it "refuses #{name} at construction, naming client_key and client_cert" do
+        cert = self_signed(OpenSSL::PKey::RSA.new(2048))
+        expect do
+          SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', client_cert: cert.to_pem, client_key: other_key.call.to_pem)
+        end.to raise_error(SpiceDB::LocalValidationError, /client_key does not match client_cert/)
+      end
+    end
+
+    it 'accepts a self-signed certificate with its own key' do
+      key = OpenSSL::PKey::RSA.new(2048)
+      SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', client_cert: self_signed(key).to_pem, client_key: key.to_pem, &:close)
+    end
+
+    it 'checks the key against the leaf, the first certificate of a chain' do
+      chain = TestPki.client[:cert].to_pem + TestPki.ca[:cert].to_pem
+      SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', client_cert: chain, client_key: TestPki.client[:key].to_pem, &:close)
+      expect do
+        SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', client_cert: chain, client_key: TestPki.ca[:key].to_pem)
+      end.to raise_error(SpiceDB::LocalValidationError, /client_key does not match client_cert/)
+    end
+  end
+
   ['', ' ', "\t\n"].each do |token|
     it "refuses the blank token #{token.inspect} at construction" do
       expect { SpiceDB::Client.new_plaintext('localhost:50116', token) }

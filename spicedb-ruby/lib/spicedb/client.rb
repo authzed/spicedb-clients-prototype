@@ -189,7 +189,9 @@ module SpiceDB
     end
 
     # With +item_errors: BulkItemErrors::RETURNED+ each failed item's error is
-    # on its CheckResult#error (never a grant) instead of failing the call.
+    # on its CheckResult#error (never a grant) instead of failing the call. A
+    # malformed item in the server's response (such as an unset
+    # permissionship) still fails the whole call with INTERNAL.
     def check_bulk(checks, consistency:, context: nil, timeout: nil, tracing: Tracing::DISABLED,
                    item_errors: BulkItemErrors::RAISED, call_options: nil, retry_policy: nil)
       retry_policy = operation_retry_policy(:check_bulk, retry_policy)
@@ -534,18 +536,20 @@ module SpiceDB
     private_constant :PEM_CERTIFICATE
 
     # Parses each supplied TLS input with OpenSSL, naming the first that does
-    # not parse. Without this, gRPC's C-core accepts a non-PEM ca_cert and the
-    # first call fails with an unrelated "empty address list" and a C-core
-    # trace. Runs after the transport refusals, so theirs keep precedence.
+    # not parse, and checks that client_key belongs to client_cert. Without
+    # this, gRPC's C-core accepts a non-PEM ca_cert and the first call fails
+    # with an unrelated "empty address list" and a C-core trace, and a
+    # mismatched key fails only in the first handshake. Runs after the
+    # transport refusals, so theirs keep precedence.
     def validate_tls_material(ca_cert:, client_cert:, client_key:)
       require 'openssl'
-      { ca_cert: ca_cert, client_cert: client_cert }.each do |name, pem|
-        next if pem.nil?
+      certs = { ca_cert: ca_cert, client_cert: client_cert }.to_h do |name, pem|
+        next [name, nil] if pem.nil?
 
         blocks = pem.scan(PEM_CERTIFICATE)
         raise OpenSSL::X509::CertificateError, 'no PEM CERTIFICATE block' if blocks.empty?
 
-        blocks.each { |block| OpenSSL::X509::Certificate.new(block) }
+        [name, blocks.map { |block| OpenSSL::X509::Certificate.new(block) }]
       rescue OpenSSL::X509::CertificateError, ArgumentError => e
         raise LocalValidationError, "spicedb: #{name} is not a PEM-encoded X.509 certificate (#{e.message})"
       end
@@ -553,10 +557,21 @@ module SpiceDB
 
       begin
         # An empty passphrase so an encrypted key fails rather than prompting.
-        OpenSSL::PKey.read(client_key, '')
+        key = OpenSSL::PKey.read(client_key, '')
       rescue OpenSSL::PKey::PKeyError, ArgumentError => e
         raise LocalValidationError, "spicedb: client_key is not a PEM-encoded private key (#{e.message})"
       end
+      check_key_matches(certs[:client_cert]&.first, key)
+    end
+
+    # The first client_cert block is the leaf the key must belong to; any
+    # others are its chain.
+    def check_key_matches(leaf, key)
+      return if leaf.nil? || leaf.check_private_key(key)
+
+      raise LocalValidationError, 'spicedb: client_key does not match client_cert (they are from different key pairs)'
+    rescue OpenSSL::X509::CertificateError => e
+      raise LocalValidationError, "spicedb: client_key does not match client_cert (#{e.message})"
     end
 
     def adopt_connection(connection)

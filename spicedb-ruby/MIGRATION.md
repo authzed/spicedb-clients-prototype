@@ -54,8 +54,9 @@ as follows (requests now take keyword arguments on the client method):
 
 Names may be passed as Symbols (`permission: :view`) and object IDs as
 Integers (`object_id: user.id`), as the protobuf messages accepted; they are
-stored as Strings. Any other type raises `SpiceDB::InvalidArgumentError`
-naming the class received.
+stored as Strings. Any other type raises `SpiceDB::LocalValidationError` (an
+`InvalidArgumentError`) naming the class received, in filters and schema
+reflection arguments too.
 
 ## Hashes from `to_h`
 
@@ -145,8 +146,10 @@ open. `authzed`'s `options:` channel arguments move there.
 
 An empty or whitespace-only token (usually an unset environment variable) raises
 `LocalValidationError` at construction, and so does `ca_cert:`, `client_cert:`
-or `client_key:` material that does not parse as PEM; the message names the
-argument.
+or `client_key:` material that does not parse as PEM, or a `client_key:` from a
+different key pair than `client_cert:`; the message names the argument.
+`SpiceDB::ZedToken.new` raises `LocalValidationError` for an empty or
+whitespace-only revision token too.
 
 ## Deadlines and retries
 
@@ -237,6 +240,10 @@ consistency = Authzed::Api::V1::Consistency.new(at_least_as_fresh: Authzed::Api:
 stored = client.write(txn).revision.to_s
 consistency = SpiceDB::Consistency.at_least(SpiceDB::ZedToken.new(stored))
 ```
+
+`ZedToken.new` raises `LocalValidationError` for an empty or whitespace-only
+string (usually an unset variable or column); where a stored token may be
+absent, keep `nil` and use `Consistency.at_least_or_full(token)`.
 
 ## Writes, relationships and filters
 

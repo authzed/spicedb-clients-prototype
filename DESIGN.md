@@ -473,9 +473,17 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     bare `Bearer` header the server rejects later (a blank environment
     variable is the usual cause).
   - Custom CA, client certificate and key material is parsed when the client
-    is built; material that does not parse fails with a local validation
-    error naming which input is wrong, never as an unexplained transport
-    failure on the first call.
+    is built; material that does not parse, or a client key that does not
+    match its certificate, fails with a local validation error naming which
+    input is wrong, never as an unexplained transport failure on the first
+    call.
+  - Caller-supplied revision tokens follow the same rule as credentials: an
+    empty or whitespace-only token is a local validation error.
+  - Dynamically typed clients check the types of names and IDs before use:
+    a value of the wrong type is a local validation error, never a server
+    round trip with a coerced value. Where a client deliberately accepts
+    another type for an ID (Ruby Integers, converted with `to_s`), its docs
+    say so.
 
 - **Require an explicit decision before sending credentials over remote plaintext.**
   - Every client library must expose a documented, named opt-in that permits

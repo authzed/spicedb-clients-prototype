@@ -50,15 +50,19 @@ from spicedb.types import (
 
 
 def _check_permissionship(value: int, what: str) -> Permissionship:
-    """A check's permissionship, which the server always sets: an unspecified
-    one is a malformed response, never ``Permissionship.UNSPECIFIED``."""
+    """A check's permissionship, which the server always sets: an unset
+    (zero) one is a malformed response. A value newer than this client is
+    not malformed; it maps to ``Permissionship.UNSPECIFIED``, which never
+    grants, and the call succeeds."""
     if value == permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_UNSPECIFIED:
         raise _wire.malformed(f"{what}.permissionship is unspecified")
     return _check_permissionship_from_proto(value)
 
 
 def _lookup_permissionship(value: int, what: str) -> Permissionship:
-    """A lookup result's permissionship, which the server always sets."""
+    """A lookup result's permissionship, which the server always sets: an
+    unset (zero) one is malformed; a newer value maps to
+    ``Permissionship.UNSPECIFIED`` (never a grant) without failing."""
     if value == permission_service_pb2.LOOKUP_PERMISSIONSHIP_UNSPECIFIED:
         raise _wire.malformed(f"{what}.permissionship is unspecified")
     return _permissionship_from_proto(value)

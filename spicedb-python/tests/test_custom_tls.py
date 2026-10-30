@@ -496,3 +496,41 @@ def test_parseable_tls_material_is_accepted_at_construction(module, certs):
         client_cert=certs.client_cert,
         client_key=certs.client_key,
     )
+
+
+@pytest.mark.parametrize("module", _FLAVORS)
+def test_client_key_from_another_key_pair_is_refused_at_construction(module, certs, monkeypatch):
+    """A client certificate paired with another key pair's private key (here
+    the server's) fails in the constructor naming both inputs, rather than
+    as a TLS handshake failure on the first call. No channel is built."""
+    from spicedb.errors import LocalValidationError
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a channel must not be created for a mismatched key")
+
+    for name in ("insecure_channel", "secure_channel"):
+        monkeypatch.setattr(grpc, name, explode)
+        monkeypatch.setattr(grpc.aio, name, explode)
+    with pytest.raises(LocalValidationError, match="client_key does not match client_cert"):
+        _client_class(module)(
+            "localhost:50116",
+            token=TOKEN,
+            ca_cert=certs.ca,
+            client_cert=certs.client_cert,
+            client_key=certs.server_key,
+        )
+
+
+def test_client_key_of_another_key_type_is_refused_at_construction(certs, tmp_path):
+    """An EC key paired with an RSA certificate is a mismatch too."""
+    from spicedb.errors import LocalValidationError
+
+    key = tmp_path / "ec.key"
+    _openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", str(key))
+    with pytest.raises(LocalValidationError, match="client_key does not match client_cert"):
+        _client_class("spicedb.sync")(
+            "localhost:50116",
+            token=TOKEN,
+            client_cert=certs.client_cert,
+            client_key=key.read_bytes(),
+        )

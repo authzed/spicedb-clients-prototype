@@ -464,3 +464,76 @@ def test_protoconv_reports_a_caller_proto_as_local_validation():
 
     with pytest.raises(LocalValidationError, match="looked_up_at"):
         protoconv.lookup_resource_from_proto(p.LookupResourcesResponse(resource_object_id="a"))
+
+
+# A permissionship value from a SpiceDB newer than this client.
+_NEWER_PERMISSIONSHIP = 99
+
+
+@pytest.mark.parametrize("client_type", FLAVORS)
+async def test_newer_check_permissionship_maps_to_unspecified_without_failing(client_type):
+    """Only the unset value is malformed: a value newer than the client maps
+    to the safe UNSPECIFIED (never a grant), so a SpiceDB upgrade is not an
+    outage."""
+    from spicedb import Permissionship
+
+    client = _client(client_type)
+    response = p.CheckPermissionResponse(checked_at=T, permissionship=_NEWER_PERMISSIONSHIP)
+    client._rpc = AsyncMock(return_value=response) if client_type is AioClient else Mock(return_value=response)
+    client._permissions = Mock()
+    result = await _resolve(client.check(
+        PermissionCheck(ObjectRef("document", "a"), "view", _ALICE), consistency=full()
+    ))
+    assert result.permissionship is Permissionship.UNSPECIFIED
+    assert not result.has_permission
+
+
+def _bulk_echo(permissionships):
+    def echo(method, request, *args):
+        return p.CheckBulkPermissionsResponse(
+            checked_at=T,
+            pairs=[
+                p.CheckBulkPermissionsPair(
+                    request=item,
+                    item=p.CheckBulkPermissionsResponseItem(permissionship=permissionships[i]),
+                )
+                for i, item in enumerate(request.items)
+            ],
+        )
+
+    return echo
+
+
+@pytest.mark.parametrize("client_type", FLAVORS)
+@pytest.mark.parametrize("item_errors", ["raise", "return"])
+async def test_newer_bulk_check_permissionship_maps_to_unspecified_without_failing(client_type, item_errors):
+    from spicedb import BulkItemErrors, Permissionship
+
+    checks = [PermissionCheck(ObjectRef("document", name), "view", _ALICE) for name in ("a", "b")]
+    echo = _bulk_echo([p.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION, _NEWER_PERMISSIONSHIP])
+    client = _client(client_type)
+    client._rpc = AsyncMock(side_effect=echo) if client_type is AioClient else Mock(side_effect=echo)
+    client._permissions = Mock()
+    results = await _resolve(client.check_bulk(
+        checks, consistency=full(), item_errors=BulkItemErrors(item_errors)
+    ))
+    assert [r.permissionship for r in results] == [Permissionship.HAS_PERMISSION, Permissionship.UNSPECIFIED]
+    assert results[1].error is None and not results[1].has_permission
+
+
+@pytest.mark.parametrize("client_type", FLAVORS)
+async def test_malformed_bulk_item_fails_the_whole_call_even_when_item_errors_are_returned(client_type):
+    """BulkItemErrors.RETURN carries per-item errors the server reports; a
+    malformed item in the response is not one, so the whole call fails."""
+    from spicedb import BulkItemErrors
+
+    checks = [PermissionCheck(ObjectRef("document", name), "view", _ALICE) for name in ("a", "b")]
+    echo = _bulk_echo([p.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION, 0])
+    client = _client(client_type)
+    client._rpc = AsyncMock(side_effect=echo) if client_type is AioClient else Mock(side_effect=echo)
+    client._permissions = Mock()
+    with pytest.raises(InternalError) as caught:
+        await _resolve(client.check_bulk(checks, consistency=full(), item_errors=BulkItemErrors.RETURN))
+    _assert_internal(caught, "check item 1: permissionship is unspecified")
+    _assert_client_detected(caught)
+    assert caught.value.input_index == 1

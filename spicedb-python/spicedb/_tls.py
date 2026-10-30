@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import re
 import ssl
+import tempfile
 
 import grpc
 
@@ -126,6 +128,8 @@ def require_tls_material_usable(
         _require_certificates("client_cert", client_cert)
     if client_key is not None:
         _require_private_key("client_key", client_key)
+    if client_cert is not None and client_key is not None:
+        _require_key_matches_certificate(client_cert, client_key)
 
 
 _PEM_KEY = re.compile(
@@ -171,3 +175,82 @@ def _require_private_key(name: str, material: bytes) -> None:
             f"spicedb: {name} is not a PEM-encoded private key ({e}); pass the key's "
             f"PEM bytes, e.g. pathlib.Path('client.key').read_bytes()"
         ) from None
+
+
+# OpenSSL's reasons for a key that is not the certificate's: same key type,
+# different key (KEY_VALUES_MISMATCH); a different key type, reported by
+# OpenSSL 3 as no certificate for that key's type (NO_CERTIFICATE_ASSIGNED)
+# and by older releases as KEY_TYPE_MISMATCH. The certificate itself has
+# already loaded by then, so each means the pair does not match.
+_MISMATCH_REASONS = frozenset(
+    {"KEY_VALUES_MISMATCH", "KEY_TYPE_MISMATCH", "NO_CERTIFICATE_ASSIGNED"}
+)
+
+
+def _require_key_matches_certificate(client_cert: bytes, client_key: bytes) -> None:
+    """Refuse a ``client_key`` from a different key pair than ``client_cert``.
+
+    Otherwise the mismatch surfaces only as a TLS handshake failure on the
+    first call. The standard library's OpenSSL performs the comparison
+    (``SSLContext.load_cert_chain`` checks the key against the leaf
+    certificate), so no extra dependency is needed. It loads only from
+    files, so the material is written to a private temporary directory
+    (mode 0700, files 0600) that is removed before this returns; on Linux an
+    anonymous in-memory file is used instead and nothing touches disk.
+
+    Only a definite mismatch is refused here. Anything else the standard
+    library cannot load (an encrypted key, which this client cannot use
+    anyway, or a key type the host's OpenSSL lacks) is left for grpc to
+    report, so this check never rejects material grpc would accept.
+    """
+    from spicedb.errors import LocalValidationError
+
+    if b"ENCRYPTED" in bytes(client_key):
+        return
+    try:
+        _load_cert_chain(bytes(client_cert), bytes(client_key))
+    except ssl.SSLError as e:
+        if getattr(e, "reason", None) not in _MISMATCH_REASONS:
+            return
+        raise LocalValidationError(
+            "spicedb: client_key does not match client_cert: the private key belongs "
+            "to a different key pair than the certificate's public key, so the TLS "
+            "handshake would fail; pass the key the certificate was issued for"
+        ) from None
+    except OSError:
+        # The material could not be staged for the check; grpc still
+        # validates the pair when the channel is built.
+        return
+
+
+def _load_cert_chain(cert: bytes, key: bytes) -> None:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+    def no_password() -> bytes:
+        # Never prompt on a terminal for a passphrase.
+        return b""
+
+    memfd_create = getattr(os, "memfd_create", None)
+    if memfd_create is not None and os.path.isdir("/proc/self/fd"):
+        fds = []
+        try:
+            for data in (cert, key):
+                fd = memfd_create("spicedb-tls", 0)
+                fds.append(fd)
+                os.write(fd, data)
+            context.load_cert_chain(
+                f"/proc/self/fd/{fds[0]}", f"/proc/self/fd/{fds[1]}", password=no_password
+            )
+        finally:
+            for fd in fds:
+                os.close(fd)
+        return
+    with tempfile.TemporaryDirectory(prefix="spicedb-tls-") as tmp:
+        paths = []
+        for name, data in (("cert.pem", cert), ("key.pem", key)):
+            path = os.path.join(tmp, name)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            paths.append(path)
+        context.load_cert_chain(paths[0], paths[1], password=no_password)

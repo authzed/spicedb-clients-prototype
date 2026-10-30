@@ -104,8 +104,17 @@ async with AsyncTypedClient.connect("spicedb.example.com:443", os.environ["SPICE
 
 An empty or whitespace-only `token` (usually an unset environment variable)
 raises `LocalValidationError` at construction, and so do `ca_cert`,
-`client_cert` or `client_key` bytes that do not parse as PEM; the message names
+`client_cert` or `client_key` bytes that do not parse as PEM, and a
+`client_key` from a different key pair than `client_cert`; the message names
 the argument.
+
+Names and IDs must be `str`: `ObjectRef("document", 42)`, a permission or
+relation of `True`, or `lookup_resources(resource_type=42, ...)` raises
+`LocalValidationError` before any request, never sending a coerced value.
+Convert numeric IDs yourself with `str(...)`. An empty or whitespace-only
+`ZedToken` passed to `at_least`, `snapshot` or a watch or materialize start/at
+revision raises `LocalValidationError`; `at_least_or_full` and
+`at_least_or_min_latency` treat it as no revision and fall back.
 
 ## Check (fail closed)
 
@@ -130,6 +139,11 @@ results = tc.check_bulk(
 )
 # results[i] matches input i; only results[i].has_permission grants.
 ```
+
+  With `item_errors=BulkItemErrors.RETURN`, a per-item error the server
+  reports lands on `results[i].error` (never a grant) instead of raising; a
+  malformed item in the server's response (such as an unset permissionship)
+  still fails the whole call with the client-detected `InternalError`.
 
 - Permission names chosen at runtime (e.g. per API method):
 

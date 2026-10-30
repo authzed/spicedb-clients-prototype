@@ -1,7 +1,9 @@
 //! The per-page default deadline bounds only waiting on the server, never the
 //! caller's processing time. Each test pairs a healthy fake that answers at
-//! once with a caller that spends longer on the items (5 x 100 ms) than the
-//! 200 ms per-page default; the read must succeed.
+//! once with a caller that spends longer on the items (5 x 250 ms) than the
+//! 500 ms per-page default; the read must succeed. The default only has to
+//! cover moving one 3 MiB message through an unoptimized build, which 500 ms
+//! leaves room for on a busy machine (200 ms failed once in 20 runs).
 //!
 //! Each item carries a 3 MiB ID, larger than the client's HTTP/2 stream
 //! window, so the server can only send the rest of the page as
@@ -27,8 +29,8 @@ use tonic::{Request, Response, Status};
 
 use support::{spawn_permissions_server, spawn_server, MockPermissionsService};
 
-const PAGE_DEFAULT: Duration = Duration::from_millis(200);
-const PER_ITEM_WORK: Duration = Duration::from_millis(100);
+const PAGE_DEFAULT: Duration = Duration::from_millis(500);
+const PER_ITEM_WORK: Duration = Duration::from_millis(250);
 const ITEMS: usize = 5;
 
 /// An object ID of about 3 MiB, unique per item.

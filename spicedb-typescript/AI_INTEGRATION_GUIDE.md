@@ -86,6 +86,11 @@ A private CA goes in `tls: { caCert }`. For an existing Connect `Transport`
 (in-memory, a test server) use `SpiceDBClient.fromTransport(transport)`;
 `close()` leaves that transport open.
 
+An empty or whitespace-only `token` (usually an unset environment variable)
+throws `InvalidArgumentError` at construction, and so do `tls.caCert`,
+`tls.clientCert` or `tls.clientKey` values that do not parse; the message names
+the option.
+
 ## Check (fail closed)
 
 ```ts

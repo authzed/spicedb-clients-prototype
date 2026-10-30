@@ -387,6 +387,8 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
 - **Bulk item-error mode.** `checkBulk(requests, { itemErrors:
   BulkItemErrors.Returned })` returns every item; failures are on
   `CheckResult.error` (with `inputIndex`) with `"unspecified"` permissionship.
+  A malformed item in the server's response (such as an unset permissionship)
+  still fails the whole call with the client-detected malformed-response error.
 - **Default-deadline disable, retry policy, stream retries, import status and
   batch size, paging state, watch schema changes, all-or-nothing delete and
   delete-all progress.** See the sections above.

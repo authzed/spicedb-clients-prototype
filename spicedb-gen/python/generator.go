@@ -66,6 +66,10 @@ type TemplateData struct {
 	Wildcards []SubjectSetData
 	// SchemaSubjectMembers are the members of the SchemaSubject alias.
 	SchemaSubjectMembers []string
+	// SubjectClasses lists every generated subject class, definitions and
+	// every subject ref variant, for the runtime check that a value is a
+	// generated subject.
+	SubjectClasses []string
 
 	// ClientTypeImports lists the names, sorted and deduplicated, that
 	// sync.py/aio.py reference from the types module.
@@ -356,6 +360,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		"alias":      formatAlias,
 		"bracket":    bracket,
 		"tuple":      tuple,
+		"nameTuple":  nameTuple,
 		"assign":     assign,
 		"assignCall": assignCall,
 		"list":       list,
@@ -500,6 +505,27 @@ func tuple(lhs string, items []string) string {
 	b.WriteString(lhs + " = (\n")
 	for _, item := range items {
 		b.WriteString(`    "` + item + "\",\n")
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// nameTuple renders `<lhs> = (...)` for a tuple of unquoted names, formatted
+// as ruff formats it: one line when it fits, else one name per line.
+func nameTuple(lhs string, items []string) string {
+	switch {
+	case len(items) == 0:
+		return lhs + " = ()"
+	case len(items) == 1 && len(lhs+" = ("+items[0]+",)") <= lineLength:
+		return lhs + " = (" + items[0] + ",)"
+	}
+	if one := lhs + " = (" + strings.Join(items, ", ") + ")"; len(items) > 1 && len(one) <= lineLength {
+		return one
+	}
+	var b strings.Builder
+	b.WriteString(lhs + " = (\n")
+	for _, item := range items {
+		b.WriteString("    " + item + ",\n")
 	}
 	b.WriteString(")")
 	return b.String()
@@ -1165,6 +1191,12 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	for _, w := range data.Wildcards {
 		data.SchemaSubjectMembers = append(data.SchemaSubjectMembers, w.ClassName)
 	}
+	for _, d := range data.Definitions {
+		data.SubjectClasses = append(data.SubjectClasses, d.ClassName)
+	}
+	for _, sr := range data.SubjectRefs {
+		data.SubjectClasses = append(data.SubjectClasses, sr.ClassName)
+	}
 	for _, c := range checkables {
 		if c.SubjectUnion != "" {
 			data.CheckOverloads = append(data.CheckOverloads, c)
@@ -1194,9 +1226,12 @@ func clientTypeImports(data TemplateData) []string {
 	set := map[string]bool{
 		"Permission":             true,
 		"_lookup_target":         true,
+		"_named_checks":          true,
 		"_object":                true,
 		"_reaches":               true,
+		"_require_name":          true,
 		"_require_subject":       true,
+		"_subject":               true,
 		"definition_by_name":     true,
 		"SubjectNotAllowedError": true,
 		"RelationshipKey":        true,

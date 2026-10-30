@@ -295,10 +295,7 @@ class TypedClient:
 
         Every item is validated as in check_by_name before any RPC.
         """
-        requests = [
-            _lookup_target(resource_type, resource_id, permission).permission_check(s)
-            for resource_type, resource_id, permission, s in checks
-        ]
+        requests = _named_checks(checks)
         return {{$await}}self.client.check_bulk(
             requests,
             consistency=c,
@@ -411,12 +408,10 @@ class TypedClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupResource]:
-        _require_subject(s)
-        sub_type, sub_id, sub_rel = s._subject_ref()
         return self.client.lookup_resources(
             resource_type=p._resource_type,
             permission=p._permission,
-            subject=SubjectRef(ObjectRef(sub_type, sub_id), sub_rel or None),
+            subject=_subject(s),
             consistency=c,
             context=context,
             permissionship_filter=permissionship_filter,
@@ -462,11 +457,10 @@ class TypedClient:
             return {{$stream}}[LookupResource](_no_results)
         if not isinstance(s, target._admits):
             raise SubjectNotAllowedError(f"{target.ref} cannot be looked up for {s}")
-        sub_type, sub_id, sub_rel = s._subject_ref()
         return self.client.lookup_resources(
             resource_type=resource_type,
             permission=permission,
-            subject=SubjectRef(ObjectRef(sub_type, sub_id), sub_rel or None),
+            subject=_subject(s),
             consistency=c,
             context=context,
             permissionship_filter=permissionship_filter,
@@ -509,8 +503,9 @@ class TypedClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupSubject]:
+        _require_subject(t, allow_class=True)
         return self.client.lookup_subjects(
-            resource=ObjectRef(p._resource_type, p._resource_id),
+            resource=_object(p._resource_type, p._resource_id),
             permission=p._permission,
             subject_type=t._type,
             consistency=c,
@@ -551,6 +546,8 @@ class TypedClient:
         target = _lookup_target(resource_type, resource_id, permission)
         resource = _object(resource_type, resource_id)
         definition_by_name(subject_type)
+        if subject_relation is not None:
+            _require_name(subject_relation, "subject relation")
         relation = "" if subject_relation in (None, "...") else subject_relation
         if relation:
             _lookup_target(subject_type, "", relation)

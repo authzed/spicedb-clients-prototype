@@ -43,6 +43,27 @@ public class ConsistencyTests
         act.Should().Throw<InvalidArgumentException>();
     }
 
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    public void StrictStrategies_ThrowOnWhitespaceOnlyRevision_LikeEmpty(string token)
+    {
+        var atLeast = () => Consistency.AtLeast(new SpiceDB.Client.ZedToken(token));
+        var snapshot = () => Consistency.Snapshot(new SpiceDB.Client.ZedToken(token));
+        atLeast.Should().Throw<InvalidArgumentException>().WithMessage("A nonempty revision token is required.");
+        snapshot.Should().Throw<InvalidArgumentException>().WithMessage("A nonempty revision token is required.");
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("\t")]
+    public void FallbackHelpers_TreatWhitespaceOnlyRevisionAsEmpty(string token)
+    {
+        Consistency.AtLeastOrFull(new SpiceDB.Client.ZedToken(token)).ToProto().FullyConsistent.Should().BeTrue();
+        Consistency.AtLeastOrMinLatency(new SpiceDB.Client.ZedToken(token)).ToProto().MinimizeLatency.Should().BeTrue();
+    }
+
     [Fact]
     public void AtLeast_ThrowsOnNullRevision()
     {

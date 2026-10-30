@@ -1,5 +1,7 @@
 # Changelog
 
+- Endpoints accept `host:port`, `http://host:port` (plaintext) and `https://host[:port]` (TLS, port 443 by default). The URL scheme must agree with `transport_security`; an `http://` URL or a plaintext `host` without a port is rejected (no silent dial to 80 or 443), and a TLS endpoint without a port uses 443. Any other form (a path, query, fragment or userinfo, a non-numeric or out-of-range port, an unsupported scheme such as `ftp://` or `dns:///`) now fails at construction with a `LocalValidationError` naming the problem, instead of building a client whose every call fails. Malformed endpoints are reported before the remote-plaintext refusal, which now judges the URL's parsed host and names both options a remote plaintext host (such as a Docker Compose service) needs: `transport_security=TransportSecurity.PLAINTEXT` and `remote_credentials=RemoteCredentials.ALLOW`.
+
 - Generated sync/async clients now expose all native capabilities directly, including `delete_relationships`, `delete_all_relationships_non_atomic`, Watch relationship filters, bulk checks, schema operations, imports/exports, counters, and materialize methods. Schema-aware check/lookup overloads remain strict. Lookup/read methods expose native pagination and diagnostic options; typed write helpers accept metadata, and `write` accepts typed or native transactions. Native stream identity and cancellation are preserved.
 
 - Watch supports full native relationship filters, ORing multiple entries and watching all relationship changes when filters are empty. Nonempty `object_types` and `filters` are mutually exclusive and fail locally before RPC. Watch examples now use type-only relationship filters.
@@ -11,6 +13,211 @@
 - Add `LookupPermissionshipFilter.ALL` / `LookupPermissionshipFilter.HAS_PERMISSION_ONLY` to LookupResources. The default preserves conditional matches; opt-in filtering yields only unconditional grants, with limits applied after filtering and pagination continuing through skipped matches.
 
 ## Unreleased
+
+- Tests: the deadline and per-page deadline tests against a real gRPC server call `ready()` before starting a clock or a short deadline, so an allowance never has to cover connection setup on a busy machine; the stalling server's pause is 3 s and two import watchdogs are wider.
+- `Consistency` has a readable `str()` (`full()`, `min_latency()`, `at_least(<token>)`, `snapshot(<token>)`) and a JSON-compatible `to_dict()` (`{"strategy": "at_least", "token": "<token>"}`; no token for `full` and `min_latency`), like the other native values. It printed only its dataclass repr, and `dataclasses.asdict` exposed the token as `{"_value": ...}`.
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `spicedb: client detected malformed response from server: CheckPermissionResponse.permissionship is unset` (it said "is unspecified"), and the docs and docstrings match. `Permissionship.UNSPECIFIED` names only the safe value a permissionship newer than this client maps to, which never fails the call.
+- **Behavior change:** an empty or whitespace-only `token` raises `LocalValidationError` at construction (both flavors), instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- **Behavior change:** `ca_cert`, `client_cert` and `client_key` are parsed at construction. Material that does not parse (not PEM, or a corrupt body) raises `LocalValidationError` naming the argument, instead of failing the first call as an unexplained transport error. Certificates are parsed with the standard library's OpenSSL; the key's PEM structure and DER envelope are checked, and grpc parses the key itself when the channel opens.
+- Docs: with bulk item errors returned (`BulkItemErrors.RETURN`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the `BulkItemErrors` and `check_bulk` docstrings, design notes, migration guide and AI guide now say so.
+- **Behavior change:** a `client_key` from a different key pair than `client_cert` raises `LocalValidationError` at construction naming both, instead of failing the first call's TLS handshake. The standard library's OpenSSL compares them; no dependency is added.
+- **Behavior change:** caller-supplied names and IDs must be `str`. An `int`, `bool` or other non-string object type or ID, relation, permission, caveat name, filter field, lookup or schema argument, counter name or watch object type raises `LocalValidationError` before any request, instead of being coerced or failing as a protobuf `TypeError`.
+- **Behavior change:** a whitespace-only `ZedToken` is treated like an empty one: `at_least`, `snapshot`, and watch and materialize start/at revisions raise `LocalValidationError` for either (watch and materialize revisions previously sent an empty token as is), and `at_least_or_full` / `at_least_or_min_latency` fall back.
+- Docs: a check or lookup permissionship value newer than this client maps to `Permissionship.UNSPECIFIED` (never a grant) and does not fail the call; only the unset value is malformed. Docstrings that implied otherwise are corrected.
+
+### Client-detected errors say so
+
+- A malformed response's `InternalError` now reads `spicedb: client detected
+  malformed response from server: <detail>` (was `spicedb: malformed
+  response: <detail>`), so it is not mistaken for an `INTERNAL` the server
+  sent. `server_message` stays None.
+- A check, bulk-check item, lookup-resources result or looked-up subject (not
+  its excluded subjects) whose permissionship is unset now raises that `InternalError` (a bulk item carries its
+  `input_index`) instead of returning `Permissionship.UNSPECIFIED`. A value
+  newer than this client is not malformed: it still maps to
+  `Permissionship.UNSPECIFIED`, which never grants. The
+  in-memory doubles never answer UNSPECIFIED: `set_check_result` with it, and
+  a check, bulk check or lookup whose resolver returns it, raise
+  `LocalValidationError`.
+
+### Endpoint validation is local validation
+
+- A malformed endpoint (for example a plaintext `"localhost"` without a port)
+  or a non-string endpoint now raises `LocalValidationError` instead of a
+  plain `InvalidArgumentError`, so `except ValueError` around construction
+  catches it like every other constructor argument error. `except
+  InvalidArgumentError` keeps matching.
+
+### Testing guide
+
+- The AI integration guide notes that projects whose permissions are all
+  computed get little from stored-relation grants on the double: model them
+  with the resolver or test against SpiceDB.
+
+### Closing an aio stream no longer cancels the consumer's task
+
+- `AsyncStream.aclose()` from another task, while a consumer awaits the
+  stream's next item, now raises `spicedb.errors.CancelledError` (code
+  `CANCELLED`) in that consumer, as closing a sync `Stream` from another
+  thread already did. Before, it cancelled the consumer's whole task, which
+  surfaced as `asyncio.CancelledError` and ended the task. Cancelling the
+  consumer's task yourself still propagates `asyncio.CancelledError`.
+
+### Malformed responses fail with INTERNAL
+
+- New `InternalError` (code `INTERNAL`, not retryable by default); a server
+  `INTERNAL` status now maps to it too. A response the client cannot
+  interpret raises it: a missing relationship, resource, subject or object,
+  an empty object ID or relation, a missing revision (`read_at`,
+  `looked_up_at`, `checked_at`, `written_at`, `deleted_at`, `expanded_at`,
+  `changes_through`, and the counter, roaring and permission-set revisions),
+  an expand node with neither children nor subjects, a counter response with
+  neither a value nor `counter_still_calculating`, a permission-set change
+  without its parent, child or revision, a permission-set lookup without its
+  change or cursor, and a full page whose cursor does not advance. Such a
+  response is never skipped (which would make a full page look short and
+  end a paged read early) and never filled with empty values: a missing
+  revision used to become `ZedToken("")`.
+- Client-detected errors (a bulk-check pair count or echo mismatch, a pair
+  with neither item nor error, unspecified delete progress) now report
+  `INTERNAL` instead of `UNKNOWN`.
+- `protoconv.*_from_proto` reports a response proto missing a required field
+  as `LocalValidationError`, since the caller supplied it.
+
+### Per-page default deadlines
+
+- Finite paged reads (`read_relationships`, `lookup_resources`,
+  `lookup_subjects`, `export_relationships`, `lookup_permission_sets`) now
+  apply the client `default_timeout` to each page, so a server that stalls
+  mid-read fails it with `DeadlineExceededError` instead of hanging. The
+  deadline counts only time spent waiting on the server: time your code
+  spends between items never counts, so a slow consumer of a healthy server
+  always finishes. A paged read gives each page request the default; an
+  unpaged subject lookup, an export, a permission-set lookup or a
+  `Paging.SINGLE_REQUEST` read bounds each wait for the next message. A
+  per-call `timeout` still bounds the whole read and wins when earlier;
+  `watch` keeps no default; `DefaultDeadline.DISABLED` turns it off.
+
+### Startup readiness and gRPC DNS targets
+
+- New `ready(timeout=None)` on `spicedb.sync.SpiceDBClient` and
+  `await ready(timeout=None)` on `spicedb.aio.SpiceDBClient` (and on
+  `ClientProtocol`/`AsyncClientProtocol` and the generated `TypedClient`). Both clients still connect lazily;
+  call it once at startup so a wrong or unreachable endpoint fails there. It
+  waits for the channel to become ready within `timeout` (default: the
+  client's `default_timeout`) and raises `UnavailableError` naming the
+  endpoint and the transport's cause (refused, DNS, TLS), or
+  `DeadlineExceededError` if the connection was still in progress. It sends
+  no credentials, so it does not check the token. The in-memory doubles
+  accept it as a no-op (it validates `timeout` and is not recorded).
+- Endpoints now accept grpc's `dns:///host:port` target, for client-side
+  load balancing over every address a name resolves to. The port rule
+  matches `host:port` (plaintext must name it; TLS defaults to 443), and the
+  loopback check runs on the host after `dns:///`, so
+  `dns:///localhost:50051` is loopback and `dns:///spicedb:50051` needs
+  `remote_credentials=RemoteCredentials.ALLOW` over plaintext. A DNS-server
+  authority (`dns://8.8.8.8/host:port`) and the slashless `dns:host:port`
+  are still rejected at construction, and the error now lists every
+  accepted form, `dns:///host:port` and `unix:` sockets included.
+
+### Local validation, parsers and prebuilt updates
+
+- Client-side validation now raises `LocalValidationError`, a subclass of both
+  `InvalidArgumentError` and `ValueError`, so `except ValueError` around bad
+  input (for example `Relationship.from_triple("document", "viewer", "user:1")`)
+  catches it; `except InvalidArgumentError` and `except grpc.RpcError` still
+  do, and `code()` is still `INVALID_ARGUMENT`. A server `INVALID_ARGUMENT`
+  stays a plain `InvalidArgumentError`.
+- **Breaking:** `ObjectRef` requires a type and ID that SpiceDB's tuple syntax
+  accepts (a lowercase definition name, optionally `prefix/name`, and a
+  nonempty ID of `a-z A-Z 0-9 / _ | - = +` characters, or `*`). Before:
+  `ObjectRef("", "")` was accepted and the server rejected the request. After:
+  it raises `LocalValidationError`. Values read from the server are kept as
+  sent.
+- New `ObjectRef.parse("type:id")` and `SubjectRef.parse("type:id[#relation]")`
+  (`#...` is a direct subject). `Relationship.from_triple` also treats a
+  `#...` subject relation as direct, as `from_tuple` does.
+- New `Transaction.add(update)` and `Transaction.extend(updates)` queue
+  prebuilt `Update` values; `extend` is all-or-nothing, and an `UNSPECIFIED`
+  operation is rejected.
+- Using an aio client from a second event loop now says to create one client
+  per event loop (or use `spicedb.sync` if the code is synchronous).
+- The `UpdateOperation` docstring covers queued transaction updates, not only
+  `watch()`.
+
+### Dependency floors
+
+- The protobuf floor drops from `7.36.2` to `5.26.1`: spicedb-python-proto's
+  bindings are now generated as protobuf 5.26.1 code (pinned plugins), so
+  applications on protobuf 5.x, 6.x and 7.x install without a protobuf
+  upgrade. The suites pass on 5.26.1, 5.29.5, 6.33.2 and 7.36.2.
+
+### Generated typed clients: runtime names
+
+- `object_by_name(type, id)` and `parse_object("type:id")` return the typed
+  object (`Document("readme")`), `subject_set_by_name(type, id, relation)` the
+  typed subject set (`TeamMember("eng")`), and `relationship_from_triple(...)`
+  a `TypedRelationship` checked against the schema exactly as SpiceDB checks a
+  write (subject type, subject relation, wildcard, caveat and expiration).
+  Unknown names raise `NotInSchemaError`, inadmissible subjects
+  `SubjectNotAllowedError`, malformed text `LocalValidationError`.
+- `SchemaObject` and `SubjectSet` are the unions of every generated object
+  and subject-set class.
+- `TypedClient.check_by_name` and `check_bulk_by_name` check permissions or
+  relations named at runtime; `lookup_subjects_by_name` is the counterpart of
+  `lookup_resources_by_name`.
+- `lookup_resources_by_name` accepts relations as well as permissions, as
+  SpiceDB does. A by-name lookup whose subject type cannot reach the
+  permission returns no results without a call (SpiceDB's answer) instead of
+  raising `SubjectNotAllowedError`; unknown names still raise.
+- Generated `sync.py`/`aio.py` pass mypy, including `--strict`:
+  `__exit__`/`__aexit__` return `None` instead of a `bool` that is always
+  False.
+- `--python.names-only` writes only the name constants, name tuples and
+  `SCHEMA_TEXT` to `names.py` (or `--python.module`), importing only the
+  standard library.
+
+### Test doubles resolve checks and serve lookups
+
+- `InMemoryClient` and `AsyncInMemoryClient` now resolve a check in a fixed
+  order: a result registered with `set_check_result`; then a check resolver
+  installed with the new `set_check_resolver(resolver)` (a callable taking the
+  `PermissionCheck` and returning a `CheckResult`, a `Permissionship`, a bool,
+  or None to defer), so tests over generated IDs need no per-ID registration
+  (`set_check_resolver(grant_all)` grants everything); then the stored
+  relationships, where a relationship on the resource whose relation is the
+  permission's name and whose subject matches exactly or by wildcard grants it
+  (conditionally when caveated; expired ones are ignored). Anything else is
+  `NO_PERMISSION`. Previously only registered results counted, so a check of a
+  relationship the test had just written reported no permission.
+- `lookup_resources` and `lookup_subjects` work on the doubles instead of
+  raising `UNIMPLEMENTED`: they enumerate the objects of the requested type in
+  the stored relationships and yield those the check resolution grants,
+  reporting conditional results, honoring `permissionship_filter`, `limit`,
+  `cursor` and `wildcards`, recording each call and consulting the fault hook
+  before the call and each item. `cursor_after(n)` builds a lookup cursor too.
+
+### Generated typed clients
+
+- `TypedClient(client)` accepts `spicedb.protocols.ClientProtocol` (sync) or
+  `AsyncClientProtocol` (aio), so a typed client wraps a `spicedb.testing`
+  double: `TypedClient(InMemoryClient())`.
+- New schema-level lookups for names received at runtime, each validated
+  against the schema: `definition_by_name(name)` (the generated class),
+  `permission_ref_by_name(definition, permission)` (a resource-less
+  `PermissionRef`) and `TypedClient.lookup_resources_by_name(c, resource_type,
+  permission, subject, ...)`, which raises `NotInSchemaError` or
+  `SubjectNotAllowedError` before any call.
+- Generated modules expose `DefinitionNames` constants, a `DEFINITION_NAMES`
+  tuple and `SCHEMA_TEXT`, the schema they were generated from, so a service
+  can write its schema at startup without shipping the `.zed` file.
+
+### Documentation
+
+- New `README.md` covering installation (including from a checkout before
+  publication), a first call and links to the other guides.
+- `MIGRATION.md` opens with a Requirements section and has a table of renamed
+  request and response members.
 
 ### Paging and bridge fixes
 

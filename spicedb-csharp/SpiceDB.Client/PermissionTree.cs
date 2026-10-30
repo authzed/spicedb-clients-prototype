@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 // PermissionTree is a native, immutable representation of an expanded
 // permission tree. It avoids leaking the proto PermissionRelationshipTree
 // type in favor of plain C# records.
@@ -7,6 +8,7 @@ namespace SpiceDB.Client;
 /// <summary>
 /// The set operation combining an <see cref="IntermediateNode"/>'s children.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter<TreeOperation>))]
 public enum TreeOperation
 {
     Unspecified,

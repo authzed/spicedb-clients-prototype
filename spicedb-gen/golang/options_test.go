@@ -2,9 +2,12 @@ package golang
 
 import (
 	"go/format"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -126,4 +129,137 @@ func TestWithArticle(t *testing.T) {
 	} {
 		assert.Equal(t, want, withArticle(word), word)
 	}
+}
+
+func TestSchemaTextAndDefinitionNames(t *testing.T) {
+	zed := "definition user {}\n\n// a `quoted` comment\ndefinition doc {\n\trelation viewer: user\n\tpermission view = viewer\n}\n"
+	out, err := generate(t, zed, nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "const SchemaText = "+strconv.Quote(zed), "a backquote forces an interpreted literal holding the text verbatim")
+	flat := squash(out)
+	assert.Contains(t, flat, `var Definitions = struct { User string Doc string }{ User: "user", Doc: "doc", }`)
+	assert.Contains(t, flat, `return []string{"user", "doc"}`)
+	assert.Contains(t, flat, `"doc": {name: "doc", relations: DocRelationNames(), permissions: DocPermissionNames(), ref: func(id string) DefinitionRef { return Doc(id) }},`)
+	assert.Contains(t, flat, "func PermissionRefByName(definition, permission string) (PermissionRef, error)")
+	assert.Contains(t, flat, "func LookupResourcesByName(ctx context.Context, tc *TypedClient, cs consistency.Strategy, definition, permission string, subject Subject, opts ...client.LookupResourcesOption)")
+
+	out, err = generate(t, "definition user {}", nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "const SchemaText = `definition user {}`")
+	assert.Equal(t, "`a\nb`", goStringLiteral("a\nb"))
+	assert.Equal(t, `"a\r\nb"`, goStringLiteral("a\r\nb"))
+}
+
+func TestByNameIdentifiersAreReserved(t *testing.T) {
+	_, err := generate(t, "definition definitions {}", nil)
+	require.ErrorContains(t, err, "Definitions")
+	require.ErrorContains(t, err, "--go.rename")
+	_, err = generate(t, "definition definitions {}", map[string]string{"rename": "definitions=Defs"})
+	require.NoError(t, err)
+	_, err = generate(t, "definition definition_ref {}", nil)
+	require.ErrorContains(t, err, "DefinitionRef")
+	_, err = generate(t, "definition user {}\ndefinition doc {\n\trelation viewer: user\n\tpermission definition_name = viewer\n}", nil)
+	require.ErrorContains(t, err, "DefinitionName", "every ref has DefinitionName, so a permission cannot take it")
+}
+
+// A definition with no writable relation never reads RelationshipByName's
+// subject, so it is named _ and unused-parameter lint passes; one with a
+// writable relation keeps the name.
+func TestRelationshipByNameNamesOnlyAUsedSubject(t *testing.T) {
+	out, err := generate(t, "definition user {}\ndefinition doc {\n\trelation viewer: user\n}", nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "func (d UserRef) RelationshipByName(relation string, _ Subject) (TypedRelationship, error) {")
+	assert.Contains(t, out, "func (d DocRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {")
+}
+
+func TestRuntimeNameTables(t *testing.T) {
+	zed := `definition user {}
+definition group {
+	relation member: user | group#member
+}
+definition doc {
+	relation viewer: user | group#member
+	relation parent: group
+	permission view = viewer
+}`
+	out, err := generate(t, zed, nil)
+	require.NoError(t, err)
+	flat := squash(out)
+	assert.Contains(t, flat, `"doc#view": {"group#member", "user"},`, "subject sets expand to their members")
+	assert.Contains(t, flat, `"doc#parent": {"group"},`)
+	assert.Contains(t, flat, `case "group#member": if _, err := rel.NewObject(definition, id); err != nil { return nil, err } return GroupMemberRef{id: id}, nil`)
+	assert.NotContains(t, flat, `case "doc#viewer":`, "a relation never used as a subject set has no subject set")
+}
+
+func TestNamesOnly(t *testing.T) {
+	zed := "caveat c(x int) { x > 0 }\ndefinition user {}\ndefinition doc {\n\trelation viewer: user | user with c\n\tpermission view = viewer\n}\n"
+	s, err := schema.ParseString(zed)
+	require.NoError(t, err)
+	files, err := (&Generator{}).Generate(s, map[string]string{"names-only": "true", "package": "apinames"})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, "names.gen.go", files[0].Path)
+	out := string(files[0].Content)
+
+	f, err := parser.ParseFile(token.NewFileSet(), "names.gen.go", out, parser.ImportsOnly)
+	require.NoError(t, err)
+	assert.Empty(t, f.Imports, "names-only output imports nothing, so it never depends on the client")
+	assert.Equal(t, "apinames", f.Name.Name)
+
+	flat := squash(out)
+	assert.Contains(t, flat, `var Definitions = struct { User string Doc string }{ User: "user", Doc: "doc", }`)
+	assert.Contains(t, flat, `var DocRelations = struct { Viewer string }{ Viewer: "viewer", }`)
+	assert.Contains(t, flat, `var DocPermissions = struct { View string }{ View: "view", }`)
+	assert.Contains(t, flat, "func DocRelationNames() []string")
+	assert.Contains(t, flat, "func DefinitionNames() []string")
+	assert.Contains(t, out, "const SchemaText = `"+zed+"`")
+	for _, absent := range []string{"TypedClient", "DocRef", "CContext", "Permission{", "DefinitionByName"} {
+		assert.NotContains(t, out, absent)
+	}
+
+	// Renames still apply, so identifiers match the full client's.
+	out, err = generate(t, collidingSchema, map[string]string{"names-only": "true", "rename": "subject=SubjectDef"})
+	require.NoError(t, err)
+	assert.Contains(t, squash(out), `SubjectDef: "subject"`)
+
+	// false (or no option) generates the full client.
+	out, err = generate(t, zed, map[string]string{"names-only": "false"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "type TypedClient struct")
+
+	_, err = generate(t, zed, map[string]string{"names-only": "yes please"})
+	require.ErrorContains(t, err, "--go.names-only")
+
+	// The default package differs from the full output's, so a file can import
+	// both without an alias.
+	out, err = generate(t, zed, map[string]string{"names-only": "true"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "package permissionnames\n")
+	out, err = generate(t, zed, nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "package permissions\n")
+}
+
+// testdata/go-names is a module with no requirements holding names-only
+// output; it must match what the generator emits today.
+func TestNamesOnlyFixtureIsCurrent(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+	files, err := (&Generator{}).Generate(s, map[string]string{"names-only": "true", "package": "apinames"})
+	require.NoError(t, err)
+	want, err := os.ReadFile("../testdata/go-names/names.gen.go")
+	require.NoError(t, err)
+	assert.Equal(t, string(want), string(files[0].Content),
+		"regenerate: spicedb-gen --schema testdata/sample.zed --lang go --go.package=apinames --go.names-only --out testdata/go-names/names.gen.go")
+
+	if testing.Short() {
+		return
+	}
+	// The fixture module requires nothing, so this builds only while the
+	// output imports the standard library alone.
+	cmd := exec.Command("go", "vet", "./...")
+	cmd.Dir = "../testdata/go-names"
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=readonly")
+	vetOut, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(vetOut))
 }

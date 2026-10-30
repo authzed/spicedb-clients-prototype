@@ -27,16 +27,16 @@ module SpiceDB
     end
 
     def next
-      raise StopIteration if closed?
+      finish if closed?
 
       value = @enumerator.next
-      raise StopIteration if closed?
+      finish if closed?
 
       value
     rescue Exception # rubocop:disable Lint/RescueException -- release transport on Interrupt as well as application errors
       was_closed = closed?
       close
-      raise StopIteration if was_closed
+      finish if was_closed
 
       raise
     end
@@ -67,22 +67,62 @@ module SpiceDB
     end
 
     def closed? = @mutex.synchronize { @closed }
+
+    # Closes the stream on behalf of someone other than its consumer (the
+    # client being closed): the consumer, including one blocked in #next,
+    # then gets CancelledError with +message+ rather than an ordinary end of
+    # iteration, so a cancelled read never looks complete.
+    #
+    # @api private
+    def cancel(message)
+      @mutex.synchronize { @cancelled ||= message unless @closed }
+      close
+    end
+
+    private
+
+    # Ends iteration: StopIteration after the consumer's own #close,
+    # CancelledError after #cancel.
+    def finish
+      message = @mutex.synchronize { @cancelled }
+      raise CancelledError, message if message
+
+      raise StopIteration
+    end
   end
 
   # One monotonic budget is shared by every attempt and page of an operation.
   # It also carries the operation's per-call CallOptions and RetryPolicy.
+  #
+  # A finite paged read also carries +page_timeout+, the client default
+  # deadline, which bounds each page request on its own (see #page): a
+  # server that stalls mid-read fails the read instead of hanging it.
   class Budget
-    attr_reader :call_options, :retry_policy
+    attr_reader :call_options, :retry_policy, :page_timeout
 
-    def initialize(timeout, call_options: nil, retry_policy: nil)
-      raise InvalidArgumentError, 'call_options: expected SpiceDB::CallOptions' unless call_options.nil? || call_options.is_a?(CallOptions)
-      raise InvalidArgumentError, 'retry_policy: expected SpiceDB::RetryPolicy' unless retry_policy.nil? || retry_policy.is_a?(RetryPolicy)
+    def initialize(timeout, call_options: nil, retry_policy: nil, page_timeout: nil)
+      raise LocalValidationError, 'call_options: expected SpiceDB::CallOptions' unless call_options.nil? || call_options.is_a?(CallOptions)
+      raise LocalValidationError, 'retry_policy: expected SpiceDB::RetryPolicy' unless retry_policy.nil? || retry_policy.is_a?(RetryPolicy)
 
       @call_options = call_options
       @retry_policy = retry_policy
-      raise InvalidArgumentError, 'timeout must be finite and positive' unless timeout.nil? || (timeout.is_a?(Numeric) && timeout.finite? && timeout.positive?)
+      raise LocalValidationError, 'timeout must be finite and positive' unless timeout.nil? || (timeout.is_a?(Numeric) && timeout.finite? && timeout.positive?)
 
       @end = timeout && (monotonic + timeout)
+      @page_timeout = page_timeout
+    end
+
+    # The budget for one page request opened now: +page_timeout+ from now,
+    # or the whole operation's remaining budget when that ends earlier.
+    # Without a page timeout (watch, imports, a disabled client default) it
+    # is this budget.
+    def page
+      return self unless @page_timeout
+
+      page_end = monotonic + @page_timeout
+      copy = dup
+      copy.instance_variable_set(:@end, @end ? [@end, page_end].min : page_end)
+      copy
     end
 
     def remaining
@@ -106,6 +146,70 @@ module SpiceDB
     end
 
     private
+
+    def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  # Bounds a finite read that streams without a size bound on one call (an
+  # export, a subject or permission-set lookup, a single-request read), where
+  # a call deadline would bound the whole read and the caller's time with it:
+  # the time from asking for the next response to receiving it may not exceed
+  # +timeout+. On expiry it cancels the call; #expired? then tells the reader
+  # to raise DeadlineExceededError rather than the cancellation. Time the
+  # caller spends on a response does not count.
+  class PageWatchdog
+    def initialize(timeout, call)
+      @timeout = timeout
+      @call = call
+      @mutex = Mutex.new
+      @cond = ConditionVariable.new
+      @waiting_since = monotonic
+      @expired = false
+      @done = false
+      @thread = Thread.new { run }
+    end
+
+    def received = update(nil)
+    def waiting = update(monotonic)
+    def expired? = @mutex.synchronize { @expired }
+
+    def stop
+      @mutex.synchronize do
+        @done = true
+        @cond.signal
+      end
+      @thread.join
+    end
+
+    private
+
+    def update(since)
+      @mutex.synchronize do
+        @waiting_since = since
+        @cond.signal
+      end
+    end
+
+    def run
+      @mutex.synchronize do
+        until @done
+          if @waiting_since.nil?
+            @cond.wait(@mutex)
+            next
+          end
+
+          left = @waiting_since + @timeout - monotonic
+          if left.positive?
+            @cond.wait(@mutex, left)
+            next
+          end
+
+          @expired = true
+          break
+        end
+      end
+      @call.cancel if @expired
+    end
 
     def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end

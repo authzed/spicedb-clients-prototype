@@ -38,7 +38,9 @@ namespace SpiceDB.Client.Tests;
 
 public class DeadlineTests
 {
-    private const int StallMs = 1500;
+    // Long enough that a deadline of a few hundred milliseconds firing, rather than the stall
+    // ending, is unmistakable even when a busy machine delays the client by a second or so.
+    private const int StallMs = 3000;
     private static readonly TimeSpan WatchdogTimeout = TimeSpan.FromSeconds(10);
 
     private sealed class StallingPermissionsService : PermissionsService.PermissionsServiceBase
@@ -130,6 +132,9 @@ public class DeadlineTests
 
         var channel = GrpcChannel.ForAddress(address);
         var client = SpiceDBClient.CreateFromChannel(channel, "test-token", new ClientOptions { DefaultTimeout = defaultTimeout });
+        // Each test times a call against a short deadline; the first call on the channel would
+        // also pay for connection setup, so it is made here, untimed.
+        await ConnectionWarmup.WarmAsync(client);
 
         return (app, client);
     }
@@ -202,35 +207,28 @@ public class DeadlineTests
     }
 
     [Fact]
-    public async Task StreamingCall_DoesNotInheritTheUnaryDefault()
+    public async Task StreamingRead_PageStalledPastTheClientDefault_FailsWithDeadlineExceeded()
     {
-        // defaultTimeout is far smaller than the server's stall. If ReadRelationshipsAsync
-        // inherited it, this would throw DeadlineExceededException instead of yielding the item.
+        // A paged read has no default total budget, but each page request gets the client
+        // default deadline: the server's stall here is far longer than the 100ms default, so the
+        // read fails instead of waiting it out. Root DESIGN.md, "Treat a deadline as a budget".
+        // PageDeadlineTests covers a read that outlives the default across several pages.
         var (app, client) = await StartAsync(TimeSpan.FromMilliseconds(100));
         try
         {
             var start = DateTime.UtcNow;
-
-            var collectTask = Task.Run(async () =>
+            Func<Task> act = () => RunWithWatchdogAsync(Task.Run(async () =>
             {
                 var items = new List<Relationship>();
                 await foreach (var rel in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-                {
                     items.Add(rel.Relationship);
-                }
                 return items;
-            });
+            }));
 
-            var completed = await Task.WhenAny(collectTask, Task.Delay(WatchdogTimeout));
-            completed.Should().Be(collectTask,
-                "the stream did not complete within the watchdog -- deadline enforcement regressed");
-
-            var items = await collectTask;
+            await act.Should().ThrowAsync<DeadlineExceededException>();
             var elapsed = DateTime.UtcNow - start;
-
-            items.Should().ContainSingle().Which.Resource.ObjectId.Should().Be("a");
-            elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(StallMs),
-                "the stream must outlive the tiny unary default, not get cut off by it");
+            elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(StallMs),
+                "the page request must fail at the ~100ms client default, not wait out the server's stall");
         }
         finally
         {

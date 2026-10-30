@@ -400,8 +400,16 @@ func WithLookupSubjectsRelation(relation string) LookupSubjectsOption {
 func WithExportRelationshipsFilter(f rel.Filter) ExportRelationshipsOption {
 	return func(o *operationOptions) { o.filter = &f }
 }
+// WithUpdatesStart resumes the stream after token. The zero token starts at
+// the current revision; a whitespace-only token is a local validation error.
 func WithUpdatesStart(token consistency.ZedToken) UpdatesOption {
-	return func(o *operationOptions) { o.start = token }
+	return func(o *operationOptions) {
+		if token.String() != "" && token.IsBlank() {
+			o.err = invalid("updates starting token must not be blank")
+			return
+		}
+		o.start = token
+	}
 }
 
 // WatchCheckpoints selects the operation's checkpoints behavior.

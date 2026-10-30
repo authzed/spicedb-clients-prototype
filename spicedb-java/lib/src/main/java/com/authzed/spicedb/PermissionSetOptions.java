@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Duration;
 
 public final class PermissionSetOptions {
@@ -12,15 +13,13 @@ public final class PermissionSetOptions {
   private PermissionSetOptions(Builder b) {
     this.transport = b.transport;
     this.retryPolicy = b.retryPolicy;
-    if (transport == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
+    if (transport == null) throw new LocalValidationException("transport must not be null");
     timeout = b.timeout;
     limit = b.limit;
     resumeCursor = b.resumeCursor;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
-    if (limit <= 0)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("limit must be positive");
+      throw new LocalValidationException("timeout must be positive");
+    if (limit <= 0) throw new LocalValidationException("limit must be positive");
   }
 
   public Duration timeout() {

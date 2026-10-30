@@ -4,9 +4,10 @@ from __future__ import annotations
 from spicedb.token import ZedToken, _token_string
 
 import json
+import re
 from typing import TYPE_CHECKING
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -16,7 +17,7 @@ from typing import TypeAlias
 from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.protobuf import struct_pb2, timestamp_pb2
 from google.protobuf.message import Message
-from spicedb.errors import InvalidArgumentError
+from spicedb.errors import LocalValidationError
 
 if TYPE_CHECKING:
     from spicedb.errors import SpiceDBError
@@ -59,14 +60,14 @@ def _json(value, path, active=None):
     ):
         identity = id(value)
         if identity in active:
-            raise InvalidArgumentError(f"{path}: cyclic JSON collection")
+            raise LocalValidationError(f"{path}: cyclic JSON collection")
         active.add(identity)
         try:
             if isinstance(value, Mapping):
                 result = {}
                 for key, item in value.items():
                     if not isinstance(key, str):
-                        raise InvalidArgumentError(
+                        raise LocalValidationError(
                             f"{path}: JSON key {key!r} must be a string"
                         )
                     result[key] = _json(item, f"{path}.{key}", active)
@@ -77,7 +78,7 @@ def _json(value, path, active=None):
             ]
         finally:
             active.remove(identity)
-    raise InvalidArgumentError(
+    raise LocalValidationError(
         f"{path}: cannot represent {type(value).__name__} as JSON"
     )
 
@@ -85,7 +86,7 @@ def _json(value, path, active=None):
 def context_to_struct(context: JSONObject, what: str) -> struct_pb2.Struct:
     converted = _json(context, what)
     if not isinstance(converted, dict):
-        raise InvalidArgumentError(f"{what}: must be a JSON object")
+        raise LocalValidationError(f"{what}: must be a JSON object")
     result = struct_pb2.Struct()
     result.update(converted)
     return result
@@ -104,6 +105,35 @@ def context_from_struct(context: struct_pb2.Struct) -> JSONObject:
         return getattr(v, kind) if kind else None
 
     return _snapshot({k: convert(v) for k, v in context.fields.items()})
+
+
+def _require_str(value, what: str, *, optional: bool = False) -> None:
+    """Refuse a caller-supplied name or ID that is not a ``str``.
+
+    A dynamically typed caller can pass ``42`` or ``True`` where a name or ID
+    belongs; it must fail here as local validation rather than reach the
+    server coerced (or fail later as protobuf's ``TypeError``). ``bool`` is
+    not a ``str``, so it is refused too. See root DESIGN.md, "Reject unusable
+    credentials and trust material at construction".
+    """
+    if optional and value is None:
+        return
+    if not isinstance(value, str):
+        expected = "str or None" if optional else "str"
+        raise LocalValidationError(
+            f"{what}: expected {expected}, got {type(value).__name__} {value!r}"
+        )
+
+
+def _require_type(value, cls, what: str, *, optional: bool = False) -> None:
+    """Refuse a caller-supplied value that is not a ``cls`` (e.g. a raw string
+    where an ``ObjectRef`` belongs)."""
+    if optional and value is None:
+        return
+    if not isinstance(value, cls):
+        raise LocalValidationError(
+            f"{what}: expected {cls.__name__}, got {type(value).__name__} {value!r}"
+        )
 
 
 def _format_expiration(value: datetime) -> str:
@@ -129,7 +159,7 @@ def _parse_tuple_suffix(suffix: str, text: str):
         body = suffix[1:]
         end = min((i for i in (body.find(":"), body.find("]")) if i >= 0), default=-1)
         if end <= 0:
-            raise InvalidArgumentError(f"relationship: invalid tuple caveat in {text!r}")
+            raise LocalValidationError(f"relationship: invalid tuple caveat in {text!r}")
         name = body[:end]
         if body[end] == "]":
             caveat = Caveat(name)
@@ -139,33 +169,70 @@ def _parse_tuple_suffix(suffix: str, text: str):
             try:
                 context, consumed = json.JSONDecoder().raw_decode(rest)
             except ValueError as e:
-                raise InvalidArgumentError(
+                raise LocalValidationError(
                     f"relationship: invalid tuple caveat context in {text!r}"
                 ) from e
             if not isinstance(context, dict) or not rest[consumed:].startswith("]"):
-                raise InvalidArgumentError(f"relationship: invalid tuple caveat in {text!r}")
+                raise LocalValidationError(f"relationship: invalid tuple caveat in {text!r}")
             caveat = Caveat(name, context)
             suffix = rest[consumed + 1 :]
     if suffix:
         if not suffix.startswith(_EXPIRATION_PREFIX) or not suffix.endswith("]"):
-            raise InvalidArgumentError(f"relationship: invalid tuple suffix {suffix!r}")
+            raise LocalValidationError(f"relationship: invalid tuple suffix {suffix!r}")
         raw = suffix[len(_EXPIRATION_PREFIX) : -1]
         try:
             expiration = datetime.fromisoformat(raw)
         except ValueError as e:
-            raise InvalidArgumentError(f"relationship: invalid tuple expiration {raw!r}") from e
+            raise LocalValidationError(f"relationship: invalid tuple expiration {raw!r}") from e
         if expiration.tzinfo is None or "T" not in raw.upper():
-            raise InvalidArgumentError(
+            raise LocalValidationError(
                 f"relationship: tuple expiration {raw!r} must be RFC 3339 with a time zone"
             )
         expiration = expiration.astimezone(timezone.utc)
     return caveat, expiration
 
 
+# SpiceDB's own tuple-syntax rules (pkg/tuple): a definition name, optionally
+# prefixed by `prefix/` segments, and an object ID (or `*`, the wildcard).
+# The server rejects anything else, so the client rejects it before sending.
+_OBJECT_TYPE_RE = re.compile(
+    r"([a-z][a-z0-9_]{1,61}[a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]"
+)
+_OBJECT_ID_RE = re.compile(r"[a-zA-Z0-9/_|\-=+]+|\*")
+
+
 @dataclass(frozen=True)
 class ObjectRef:
+    """An object, ``type:id``.
+
+    ``object_type`` and ``object_id`` follow SpiceDB's tuple syntax: a
+    lowercase definition name (optionally ``prefix/name``) and a nonempty ID
+    of ``a-z A-Z 0-9 / _ | - = +`` characters, or ``*`` for a wildcard.
+    Anything else raises :class:`~spicedb.errors.LocalValidationError` (an
+    ``InvalidArgumentError`` and a ``ValueError``), since SpiceDB would reject
+    it. Values the server returns are taken as sent.
+    """
+
     object_type: str
     object_id: str
+
+    @classmethod
+    def parse(cls, text: str) -> ObjectRef:
+        """Parse ``type:id``, e.g. ``ObjectRef.parse("document:readme")``."""
+        if not isinstance(text, str):
+            raise LocalValidationError(f"object: expected type:id string, got {text!r}")
+        object_type, sep, object_id = text.partition(":")
+        if not sep:
+            raise LocalValidationError(f"object: invalid {text!r}; expected type:id")
+        return cls(object_type, object_id)
+
+    @classmethod
+    def _unchecked(cls, object_type: str, object_id: str) -> ObjectRef:
+        """A ref from server data, kept exactly as sent (no local validation)."""
+        value = object.__new__(cls)
+        object.__setattr__(value, "object_type", object_type)
+        object.__setattr__(value, "object_id", object_id)
+        return value
 
     def _to_proto(self):
         return core_pb2.ObjectReference(
@@ -173,6 +240,20 @@ class ObjectRef:
         )
 
     def __post_init__(self) -> None:
+        if not isinstance(self.object_type, str) or not _OBJECT_TYPE_RE.fullmatch(
+            self.object_type
+        ):
+            raise LocalValidationError(
+                f"object.object_type: invalid {self.object_type!r}; expected a "
+                "lowercase definition name such as 'document' or 'prefix/document'"
+            )
+        if not isinstance(self.object_id, str) or not _OBJECT_ID_RE.fullmatch(
+            self.object_id
+        ):
+            raise LocalValidationError(
+                f"object.object_id: invalid {self.object_id!r}; expected a nonempty "
+                "ID of a-z A-Z 0-9 / _ | - = + characters, or *"
+            )
         _freeze(self)
 
     def __str__(self) -> str:
@@ -185,9 +266,30 @@ class SubjectRef:
     object: ObjectRef
     relation: str | None = None
 
+    @classmethod
+    def parse(cls, text: str) -> SubjectRef:
+        """Parse ``type:id`` or ``type:id#relation``.
+
+        ``type:id#...`` is a direct subject (relation None), as in SpiceDB's
+        tuple syntax. Invalid input raises
+        :class:`~spicedb.errors.LocalValidationError`.
+        """
+        if not isinstance(text, str):
+            raise LocalValidationError(
+                f"subject: expected type:id[#relation] string, got {text!r}"
+            )
+        obj, sep, relation = text.partition("#")
+        if sep and (not relation or "#" in relation):
+            raise LocalValidationError(
+                f"subject: invalid {text!r}; expected type:id[#relation]"
+            )
+        return cls(ObjectRef.parse(obj), relation if sep and relation != "..." else None)
+
     def __post_init__(self) -> None:
+        _require_type(self.object, ObjectRef, "subject.object")
+        _require_str(self.relation, "subject.relation", optional=True)
         if self.relation == "":
-            raise InvalidArgumentError("subject.relation: must be nonempty or None")
+            raise LocalValidationError("subject.relation: must be nonempty or None")
         _freeze(self)
 
     def _to_proto(self):
@@ -206,6 +308,7 @@ class Caveat:
     context: JSONObject | None = None
 
     def __post_init__(self) -> None:
+        _require_str(self.name, "caveat.name")
         if self.context is not None:
             context_to_struct(self.context, "caveat.context")
         _freeze(self)
@@ -219,6 +322,9 @@ class PermissionCheck:
     context: JSONObject | None = None
 
     def __post_init__(self) -> None:
+        _require_type(self.resource, ObjectRef, "check.resource")
+        _require_str(self.permission, "check.permission")
+        _require_type(self.subject, SubjectRef, "check.subject")
         if self.context is not None:
             context_to_struct(self.context, "check.context")
         _freeze(self)
@@ -242,6 +348,9 @@ class Relationship:
         caveat: Caveat | None = None,
         expiration: datetime | None = None,
     ) -> Relationship:
+        _require_str(resource, "relationship.resource")
+        _require_str(relation, "relationship.relation")
+        _require_str(subject, "relationship.subject")
         try:
             rt, ri = resource.split(":", 1)
             subj, sep, sr = subject.partition("#")
@@ -249,13 +358,13 @@ class Relationship:
             if not all((rt, ri, relation, st, si)) or (sep and (not sr)):
                 raise ValueError()
         except ValueError as e:
-            raise InvalidArgumentError(
+            raise LocalValidationError(
                 "relationship: expected type:id, relation, type:id[#relation]"
             ) from e
         return cls(
             ObjectRef(rt, ri),
             relation,
-            SubjectRef(ObjectRef(st, si), sr if sep else None),
+            SubjectRef(ObjectRef(st, si), sr if sep and sr != "..." else None),
             caveat,
             expiration,
         )
@@ -272,7 +381,7 @@ class Relationship:
         microseconds are truncated (Python's ``datetime`` resolution).
         """
         if not isinstance(text, str):
-            raise InvalidArgumentError("relationship: expected tuple string")
+            raise LocalValidationError("relationship: expected tuple string")
         main, bracket, suffix = text.partition("[")
         suffix = bracket + suffix
         try:
@@ -286,7 +395,7 @@ class Relationship:
             if not all((rt, ri, relation, st, si)) or (sep and not subject_relation):
                 raise ValueError()
         except ValueError as e:
-            raise InvalidArgumentError(
+            raise LocalValidationError(
                 f"relationship: invalid tuple {text!r}; expected type:id#relation@type:id[#relation]"
             ) from e
         caveat, expiration = _parse_tuple_suffix(suffix, text)
@@ -425,10 +534,10 @@ class Relationship:
             else None
         )
         return cls(
-            ObjectRef(p.resource.object_type, p.resource.object_id),
+            ObjectRef._unchecked(p.resource.object_type, p.resource.object_id),
             p.relation,
             SubjectRef(
-                ObjectRef(p.subject.object.object_type, p.subject.object.object_id),
+                ObjectRef._unchecked(p.subject.object.object_type, p.subject.object.object_id),
                 p.subject.optional_relation or None,
             ),
             caveat,
@@ -438,6 +547,11 @@ class Relationship:
         )
 
     def __post_init__(self) -> None:
+        _require_type(self.resource, ObjectRef, "relationship.resource")
+        _require_str(self.relation, "relationship.relation")
+        _require_type(self.subject, SubjectRef, "relationship.subject")
+        _require_type(self.caveat, Caveat, "relationship.caveat", optional=True)
+        _require_type(self.expiration, datetime, "relationship.expiration", optional=True)
         _freeze(self)
 
 
@@ -453,12 +567,13 @@ class SubjectRelationFilter:
     name: str | None = None
 
     def __post_init__(self) -> None:
+        _require_str(self.name, "subject.relation.name", optional=True)
         if (
             not isinstance(self.kind, SubjectRelationMode)
             or (self.kind == SubjectRelationMode.NAMED and (not self.name))
             or (self.kind != SubjectRelationMode.NAMED and self.name is not None)
         ):
-            raise InvalidArgumentError("subject.relation: invalid relation filter")
+            raise LocalValidationError("subject.relation: invalid relation filter")
         _freeze(self)
 
     @classmethod
@@ -491,8 +606,11 @@ class SubjectFilter:
     )
 
     def __post_init__(self) -> None:
+        _require_str(self.subject_type, "subject.subject_type")
+        _require_str(self.subject_id, "subject.subject_id", optional=True)
+        _require_type(self.relation, SubjectRelationFilter, "subject.relation")
         if not self.subject_type:
-            raise InvalidArgumentError("subject.subject_type: required")
+            raise LocalValidationError("subject.subject_type: required")
         _freeze(self)
 
     def _to_proto(self):
@@ -519,8 +637,12 @@ class Filter:
     subject: SubjectFilter | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        _require_str(self.resource_type, "filter.resource_type")
+        for name in ("resource_id", "resource_id_prefix", "relation"):
+            _require_str(getattr(self, name), f"filter.{name}", optional=True)
+        _require_type(self.subject, SubjectFilter, "filter.subject", optional=True)
         if self.resource_id is not None and self.resource_id_prefix is not None:
-            raise InvalidArgumentError(
+            raise LocalValidationError(
                 "filter.resource_id and resource_id_prefix are mutually exclusive"
             )
         _freeze(self)
@@ -543,7 +665,7 @@ class Filter:
         not filterable. Test doubles use this instead of reimplementing it.
         """
         if not isinstance(relationship, Relationship):
-            raise InvalidArgumentError("filter.matches: expected Relationship")
+            raise LocalValidationError("filter.matches: expected Relationship")
         resource = relationship.resource
         if self.resource_type and self.resource_type != resource.object_type:
             return False
@@ -610,11 +732,19 @@ class SchemaFilter:
         )
 
     def __post_init__(self) -> None:
+        for name in ("definition_name", "caveat_name", "relation_name", "permission_name"):
+            _require_str(getattr(self, name), f"schema_filter.{name}", optional=True)
         _freeze(self)
 
 
 class UpdateOperation(Enum):
-    """The kind of mutation represented by an `Update` from `watch()`."""
+    """The kind of mutation an `Update` represents.
+
+    Used both for changes observed through `watch()` and for updates queued
+    in a `Transaction` (`create`/`touch`/`delete`, or a prebuilt `Update`
+    passed to `Transaction.add`). `UNSPECIFIED` only appears on observed
+    updates from a server sending an unknown operation; it cannot be written.
+    """
 
     CREATE = "create"
     TOUCH = "touch"
@@ -653,16 +783,16 @@ class Update:
     def _to_proto(self) -> core_pb2.RelationshipUpdate:
         operation = _UPDATE_OP_TO_PROTO.get(self.operation)
         if operation is None:
-            raise InvalidArgumentError("update.operation: cannot send UNSPECIFIED")
+            raise LocalValidationError("update.operation: cannot send UNSPECIFIED")
         return core_pb2.RelationshipUpdate(
             operation=operation, relationship=self.relationship._to_proto()
         )
 
     def __post_init__(self) -> None:
         if not isinstance(self.operation, UpdateOperation):
-            raise InvalidArgumentError("update.operation: expected UpdateOperation")
+            raise LocalValidationError("update.operation: expected UpdateOperation")
         if not isinstance(self.relationship, Relationship):
-            raise InvalidArgumentError("update.relationship: expected Relationship")
+            raise LocalValidationError("update.relationship: expected Relationship")
         _freeze(self)
 
     def __str__(self) -> str:
@@ -696,9 +826,9 @@ class Precondition:
 
     def __post_init__(self) -> None:
         if not isinstance(self.operation, PreconditionOperation):
-            raise InvalidArgumentError("precondition.operation: expected PreconditionOperation")
+            raise LocalValidationError("precondition.operation: expected PreconditionOperation")
         if not isinstance(self.filter, Filter):
-            raise InvalidArgumentError("precondition.filter: expected Filter")
+            raise LocalValidationError("precondition.filter: expected Filter")
 
     def _to_proto(self) -> permission_service_pb2.Precondition:
         return permission_service_pb2.Precondition(
@@ -741,6 +871,13 @@ class WatchEvent:
         _freeze(self)
 
 
+def _checked_update(update: Update) -> Update:
+    if not isinstance(update, Update):
+        raise LocalValidationError(f"update: expected Update, got {update!r}")
+    update._to_proto()  # validate now, not at write time
+    return update
+
+
 class Transaction:
     """A mutable builder batching relationship writes with preconditions.
 
@@ -772,6 +909,29 @@ class Transaction:
     def delete(self, rel: Relationship) -> Transaction:
         """Add a DELETE operation."""
         return self._add(UpdateOperation.DELETE, rel)
+
+    def add(self, update: Update) -> Transaction:
+        """Queue a prebuilt ``Update`` (``CREATE``, ``TOUCH`` or ``DELETE``).
+
+        Equivalent to the matching ``create``/``touch``/``delete`` call, for
+        code that already holds ``Update`` values (a work queue, a replayed
+        watch event). An ``UNSPECIFIED`` operation or a non-``Update`` raises
+        :class:`~spicedb.errors.LocalValidationError` and queues nothing.
+        """
+        self._update_list.append(_checked_update(update))
+        return self
+
+    def extend(self, updates: Iterable[Update]) -> Transaction:
+        """Queue each prebuilt ``Update`` in order, as ``add`` does.
+
+        All-or-nothing: if any item is invalid, it raises
+        :class:`~spicedb.errors.LocalValidationError` and none are queued.
+        """
+        if isinstance(updates, (Update, str, bytes)):
+            raise LocalValidationError("updates: expected an iterable of Update values")
+        checked = [_checked_update(update) for update in updates]
+        self._update_list.extend(checked)
+        return self
 
     def must_not_match(self, f: Filter) -> Transaction:
         """Add a precondition that no relationships match the filter."""
@@ -914,16 +1074,15 @@ def _permission_tree_from_proto(
         leaf = LeafNode(
             subjects=[
                 SubjectRef(
-                    object=ObjectRef(s.object.object_type, s.object.object_id),
+                    object=ObjectRef._unchecked(s.object.object_type, s.object.object_id),
                     relation=s.optional_relation or None,
                 )
                 for s in t.leaf.subjects
             ]
         )
     return PermissionTree(
-        expanded_object=ObjectRef(
-            object_type=t.expanded_object.object_type,
-            object_id=t.expanded_object.object_id,
+        expanded_object=ObjectRef._unchecked(
+            t.expanded_object.object_type, t.expanded_object.object_id
         ),
         expanded_relation=t.expanded_relation,
         intermediate=intermediate,
@@ -1117,10 +1276,12 @@ class RelationReference:
     def _from_proto(
         cls, proto: schema_service_pb2.ReflectionRelationReference
     ) -> "RelationReference":
-        """Create from a proto ReflectionRelationReference."""
+        """Create from a proto ReflectionRelationReference (a server response)."""
+        from spicedb import _wire
+
         return cls(
-            definition_name=proto.definition_name,
-            relation_name=proto.relation_name,
+            definition_name=_wire.text(proto.definition_name, "ReflectionRelationReference.definition_name"),
+            relation_name=_wire.text(proto.relation_name, "ReflectionRelationReference.relation_name"),
             is_permission=proto.is_permission,
         )
 
@@ -1623,11 +1784,11 @@ def _debug_trace(p):
         else None
     )
     return CheckDebugTrace(
-        ObjectRef(p.resource.object_type, p.resource.object_id),
+        ObjectRef._unchecked(p.resource.object_type, p.resource.object_id),
         p.permission,
         _safe_enum(PermissionType, p.permission_type),
         SubjectRef(
-            ObjectRef(p.subject.object.object_type, p.subject.object.object_id),
+            ObjectRef._unchecked(p.subject.object.object_type, p.subject.object.object_id),
             p.subject.optional_relation or None,
         ),
         _check_permissionship_from_proto(p.result),
@@ -1671,7 +1832,7 @@ class PermissionSetCursor:
                 or not isinstance(value, int)
                 or not 0 <= value <= 0xFFFFFFFF
             ):
-                raise InvalidArgumentError(f"cursor.{name}: expected uint32")
+                raise LocalValidationError(f"cursor.{name}: expected uint32")
         _freeze(self)
 
     def _to_proto(self):

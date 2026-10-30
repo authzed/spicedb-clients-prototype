@@ -13,12 +13,12 @@ module SpiceDB
     # Strategy wraps a consistency requirement for read operations.
     Strategy = Data.define(:type, :revision) do
       def initialize(type:, revision: nil)
-        raise InvalidArgumentError, 'unknown consistency strategy' unless %i[full min_latency at_least snapshot].include?(type)
+        raise LocalValidationError, 'unknown consistency strategy' unless %i[full min_latency at_least snapshot].include?(type)
 
         if %i[at_least snapshot].include?(type)
           revision = ZedToken.validate(revision)
         elsif !revision.nil?
-          raise InvalidArgumentError, 'this consistency strategy does not accept a revision'
+          raise LocalValidationError, 'this consistency strategy does not accept a revision'
         end
         super
       end
@@ -37,6 +37,27 @@ module SpiceDB
           { at_exact_snapshot: { token: revision.to_s } }
         end
       end
+
+      # The strategy and its revision: +full+, +min_latency+,
+      # <tt>at_least(<token>)</tt> or <tt>snapshot(<token>)</tt>.
+      # @return [String]
+      def to_s
+        revision.nil? ? type.to_s : "#{type}(#{revision})"
+      end
+
+      # @return [String] the strategy for +p+ and the console
+      def inspect = "#<SpiceDB::Consistency #{self}>"
+
+      # A JSON-ready form: <tt>{"strategy" => "at_least", "token" => "<token>"}</tt>,
+      # with no token for +full+ and +min_latency+.
+      # @return [Hash{String => String}]
+      def as_json(*)
+        json = { 'strategy' => type.to_s }
+        json['token'] = revision.to_s unless revision.nil?
+        json
+      end
+
+      def to_json(*) = as_json.to_json(*)
     end
 
     module_function

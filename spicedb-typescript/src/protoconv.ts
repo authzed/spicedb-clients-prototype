@@ -42,15 +42,11 @@ import {
     type LookupResource, type LookupSubject, type ResolvedSubject, type ExpandResult, type PermissionTree,
     type ReadRelationship, type WriteResult, type Permissionship,
     toProtoRelationship, fromProtoRelationship, toProtoRelationshipFilter, toProtoUpdate, toProtoPreconditionValue,
-    protoSubject, nativeSubject, immutableSnapshot, mergeCheckContext, checkResultFromProto as checkResultFromProtoTypes, fromProtoLookupResource,
+    protoSubject, protoObject, requireString, nativeSubject, immutableSnapshot, mergeCheckContext, checkResultFromProto as checkResultFromProtoTypes, fromProtoLookupResource,
     fromProtoLookupSubject, fromProtoPermissionTree, fromProtoDebugInformation,
 } from "./types.js";
 
-export function objectToProto(object: ObjectRef): ObjectReference {
-    if (!object?.objectType || typeof object.objectId !== "string")
-        throw new InvalidArgumentError("object requires objectType and objectId");
-    return create(ObjectReferenceSchema, { objectType: object.objectType, objectId: object.objectId });
-}
+export function objectToProto(object: ObjectRef): ObjectReference { return protoObject(object, "object"); }
 export function objectFromProto(object: ObjectReference | undefined): ObjectRef {
     return immutableSnapshot({ objectType: object?.objectType ?? "", objectId: object?.objectId ?? "" });
 }
@@ -99,20 +95,20 @@ export function consistencyFromProto(consistency: ProtoConsistency): Consistency
     const r = consistency.requirement;
     if (r.case === undefined)
         throw new InvalidArgumentError("consistency has no requirement");
-    if ((r.case === "atLeastAsFresh" || r.case === "atExactSnapshot") && !r.value.token)
-        throw new InvalidArgumentError("token consistency requires a nonempty token");
+    if ((r.case === "atLeastAsFresh" || r.case === "atExactSnapshot") && !r.value.token?.trim())
+        throw new InvalidArgumentError("token consistency requires a nonempty token, not empty or whitespace");
     return Consistency._wrap(consistency);
 }
 export function zedTokenToProto(token: ZedToken): ProtoZedToken { return create(ZedTokenSchema, { token: tokenString(token) }); }
 export function zedTokenFromProto(token: ProtoZedToken | undefined): ZedToken { return serverToken(token?.token); }
 /** The singular `CheckPermissionRequest` the client sends for `request` (with optional call-level context merged under the request's). */
 export function checkRequestToProto(request: CheckRequest, defaultContext?: CheckRequest["context"]): CheckPermissionRequest {
-    return create(CheckPermissionRequestSchema, { resource: objectToProto(request.resource), permission: request.permission, subject: protoSubject(request.subject), consistency: consistencyToProto(request.consistency), context: mergeCheckContext(defaultContext, request.context) });
+    return create(CheckPermissionRequestSchema, { resource: protoObject(request.resource, "resource"), permission: requireString(request.permission, "permission"), subject: protoSubject(request.subject), consistency: consistencyToProto(request.consistency), context: mergeCheckContext(defaultContext, request.context) });
 }
 export function checkResultFromProto(response: CheckPermissionResponse): CheckResult { return checkResultFromProtoTypes(response); }
 /** The bulk request item `checkBulk` sends for `request` (with optional call-level context merged under the request's). */
 export function checkBulkRequestItemToProto(request: CheckRequest, defaultContext?: CheckRequest["context"]): CheckBulkPermissionsRequestItem {
-    return create(CheckBulkPermissionsRequestItemSchema, { resource: objectToProto(request.resource), permission: request.permission, subject: protoSubject(request.subject), context: mergeCheckContext(defaultContext, request.context) });
+    return create(CheckBulkPermissionsRequestItemSchema, { resource: protoObject(request.resource, "resource"), permission: requireString(request.permission, "permission"), subject: protoSubject(request.subject), context: mergeCheckContext(defaultContext, request.context) });
 }
 /** The `google.rpc.Status` an item error carries: the server's own status when it came from one, else its code and message. */
 function itemErrorStatus(error: SpiceDBError) {

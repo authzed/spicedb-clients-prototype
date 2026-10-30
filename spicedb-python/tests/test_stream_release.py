@@ -5,6 +5,7 @@ A bare break requires a context manager while the stream remains retained.
 """
 
 from __future__ import annotations
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import TransportSecurity
 from spicedb import ObjectRef, SubjectRef
 import asyncio
@@ -43,6 +44,14 @@ class _ParkingPermissionSets(materialize_grpc.WatchPermissionSetsServiceServicer
     def LookupPermissionSets(self, request, context):
         self._parked.on_open(context)
         yield materialize.LookupPermissionSetsResponse(
+            change=materialize.PermissionSetChange(
+                at_revision=core_pb2.ZedToken(token="materialize"),
+                operation=materialize.PermissionSetChange.SET_OPERATION_ADDED,
+                parent_set=materialize.SetReference(
+                    object_type="group", object_id="eng", permission_or_relation="member"
+                ),
+                child_member=materialize.MemberReference(object_type="user", object_id="alice"),
+            ),
             cursor=materialize.Cursor(
                 limit=request.limit,
                 token=core_pb2.ZedToken(token="materialize"),
@@ -95,7 +104,7 @@ class _ParkingPermissions(psp_grpc.PermissionsServiceServicer):
 
     def ReadRelationships(self, request, context):
         self._parked.on_open(context)
-        yield psp.ReadRelationshipsResponse(
+        yield psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
             relationship=_relationship(),
             after_result_cursor=core_pb2.Cursor(token="cursor-1"),
         )
@@ -103,7 +112,7 @@ class _ParkingPermissions(psp_grpc.PermissionsServiceServicer):
 
     def LookupResources(self, request, context):
         self._parked.on_open(context)
-        yield psp.LookupResourcesResponse(
+        yield psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             resource_object_id="doc1",
             permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
             after_result_cursor=core_pb2.Cursor(token="cursor-1"),
@@ -112,7 +121,7 @@ class _ParkingPermissions(psp_grpc.PermissionsServiceServicer):
 
     def LookupSubjects(self, request, context):
         self._parked.on_open(context)
-        yield psp.LookupSubjectsResponse(
+        yield psp.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             subject=psp.ResolvedSubject(
                 subject_object_id="user1",
                 permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,

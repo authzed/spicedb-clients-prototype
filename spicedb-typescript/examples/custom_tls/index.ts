@@ -25,7 +25,7 @@ import * as http2 from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
-import { PermissionsService } from "@spicedb/proto";
+import { CheckPermissionResponse_Permissionship, PermissionsService } from "@spicedb/proto";
 import { createSpiceDBClient, full } from "../../src/index.js";
 function assert(condition: boolean, message: string): void {
     if (!condition) {
@@ -83,7 +83,8 @@ function serve(requireClientCert: boolean): Promise<{
                 checkBulkPermissions: (req) => ({
                     pairs: req.items.map(item => ({
                         request: item,
-                        response: { case: "item" as const, value: {} }
+                        // SpiceDB always sets permissionship; an unset one is malformed.
+                        response: { case: "item" as const, value: { permissionship: CheckPermissionResponse_Permissionship.NO_PERMISSION } }
                     }))
                 })
             });

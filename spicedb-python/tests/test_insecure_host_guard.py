@@ -34,6 +34,9 @@ LOOPBACK_ENDPOINTS = [
     "unix:///var/run/spicedb.sock",
     "UNIX:/var/run/spicedb.sock",
     "Unix:///var/run/spicedb.sock",
+    "dns:///localhost:50051",
+    "DNS:///127.0.0.1:50051",
+    "dns:///[::1]:50051",
 ]
 NON_LOOPBACK_ENDPOINTS = [
     "example.com:443",
@@ -44,6 +47,8 @@ NON_LOOPBACK_ENDPOINTS = [
     "localhost.evil.com:443",
     "127.0.0.1.evil.com:443",
     "evil-localhost:443",
+    "dns:///example.com:443",
+    "dns:///10.0.0.5:50051",
 ]
 AUTHORITY_SHIFTING_ENDPOINTS = [
     "127.0.0.1:443@evil.com",
@@ -61,7 +66,22 @@ AUTHORITY_SHIFTING_ENDPOINTS = [
     "127.0.0.1:٤٤٣",
     "127.0.0.1:４４３",
     "127.0.0.1:²",
+    "dns:///127.0.0.1:443@evil.com",
+    "dns:////localhost:50051",
+    "dns://evil.com/localhost:50051",
 ]
+
+
+# Every authority-shifting endpoint is malformed (including "localhost.",
+# a plaintext endpoint without a port), so it fails as invalid before the
+# remote-plaintext policy runs; the lookalike hosts below are well-formed and
+# get that policy's message instead.
+@pytest.mark.parametrize("endpoint", ["localhost.:50051", "127.0.0.1.evil.com:443"])
+def test_well_formed_lookalike_host_gets_the_remote_policy(endpoint: str):
+    with mock.patch("grpc.insecure_channel") as insecure_channel:
+        with pytest.raises(InvalidArgumentError, match="remote_credentials"):
+            SyncSpiceDBClient(endpoint, token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
+    insecure_channel.assert_not_called()
 
 
 @pytest.mark.parametrize("endpoint", LOOPBACK_ENDPOINTS)
@@ -90,7 +110,7 @@ def test_sync_refuses_authority_shifting_endpoint_without_opt_in(endpoint: str):
     """
     with mock.patch("grpc.insecure_channel") as insecure_channel:
         with pytest.raises(
-            InvalidArgumentError, match="remote_credentials"
+            InvalidArgumentError, match="invalid endpoint"
         ):
             SyncSpiceDBClient(endpoint, token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     insecure_channel.assert_not_called()
@@ -100,7 +120,7 @@ def test_sync_refuses_authority_shifting_endpoint_without_opt_in(endpoint: str):
 def test_aio_refuses_authority_shifting_endpoint_without_opt_in(endpoint: str):
     with mock.patch("grpc.aio.insecure_channel") as insecure_channel:
         with pytest.raises(
-            InvalidArgumentError, match="remote_credentials"
+            InvalidArgumentError, match="invalid endpoint"
         ):
             AsyncSpiceDBClient(endpoint, token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     insecure_channel.assert_not_called()

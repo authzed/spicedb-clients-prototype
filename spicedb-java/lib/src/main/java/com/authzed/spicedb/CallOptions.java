@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Duration;
 import java.util.*;
 
@@ -11,11 +12,10 @@ public final class CallOptions {
   private CallOptions(Builder b) {
     this.transport = b.transport;
     this.retryPolicy = b.retryPolicy;
-    if (transport == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
+    if (transport == null) throw new LocalValidationException("transport must not be null");
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
+      throw new LocalValidationException("timeout must be positive");
   }
 
   public static Builder builder() {

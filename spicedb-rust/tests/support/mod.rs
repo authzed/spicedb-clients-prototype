@@ -174,6 +174,22 @@ pub async fn spawn_permissions_server(mock: MockPermissionsService) -> SocketAdd
     spawn_server(router).await
 }
 
+/// Serves a single [`MockPermissionsService`] on a Unix domain socket at
+/// `path` (replacing any stale socket file there).
+#[cfg(unix)]
+pub fn spawn_permissions_unix_server(mock: MockPermissionsService, path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    let listener = tokio::net::UnixListener::bind(path).expect("bind unix socket");
+    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+    let router = Server::builder().add_service(PermissionsServiceServer::new(mock));
+    tokio::spawn(async move {
+        router
+            .serve_with_incoming(incoming)
+            .await
+            .expect("mock gRPC server should serve");
+    });
+}
+
 /// Server-streaming response type shared by the mock's paginating RPCs.
 type ProtoResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
@@ -204,6 +220,10 @@ pub struct MockPermissionsService {
     lookup_resources_calls: Arc<AtomicUsize>,
     lookup_resources_debug: Arc<Mutex<Vec<bool>>>,
     lookup_resources_cursors: Arc<Mutex<Vec<Option<proto::Cursor>>>>,
+    /// `(call, duration)`: the `call`-th `LookupResources` request (1-based)
+    /// streams its first item, then stalls mid-page for `duration`.
+    lookup_resources_stall: Mutex<Option<(usize, std::time::Duration)>>,
+    expand_response: Mutex<Option<proto::ExpandPermissionTreeResponse>>,
 
     lookup_subjects_responses: Mutex<Vec<proto::LookupSubjectsResponse>>,
     lookup_subjects_calls: Arc<AtomicUsize>,
@@ -272,6 +292,8 @@ impl MockPermissionsService {
             lookup_resources_calls: Arc::new(AtomicUsize::new(0)),
             lookup_resources_debug: Arc::new(Mutex::new(Vec::new())),
             lookup_resources_cursors: Arc::new(Mutex::new(Vec::new())),
+            lookup_resources_stall: Mutex::new(None),
+            expand_response: Mutex::new(None),
 
             lookup_subjects_responses: Mutex::new(Vec::new()),
             lookup_subjects_calls: Arc::new(AtomicUsize::new(0)),
@@ -337,6 +359,17 @@ impl MockPermissionsService {
     /// Queues one page of `LookupResources` responses.
     pub fn push_lookup_resources_page(&self, page: Vec<proto::LookupResourcesResponse>) {
         self.lookup_resources_pages.lock().unwrap().push_back(page);
+    }
+
+    /// Sets the response every `ExpandPermissionTree` call returns.
+    pub fn set_expand_response(&self, response: proto::ExpandPermissionTreeResponse) {
+        *self.expand_response.lock().unwrap() = Some(response);
+    }
+
+    /// Makes the `call`-th `LookupResources` page (1-based) stream its first
+    /// item and then stall for `duration` before the rest.
+    pub fn stall_lookup_resources_page(&self, call: usize, duration: std::time::Duration) {
+        *self.lookup_resources_stall.lock().unwrap() = Some((call, duration));
     }
 
     /// Returns a live handle to the `LookupResources` call counter.
@@ -685,7 +718,12 @@ impl PermissionsService for MockPermissionsService {
         &self,
         _request: Request<proto::ExpandPermissionTreeRequest>,
     ) -> Result<Response<proto::ExpandPermissionTreeResponse>, Status> {
-        unimplemented!("not exercised by the read-stream behavioral tests")
+        self.expand_response
+            .lock()
+            .unwrap()
+            .clone()
+            .map(Response::new)
+            .ok_or_else(|| Status::unimplemented("no expand response configured"))
     }
 
     type LookupResourcesStream = ProtoResponseStream<proto::LookupResourcesResponse>;
@@ -694,7 +732,11 @@ impl PermissionsService for MockPermissionsService {
         &self,
         request: Request<proto::LookupResourcesRequest>,
     ) -> Result<Response<Self::LookupResourcesStream>, Status> {
-        self.lookup_resources_calls.fetch_add(1, Ordering::SeqCst);
+        let call = self.lookup_resources_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let stall = match *self.lookup_resources_stall.lock().unwrap() {
+            Some((on, duration)) if on == call => Some(duration),
+            _ => None,
+        };
         self.lookup_resources_debug
             .lock()
             .unwrap()
@@ -710,7 +752,12 @@ impl PermissionsService for MockPermissionsService {
             .pop_front()
             .unwrap_or_default();
         let stream = async_stream::stream! {
-            for resp in page {
+            for (i, resp) in page.into_iter().enumerate() {
+                if i == 1 {
+                    if let Some(d) = stall {
+                        tokio::time::sleep(d).await;
+                    }
+                }
                 yield Ok(resp);
             }
         };

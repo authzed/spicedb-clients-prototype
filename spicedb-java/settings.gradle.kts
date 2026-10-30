@@ -6,6 +6,6 @@ include("examples")
 // Include the proto client as a composite build so it resolves as a project dependency.
 includeBuild("../proto-clients/spicedb-java-proto") {
     dependencySubstitution {
-        substitute(module("com.authzed:spicedb-java-proto")).using(project(":"))
+        substitute(module("com.authzed.spicedb:spicedb-java-proto")).using(project(":"))
     }
 }

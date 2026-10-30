@@ -39,10 +39,41 @@ c, err := client.NewPlaintext("spicedb:50051", "key",
     client.WithRemotePlaintextCredentials(client.RemotePlaintextAllowed))
 ```
 
+A Docker Compose service such as `spicedb:50051`, reached from another service
+on the compose network, is a remote host: plaintext to it needs both the
+plaintext constructor and the credentials opt-in, as above. Without the opt-in
+`NewPlaintext` fails with `ErrInvalidArgument`, and the message names both
+`NewPlaintext(endpoint, key, WithRemotePlaintextCredentials(RemotePlaintextAllowed))`
+and, for `NewWithOpts`, `WithInsecure()` with the same opt-in.
+
+Endpoints are `host:port`, `http://host:port` (plaintext constructors only;
+the port is required), `https://host[:port]` (TLS only; 443 when the port is
+omitted), or one of the gRPC targets `dns:///host:port` (client-side DNS
+resolution), `unix:/path/to.sock` / `unix:///path/to.sock` and
+`passthrough:///host:port`. Plaintext always needs an explicit port: a bare
+`localhost` is refused (write `localhost:50051`), while a bare TLS host uses
+443. A URL whose scheme disagrees with the constructor, any other scheme
+(including gRPC resolvers such as `unix-abstract:` that authzed-go passed
+through), or an endpoint with a path, query, fragment, userinfo or non-numeric
+port fails at construction with `ErrInvalidArgument` naming the problem, so a
+wrong endpoint never builds a client whose every call fails.
+
+Like authzed-go, constructors connect lazily. Where you relied on
+`grpc.WithBlock()` to fail at startup, call `Ready` instead:
+
+```go
+if err := c.Ready(ctx, client.WithReadyTimeout(10*time.Second)); err != nil {
+    return err // CodeDeadlineExceeded, naming the endpoint and the connection error
+}
+```
+
 `NewSystemTLS` uses the system trust store. `NewWithOpts` with
 `WithDialOptions` covers custom trust and mTLS. Remove any
 `grpcutil.WithBearerToken` from your dial options, because the key is already
 attached.
+
+An empty or whitespace-only preshared key (usually an unset environment
+variable) fails at construction with `ErrInvalidArgument`.
 
 ## Existing connections
 
@@ -55,12 +86,25 @@ c, err := client.NewFromConn(conn) // conn stays yours; c.Close() leaves it open
 
 ## Deadlines and retries
 
-Every unary call (including bulk checks and paged reads) gets a 30-second
-budget unless the context already has an earlier deadline, or you pass a
-per-call `With<Operation>Timeout` or a client-wide `WithDefaultTimeout`.
+Every unary call (including bulk checks) gets a 30-second budget unless the
+context already has an earlier deadline, or you pass a per-call
+`With<Operation>Timeout` or a client-wide `WithDefaultTimeout`. Paged reads
+(relationship reads, lookups, exports) apply that default to each page
+request's server time instead (time your loop body spends on an item does
+not count), so a long or slowly consumed read is not cut off but a stalled
+page fails; a
+context deadline or `With<Operation>Timeout` still bounds the whole read.
 Idempotent reads retry `Unavailable` and `Aborted` up to three times with
-jittered backoff, and writes are never retried. Streams have no default
-deadline.
+jittered backoff, and writes are never retried. Watches and imports have no
+default deadline.
+
+A response the client cannot interpret (for example a relationship without a
+subject, or a check or lookup result whose permissionship is unset)
+fails with `ErrInternal`, and its message says
+`client detected malformed response from server` so it is not mistaken for a
+status the server sent; authzed-go handed you the empty message fields, and
+an unset permissionship as a result. `PermissionshipUnspecified` never
+appears on a successful result.
 
 Tools with their own policy should not stack it on the client's:
 
@@ -79,6 +123,12 @@ metrics) changes. Use `CheckBulk` for several checks.
 
 Only an unconditional grant satisfies `HasPermission()`. A conditional result
 is not a grant: `result.Permissionship` and `result.MissingContext` say why.
+
+`CheckBulk` fails the whole call on the first per-item error by default.
+`WithBulkItemErrors(client.ItemErrorsReturned)` instead returns every item,
+with a failed item's error on `result.Err` (it never grants). A malformed item
+in the server's response, such as an unset permissionship, is not a per-item
+error and still fails the whole call with `ErrInternal`.
 
 ```go
 // authzed-go
@@ -205,15 +255,22 @@ For output that must stay protocol-shaped (JSON for scripts, backup files), use
 ZedTokens are `consistency.ZedToken` values. Store `token.String()` and
 restore it with `consistency.NewZedToken(s)`. Pass them back with
 `consistency.AtLeast(token)` or `consistency.Snapshot(token)`. Writes return
-`client.WriteResult`, whose token is in `.Revision`.
+`client.WriteResult`, whose token is in `.Revision`. An empty or
+whitespace-only token passed to `AtLeast` or `Snapshot` fails locally with
+`ErrInvalidArgument`; `AtLeastOrFull` and `AtLeastOrMinLatency` treat it as
+absent.
 
 ## Testing
 
-`client/clienttest.Store` is an in-memory double with the same method
-signatures as `*client.Client` for `Write`, `ReadRelationships`,
-`DeleteRelationships`, `Check` and `CheckBulk`. It applies SpiceDB filter,
-precondition and CREATE semantics; register check results with
-`SetCheckResult`. If you keep your own fake, `rel.Filter.Matches` and
+`client/clienttest.Store` is an in-memory double that implements
+`client.Interface`, the full `*client.Client` method set. It applies SpiceDB
+filter, precondition and CREATE semantics. Checks resolve to a result
+registered with `SetCheckResult`, then to a `SetCheckResolver` callback
+(`clienttest.GrantAll` grants everything), then to stored relationships whose
+relation is the permission's name (exact or wildcard subject), and otherwise
+deny. `LookupResources` and `LookupSubjects` return the objects in stored
+relationships that check resolution grants. A generated `TypedClient` wraps
+the Store: `permissions.NewTypedClient(store)`. If you keep your own fake, `rel.Filter.Matches` and
 `client.NewError` replace hand-written filter matching and `&client.Error{}`
 literals.
 
@@ -235,3 +292,5 @@ literals.
 | Usersets on permissions | `org.CanAdminSubject()` |
 | Check a relation | `org.MemberRelation()` |
 | Runtime permission names | `org.PermissionByName(name)`, `org.RelationshipByName(rel, subject)`, `permissions.OrganizationPermissionNames()` |
+| Runtime type and permission names (policy expressions) | `permissions.DefinitionByName(t)`, `permissions.PermissionRefByName(t, p)`, `permissions.LookupResourcesByName(ctx, tc, cs, t, p, subject)` |
+| Definition names and the schema text | `permissions.Definitions.Organization`, `permissions.DefinitionNames()`, `permissions.SchemaText` |

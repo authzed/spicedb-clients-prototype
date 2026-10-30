@@ -604,3 +604,460 @@ async fn schema_reads_can_omit_the_revision() {
     let read = client.read_schema(ReadSchemaRequest::new()).await.unwrap();
     assert!(!read.revision.as_ref().is_empty());
 }
+
+mod resolution_and_lookups {
+    use super::*;
+    use futures::TryStreamExt;
+    use spicedb::testing::{grant_all, Resolution};
+    use spicedb::{
+        CheckOptions, LookupPermissionshipFilter, LookupResourcesOptions, LookupResourcesRequest,
+        LookupSubjectsOptions, LookupSubjectsRequest, ObjectRef, SubjectRef, WildcardOption,
+    };
+    use std::sync::{Arc, Mutex};
+
+    fn obj(t: &str, id: &str) -> ObjectRef {
+        ObjectRef::new(t, id).unwrap()
+    }
+
+    fn check(resource: &str, permission: &str, subject: &str) -> PermissionCheck {
+        PermissionCheck::new(
+            resource.parse().unwrap(),
+            permission,
+            subject.parse().unwrap(),
+            consistency::full(),
+        )
+    }
+
+    async fn permissionship(fake: &InMemorySpiceDB, c: PermissionCheck) -> Permissionship {
+        fake.client()
+            .unwrap()
+            .check(c)
+            .await
+            .unwrap()
+            .permissionship
+    }
+
+    async fn lookup(
+        fake: &InMemorySpiceDB,
+        options: LookupResourcesOptions,
+    ) -> Vec<spicedb::LookupResource> {
+        let request = LookupResourcesRequest::new(
+            "document",
+            "view",
+            obj("user", "alice").into(),
+            consistency::full(),
+        )
+        .with_options(options);
+        fake.client()
+            .unwrap()
+            .lookup_resources(request)
+            .try_collect()
+            .await
+            .unwrap()
+    }
+
+    /// A registered result, then the resolver, then the stored
+    /// relationships, then no permission.
+    #[tokio::test]
+    async fn checks_resolve_in_the_documented_order() {
+        let fake = InMemorySpiceDB::with_relationships([rel("document:stored#view@user:alice")]);
+        fake.set_check_result(
+            &obj("document", "registered"),
+            "view",
+            &obj("user", "alice").into(),
+            Permissionship::NoPermission,
+        );
+        fake.set_check_resolver(|c| {
+            (c.resource().object_id() != "stored").then(Resolution::has_permission)
+        });
+        // Registered wins over the resolver.
+        assert_eq!(
+            permissionship(&fake, check("document:registered", "view", "user:alice")).await,
+            Permissionship::NoPermission
+        );
+        // The resolver answers what is not registered.
+        assert_eq!(
+            permissionship(&fake, check("document:generated-9f2", "view", "user:alice")).await,
+            Permissionship::HasPermission
+        );
+        // Declining falls through to the stored relationships.
+        assert_eq!(
+            permissionship(&fake, check("document:stored", "view", "user:alice")).await,
+            Permissionship::HasPermission
+        );
+        fake.clear_check_resolver();
+        assert_eq!(
+            permissionship(&fake, check("document:generated-9f2", "view", "user:alice")).await,
+            Permissionship::NoPermission
+        );
+    }
+
+    /// Grant-all is one line and covers checks, bulk checks and lookups.
+    #[tokio::test]
+    async fn grant_all_grants_every_check() {
+        let fake = InMemorySpiceDB::with_relationships([rel("document:d1#owner@user:bob")]);
+        fake.set_check_resolver(grant_all);
+        let client = fake.client().unwrap();
+        assert!(client
+            .check(check("document:any", "edit", "user:carol"))
+            .await
+            .unwrap()
+            .has_permission());
+        let bulk = client
+            .check_bulk(BulkCheckRequest::new(vec![
+                check("document:a", "view", "user:x"),
+                check("document:b", "view", "user:y"),
+            ]))
+            .await
+            .unwrap();
+        assert!(bulk.iter().all(|r| r.has_permission()));
+        let ids: Vec<_> = lookup(&fake, LookupResourcesOptions::new())
+            .await
+            .into_iter()
+            .map(|r| r.resource_id)
+            .collect();
+        assert_eq!(ids, ["d1"]);
+    }
+
+    /// The double never sends an unset permissionship, which the client
+    /// rejects as a malformed response: a resolver or registered `Unspecified`
+    /// answers "no" for checks and bulk checks.
+    #[tokio::test]
+    async fn an_unspecified_answer_reaches_the_client_as_no_permission() {
+        let fake = InMemorySpiceDB::new();
+        fake.set_check_result(
+            &obj("document", "registered"),
+            "view",
+            &obj("user", "alice").into(),
+            Permissionship::Unspecified,
+        );
+        fake.set_check_resolver(|c| {
+            (c.resource().object_id() == "resolved").then(|| Permissionship::Unspecified.into())
+        });
+        for id in ["document:registered", "document:resolved"] {
+            assert_eq!(
+                permissionship(&fake, check(id, "view", "user:alice")).await,
+                Permissionship::NoPermission,
+                "{id}"
+            );
+        }
+        let bulk = fake
+            .client()
+            .unwrap()
+            .check_bulk(BulkCheckRequest::new(vec![
+                check("document:registered", "view", "user:alice"),
+                check("document:resolved", "view", "user:alice"),
+            ]))
+            .await
+            .unwrap();
+        assert!(bulk
+            .iter()
+            .all(|r| r.permissionship == Permissionship::NoPermission));
+    }
+
+    /// The resolver receives the check with the call's context merged in (the
+    /// check's own keys win), and a conditional answer reaches the caller with
+    /// its missing context.
+    #[tokio::test]
+    async fn the_resolver_sees_the_context_and_can_answer_conditionally() {
+        let fake = InMemorySpiceDB::new();
+        let seen = Arc::new(Mutex::new(None));
+        let record = seen.clone();
+        fake.set_check_resolver(move |c| {
+            *record.lock().unwrap() = c.context().cloned();
+            Some(Resolution::conditional(["ip"]))
+        });
+        let mut call = spicedb::types::Context::new();
+        call.insert("tier".into(), serde_json::json!("gold"));
+        call.insert("day".into(), serde_json::json!("mon"));
+        let mut own = spicedb::types::Context::new();
+        own.insert("day".into(), serde_json::json!("tue"));
+        let result = fake
+            .client()
+            .unwrap()
+            .check(
+                check("document:1", "view", "user:alice")
+                    .with_context(own)
+                    .with_options(CheckOptions::new().with_context(call)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.permissionship, Permissionship::ConditionalPermission);
+        assert_eq!(result.missing_context, ["ip"]);
+        assert!(!result.has_permission());
+        let seen = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("context reached the resolver");
+        assert_eq!(seen["tier"], serde_json::json!("gold"));
+        assert_eq!(seen["day"], serde_json::json!("tue"));
+    }
+
+    /// Stored relationships: exact subjects and wildcards over direct subjects
+    /// grant; a caveated match is conditional and an uncaveated one wins; an
+    /// expired relationship never grants.
+    #[tokio::test]
+    async fn stored_relationships_grant_by_exact_or_wildcard_subject() {
+        let past = chrono::Utc::now() - chrono::Duration::hours(1);
+        let fake = InMemorySpiceDB::with_relationships([
+            rel("document:pub#view@user:*"),
+            rel("document:c#view@user:alice[only_weekdays]"),
+            rel("document:both#view@user:alice[only_weekdays]"),
+            rel("document:both#view@user:alice"),
+            rel("document:old#view@user:alice").with_expiration(past),
+            rel("document:set#view@group:eng#member"),
+        ]);
+        for (c, expected) in [
+            (
+                check("document:pub", "view", "user:bob"),
+                Permissionship::HasPermission,
+            ),
+            // A wildcard matches only direct subjects of its type.
+            (
+                check("document:pub", "view", "user:bob#member"),
+                Permissionship::NoPermission,
+            ),
+            (
+                check("document:pub", "view", "team:bob"),
+                Permissionship::NoPermission,
+            ),
+            (
+                check("document:c", "view", "user:alice"),
+                Permissionship::ConditionalPermission,
+            ),
+            (
+                check("document:both", "view", "user:alice"),
+                Permissionship::HasPermission,
+            ),
+            (
+                check("document:old", "view", "user:alice"),
+                Permissionship::NoPermission,
+            ),
+            (
+                check("document:set", "view", "group:eng#member"),
+                Permissionship::HasPermission,
+            ),
+            (
+                check("document:set", "view", "group:eng"),
+                Permissionship::NoPermission,
+            ),
+            (
+                check("document:pub", "edit", "user:bob"),
+                Permissionship::NoPermission,
+            ),
+        ] {
+            let label = format!("{c:?}");
+            assert_eq!(permissionship(&fake, c).await, expected, "{label}");
+        }
+    }
+
+    /// LookupResources enumerates objects of the type in first-appearance
+    /// order (as resource or subject), returns those check resolution grants,
+    /// reports conditional results as conditional (with missing context), and
+    /// honors the permissionship filter, limit and cursor.
+    #[tokio::test]
+    async fn lookup_resources_follows_check_resolution() {
+        let fake = InMemorySpiceDB::with_relationships([
+            rel("document:d3#view@user:alice"),
+            rel("folder:f1#parent@document:d1"),
+            rel("document:d2#view@user:alice[only_weekdays]"),
+            rel("document:d1#view@user:bob"),
+            rel("document:d4#view@user:alice"),
+        ]);
+        fake.set_check_resolver(|c| {
+            (c.resource().object_id() == "d1").then(|| Resolution::conditional(["now"]))
+        });
+        let all = lookup(&fake, LookupResourcesOptions::new()).await;
+        let summary: Vec<_> = all
+            .iter()
+            .map(|r| (r.resource_id.as_str(), r.permissionship.clone()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("d3", Permissionship::HasPermission),
+                ("d1", Permissionship::ConditionalPermission),
+                ("d2", Permissionship::ConditionalPermission),
+                ("d4", Permissionship::HasPermission),
+            ]
+        );
+        assert_eq!(
+            all[1]
+                .partial_caveat
+                .as_ref()
+                .unwrap()
+                .missing_required_context,
+            ["now"]
+        );
+        assert!(all[2].partial_caveat.is_some());
+        assert!(all[0].partial_caveat.is_none());
+        let cursors: Vec<_> = all.iter().map(|r| r.after_result_cursor.clone()).collect();
+        assert_eq!(
+            cursors,
+            (1..=4).map(|n| Some(cursor_after(n))).collect::<Vec<_>>()
+        );
+
+        // The filter drops conditional results; cursors still count them.
+        let granted = lookup(
+            &fake,
+            LookupResourcesOptions::new()
+                .with_permissionship_filter(LookupPermissionshipFilter::HasPermissionOnly),
+        )
+        .await;
+        let ids: Vec<_> = granted.iter().map(|r| r.resource_id.as_str()).collect();
+        assert_eq!(ids, ["d3", "d4"]);
+        assert_eq!(granted[1].after_result_cursor, Some(cursor_after(4)));
+
+        // Resume after the second granted result; limit and page size hold.
+        let resumed = lookup(
+            &fake,
+            LookupResourcesOptions::new().with_cursor(cursor_after(2)),
+        )
+        .await;
+        let ids: Vec<_> = resumed.iter().map(|r| r.resource_id.as_str()).collect();
+        assert_eq!(ids, ["d2", "d4"]);
+        let before = fake.calls_of(Operation::LookupResources).len();
+        let limited = lookup(
+            &fake,
+            LookupResourcesOptions::new()
+                .with_limit(3)
+                .with_page_size(NonZeroU32::new(2).unwrap()),
+        )
+        .await;
+        let ids: Vec<_> = limited.iter().map(|r| r.resource_id.as_str()).collect();
+        assert_eq!(ids, ["d3", "d1", "d2"]);
+        // Each page is its own recorded RPC.
+        assert_eq!(fake.calls_of(Operation::LookupResources).len() - before, 2);
+    }
+
+    /// The item fault hook runs before each lookup result.
+    #[tokio::test]
+    async fn lookup_results_consult_the_item_fault_hook() {
+        let fake = InMemorySpiceDB::with_relationships([
+            rel("document:d1#view@user:alice"),
+            rel("document:d2#view@user:alice"),
+        ]);
+        fake.set_fault_hook(|f| {
+            (f.call.operation() == Operation::LookupResources
+                && f.stage == FaultStage::Item
+                && f.item == 1)
+                .then(|| server_error(Code::Internal, "boom"))
+        });
+        let request = LookupResourcesRequest::new(
+            "document",
+            "view",
+            obj("user", "alice").into(),
+            consistency::full(),
+        );
+        let results: Vec<_> = fake
+            .client()
+            .unwrap()
+            .lookup_resources(request)
+            .collect()
+            .await;
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].as_ref().unwrap().resource_id, "d1");
+        assert_eq!(results[1].as_ref().unwrap_err().code(), Code::Internal);
+    }
+
+    async fn subjects(
+        fake: &InMemorySpiceDB,
+        options: LookupSubjectsOptions,
+        subject_type: &str,
+    ) -> Vec<(String, Permissionship)> {
+        let request = LookupSubjectsRequest::new(
+            obj("document", "1"),
+            "view",
+            subject_type,
+            consistency::full(),
+        )
+        .with_options(options);
+        let found: Vec<spicedb::LookupSubject> = fake
+            .client()
+            .unwrap()
+            .lookup_subjects(request)
+            .try_collect()
+            .await
+            .unwrap();
+        found
+            .into_iter()
+            .map(|s| (s.subject.subject_id, s.subject.permissionship))
+            .collect()
+    }
+
+    /// LookupSubjects returns granted subjects of the type in first-appearance
+    /// order, a stored wildcard as `*` (unless excluded), conditional results
+    /// as conditional, and honors the subject relation and limit.
+    #[tokio::test]
+    async fn lookup_subjects_follows_check_resolution() {
+        let fake = InMemorySpiceDB::with_relationships([
+            rel("document:1#view@user:carol[only_weekdays]"),
+            rel("group:eng#member@user:dave"),
+            rel("document:1#view@user:alice"),
+            rel("document:1#view@user:*"),
+            rel("document:1#view@group:eng#member"),
+        ]);
+        let p = |id: &str, p: Permissionship| (id.to_string(), p);
+        assert_eq!(
+            subjects(&fake, LookupSubjectsOptions::new(), "user").await,
+            [
+                // carol: her caveated grant would be conditional, but the
+                // wildcard grants her outright, and an uncaveated match wins.
+                p("carol", Permissionship::HasPermission),
+                // dave is granted through the wildcard (no schema is
+                // evaluated, so group membership does not count).
+                p("dave", Permissionship::HasPermission),
+                p("alice", Permissionship::HasPermission),
+                p("*", Permissionship::HasPermission),
+            ]
+        );
+        let no_wildcards = subjects(
+            &fake,
+            LookupSubjectsOptions::new().with_wildcard_option(WildcardOption::Exclude),
+            "user",
+        )
+        .await;
+        assert_eq!(no_wildcards.len(), 3);
+        assert!(no_wildcards.iter().all(|(id, _)| id != "*"));
+        assert_eq!(
+            subjects(&fake, LookupSubjectsOptions::new().with_limit(2), "user")
+                .await
+                .len(),
+            2
+        );
+        assert_eq!(
+            subjects(
+                &fake,
+                LookupSubjectsOptions::new().with_subject_relation("member"),
+                "group"
+            )
+            .await,
+            [p("eng", Permissionship::HasPermission)]
+        );
+        // `...` is a direct subject: group:eng itself has no direct grant.
+        assert!(subjects(
+            &fake,
+            LookupSubjectsOptions::new().with_subject_relation("..."),
+            "group"
+        )
+        .await
+        .is_empty());
+
+        // Without the wildcard, a caveated-only subject is conditional.
+        let caveated =
+            InMemorySpiceDB::with_relationships([rel("document:1#view@user:carol[only_weekdays]")]);
+        assert_eq!(
+            subjects(&caveated, LookupSubjectsOptions::new(), "user").await,
+            [p("carol", Permissionship::ConditionalPermission)]
+        );
+    }
+
+    /// `SubjectRef::from(object)` builds the direct subject used everywhere.
+    #[test]
+    fn a_direct_subject_is_one_call() {
+        let s: SubjectRef = obj("user", "alice").into();
+        assert_eq!(s, SubjectRef::direct(obj("user", "alice")));
+        assert_eq!(s.relation(), None);
+    }
+}

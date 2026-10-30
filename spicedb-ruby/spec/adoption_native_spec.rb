@@ -48,7 +48,8 @@ RSpec.describe 'adoption: native client behavior' do # rubocop:disable Metrics/B
     it 'reports a status code for local validation and an exhausted local budget' do
       expect { SpiceDB::ObjectRef.new(object_type: '', object_id: 'x') }.to raise_error(GRPC::BadStatus) do |error|
         expect(error.code).to eq(GRPC::Core::StatusCodes::INVALID_ARGUMENT)
-        expect(error.server_message).to be_nil
+        # The server-message field always has a value: a local error's is its message.
+        expect(error.server_message).to eq(error.message)
       end
       now = 0.0
       allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { now }
@@ -393,7 +394,7 @@ RSpec.describe 'adoption: native client behavior' do # rubocop:disable Metrics/B
     end
 
     it 'accepts call_options on every public operation' do
-      operations = SpiceDB::Client.public_instance_methods(false) - %i[close proto_client retry_policy operation_retry_policies]
+      operations = SpiceDB::Client.public_instance_methods(false) - %i[close connect! proto_client retry_policy operation_retry_policies]
       missing = operations.reject { |name| SpiceDB::Client.instance_method(name).parameters.include?(%i[key call_options]) }
       expect(missing).to eq([])
     end

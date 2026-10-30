@@ -21,9 +21,10 @@ from spicedb.options import (
     Operation,
     _option,
 )
-from spicedb.token import ZedToken, _token_string
+from spicedb.token import ZedToken, _revision_string
 
 import asyncio
+import time
 import inspect
 from typing import Any
 from collections.abc import Callable, Iterable, AsyncIterable, Mapping, Sequence
@@ -53,15 +54,28 @@ from authzed.api.materialize.v0 import (
     watchpermissionsets_pb2 as permission_sets,
     watchpermissionsets_pb2_grpc,
 )
-from spicedb import _mapping, _requests
-from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
+from spicedb import _mapping, _requests, _wire
+from spicedb._auth import bearer_metadata, require_insecure_transport_allowed, require_token_usable
+from spicedb._endpoint import parse_endpoint
 from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._budget import Budget
-from spicedb._client_base import ClientConfig, _positive, write_is_idempotent, capture_async, response_target
+from spicedb._client_base import (
+    MESSAGE,
+    PAGE,
+    PROBE_METHOD,
+    PROBE_TIMEOUT,
+    ClientConfig,
+    _positive,
+    capture_async,
+    not_ready_error,
+    response_target,
+    stalled_error,
+    write_is_idempotent,
+)
 from spicedb._streams import AsyncStream
 from spicedb.consistency import Consistency
 from spicedb.errors import (
-    InvalidArgumentError,
+    LocalValidationError,
     SpiceDBError,
     EventLoopBindingError,
     DeadlineExceededError,
@@ -69,6 +83,7 @@ from spicedb.errors import (
 )
 from spicedb.raw import RawGrpc
 from spicedb.types import (
+    _require_str,
     PermissionSetCursor,
     PermissionSetEvent,
     PermissionSetLookup,
@@ -99,7 +114,6 @@ from spicedb.types import (
     LookupResource,
     LookupSubject,
     WatchEvent,
-    _permission_tree_from_proto,
     _snapshot,
     _schema_diff_from_proto,
 )
@@ -109,7 +123,7 @@ def _cursor(value: str | None, field: str):
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise InvalidArgumentError(f"{field}: expected nonempty cursor string")
+        raise LocalValidationError(f"{field}: expected nonempty cursor string")
     return core.Cursor(token=value)
 
 
@@ -137,11 +151,15 @@ class SpiceDBClient(ClientConfig):
     ) -> None:
         insecure = _option(transport_security, TransportSecurity) == "plaintext"
         allow_insecure_remote_credentials = _option(remote_credentials, RemoteCredentials) == "allow"
+        # Malformed endpoints fail first, so the remote-plaintext refusal
+        # below only ever describes a well-formed remote host.
+        target = parse_endpoint(endpoint, insecure=insecure)
         require_insecure_transport_allowed(
-            endpoint,
+            target,
             insecure=insecure,
             allow_insecure_remote_credentials=allow_insecure_remote_credentials,
         )
+        require_token_usable(token)
         require_tls_material_usable(
             insecure=insecure,
             ca_cert=ca_cert,
@@ -149,7 +167,7 @@ class SpiceDBClient(ClientConfig):
             client_key=client_key,
         )
         self._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
-        self._endpoint = endpoint
+        self._endpoint = target
         self._insecure = insecure
         self._ca_cert = ca_cert
         self._client_cert = client_cert
@@ -181,7 +199,7 @@ class SpiceDBClient(ClientConfig):
         still apply. ``close()`` never closes the channel.
         """
         if not isinstance(channel, grpc.aio.Channel):
-            raise InvalidArgumentError("channel: expected grpc.aio.Channel")
+            raise LocalValidationError("channel: expected grpc.aio.Channel")
         client = cls.__new__(cls)
         client._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
         client._endpoint = None
@@ -199,7 +217,10 @@ class SpiceDBClient(ClientConfig):
         loop = asyncio.get_running_loop()
         if self._loop is not None and loop is not self._loop:
             raise EventLoopBindingError(
-                "client is bound to another event loop; use spicedb.sync for synchronous code"
+                "this spicedb.aio client is bound to the event loop it was first used on; "
+                "create one client per event loop (for example in each loop's startup "
+                "or lifespan hook), or use spicedb.sync.SpiceDBClient if the calling "
+                "code is synchronous"
             )
         self._loop = loop
         if self._channel is None:
@@ -239,6 +260,40 @@ class SpiceDBClient(ClientConfig):
         """Return this client's authenticated channel; raw calls own their options."""
         self._ensure_channel()
         return RawGrpc(channel=self._channel, metadata=tuple(self._metadata))
+
+    async def ready(self, *, timeout: float | None = None) -> None:
+        """Wait until the channel is connected, as a startup readiness check.
+
+        The client otherwise connects lazily on its first call, so a wrong or
+        unreachable endpoint would only show up then. ``timeout`` defaults to
+        the client's default deadline. Raises ``UnavailableError`` naming the
+        endpoint and the transport's cause (refused, DNS, TLS) when the
+        connection failed, or ``DeadlineExceededError`` when it was still
+        connecting at the deadline. Sends no credentials and calls no SpiceDB
+        API, so it does not check the token.
+        """
+        budget = self._budget(timeout)
+        self._ensure_channel()
+        channel = self._channel
+        waited = budget.remaining()
+        channel.get_state(try_to_connect=True)
+        try:
+            await asyncio.wait_for(channel.channel_ready(), waited)
+            return
+        except asyncio.TimeoutError:
+            pass
+        probe_error = None
+        if channel.get_state() is grpc.ChannelConnectivity.TRANSIENT_FAILURE:
+            try:
+                await channel.unary_unary(PROBE_METHOD)(b"", timeout=PROBE_TIMEOUT)
+            except grpc.RpcError as error:
+                probe_error = error
+            else:
+                return
+        limit = self._default_timeout if timeout is None else timeout
+        failure = not_ready_error(self._endpoint, limit, probe_error)
+        if failure is not None:
+            raise failure
 
     async def close(self) -> None:
         """Close streams and, unless it was supplied by the caller, the channel."""
@@ -320,6 +375,8 @@ class SpiceDBClient(ClientConfig):
 
         ``item_errors=BulkItemErrors.RETURN`` puts each failing item's error on
         ``CheckResult.error`` instead of raising the first one.
+        A malformed item in the server's response (such as an unset
+        permissionship) is not a per-item error and still fails the whole call.
         """
         _option(tracing, Tracing)
         return_errors = _option(item_errors, BulkItemErrors) == "return"
@@ -369,7 +426,7 @@ class SpiceDBClient(ClientConfig):
         response = await self._rpc(
             self._permissions.WriteRelationships, request, budget, policy, call_options
         )
-        return WriteResult(revision=ZedToken(response.written_at.token))
+        return WriteResult(revision=_wire.token(response, "written_at", "WriteRelationshipsResponse"))
 
     async def delete_relationships(
         self,
@@ -424,7 +481,7 @@ class SpiceDBClient(ClientConfig):
             response.deletion_progress, DeleteProgress.UNSPECIFIED
         )
         return DeleteResult(
-            ZedToken(response.deleted_at.token),
+            _wire.token(response, "deleted_at", "DeleteRelationshipsResponse"),
             response.relationships_deleted_count,
             progress,
             response.after_result_cursor.token
@@ -458,7 +515,7 @@ class SpiceDBClient(ClientConfig):
         metadata = _snapshot(metadata)
         _positive(page_size, "page_size")
         if on_progress is not None and not callable(on_progress):
-            raise InvalidArgumentError("on_progress: expected callable")
+            raise LocalValidationError("on_progress: expected callable")
         self._ensure_channel()
         acknowledged = None
         cursor = None
@@ -487,7 +544,7 @@ class SpiceDBClient(ClientConfig):
                 if page.progress == DeleteProgress.COMPLETE:
                     return acknowledged
                 if page.progress == DeleteProgress.UNSPECIFIED:
-                    raise SpiceDBError("delete-all received unspecified progress")
+                    raise _wire.malformed("DeleteRelationshipsResponse.deletion_progress is unspecified")
                 cursor = page.cursor
         except BaseException as error:
             if acknowledged is not None:
@@ -503,19 +560,20 @@ class SpiceDBClient(ClientConfig):
         response = await self._rpc(
             self._schema.ReadSchema, s.ReadSchemaRequest(), budget, Operation.READ_SCHEMA, call_options
         )
-        return SchemaResult(response.schema_text, ZedToken(response.read_at.token))
+        return SchemaResult(response.schema_text, _wire.token(response, "read_at", "ReadSchemaResponse"))
 
     async def write_schema(
         self, schema: str, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> ZedToken:
         """Write schema. Idempotent, so it may opt in to retries with ``CallOptions(retry_policy=...)``."""
+        _require_str(schema, "schema")
         budget = self._budget(timeout)
         policy = self._mutation_policy(call_options, True, "write schema", Operation.WRITE_SCHEMA)
         self._ensure_channel()
         response = await self._rpc(
             self._schema.WriteSchema, s.WriteSchemaRequest(schema=schema), budget, policy, call_options
         )
-        return ZedToken(response.written_at.token)
+        return _wire.token(response, "written_at", "WriteSchemaResponse")
 
     async def expand_permission_tree(
         self,
@@ -537,7 +595,7 @@ class SpiceDBClient(ClientConfig):
             call_options,
         )
         return ExpandResult(
-            _permission_tree_from_proto(response.tree_root), ZedToken(response.expanded_at.token)
+            _mapping.permission_tree(response), _wire.token(response, "expanded_at", "ExpandPermissionTreeResponse")
         )
 
     async def reflect_schema(
@@ -571,6 +629,7 @@ class SpiceDBClient(ClientConfig):
         call_options: CallOptions | None = None,
     ) -> RelationsResult:
         """Computable permissions."""
+        _require_str(definition_name_filter, "definition_name_filter", optional=True)
         budget = self._budget(timeout)
         self._ensure_channel()
         request = _requests.computable_permissions_request(
@@ -582,7 +641,7 @@ class SpiceDBClient(ClientConfig):
         )
         return RelationsResult(
             [RelationReference._from_proto(x) for x in response.permissions],
-            ZedToken(response.read_at.token),
+            _wire.token(response, "read_at", "ComputablePermissionsResponse"),
         )
 
     async def dependent_relations(
@@ -608,7 +667,7 @@ class SpiceDBClient(ClientConfig):
         )
         return RelationsResult(
             [RelationReference._from_proto(x) for x in response.relations],
-            ZedToken(response.read_at.token),
+            _wire.token(response, "read_at", "DependentRelationsResponse"),
         )
 
     async def diff_schema(
@@ -630,13 +689,14 @@ class SpiceDBClient(ClientConfig):
             call_options,
         )
         return SchemaDiffResult(
-            [_schema_diff_from_proto(x) for x in response.diffs], ZedToken(response.read_at.token)
+            [_schema_diff_from_proto(x) for x in response.diffs], _wire.token(response, "read_at", "DiffSchemaResponse")
         )
 
     async def experimental_register_relationship_counter(
         self, name: str, filter: Filter, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> None:
         """Experimental: register a stored relationship counter."""
+        _require_str(name, "name")
         budget = self._budget(timeout)
         self._mutation_policy(call_options, False, "register relationship counter", Operation.EXPERIMENTAL_REGISTER_RELATIONSHIP_COUNTER)
         self._ensure_channel()
@@ -654,6 +714,7 @@ class SpiceDBClient(ClientConfig):
         self, name: str, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> None:
         """Experimental: unregister a stored relationship counter."""
+        _require_str(name, "name")
         budget = self._budget(timeout)
         self._mutation_policy(call_options, False, "unregister relationship counter", Operation.EXPERIMENTAL_UNREGISTER_RELATIONSHIP_COUNTER)
         self._ensure_channel()
@@ -669,6 +730,7 @@ class SpiceDBClient(ClientConfig):
         self, name: str, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> CountResult:
         """Experimental: inspect a stored relationship counter."""
+        _require_str(name, "name")
         budget = self._budget(timeout)
         self._ensure_channel()
         response = await self._rpc(
@@ -681,9 +743,15 @@ class SpiceDBClient(ClientConfig):
         if response.HasField("read_counter_value"):
             return CountResult(
                 response.read_counter_value.relationship_count,
-                ZedToken(response.read_counter_value.read_at.token),
+                _wire.token(
+                    response.read_counter_value, "read_at", "ExperimentalCountRelationshipsResponse.read_counter_value"
+                ),
             )
-        return CountResult(None, None, response.counter_still_calculating)
+        if not response.counter_still_calculating:
+            raise _wire.malformed(
+                "ExperimentalCountRelationshipsResponse has neither read_counter_value nor counter_still_calculating"
+            )
+        return CountResult(None, None, True)
 
     async def experimental_roaring_lookup_resources(
         self,
@@ -696,6 +764,7 @@ class SpiceDBClient(ClientConfig):
         call_options: CallOptions | None = None,
     ) -> RoaringLookupResourcesResult:
         """Experimental: return the server's opaque roaring64 bitmap."""
+        _requests.require_lookup_resources_args(resource_type, permission, subject)
         budget = self._budget(timeout)
         self._ensure_channel()
         request = roaring.ExperimentalRoaringLookupResourcesRequest(
@@ -708,7 +777,7 @@ class SpiceDBClient(ClientConfig):
             self._materialize.ExperimentalRoaringLookupResources, request, budget, Operation.EXPERIMENTAL_ROARING_LOOKUP_RESOURCES, call_options
         )
         return RoaringLookupResourcesResult(
-            response.bitmap, response.cardinality, ZedToken(response.at_revision.token)
+            response.bitmap, response.cardinality, _wire.token(response, "at_revision", "RoaringLookupResourcesResponse")
         )
 
     def _stream(
@@ -725,11 +794,18 @@ class SpiceDBClient(ClientConfig):
         start_cursor=None,
         single_request=False,
         operation=None,
+        deadline=None,
     ):
+        """Stream ``mapper``'s items over one or more requests.
+
+        ``deadline`` is PAGE, MESSAGE or None; see ``spicedb._client_base``.
+        """
         # Validate options before any transport work.
         kwargs = self._call_kwargs(call_options)
         target = response_target(call_options)
         policy = self._stream_policy(watch, call_options, operation)
+        page_default = self._default_timeout if deadline is not None else None
+        per_page = deadline == PAGE
 
         async def factory(owner):
             """Factory."""
@@ -745,6 +821,7 @@ class SpiceDBClient(ClientConfig):
                     # Single-request mode sends one request, as the raw
                     # API does: its limit is the total limit (0 means
                     # unbounded) and no follow-up page is fetched.
+                    page_start = cursor
                     request = request_factory(cursor, (limit or 0) if single_request else page_size)
                     attempt = 0
                     while True:
@@ -753,7 +830,13 @@ class SpiceDBClient(ClientConfig):
                         # skipped by the include filter, or the retry would
                         # not be allowed) must not count toward this page.
                         page_count = 0
+                        page_cursor = None
                         call = None
+                        # Server-wait time left for this page (PAGE) or for
+                        # each message (MESSAGE). Measured only around the
+                        # wait for the server, never while the caller holds
+                        # an item, so a slow consumer never fails the read.
+                        page_left = page_default
                         try:
                             call = rpc_factory()(
                                 request,
@@ -761,9 +844,25 @@ class SpiceDBClient(ClientConfig):
                                 **kwargs,
                             )
                             owner._set_call(call)
-                            async for response in call:
+                            responses = call.__aiter__()
+                            while True:
+                                try:
+                                    if page_default is None:
+                                        response = await anext(responses)
+                                    else:
+                                        bound = page_left if per_page else page_default
+                                        waited = time.monotonic()
+                                        try:
+                                            response = await asyncio.wait_for(anext(responses), max(bound, 0))
+                                        finally:
+                                            if per_page:
+                                                page_left -= time.monotonic() - waited
+                                except StopAsyncIteration:
+                                    break
+                                except TimeoutError as error:
+                                    raise stalled_error(page_default, per_page) from error
                                 budget.remaining()
-                                cursor = (
+                                page_cursor = (
                                     response.after_result_cursor
                                     if hasattr(response, "after_result_cursor")
                                     and response.HasField("after_result_cursor")
@@ -780,6 +879,7 @@ class SpiceDBClient(ClientConfig):
                                     if limit is not None and delivered >= limit:
                                         return
                             await capture_async(target, call)
+                            cursor = page_cursor
                             break
                         except SpiceDBError:
                             raise
@@ -800,6 +900,11 @@ class SpiceDBClient(ClientConfig):
                                 call.cancel()
                     if single_request or page_size is None or page_count < page_size or cursor is None:
                         return
+                    if page_start is not None and cursor.token == page_start.token:
+                        # Re-requesting the same cursor would loop forever.
+                        raise _wire.malformed(
+                            "a full page ended at the cursor it started from; the cursor does not advance"
+                        )
             finally:
                 if owner._call is not None:
                     owner._call.cancel()
@@ -838,9 +943,9 @@ class SpiceDBClient(ClientConfig):
             ),
             lambda response: [
                 ReadRelationship(
-                    Relationship._from_proto(response.relationship),
+                    _wire.relationship(response, "relationship", "ReadRelationshipsResponse"),
                     _response_cursor(response),
-                    ZedToken(response.read_at.token),
+                    _wire.token(response, "read_at", "ReadRelationshipsResponse"),
                 )
             ],
             budget,
@@ -849,6 +954,7 @@ class SpiceDBClient(ClientConfig):
             start_cursor=start,
             single_request=single,
             operation=Operation.READ_RELATIONSHIPS,
+            deadline=MESSAGE if single else PAGE,
         )
 
     def lookup_resources(
@@ -880,6 +986,7 @@ class SpiceDBClient(ClientConfig):
         single = _option(paging, Paging) == "single_request"
         _option(permissionship_filter, LookupPermissionshipFilter)
         _option(debug, LookupDebug)
+        _requests.require_lookup_resources_args(resource_type, permission, subject)
         budget = Budget(timeout)
         _positive(page_size, "page_size")
         if limit is not None:
@@ -909,6 +1016,7 @@ class SpiceDBClient(ClientConfig):
             start_cursor=start,
             single_request=single,
             operation=Operation.LOOKUP_RESOURCES,
+            deadline=MESSAGE if single else PAGE,
         )
 
     def lookup_subjects(
@@ -928,6 +1036,7 @@ class SpiceDBClient(ClientConfig):
     ) -> AsyncStream[LookupSubject]:
         """Lookup subjects."""
         _option(wildcards, Wildcards)
+        _requests.require_lookup_subjects_args(resource, permission, subject_type, subject_relation)
         budget = Budget(timeout)
         if page_size is not None:
             _positive(page_size, "page_size")
@@ -941,7 +1050,7 @@ class SpiceDBClient(ClientConfig):
                 resource,
                 permission,
                 subject_type,
-                subject_relation or "",
+                subject_relation,
                 ctx,
                 consistency,
             )
@@ -961,6 +1070,7 @@ class SpiceDBClient(ClientConfig):
             limit,
             call_options=call_options,
             operation=Operation.LOOKUP_SUBJECTS,
+            deadline=MESSAGE if page_size is None else PAGE,
         )
 
     def export_relationships(
@@ -986,7 +1096,7 @@ class SpiceDBClient(ClientConfig):
         def items(response):
             after = _response_cursor(response)
             return [
-                ExportedRelationship(Relationship._from_proto(x), after)
+                ExportedRelationship(_wire.relationship(x, None, "ExportBulkRelationshipsResponse.relationships"), after)
                 for x in response.relationships
             ]
 
@@ -1001,6 +1111,7 @@ class SpiceDBClient(ClientConfig):
             call_options=call_options,
             start_cursor=start,
             operation=Operation.EXPORT_RELATIONSHIPS,
+            deadline=MESSAGE,
         )
 
     def watch(
@@ -1166,7 +1277,7 @@ class SpiceDBClient(ClientConfig):
             Operation.EXPERIMENTAL_COUNT_RELATIONSHIPS_BY_FILTER,
             call_options,
         )
-        return CountResult(response.relationship_count, ZedToken(response.read_at.token))
+        return CountResult(response.relationship_count, _wire.token(response, "read_at", "CountRelationshipsResponse"))
 
     def watch_permission_sets(
         self,
@@ -1178,7 +1289,7 @@ class SpiceDBClient(ClientConfig):
         """Materialize: watch normalized set changes; never auto-reconnects."""
         budget = Budget(timeout)
         request = permission_sets.WatchPermissionSetsRequest(
-            optional_starting_after=core.ZedToken(token=_token_string(start_revision))
+            optional_starting_after=core.ZedToken(token=_revision_string(start_revision, "start_revision"))
             if start_revision is not None
             else None
         )
@@ -1205,10 +1316,10 @@ class SpiceDBClient(ClientConfig):
         budget = Budget(timeout)
         _positive(limit, "limit")
         if limit > 0xFFFFFFFF:
-            raise InvalidArgumentError("limit: exceeds uint32")
+            raise LocalValidationError("limit: exceeds uint32")
         request = permission_sets.LookupPermissionSetsRequest(
             limit=limit,
-            optional_at_revision=core.ZedToken(token=_token_string(at_revision))
+            optional_at_revision=core.ZedToken(token=_revision_string(at_revision, "at_revision"))
             if at_revision is not None
             else None,
             optional_starting_after_cursor=cursor._to_proto()
@@ -1223,6 +1334,7 @@ class SpiceDBClient(ClientConfig):
             limit=limit,
             call_options=call_options,
             operation=Operation.LOOKUP_PERMISSION_SETS,
+            deadline=MESSAGE,
         )
 
     async def download_permission_sets(
@@ -1235,7 +1347,7 @@ class SpiceDBClient(ClientConfig):
         """Materialize: return native file URLs without downloading their contents."""
         budget = self._budget(timeout)
         request = permission_sets.DownloadPermissionSetsRequest(
-            optional_at_revision=core.ZedToken(token=_token_string(at_revision))
+            optional_at_revision=core.ZedToken(token=_revision_string(at_revision, "at_revision"))
             if at_revision is not None
             else None
         )

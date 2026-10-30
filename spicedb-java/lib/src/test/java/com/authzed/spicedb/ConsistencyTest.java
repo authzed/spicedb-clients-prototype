@@ -96,4 +96,46 @@ class ConsistencyTest {
     Consistency c = Consistency.atLeastOrMinLatency(new com.authzed.spicedb.ZedToken("rev2"));
     assertEquals("rev2", c.toProto().getAtLeastAsFresh().getToken());
   }
+
+  @Test
+  void strictStrategiesRejectWhitespaceOnlyRevisionLikeEmpty() {
+    for (var blank : java.util.List.of(" ", "\t", " \n ")) {
+      var token = new com.authzed.spicedb.ZedToken(blank);
+      var atLeast =
+          assertThrows(
+              com.authzed.spicedb.errors.LocalValidationException.class,
+              () -> Consistency.atLeast(token));
+      assertTrue(atLeast.getMessage().contains("whitespace-only"), atLeast.getMessage());
+      assertThrows(
+          com.authzed.spicedb.errors.LocalValidationException.class,
+          () -> Consistency.snapshot(token));
+    }
+  }
+
+  @Test
+  void fallbackStrategiesTreatWhitespaceOnlyRevisionAsAbsent() {
+    var token = new com.authzed.spicedb.ZedToken("  ");
+    assertTrue(Consistency.atLeastOrFull(token).toProto().getFullyConsistent());
+    assertTrue(Consistency.atLeastOrMinLatency(token).toProto().getMinimizeLatency());
+  }
+
+  /** A strategy names itself and its token in its string and structured JSON forms. */
+  @Test
+  void stringAndJsonFormsNameTheStrategy() {
+    var token = new ZedToken("GhUKEzE2");
+    assertEquals("full", Consistency.full().toString());
+    assertEquals("{\"strategy\":\"full\"}", Consistency.full().toJson());
+    assertEquals("minLatency", Consistency.minLatency().toString());
+    assertEquals("{\"strategy\":\"minLatency\"}", Consistency.minLatency().toJson());
+    assertEquals("atLeast(GhUKEzE2)", Consistency.atLeast(token).toString());
+    assertEquals(
+        "{\"strategy\":\"atLeast\",\"token\":\"GhUKEzE2\"}", Consistency.atLeast(token).toJson());
+    assertEquals("snapshot(GhUKEzE2)", Consistency.snapshot(token).toString());
+    assertEquals(
+        "{\"strategy\":\"snapshot\",\"token\":\"GhUKEzE2\"}", Consistency.snapshot(token).toJson());
+    assertEquals(
+        "{\"strategy\":\"atLeast\",\"token\":\"GhUKEzE2\"}",
+        Consistency.atLeastOrFull(token).toJson());
+    assertEquals("{\"strategy\":\"minLatency\"}", Consistency.atLeastOrMinLatency(null).toJson());
+  }
 }

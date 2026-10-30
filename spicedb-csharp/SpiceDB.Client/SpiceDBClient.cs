@@ -30,6 +30,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     private readonly Dictionary<string, RetryPolicy> _operationRetry;
     private readonly CancellationTokenSource _lifetime = new();
     private int _disposed;
+    /// <summary>The endpoint this client dials, shown in connection-failure messages.</summary>
+    private string? _endpoint;
     private SpiceDBClient(SpiceDBProtoClient proto, ClientOptions? options)
         : this(proto.Permissions, proto.Schema, proto.Watch, proto.Experimental, proto.Materialize, options)
     { _protoClient = proto; }
@@ -56,17 +58,26 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     public static SpiceDBClient CreateSystemTls(string endpoint, string presharedKey, ClientOptions? options = null) => Create(endpoint, presharedKey, options, false);
     private static SpiceDBClient Create(string endpoint, string key, ClientOptions? options, bool insecure)
     {
-        Native.Required(endpoint, nameof(endpoint)); Native.Required(key, "presharedKey");
+        Native.Required(endpoint, nameof(endpoint)); Native.Credential(key, "presharedKey");
         ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
         (options?.RetryPolicy ?? RetryPolicy.Default).Validated(); options?.ValidateOperationRetryPolicies();
-        try { return new(new SpiceDBProtoClient(endpoint, key, insecure, options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow), options); }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UriFormatException) { throw new InvalidArgumentException(ex.Message.Replace("allowInsecureRemoteCredentials", "RemotePlaintextCredentials.Allow", StringComparison.Ordinal), ex); }
+        try { return new(new SpiceDBProtoClient(endpoint, key, insecure, options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow), options) { _endpoint = endpoint }; }
+        catch (InsecureRemoteHostException ex) { throw new InvalidArgumentException(RemotePlaintextRefusal(endpoint), ex); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UriFormatException) { throw new InvalidArgumentException(ex.Message, ex); }
     }
+    /// <summary>
+    /// The remote-plaintext refusal, naming both settings a remote plaintext endpoint (a
+    /// Docker Compose service such as <c>spicedb:50051</c>) needs, as the caller writes them.
+    /// </summary>
+    internal static string RemotePlaintextRefusal(string endpoint) =>
+        $"spicedb: refusing to send the preshared key over plaintext to non-loopback endpoint \"{endpoint}\". " +
+        "Use SpiceDBClient.CreateSystemTls for TLS, or, to send it in cleartext to a remote host on purpose, call " +
+        "SpiceDBClient.CreatePlaintext(endpoint, presharedKey, new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow })";
     /// <summary>Borrows the channel. Arbitrary caller transport configuration can supersede endpoint security assumptions.</summary>
     public static SpiceDBClient CreateFromChannel(GrpcChannel channel, string presharedKey, ClientOptions? options = null)
     {
         if (channel is null) throw new InvalidArgumentException("Channel is required.");
-        Native.Required(presharedKey, nameof(presharedKey));
+        Native.Credential(presharedKey, nameof(presharedKey));
         ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
         (options?.RetryPolicy ?? RetryPolicy.Default).Validated(); options?.ValidateOperationRetryPolicies();
         // Target omits the scheme. Inspect the transport's parsed address and fail
@@ -74,8 +85,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         var address = typeof(GrpcChannel).GetProperty("Address", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(channel) as Uri;
         if (!(options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow) &&
             (address is null || (address.Scheme != "https" && !address.IsLoopback)))
-            throw new InvalidArgumentException("Cannot establish secure or loopback channel transport. Set RemotePlaintextCredentials.Allow only to explicitly permit remote plaintext credentials.");
-        return new(new SpiceDBProtoClient(channel, presharedKey), options);
+            throw new InvalidArgumentException("spicedb: refusing to send the preshared key over a channel that is neither TLS nor loopback. To send it in cleartext to a remote host on purpose, call SpiceDBClient.CreateFromChannel(channel, presharedKey, new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow })");
+        return new(new SpiceDBProtoClient(channel, presharedKey), options) { _endpoint = channel.Target };
     }
     /// <summary>
     /// Wraps an existing, caller-owned <see cref="CallInvoker"/>: an in-memory or test-server
@@ -95,6 +106,31 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         return new(new SpiceDBProtoClient(callInvoker), options);
     }
     public SpiceDBProtoClient RawProto() => _protoClient ?? throw new InvalidOperationException("The test client has no raw transport.");
+    /// <summary>
+    /// Startup readiness check. Constructors connect lazily, so a wrong or unreachable endpoint
+    /// otherwise surfaces only on the first operation. This waits until the endpoint answers an
+    /// authenticated request (a schema read; "no schema yet" counts as ready), within
+    /// <see cref="ConnectOptions.Timeout"/> or the client default deadline. An endpoint that is
+    /// not ready in time fails with <see cref="DeadlineExceededException"/> naming it; a refused
+    /// connection that does not recover, with <see cref="UnavailableException"/>; a rejected
+    /// preshared key, with <see cref="UnauthenticatedException"/>.
+    /// </summary>
+    public async Task ConnectAsync(ConnectOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken, retry: RetryPolicy.None);
+        try
+        {
+            // Wait-for-ready keeps the call pending while the channel connects, instead of failing
+            // fast on the first refused connection, so a server that is still starting can pass.
+            await Unary(budget, o => _schema.ReadSchemaAsync(new ReadSchemaRequest(), o.WithWaitForReady()), retry: false);
+        }
+        catch (NotFoundException) { /* Reachable and authenticated; no schema has been written yet. */ }
+        catch (DeadlineExceededException ex)
+        {
+            var within = options?.Timeout ?? _defaultTimeout;
+            throw new DeadlineExceededException($"spicedb: endpoint \"{_endpoint ?? "(caller-supplied transport)"}\" was not ready within {within}: {ex.Message}", ex);
+        }
+    }
     public ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0) { _lifetime.Cancel(); _protoClient?.Dispose(); }
@@ -108,16 +144,22 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     /// inherits the client-wide policy: reopening a watch without a start revision resumes at a
     /// later revision and silently skips the changes in between, so only a per-call or
     /// per-operation policy may reopen one.
+    /// <para>A <paramref name="paged"/> read (relationship reads, lookups, exports) has no default
+    /// total budget, but applies the client default deadline to each page request, from opening it
+    /// to receiving its last item, so a server that stalls mid-read fails the read instead of
+    /// hanging it. A caller's <paramref name="timeout"/> still bounds the whole read and wins when
+    /// earlier.</para>
     /// </summary>
-    private Budget Begin(TimeSpan? timeout, CancellationToken token, bool unary = true, TransportOptions? transport = null, RetryPolicy? retry = null, bool watch = false, [CallerMemberName] string operation = "")
+    private Budget Begin(TimeSpan? timeout, CancellationToken token, bool unary = true, TransportOptions? transport = null, RetryPolicy? retry = null, bool watch = false, bool paged = false, [CallerMemberName] string operation = "")
     {
         token.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
         // The most specific policy wins: per call, then per operation, then client-wide. A
         // per-call or per-operation policy also governs stream establishment.
         var specific = retry?.Validated() ?? OperationPolicy(operation);
-        if (watch && specific is null) return new(timeout is { } w ? ValidTimeout(w) : null, token, _lifetime.Token, transport, null, false, operation);
-        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, specific ?? _retryPolicy, specific is not null || _streamRetries, operation);
+        if (watch && specific is null) return new(timeout is { } w ? ValidTimeout(w) : null, token, _lifetime.Token, transport, null, false, operation, _endpoint);
+        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, specific ?? _retryPolicy, specific is not null || _streamRetries, operation, _endpoint)
+        { PageTimeout = paged ? _defaultTimeout : null };
     }
     /// <summary>The client's <see cref="ClientOptions.OperationRetryPolicies"/> entry for the calling operation, if any.</summary>
     private RetryPolicy? OperationPolicy([CallerMemberName] string operation = "") => _operationRetry.GetValueOrDefault(operation);
@@ -142,20 +184,67 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         private readonly TransportOptions? _transport;
         private readonly RetryPolicy? _retry;
         private readonly string _operation;
+        private readonly string? _endpoint;
         // Timer rounding can cancel before the monotonic elapsed-time check expires.
         // Keep the deadline source separate from caller and client-lifetime cancellation.
         private readonly CancellationTokenSource _deadline = new();
-        public CancellationToken Token => _linked.Token;
+        // The per-page deadline of a paged read, when PageTimeout is set. It is a watchdog on
+        // waiting for the server: each wait for the next message runs under its own deadline
+        // source (kept apart from the linked token for the timer-rounding reason above) for
+        // what is left of the page's allowance, and the clock stops while the caller holds an
+        // item, so the caller's processing never counts.
+        private CancellationTokenSource? _waitDeadline;
+        private CancellationTokenSource? _wait;
+        private long _waitStart;
+        private TimeSpan _pageWaited;
+        public CancellationToken Token => _wait?.Token ?? _linked.Token;
+        /// <summary>The operation's token, without the page watchdog.</summary>
+        public CancellationToken OperationToken => _linked.Token;
         public bool StreamRetries { get; }
-        public Budget(TimeSpan? timeout, CancellationToken caller, CancellationToken lifetime, TransportOptions? transport, RetryPolicy? retry, bool streamRetries, string operation)
+        /// <summary>The per-page deadline of a paged read: the client default, or null.</summary>
+        public TimeSpan? PageTimeout { get; init; }
+        /// <summary>Starts a new page's allowance of server wait time.</summary>
+        public void StartPage() { EndWait(); _pageWaited = TimeSpan.Zero; }
+        /// <summary>Starts waiting on the server for the next message. A no-op without <see cref="PageTimeout"/>.</summary>
+        public void StartWait()
+        {
+            EndWait();
+            if (PageTimeout is not { } p) return;
+            var left = p - _pageWaited;
+            _waitStart = Stopwatch.GetTimestamp();
+            _waitDeadline = new();
+            _wait = CancellationTokenSource.CreateLinkedTokenSource(_linked.Token, _waitDeadline.Token);
+            if (left > TimeSpan.Zero) _waitDeadline.CancelAfter(left); else _waitDeadline.Cancel();
+        }
+        /// <summary>Stops the clock: the wait's time counts against the page, the caller's next does not.</summary>
+        public void EndWait()
+        {
+            if (_waitDeadline is null) return;
+            _pageWaited += Stopwatch.GetElapsedTime(_waitStart);
+            _wait?.Dispose(); _wait = null;
+            _waitDeadline.Dispose(); _waitDeadline = null;
+        }
+        private bool PageExpired => _waitDeadline is not null && PageTimeout is { } p && (_waitDeadline.IsCancellationRequested || _pageWaited + Stopwatch.GetElapsedTime(_waitStart) >= p);
+        private DeadlineExceededException PageDeadlineExceeded(Exception? inner = null)
+        {
+            var message = $"Page request deadline exceeded: the server did not deliver the page within the client default deadline ({PageTimeout}).";
+            return inner is null ? new(message) : new(message, inner);
+        }
+        public Budget(TimeSpan? timeout, CancellationToken caller, CancellationToken lifetime, TransportOptions? transport, RetryPolicy? retry, bool streamRetries, string operation, string? endpoint)
         {
             _timeout = timeout; _caller = caller; _linked = CancellationTokenSource.CreateLinkedTokenSource(caller, lifetime, _deadline.Token);
-            _transport = transport; _retry = retry; StreamRetries = streamRetries; _operation = operation;
+            _transport = transport; _retry = retry; StreamRetries = streamRetries; _operation = operation; _endpoint = endpoint;
             if (timeout is { } t) _deadline.CancelAfter(t);
         }
         public DateTime? Deadline
         {
-            get { Check(); return _timeout is { } t ? DateTime.UtcNow + (t - Stopwatch.GetElapsedTime(_start)) : null; }
+            get
+            {
+                Check();
+                // Only the total budget goes on the wire: the page watchdog stops while the
+                // caller holds an item, which an absolute call deadline cannot.
+                return _timeout is { } t ? DateTime.UtcNow + (t - Stopwatch.GetElapsedTime(_start)) : null;
+            }
         }
         /// <summary>gRPC call options for one attempt: remaining deadline, budget token and caller transport settings.</summary>
         public Grpc.Core.CallOptions CallOptions()
@@ -180,13 +269,15 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         {
             _caller.ThrowIfCancellationRequested();
             if (_deadline.IsCancellationRequested || (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t)) throw new DeadlineExceededException("Operation total deadline exceeded.");
+            if (PageExpired) throw PageDeadlineExceeded();
             Token.ThrowIfCancellationRequested();
         }
         public Exception Map(Exception ex)
         {
             if (_caller.IsCancellationRequested) return new OperationCanceledException("Operation cancelled by caller.", ex, _caller);
             if (_deadline.IsCancellationRequested || (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t)) return ex as DeadlineExceededException ?? new DeadlineExceededException("Operation total deadline exceeded.", ex);
-            return ex is RpcException rpc ? ErrorMapper.ToSpiceDBException(rpc) : ex;
+            if (PageExpired) return ex as DeadlineExceededException ?? PageDeadlineExceeded(ex);
+            return ex is RpcException rpc ? ErrorMapper.ToSpiceDBException(rpc, _endpoint) : ex;
         }
         /// <summary>Whether a read attempt that failed with <paramref name="ex"/> may be retried.</summary>
         public bool ShouldRetry(RpcException ex, int attempt) => _retry is { } p && attempt < p.MaxRetries && p.RetryableCodes.Contains(ex.StatusCode);
@@ -197,12 +288,12 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             var bound = policy.InitialBackoff * Math.Pow(2, Math.Min(attempt, 30));
             if (policy.MaxBackoff is { } max && bound > max) bound = max;
             var delay = JitteredDelay(bound);
-            policy.OnRetry?.Invoke(new RetryEvent(_operation, attempt + 1, ErrorMapper.ToSpiceDBException(cause), delay));
+            policy.OnRetry?.Invoke(new RetryEvent(_operation, attempt + 1, ErrorMapper.ToSpiceDBException(cause, _endpoint), delay));
             try { await Task.Delay(delay, Token); }
             catch (OperationCanceledException ex) { throw Map(ex); }
             Check();
         }
-        public void Dispose() { _linked.Dispose(); _deadline.Dispose(); }
+        public void Dispose() { EndWait(); _linked.Dispose(); _deadline.Dispose(); }
     }
     private static async Task<T> Unary<T>(Budget budget, Func<Grpc.Core.CallOptions, AsyncUnaryCall<T>> call, bool retry = true)
     {
@@ -219,7 +310,15 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             }
         }
     }
-    private static async IAsyncEnumerable<T> Stream<T>(Budget budget, Func<Grpc.Core.CallOptions, AsyncServerStreamingCall<T>> open)
+    /// <summary>
+    /// Opens a server stream with establishment retries. In a paged read (a budget with a
+    /// <see cref="Budget.PageTimeout"/>) the per-page deadline bounds only waiting on the server:
+    /// the clock runs while the client waits for the next message and stops while the caller
+    /// holds an item, so the caller's processing never counts. A page's waits share one
+    /// allowance; with <paramref name="perMessage"/> (a stream not bounded by a page size) each
+    /// wait for a message gets the whole allowance.
+    /// </summary>
+    private static async IAsyncEnumerable<T> Stream<T>(Budget budget, Func<Grpc.Core.CallOptions, AsyncServerStreamingCall<T>> open, bool perMessage = false)
     {
         bool exposed = false;
         for (int attempt = 0; ; attempt++)
@@ -227,6 +326,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             budget.Check();
             AsyncServerStreamingCall<T>? call = null;
             RpcException? retryCause = null;
+            budget.StartPage();
             try { call = open(budget.CallOptions()); }
             catch (RpcException ex) when (budget.StreamRetries && budget.ShouldRetry(ex, attempt)) { retryCause = ex; }
             catch (Exception ex) when (ex is RpcException or OperationCanceledException) { throw budget.Map(ex); }
@@ -234,15 +334,18 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             {
                 try
                 {
-                    using (budget.Token.Register(call.Dispose))
+                    using (budget.OperationToken.Register(call.Dispose))
                     {
                         while (true)
                         {
                             budget.Check();
+                            if (perMessage) budget.StartPage();
+                            budget.StartWait();
                             bool next;
                             try { next = await call.ResponseStream.MoveNext(budget.Token).WaitAsync(budget.Token); }
                             catch (RpcException ex) when (!exposed && budget.StreamRetries && budget.ShouldRetry(ex, attempt)) { retryCause = ex; break; }
                             catch (Exception ex) when (ex is RpcException or OperationCanceledException) { throw budget.Map(ex); }
+                            budget.EndWait();
                             if (!next) yield break;
                             exposed = true;
                             yield return call.ResponseStream.Current;
@@ -251,10 +354,12 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                 }
                 finally
                 {
+                    budget.EndWait();
                     budget.Capture(() => call.ResponseHeadersAsync, call.GetTrailers);
                     call.Dispose();
                 }
             }
+            budget.EndWait();
             if (retryCause is null) yield break;
             await budget.Backoff(attempt, retryCause);
         }
@@ -274,7 +379,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             WithTracing = options?.Tracing == CheckTracing.Enabled
         };
         var response = await Unary(budget, o => _permissions.CheckPermissionAsync(wire, o.Headers, o.Deadline, o.CancellationToken));
-        return new(ToCheckPermissionship(response.Permissionship), response.PartialCaveatInfo?.MissingRequiredContext ?? Enumerable.Empty<string>(), new(response.CheckedAt?.Token ?? ""), DebugInformation.FromProto(response.DebugTrace), response.OptionalExpiresAt?.ToDateTimeOffset());
+        return new(Response.CheckPermissionship(response.Permissionship, "CheckPermission"), response.PartialCaveatInfo?.MissingRequiredContext ?? Enumerable.Empty<string>(), new(response.CheckedAt?.Token ?? ""), DebugInformation.FromProto(response.DebugTrace), response.OptionalExpiresAt?.ToDateTimeOffset());
     }
     public async Task<IReadOnlyList<CheckResult>> CheckBulkAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default)
     {
@@ -292,11 +397,11 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             foreach (var item in items.Skip(offset).Take(1000)) wire.Items.Add(new CheckBulkPermissionsRequestItem
             { Resource = item.Resource.ToProto(), Permission = item.Permission, Subject = item.Subject.ToProto(), Context = MergeCheckContext(options?.Context, item.Context) });
             var response = await Unary(budget, o => _permissions.CheckBulkPermissionsAsync(wire, o.Headers, o.Deadline, o.CancellationToken));
-            if (response.Pairs.Count != wire.Items.Count) throw new SpiceDBException($"Bulk response returned {response.Pairs.Count} pair(s) for {wire.Items.Count} request item(s).");
+            if (response.Pairs.Count != wire.Items.Count) throw Response.Malformed("CheckBulkPermissions", $"returned {response.Pairs.Count} pair(s) for {wire.Items.Count} request item(s)");
             foreach (var pair in response.Pairs)
             {
                 if (!wire.Items[results.Count - offset].Equals(pair.Request))
-                    throw new SpiceDBException($"check item {results.Count}: bulk response echoed request does not match its input.") { InputIndex = results.Count };
+                { var malformed = Response.Malformed($"check item {results.Count}", "bulk response echoed request does not match its input"); malformed.InputIndex = results.Count; throw malformed; }
                 if (pair.Error is { } error)
                 {
                     var exception = ErrorMapper.ToSpiceDBException(new RpcException(new Grpc.Core.Status((StatusCode)error.Code, error.Message), new Metadata { { "grpc-status-details-bin", error.ToByteArray() } }));
@@ -305,7 +410,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                     results.Add(new CheckResult(exception, new(response.CheckedAt?.Token ?? "")));
                     continue;
                 }
-                if (pair.Item is null) throw new SpiceDBException($"check item {results.Count}: bulk response is missing its result.") { InputIndex = results.Count };
+                if (pair.Item is null) { var malformed = Response.Malformed($"check item {results.Count}", "bulk response is missing its result"); malformed.InputIndex = results.Count; throw malformed; }
+                if (pair.Item.Permissionship == CheckPermissionResponse.Types.Permissionship.Unspecified) { var malformed = Response.Malformed($"check item {results.Count}", "bulk response permissionship is unset"); malformed.InputIndex = results.Count; throw malformed; }
                 results.Add(ToCheckResult(pair.Item, response.CheckedAt?.Token ?? ""));
             }
         }
@@ -373,7 +479,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         foreach (var item in notMatches ?? []) request.OptionalPreconditions.Add(Transaction.BuildPrecondition(Authzed.Api.V1.Precondition.Types.Operation.MustNotMatch, item));
         var response = await Unary(budget, o => _permissions.DeleteRelationshipsAsync(request, o.Headers, o.Deadline, o.CancellationToken), false);
         if (response.DeletionProgress is not (DeleteRelationshipsResponse.Types.DeletionProgress.Complete or DeleteRelationshipsResponse.Types.DeletionProgress.Partial))
-            throw new SpiceDBException("Invalid server deletion progress.") { DeleteProgress = new(response.RelationshipsDeletedCount, new ZedToken(response.DeletedAt?.Token ?? ""), response.AfterResultCursor?.Token, 1, false) };
+            throw WithProgress(SpiceDBException.InternalError("Invalid server deletion progress."), new(response.RelationshipsDeletedCount, new ZedToken(response.DeletedAt?.Token ?? ""), response.AfterResultCursor?.Token, 1, false));
         return new(new(response.DeletedAt?.Token ?? ""), response.RelationshipsDeletedCount, response.DeletionProgress == DeleteRelationshipsResponse.Types.DeletionProgress.Complete, response.AfterResultCursor?.Token);
     }
     /// <summary>Deletes all matches in separate transactional batches. The overall operation is non-atomic: completed batches remain committed if a later batch fails or is canceled.</summary>
@@ -428,14 +534,14 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         if (string.IsNullOrEmpty(token) || token == sent)
         {
             var message = $"{operation} cursor did not advance.";
-            throw new SpiceDBException(message, new RpcException(new Grpc.Core.Status(StatusCode.Internal, message)));
+            throw SpiceDBException.InternalError(message);
         }
         return token;
     }
 
     public async IAsyncEnumerable<ReadRelationship> ReadRelationshipsAsync(Consistency consistency, Filter filter, ReadOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, paged: true);
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var single = options?.Paging == Paging.SingleRequest;
         var request = new ReadRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), RelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(), OptionalLimit = PageRequestLimit(single, size, options?.Limit), OptionalCursor = StartCursor(options?.ResumeCursor) };
@@ -443,10 +549,10 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         while (true)
         {
             int count = 0;
-            await foreach (var response in Stream(budget, o => _permissions.ReadRelationships(request, o.Headers, o.Deadline, o.CancellationToken)))
+            await foreach (var response in Stream(budget, o => _permissions.ReadRelationships(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: single))
             {
                 request.OptionalCursor = response.AfterResultCursor; count++; remaining--;
-                yield return new(Relationship.FromProto(response.Relationship), response.AfterResultCursor?.Token, new(response.ReadAt?.Token ?? ""));
+                yield return new(Response.Relationship(response.Relationship, "ReadRelationships"), response.AfterResultCursor?.Token, new(response.ReadAt?.Token ?? ""));
                 if (remaining == 0) yield break;
             }
             if (single || count < size) yield break;
@@ -455,7 +561,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     }
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, paged: true);
         if (options?.SubjectRelation is not null) throw new InvalidArgumentException("LookupResources uses the supplied SubjectRef relation.");
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var single = options?.Paging == Paging.SingleRequest;
@@ -464,12 +570,13 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         while (true)
         {
             int count = 0;
-            await foreach (var response in Stream(budget, o => _permissions.LookupResources(request, o.Headers, o.Deadline, o.CancellationToken)))
+            await foreach (var response in Stream(budget, o => _permissions.LookupResources(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: single))
             {
                 request.OptionalCursor = response.AfterResultCursor; count++;
+                var permissionship = Response.LookupPermissionship(response.Permissionship, "LookupResources");
                 if (options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly && response.Permissionship != LookupPermissionship.HasPermission) continue;
                 remaining--;
-                yield return new() { ResourceID = response.ResourceObjectId, Permissionship = ToPermissionship(response.Permissionship), PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
+                yield return new() { ResourceId = Response.Id(response.ResourceObjectId, "LookupResources", "resource object id"), Permissionship = permissionship, PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
                 if (remaining == 0) yield break;
             }
             if (single || count < size) yield break;
@@ -478,14 +585,14 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     }
     public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(Consistency consistency, ObjectRef resource, string permission, string subjectType, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, paged: true);
         if (options is not null && options.PermissionshipFilter != LookupPermissionshipFilter.All) throw new InvalidArgumentException("LookupSubjects does not support PermissionshipFilter.");
         if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null || options?.Paging is Paging.SingleRequest) throw new InvalidArgumentException("LookupSubjects does not support Debug, PageSize or Paging; upstream concrete pagination is unimplemented.");
         int remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var request = new LookupSubjectsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), Resource = Native.Required(resource, nameof(resource)).ToProto(), Permission = Native.Required(permission, nameof(permission)), SubjectObjectType = Native.Required(subjectType, nameof(subjectType)), OptionalSubjectRelation = options?.SubjectRelation ?? "", Context = Native.Struct(options?.Context) };
-        await foreach (var response in Stream(budget, o => _permissions.LookupSubjects(request, o.Headers, o.Deadline, o.CancellationToken)))
+        await foreach (var response in Stream(budget, o => _permissions.LookupSubjects(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: true))
         {
-            yield return ToLookupSubject(response);
+            yield return ValidLookupSubject(response);
             if (--remaining == 0) yield break;
         }
     }
@@ -546,7 +653,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     }
     public async IAsyncEnumerable<ExportedRelationship> ExportRelationshipsAsync(Consistency consistency, Filter filter, ExportOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, paged: true);
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var request = new ExportBulkRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), OptionalRelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(), OptionalLimit = (uint)size, OptionalCursor = StartCursor(options?.ResumeCursor) };
         var sent = options?.ResumeCursor;
@@ -558,7 +665,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                 request.OptionalCursor = response.AfterResultCursor;
                 foreach (var relationship in response.Relationships)
                 {
-                    count++; remaining--; yield return new(Relationship.FromProto(relationship), response.AfterResultCursor?.Token);
+                    count++; remaining--; yield return new(Response.Relationship(relationship, "ExportBulkRelationships"), response.AfterResultCursor?.Token);
                     if (remaining == 0) yield break;
                 }
             }
@@ -578,7 +685,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     public async IAsyncEnumerable<WatchEvent> UpdatesAsync(IReadOnlyList<string> objectTypes, ZedToken? startRevision, WatchOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, watch: true);
-        var request = new WatchRequest { OptionalStartCursor = startRevision is { } token ? new() { Token = token.Value } : null };
+        var request = new WatchRequest { OptionalStartCursor = RevisionInput.Optional(startRevision, nameof(startRevision)) is { } token ? new() { Token = token } : null };
         request.OptionalObjectTypes.AddRange(Native.Required(objectTypes, nameof(objectTypes)).ToArray());
         if (request.OptionalObjectTypes.Count > 0 && (options?.RelationshipFilters.Count ?? 0) > 0)
             throw new InvalidArgumentException("Object types and relationship filters are mutually exclusive.");
@@ -588,7 +695,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         if (content.HasFlag(WatchContent.Checkpoints)) request.OptionalUpdateKinds.Add(WatchKind.IncludeCheckpoints);
         if (content.HasFlag(WatchContent.SchemaUpdates)) request.OptionalUpdateKinds.Add(WatchKind.IncludeSchemaUpdates);
         await foreach (var response in Stream(budget, o => _watch.Watch(request, o.Headers, o.Deadline, o.CancellationToken)))
-            yield return new(response.Updates.Select(UpdateFromProto), new(response.ChangesThrough?.Token ?? ""), response.IsCheckpoint, response.SchemaUpdated, Native.FromStruct(response.OptionalTransactionMetadata), response.FullRevisionMetadata.Select(x => Native.FromStruct(x)!));
+            yield return new(response.Updates.Select(u => Response.Update(u, "Watch")).ToArray(), new(response.ChangesThrough?.Token ?? ""), response.IsCheckpoint, response.SchemaUpdated, Native.FromStruct(response.OptionalTransactionMetadata), response.FullRevisionMetadata.Select(x => Native.FromStruct(x)!));
     }
     public async Task<SchemaResult> ReadSchemaAsync(
         CallOptions? options = null, CancellationToken cancellationToken = default)
@@ -769,7 +876,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
 
         return new ExpandResult
         {
-            Tree = ToPermissionTree(resp.TreeRoot),
+            Tree = ToPermissionTree(Response.Tree(resp.TreeRoot, "ExpandPermissionTree")),
             Revision = new(resp.ExpandedAt?.Token ?? ""),
         };
     }
@@ -807,7 +914,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         if (resp.CounterStillCalculating)
             return new CountResult { StillCalculating = true };
 
-        var cv = resp.ReadCounterValue ?? throw new SpiceDBException("Counter response does not contain a count or calculating state.");
+        var cv = resp.ReadCounterValue ?? throw SpiceDBException.InternalError("Counter response does not contain a count or calculating state.");
         return new CountResult
         {
             RelationshipCount = cv.RelationshipCount,
@@ -891,7 +998,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
             return new ResolvedSubject();
         return new ResolvedSubject
         {
-            SubjectID = v.SubjectObjectId,
+            SubjectId = v.SubjectObjectId,
             Permissionship = ToPermissionship(v.Permissionship),
             PartialCaveat = ToPartialCaveatInfo(v.PartialCaveatInfo),
         };
@@ -900,12 +1007,12 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     internal static LookupSubject ToLookupSubject(LookupSubjectsResponse resp)
     {
         var subject = ToResolvedSubject(resp.Subject);
-        if (string.IsNullOrEmpty(subject.SubjectID))
+        if (string.IsNullOrEmpty(subject.SubjectId))
         {
 #pragma warning disable CS0612 // deprecated proto fields — explicit fallback for older servers
             subject = new ResolvedSubject
             {
-                SubjectID = resp.SubjectObjectId,
+                SubjectId = resp.SubjectObjectId,
                 Permissionship = ToPermissionship(resp.Permissionship),
                 PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
             };
@@ -921,7 +1028,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         {
 #pragma warning disable CS0612 // deprecated proto field — explicit fallback for older servers
             if (resp.ExcludedSubjectIds.Count > 0)
-                excluded = resp.ExcludedSubjectIds.Select(id => new ResolvedSubject { SubjectID = id }).ToList();
+                excluded = resp.ExcludedSubjectIds.Select(id => new ResolvedSubject { SubjectId = id }).ToList();
 #pragma warning restore CS0612
         }
 
@@ -966,15 +1073,33 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         // raise, and MUST map to the safe, non-permissive default -- never a grant, and never a
         // write. Mapping to Touch here would let a cache or index mirror consuming the watch
         // stream upsert a relationship that may in fact have been deleted.
-        var op = pu.Operation switch
-        {
-            Authzed.Api.V1.RelationshipUpdate.Types.Operation.Create => UpdateOperation.Create,
-            Authzed.Api.V1.RelationshipUpdate.Types.Operation.Touch => UpdateOperation.Touch,
-            Authzed.Api.V1.RelationshipUpdate.Types.Operation.Delete => UpdateOperation.Delete,
-            _ => UpdateOperation.Unspecified,
-        };
-        return new RelationshipUpdate(op, Relationship.FromProto(pu.Relationship));
+        return new RelationshipUpdate(UpdateOperationFromProto(pu.Operation), Relationship.FromProto(pu.Relationship));
     }
+    internal static UpdateOperation UpdateOperationFromProto(Authzed.Api.V1.RelationshipUpdate.Types.Operation operation) => operation switch
+    {
+        Authzed.Api.V1.RelationshipUpdate.Types.Operation.Create => UpdateOperation.Create,
+        Authzed.Api.V1.RelationshipUpdate.Types.Operation.Touch => UpdateOperation.Touch,
+        Authzed.Api.V1.RelationshipUpdate.Types.Operation.Delete => UpdateOperation.Delete,
+        _ => UpdateOperation.Unspecified,
+    };
+    /// <summary>
+    /// <see cref="ToLookupSubject"/> for the client's own call path: a response with no subject
+    /// id (in either the current or the deprecated field), or an excluded subject without one,
+    /// is malformed rather than an empty-id subject, and so is a subject whose permissionship is
+    /// unspecified.
+    /// </summary>
+    internal static LookupSubject ValidLookupSubject(LookupSubjectsResponse response)
+    {
+        var mapped = ToLookupSubject(response);
+        Response.Id(mapped.Subject.SubjectId, "LookupSubjects", "subject object id");
+#pragma warning disable CS0612 // deprecated proto field — the same fallback ToLookupSubject takes
+        var permissionship = string.IsNullOrEmpty(response.Subject?.SubjectObjectId) ? response.Permissionship : response.Subject.Permissionship;
+#pragma warning restore CS0612
+        Response.LookupPermissionship(permissionship, "LookupSubjects");
+        foreach (var excluded in mapped.ExcludedSubjects) Response.Id(excluded.SubjectId, "LookupSubjects", "excluded subject object id");
+        return mapped;
+    }
+    private static SpiceDBException WithProgress(SpiceDBException error, DeleteProgress progress) { error.DeleteProgress = progress; return error; }
 
     internal static Struct? MergeCheckContext(IReadOnlyDictionary<string, object?>? defaults, IReadOnlyDictionary<string, object?>? item)
     {

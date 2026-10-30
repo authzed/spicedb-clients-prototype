@@ -153,6 +153,6 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
 
     expect do
       client.check_bulk([numbered_rels(batch_size * 2)].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
-    end.to raise_error(SpiceDB::Error, /check item #{failing}: malformed/)
+    end.to raise_error(SpiceDB::Error, /check item #{failing}: malformed/) { |e| expect(e.code).to eq(GRPC::Core::StatusCodes::INTERNAL) }
   end
 end

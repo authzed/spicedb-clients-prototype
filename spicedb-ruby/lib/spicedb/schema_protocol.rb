@@ -5,21 +5,21 @@ module SpiceDB
     private
 
     def call_read_schema(timeout_seconds)
-      resp = invoke(@proto_client.schema, :read_schema,
+      resp = invoke(proto_client.schema, :read_schema,
                     Authzed::Api::V1::ReadSchemaRequest.new,
                     timeout_seconds)
       [resp.schema_text, ZedToken.from_proto(resp.read_at)]
     end
 
     def call_write_schema(schema, timeout_seconds)
-      resp = invoke(@proto_client.schema, :write_schema,
+      resp = invoke(proto_client.schema, :write_schema,
                     Authzed::Api::V1::WriteSchemaRequest.new(schema: schema),
                     timeout_seconds)
       ZedToken.from_proto(resp.written_at)
     end
 
     def call_reflect_schema(consistency, timeout_seconds, filters = [])
-      resp = invoke(@proto_client.schema, :reflect_schema,
+      resp = invoke(proto_client.schema, :reflect_schema,
                     Authzed::Api::V1::ReflectSchemaRequest.new(
                       optional_filters: filters.map do |filter|
                         Authzed::Api::V1::ReflectionSchemaFilter.new(**filter.to_h.to_h do |key, value|
@@ -84,12 +84,12 @@ module SpiceDB
     end
 
     def call_computable_permissions(consistency, definition_name, relation_name, timeout_seconds, definition_name_filter = nil)
-      resp = invoke(@proto_client.schema, :computable_permissions,
+      resp = invoke(proto_client.schema, :computable_permissions,
                     Authzed::Api::V1::ComputablePermissionsRequest.new(
                       consistency: build_consistency(consistency),
-                      definition_name: definition_name,
-                      relation_name: relation_name,
-                      optional_definition_name_filter: definition_name_filter || ''
+                      definition_name: Values.loose_name(definition_name, 'definition_name'),
+                      relation_name: Values.loose_name(relation_name, 'relation_name'),
+                      optional_definition_name_filter: Values.loose_name(definition_name_filter, 'definition_name_filter') || ''
                     ),
                     timeout_seconds)
 
@@ -105,11 +105,11 @@ module SpiceDB
     end
 
     def call_dependent_relations(consistency, definition_name, permission_name, timeout_seconds)
-      resp = invoke(@proto_client.schema, :dependent_relations,
+      resp = invoke(proto_client.schema, :dependent_relations,
                     Authzed::Api::V1::DependentRelationsRequest.new(
                       consistency: build_consistency(consistency),
-                      definition_name: definition_name,
-                      permission_name: permission_name
+                      definition_name: Values.loose_name(definition_name, 'definition_name'),
+                      permission_name: Values.loose_name(permission_name, 'permission_name')
                     ),
                     timeout_seconds)
 
@@ -125,7 +125,7 @@ module SpiceDB
     end
 
     def call_diff_schema(consistency, comparison_schema, timeout_seconds)
-      resp = invoke(@proto_client.schema, :diff_schema,
+      resp = invoke(proto_client.schema, :diff_schema,
                     Authzed::Api::V1::DiffSchemaRequest.new(
                       consistency: build_consistency(consistency),
                       comparison_schema: comparison_schema

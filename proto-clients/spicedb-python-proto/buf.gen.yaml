@@ -4,11 +4,20 @@ version: v2
 # everything authzed-py ships for those protos, including the .pyi type stubs,
 # so a bridged authzed-py (spicedb_python_proto.bridge) loses nothing when it
 # drops its own generated modules.
+#
+# The protocolbuffers plugin versions are pinned, and they set the protobuf
+# runtime floor: each generated module calls ValidateProtobufRuntimeVersion
+# with its gencode version and refuses an older runtime. v26.1 (gencode
+# 5.26.1) is the oldest 5.x gencode, so applications on protobuf 5.x, 6.x or
+# 7.x can all adopt the client without a protobuf upgrade; newer runtimes
+# accept older gencode. The suites are run against each major (DESIGN.md,
+# "Dependency floors"). Raise these pins only together with the protobuf floor
+# in pyproject.toml and ../../spicedb-python/pyproject.toml.
 plugins:
-  - remote: buf.build/protocolbuffers/python
+  - remote: buf.build/protocolbuffers/python:v26.1
     include_imports: true
     out: gen
-  - remote: buf.build/protocolbuffers/pyi
+  - remote: buf.build/protocolbuffers/pyi:v26.1
     include_imports: true
     out: gen
   - remote: buf.build/grpc/python

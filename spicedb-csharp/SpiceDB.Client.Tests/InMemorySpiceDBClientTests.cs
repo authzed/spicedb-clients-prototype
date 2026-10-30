@@ -113,9 +113,9 @@ public class InMemorySpiceDBClientTests
         conflict.ServerMessage.Should().StartWith("could not CREATE relationship `document:1#viewer@user:alice`, as it already existed");
         conflict.Reason.Should().Be("ERROR_REASON_ATTEMPT_TO_RECREATE_RELATIONSHIP");
 
-        // Local validation looks like the client's local validation: no server message.
+        // Local validation looks like the client's local validation: the server message is the message.
         var local = await Assert.ThrowsAsync<InvalidArgumentException>(async () => { await foreach (var _ in store.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), new ReadOptions { Limit = 0 })) { } });
-        local.ServerMessage.Should().BeNull();
+        local.ServerMessage.Should().Be("Limit must be positive.");
         local.Message.Should().Be("Limit must be positive.");
 
         // The same per-call retry rules as the real client.
@@ -286,8 +286,6 @@ public class InMemorySpiceDBClientTests
         var doc = new ObjectRef("document", "1");
         var calls = new Func<Task>[]
         {
-            async () => { await foreach (var _ in store.LookupResourcesAsync(Consistency.Full(), "document", "view", Alice)) { } },
-            async () => { await foreach (var _ in store.LookupSubjectsAsync(Consistency.Full(), doc, "view", "user")) { } },
             async () => { await foreach (var _ in store.UpdatesAsync(["document"], null)) { } },
             () => store.ComputablePermissionsAsync(Consistency.Full(), "document", "viewer"),
             () => store.DependentRelationsAsync(Consistency.Full(), "document", "view"),
@@ -310,7 +308,7 @@ public class InMemorySpiceDBClientTests
         }
         var fake = (InMemorySpiceDBClient)store;
         fake.Calls.Select(c => c.Operation).Should().Equal(
-            SpiceDBOperation.LookupResources, SpiceDBOperation.LookupSubjects, SpiceDBOperation.Updates,
+            SpiceDBOperation.Updates,
             SpiceDBOperation.ComputablePermissions, SpiceDBOperation.DependentRelations, SpiceDBOperation.DiffSchema,
             SpiceDBOperation.ExpandPermissionTree, SpiceDBOperation.ExperimentalRegisterRelationshipCounter,
             SpiceDBOperation.ExperimentalCountRelationships, SpiceDBOperation.ExperimentalUnregisterRelationshipCounter,

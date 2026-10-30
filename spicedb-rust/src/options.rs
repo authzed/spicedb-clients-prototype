@@ -269,6 +269,21 @@ impl fmt::Display for Operation {
     }
 }
 
+/// When [`SpiceDBClientBuilder::build`](crate::SpiceDBClientBuilder::build)
+/// dials the endpoint. Without a choice, TLS connects at construction (the
+/// handshake validates the server) and plaintext on the first call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConnectMode {
+    /// Connect on the first call: construction succeeds while SpiceDB is
+    /// down or the endpoint is wrong, and calls fail until it is reachable.
+    Lazy,
+    /// Connect during `build`, so an unreachable or wrong endpoint fails
+    /// there with [`SpiceDBError::Transport`]
+    /// and a service can refuse to start.
+    Eager,
+}
+
 /// Whether unary operations get the client's default deadline when no
 /// per-call timeout is set.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -415,9 +430,15 @@ pub enum BulkItemErrors {
     /// [`SpiceDBError::BulkItem`].
     #[default]
     Fail,
-    /// Every item gets a result; a failed item carries its
-    /// [`SpiceDBError::BulkItem`] in [`CheckResult::error`](crate::CheckResult::error)
-    /// and `Permissionship::Unspecified`, so it never grants.
+    /// Every item the server answered or failed gets a result; a failed item
+    /// carries its [`SpiceDBError::BulkItem`] in
+    /// [`CheckResult::error`](crate::CheckResult::error) and
+    /// `Permissionship::Unspecified`, so it never grants.
+    ///
+    /// A malformed item in the server's response (such as an unset
+    /// permissionship) is not a per-item error: it still fails the whole call
+    /// with `Internal`, for which
+    /// [`SpiceDBError::is_client_detected`] is true.
     Returned,
 }
 

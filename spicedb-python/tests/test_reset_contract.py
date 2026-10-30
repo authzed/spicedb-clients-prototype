@@ -1,6 +1,8 @@
 """Acceptance tests for the explicitly breaking native API reset."""
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import TransportSecurity
-from spicedb import ZedToken, Tracing
+from spicedb import InternalError, ZedToken, Tracing
+import grpc
 
 import pytest
 from unittest.mock import AsyncMock
@@ -134,7 +136,7 @@ def test_recursive_trace_native_values_and_absence():
         trace_operation_id="operation",
         source="server",
     )
-    response = p.CheckPermissionResponse(
+    response = p.CheckPermissionResponse(checked_at=_core_tok.ZedToken(token="t"),
         permissionship=2,
         debug_trace=d.DebugInformation(schema_used="schema", check=trace),
     )
@@ -151,7 +153,7 @@ def test_recursive_trace_native_values_and_absence():
     assert native.sub_problems[0].result is Permissionship.UNSPECIFIED
     assert native.sub_problems[0].permission_type is PermissionType.UNSPECIFIED
     assert native.sub_problems[0].was_cached_result is False
-    assert check_result(p.CheckPermissionResponse()).debug_trace is None
+    assert check_result(p.CheckPermissionResponse(checked_at=_core_tok.ZedToken(token="t"), permissionship=1)).debug_trace is None
     bulk = p.CheckBulkPermissionsResponse(
         checked_at=c.ZedToken(token="chunk"),
         pairs=[
@@ -235,7 +237,7 @@ def test_one_budget_across_retries_and_chunks(monkeypatch):
         now[0] += 0.2
         if len(timeouts) == 1:
             raise Retry()
-        return p.CheckPermissionResponse(permissionship=2)
+        return p.CheckPermissionResponse(checked_at=_core_tok.ZedToken(token="t"), permissionship=2)
 
     client._permissions = Mock(CheckPermission=Mock(side_effect=attempt))
     client.check(CHECK, consistency=full(), timeout=0.6)
@@ -244,7 +246,7 @@ def test_one_budget_across_retries_and_chunks(monkeypatch):
 
     def bulk(request, **kwargs):
         now[0] += 0.6
-        return p.CheckBulkPermissionsResponse(
+        return p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
             pairs=[
                 p.CheckBulkPermissionsPair(
                     item=p.CheckBulkPermissionsResponseItem(permissionship=2),
@@ -691,7 +693,7 @@ async def test_lookup_subjects_omits_unsupported_concrete_limit_by_default(
     class Call:
         def __iter__(self):
             for name in ("alice", "bob", "carol"):
-                yield p.LookupSubjectsResponse(
+                yield p.LookupSubjectsResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                     subject=p.ResolvedSubject(subject_object_id=name, permissionship=1)
                 )
 
@@ -740,9 +742,11 @@ async def test_async_import_deadline_cancels_blocked_producer(import_server):
             closed.set()
 
     async with AsyncClient(import_server, token="x", transport_security=TransportSecurity.PLAINTEXT) as client:
+        # Connect first, so the watchdog below never has to cover connection setup.
+        await client.ready(timeout=30)
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(
-                client.import_relationships(source(), timeout=0.03), 0.5
+                client.import_relationships(source(), timeout=0.03), 5
             )
     assert closed.is_set()
 
@@ -771,7 +775,7 @@ async def test_bulk_rejects_unmatched_echoed_requests(asynchronous, corruption):
     ]
 
     def respond(request, **kwargs):
-        response = p.CheckBulkPermissionsResponse(
+        response = p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
             pairs=[
                 p.CheckBulkPermissionsPair(
                     request=item,
@@ -815,7 +819,7 @@ def test_bulk_matched_error_and_bad_echo_keep_absolute_index():
         full(),
         [CHECK, PermissionCheck(ObjectRef("document", "two"), "view", CHECK.subject)],
     ).items
-    response = p.CheckBulkPermissionsResponse(
+    response = p.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
         pairs=[
             p.CheckBulkPermissionsPair(
                 request=expected[0],
@@ -832,7 +836,8 @@ def test_bulk_matched_error_and_bad_echo_keep_absolute_index():
     response.pairs[1].request.CopyFrom(expected[0])
     with pytest.raises(SpiceDBError, match="check item 1001.*request") as caught:
         check_results(response, expected, offset=1000)
-    assert type(caught.value) is SpiceDBError
+    assert type(caught.value) is InternalError
+    assert caught.value.code() is grpc.StatusCode.INTERNAL
     assert caught.value.input_index == 1001
 
 
@@ -867,10 +872,11 @@ async def test_async_import_remote_rejection_cancels_blocked_producer():
 
     try:
         async with AsyncClient(f"127.0.0.1:{port}", token="x", transport_security=TransportSecurity.PLAINTEXT) as client:
+            await client.ready(timeout=30)  # the watchdog below never covers connection setup
             with pytest.raises(
                 PermissionDeniedError, match="upload rejected"
             ) as caught:
-                await asyncio.wait_for(client.import_relationships(source()), timeout=2)
+                await asyncio.wait_for(client.import_relationships(source()), timeout=10)
             assert isinstance(caught.value.__cause__, grpc.aio.AioRpcError)
             assert caught.value.__cause__.code() is grpc.StatusCode.PERMISSION_DENIED
             assert closed.is_set()

@@ -24,10 +24,12 @@ internal sealed class AuthCapturingHandler : HttpMessageHandler
 {
     public int InvocationCount;
     public string? CapturedAuth;
+    public Uri? CapturedUri;
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref InvocationCount);
+        CapturedUri = request.RequestUri;
         CapturedAuth = request.Headers.TryGetValues("authorization", out var values) ? values.FirstOrDefault() : null;
 
         // The response content/framing doesn't matter -- callers only inspect
@@ -62,12 +64,10 @@ public class InsecureHostGuardTest
     [InlineData("127.55.66.77:50051", true)]
     [InlineData("[::1]:50051", true)]
     [InlineData("::1", true)]
-    // Unix targets are NOT loopback for this client, deliberately, and this pair used
-    // to assert the opposite. Grpc.Net.Client cannot dial a UDS path from an address
-    // string: GrpcChannel.ForAddress("http://unix:/var/run/spicedb.sock") reports
-    // Target "unix", so the exemption was handing a bearer token to whatever DNS
-    // answers for the name "unix". The constructor now refuses these outright -- see
-    // TestRefusesUnixSocketTargets -- and the loopback question never arises.
+    // Unix targets are NOT loopback to this host-based check: GrpcChannel.ForAddress
+    // ("http://unix:/var/run/spicedb.sock") would resolve the DNS name "unix". The
+    // constructor dials them through a socket ConnectCallback instead, before this
+    // check -- see TestAcceptsPlaintextUnixSocketTargets.
     [InlineData("unix:/var/run/spicedb.sock", false)]
     [InlineData("unix:///var/run/spicedb.sock", false)]
     [InlineData("UNIX:/var/run/spicedb.sock", false)]
@@ -140,11 +140,16 @@ public class InsecureHostGuardTest
     {
         var handler = new AuthCapturingHandler();
 
-        var ex = Assert.Throws<InsecureRemoteHostException>(() =>
-            new SpiceDBProtoClient(endpoint, "super-secret-token", insecure: true, allowInsecureRemoteCredentials: false, httpHandler: handler));
+        // Userinfo is a malformed endpoint, refused before the loopback guard runs, so
+        // the opt-in does not buy it either.
+        foreach (var allow in new[] { false, true })
+        {
+            var ex = Assert.Throws<ArgumentException>(() =>
+                new SpiceDBProtoClient(endpoint, "super-secret-token", insecure: true, allowInsecureRemoteCredentials: allow, httpHandler: handler));
 
-        Assert.Contains(endpoint, ex.Message);
-        Assert.Contains("allowInsecureRemoteCredentials", ex.Message);
+            Assert.Contains(endpoint, ex.Message);
+            Assert.Contains("userinfo", ex.Message);
+        }
 
         Assert.Equal(0, handler.InvocationCount);
         Assert.Null(handler.CapturedAuth);
@@ -191,11 +196,9 @@ public class InsecureHostGuardTest
     /// further down, for an input the fixtures assert is supported.
     /// </summary>
     [Theory]
-    [InlineData("::1")]
-    [InlineData("[::1]")]
-    [InlineData("0:0:0:0:0:0:0:1")]
     [InlineData("[::1]:50051")]
-    [InlineData("127.0.0.1")]
+    [InlineData("[0:0:0:0:0:0:0:1]:50051")]
+    [InlineData("127.0.0.1:50051")]
     public void TestBareIpv6LoopbackConstructsAClient(string endpoint)
     {
         var handler = new AuthCapturingHandler();
@@ -217,40 +220,36 @@ public class InsecureHostGuardTest
     }
 
     /// <summary>
-    /// A unix-socket target must be refused outright, not treated as loopback. This
-    /// transport has no UDS support reachable from an address string, so
-    /// GrpcChannel.ForAddress("http://unix:/var/run/spicedb.sock") resolves the DNS
-    /// name "unix" -- meaning the old "a unix socket never leaves the kernel"
-    /// exemption was shipping the bearer token to a remote host in cleartext while the
-    /// guard reported "loopback".
-    /// <para>
-    /// The refusal is unconditional: TLS and allowInsecureRemoteCredentials are both
-    /// exercised here, because neither makes dialing a host called "unix" the thing
-    /// the caller asked for. handler.InvocationCount proves nothing reached the
-    /// transport in any of those combinations.
-    /// </para>
+    /// A plaintext unix-socket target dials the socket path itself (a ConnectCallback, not
+    /// the DNS name "unix"), so it never leaves the host and needs no remote opt-in. The
+    /// live example in spicedb-csharp/examples makes a real call over one.
     /// </summary>
     [Theory]
-    [InlineData("unix:/var/run/spicedb.sock", true, false)]
-    [InlineData("unix:///var/run/spicedb.sock", true, false)]
-    [InlineData("UNIX:/var/run/spicedb.sock", true, false)]
-    // The opt-in does not buy a unix target either: it authorizes cleartext to a
-    // remote host, not "resolve a hostname called unix".
-    [InlineData("unix:/var/run/spicedb.sock", true, true)]
-    // Nor does TLS.
-    [InlineData("unix:/var/run/spicedb.sock", false, false)]
-    public void TestRefusesUnixSocketTargets(string endpoint, bool insecure, bool allowInsecureRemoteCredentials)
+    [InlineData("unix:/var/run/spicedb.sock", "/var/run/spicedb.sock")]
+    [InlineData("unix:///var/run/spicedb.sock", "/var/run/spicedb.sock")]
+    [InlineData("UNIX:/var/run/spicedb.sock", "/var/run/spicedb.sock")]
+    [InlineData("unix:relative/spicedb.sock", "relative/spicedb.sock")]
+    public void TestAcceptsPlaintextUnixSocketTargets(string endpoint, string path)
+    {
+        Assert.Equal(path, SpiceDBProtoClient.UnixSocketPath(endpoint, insecure: true));
+        using var client = new SpiceDBProtoClient(endpoint, "token", insecure: true, allowInsecureRemoteCredentials: false);
+        Assert.NotNull(client.Permissions);
+    }
+
+    /// <summary>A unix target over TLS, with an authority, or with no path is refused at construction, naming the accepted forms.</summary>
+    [Theory]
+    [InlineData("unix:/var/run/spicedb.sock", false, "plaintext, but this client was asked for TLS")]
+    [InlineData("unix://host/var/run/spicedb.sock", true, "takes no authority")]
+    [InlineData("unix:", true, "missing socket path")]
+    public void TestRefusesMalformedUnixSocketTargets(string endpoint, bool insecure, string reason)
     {
         var handler = new AuthCapturingHandler();
-
-        var ex = Assert.Throws<InvalidOperationException>(() =>
-            new SpiceDBProtoClient(endpoint, "super-secret-token", insecure, allowInsecureRemoteCredentials, handler));
-
+        var ex = Assert.Throws<ArgumentException>(() =>
+            new SpiceDBProtoClient(endpoint, "super-secret-token", insecure, allowInsecureRemoteCredentials: false, handler));
         Assert.Contains(endpoint, ex.Message);
-        Assert.Contains("unix-domain-socket", ex.Message);
-
+        Assert.Contains(reason, ex.Message);
+        Assert.Contains("unix:/path/to/socket", ex.Message);
         Assert.Equal(0, handler.InvocationCount);
-        Assert.Null(handler.CapturedAuth);
     }
 
     /// <summary>
@@ -292,7 +291,7 @@ public class InsecureHostGuardTest
     /// expected to fail (the fake handler doesn't speak real gRPC framing) -- these
     /// tests only care about what the handler observed, not the RPC's outcome.
     /// </summary>
-    private static async Task AttemptCall(SpiceDBProtoClient client)
+    internal static async Task AttemptCall(SpiceDBProtoClient client)
     {
         try
         {

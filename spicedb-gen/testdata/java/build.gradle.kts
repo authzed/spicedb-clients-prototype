@@ -19,7 +19,7 @@ java {
 }
 
 dependencies {
-    implementation("com.authzed:spicedb-java-lib")
+    implementation("com.authzed.spicedb:spicedb-java:0.1.0")
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("org.assertj:assertj-core:3.26.3")
@@ -35,9 +35,15 @@ tasks.withType<JavaCompile> {
     options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-processing"))
 }
 
+// The generated Permissions.java (the only main source) must compile warning-free under every
+// lint, since applications commonly build with -Xlint:all -Werror.
+tasks.named<JavaCompile>("compileJava") {
+    options.compilerArgs.add("-Werror")
+}
+
 spotless {
     java {
-        target("src/main/java/**/Permissions.java")
+        target("src/main/java/**/Permissions.java", "names_only/**/PermissionNames.java")
         googleJavaFormat("1.22.0")
     }
 }
@@ -49,4 +55,14 @@ tasks.register<JavaCompile>("compileTypeErrors") {
     classpath = sourceSets["main"].compileClasspath + sourceSets["main"].output
     destinationDirectory.set(layout.buildDirectory.dir("type-errors"))
     options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-processing", "-Xmaxerrs", "100000"))
+}
+
+// Compiles the --java.names-only output and a class using it with an EMPTY classpath: no
+// spicedb-java, no proto tier. It passes only while the names-only output needs nothing beyond
+// the JDK, which is what lets a shared API package depend on it alone.
+tasks.register<JavaCompile>("compileNamesOnly") {
+    source = fileTree("names_only")
+    classpath = files()
+    destinationDirectory.set(layout.buildDirectory.dir("names-only"))
+    options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
 }

@@ -1,6 +1,6 @@
 package com.authzed.spicedb;
 
-import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.nio.file.Path;
 import java.time.Duration;
 
@@ -19,37 +19,31 @@ public final class ClientOptions {
     var ops = new java.util.EnumMap<ClientOperation, RetryPolicy>(ClientOperation.class);
     for (var e : b.operationRetryPolicies.entrySet()) {
       if (e.getKey().isNeverIdempotent() && e.getValue().maxRetries() > 0)
-        throw new InvalidArgumentException(
+        throw new LocalValidationException(
             e.getKey() + " cannot be retried: it is not idempotent on replay");
       ops.put(e.getKey(), e.getValue());
     }
     this.operationRetryPolicies = java.util.Collections.unmodifiableMap(ops);
     this.defaultDeadline = b.defaultDeadline;
     if (defaultDeadline == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "defaultDeadline must not be null");
+      throw new LocalValidationException("defaultDeadline must not be null");
     this.streamRetries = b.streamRetries;
-    if (streamRetries == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "streamRetries must not be null");
+    if (streamRetries == null) throw new LocalValidationException("streamRetries must not be null");
     this.retries = b.retries;
-    if (retries == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("retries must not be null");
+    if (retries == null) throw new LocalValidationException("retries must not be null");
     this.retryPolicy = b.retryPolicy;
-    if (retryPolicy == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("retryPolicy must not be null");
+    if (retryPolicy == null) throw new LocalValidationException("retryPolicy must not be null");
     defaultTimeout = b.defaultTimeout;
     remotePlaintextCredentials = b.remotePlaintextCredentials;
     if (remotePlaintextCredentials == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "remotePlaintextCredentials must not be null");
+      throw new LocalValidationException("remotePlaintextCredentials must not be null");
     caCertificate = b.caCertificate;
     clientCertificate = b.clientCertificate;
     clientKey = b.clientKey;
     if (defaultTimeout == null || defaultTimeout.isZero() || defaultTimeout.isNegative())
-      throw new InvalidArgumentException("defaultTimeout must be positive");
+      throw new LocalValidationException("defaultTimeout must be positive");
     if ((clientCertificate == null) != (clientKey == null))
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "clientCertificate and clientKey must be supplied together");
   }
 
@@ -97,7 +91,7 @@ public final class ClientOptions {
    * Builder#operationRetryPolicy}, or {@code null} when that operation uses the client-wide policy.
    */
   public RetryPolicy operationRetryPolicy(ClientOperation operation) {
-    if (operation == null) throw new InvalidArgumentException("operation must not be null");
+    if (operation == null) throw new LocalValidationException("operation must not be null");
     return operationRetryPolicies.get(operation);
   }
 
@@ -174,8 +168,8 @@ public final class ClientOptions {
      * InvalidArgumentException}. Setting an operation again replaces its policy.
      */
     public Builder operationRetryPolicy(ClientOperation operation, RetryPolicy policy) {
-      if (operation == null) throw new InvalidArgumentException("operation must not be null");
-      if (policy == null) throw new InvalidArgumentException("policy must not be null");
+      if (operation == null) throw new LocalValidationException("operation must not be null");
+      if (policy == null) throw new LocalValidationException("policy must not be null");
       operationRetryPolicies.put(operation, policy);
       return this;
     }

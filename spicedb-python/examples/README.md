@@ -67,9 +67,11 @@ fail".
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes with a bounded consumer: subscribe, write, consume until the expected update arrives, then `aclose()` the stream |
+| `startup_readiness/` | `ready(timeout=...)` at startup so an unreachable endpoint fails there, plus real calls over `dns:///host:port` and (with `SPICEDB_UNIX_SOCKET` set to a local SpiceDB's `--grpc-network unix` socket) `unix:` targets |
 | `schema_management/` | Schema read/write/reflect/diff, plus computable_permissions/dependent_relations introspection |
 | `bulk_operations/` | Bulk checks and bulk relationship import/export |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |
+| `in_memory_double/` | Code typed against `AsyncClientProtocol` runs on the real client and on `AsyncInMemoryClient`; the double answers relation checks and lookups as SpiceDB does, and a check resolver stands in for a computed permission |
 | `call_deadlines/` | Constructing a client with `default_timeout`, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
 | `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
 | `insecure_opt_in/` | Why `insecure=True` is loopback-only, and the named opt-in a remote plaintext host requires |

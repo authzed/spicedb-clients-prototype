@@ -221,13 +221,9 @@ class InMemorySpiceDBTest {
     assertEquals(List.of(Consistency.full(), doc, "view"), expand.arguments());
 
     // Streams fail where the real client reports a failed call: when consumed.
-    var lookup = db.lookupResources(Consistency.full(), "document", "view", alice);
-    assertEquals(1, db.callsOf(ClientOperation.LOOKUP_RESOURCES).size());
-    try (lookup) {
-      assertEquals(
-          Status.Code.UNIMPLEMENTED, assertThrows(SpiceDBException.class, lookup::toList).code());
-    }
-    try (var s = db.updates(List.of("document"), null)) {
+    var watch = db.updates(List.of("document"), null);
+    assertEquals(1, db.callsOf(ClientOperation.WATCH).size());
+    try (var s = watch) {
       assertEquals(
           Status.Code.UNIMPLEMENTED, assertThrows(SpiceDBException.class, s::toList).code());
     }
@@ -356,11 +352,13 @@ class InMemorySpiceDBTest {
     assertTrue(e.getMessage().startsWith("unable to satisfy write precondition `"));
     assertEquals(e.getMessage(), e.serverMessage(), "server errors keep SpiceDB's message");
 
-    // Local validation looks like the client's local validation: no server message.
+    // Local validation looks like the client's: a LocalValidationException whose verbatim
+    // message is its own.
     var local =
         assertThrows(
-            InvalidArgumentException.class, () -> db.deleteRelationships(Filter.of("d"), 0));
-    assertNull(local.serverMessage());
+            com.authzed.spicedb.errors.LocalValidationException.class,
+            () -> db.deleteRelationships(Filter.of("d"), 0));
+    assertEquals(local.getMessage(), local.serverMessage());
 
     // A per-call retry opt-in on a non-idempotent mutation is refused, as the client does.
     var retry =

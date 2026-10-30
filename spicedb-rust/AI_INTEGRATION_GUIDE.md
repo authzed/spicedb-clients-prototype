@@ -23,6 +23,13 @@ spicedb = { git = "https://github.com/authzed/spicedb-clients" }
 spicedb = { git = "https://github.com/authzed/spicedb-clients", features = ["testing"] }
 ```
 
+If the project already has its own crate named `spicedb` (a hand-written
+wrapper over the protos), keep both during the migration by depending on this
+one under another key, `spicedb-client = { package = "spicedb", git = "..." }`,
+and `use spicedb_client::...`; see [MIGRATION.md](MIGRATION.md).
+
+The crate targets tonic 0.14 and prost 0.14, so an application on that
+generation links one copy and `tonic::Status::from(SpiceDBError)` compiles.
 `spicedb::tonic` re-exports the tonic version the crate is built on; use it
 for `tonic::Code`, metadata and channels so the versions always agree.
 
@@ -43,12 +50,27 @@ let client = SpiceDBClient::new_system_tls(
 // SpiceDBClient is a cheap Clone + Send + Sync handle; share it, don't reconnect.
 ```
 
+Endpoints are `host:port`, `http://host:port` or `https://host[:port]`. With
+`SpiceDBClient::builder(url, token).build()` the URL's scheme selects plaintext
+or TLS, so a deployment's `SPICEDB_URL=http://spicedb:50051` setting can be
+passed as is (a remote `http://` host still needs
+`.remote_credentials_policy(RemoteCredentialsPolicy::AllowInsecureRemote)`).
+On Unix, `unix:/path/to/spicedb.sock` (or `unix:///path`) dials a local
+socket in plaintext with no opt-in. Any other form, including
+`dns:///host:port` (this client does no client-side DNS load balancing),
+fails at construction with `InvalidArgument`.
 `SpiceDBClient::new_plaintext(endpoint, token, RemoteCredentialsPolicy::LoopbackOnly)`
 is for local development; a non-loopback plaintext target needs
-`RemoteCredentialsPolicy::AllowInsecureRemote`. For an existing tonic `Channel`
+`RemoteCredentialsPolicy::AllowInsecureRemote`. Plaintext connects on the first
+call; add `.connect_mode(ConnectMode::Eager)` to the builder so a wrong or down
+SpiceDB fails at startup with `SpiceDBError::Transport`. For an existing tonic `Channel`
 (in-memory, embedded SpiceDB, a connection you configured), use
 `SpiceDBClient::from_channel(channel).token(token).build()?`; the channel stays
 yours, and dropping the client never closes it.
+
+An empty or whitespace-only token (usually an unset environment variable) fails
+at construction with `SpiceDBError::InvalidArgument`, including
+`from_channel(...).token(...)`.
 
 ## Check (fail closed)
 
@@ -56,7 +78,7 @@ yours, and dropping the client never closes it.
 let question = PermissionCheck::new(
     ObjectRef::new("organization", org_id)?,
     "view",
-    SubjectRef::new(ObjectRef::new("user", user_id)?, None)?,
+    ObjectRef::new("user", user_id)?.into(), // a direct subject
     consistency::min_latency(),
 );
 match client.check(question).await {
@@ -87,6 +109,13 @@ let results = client.check_bulk(BulkCheckRequest::new(questions)).await?;
 let allowed: Vec<bool> = results.iter().map(|r| r.has_permission()).collect();
 ```
 
+- The first failing item fails the whole bulk call. To keep the other items'
+  answers, pass
+  `CheckOptions::new().with_bulk_item_errors(BulkItemErrors::Returned)`: a
+  failed item then carries `CheckResult::error` and never grants. A malformed
+  item in the server's response (such as an unset permissionship) still fails
+  the whole call; it is not a per-item error.
+
 - Permission names chosen at runtime are plain strings in the native tier;
   validate configured names at startup (for example with
   `client.reflect_schema(...)`) rather than at check time.
@@ -99,7 +128,7 @@ let stream = client.lookup_resources(
     LookupResourcesRequest::new(
         "organization",
         "view",
-        SubjectRef::new(ObjectRef::new("user", user_id)?, None)?,
+        ObjectRef::new("user", user_id)?.into(),
         consistency::min_latency(),
     )
     .with_options(
@@ -176,6 +205,14 @@ To resume, repeat the **same request and page size** with
 (`ExportedRelationship::after_result_cursor`) work the same way. Reads and
 resource lookups page automatically; `with_paging(Paging::SingleRequest)` sends
 exactly one request like the raw API (limit = `with_limit` or unbounded).
+
+Each page of a read, lookup or export must arrive within the client default
+deadline (30 s, `default_timeout`), from requesting it to its last item, so a
+stalled server fails the stream with `SpiceDBError::DeadlineExceeded` instead
+of hanging it. Only waiting on the server counts: the client receives each
+page before handing you its items, so time you spend on items never counts
+against the page. `with_timeout` on the options bounds the whole stream,
+including your processing time; watches have no default.
 
 ## Schema-agnostic code (native tier)
 
@@ -256,9 +293,26 @@ validation and deadlines; `tonic::Status::from(err)` converts it, and
 `tonic::Status`. Forward `err.server_message()`, not `err.to_string()`, when
 relaying an error to another party; `err.reason()` is SpiceDB's
 `ERROR_REASON_*`. Bulk-item and delete-progress errors convert to their inner
-server status, so the server's message appears once.
+server status, so the server's message appears once. A response the client
+cannot interpret (a relationship, resource, subject or object missing, or a
+check or lookup result with an unset permissionship) fails with code
+`Internal` and `err.is_client_detected()` true, displayed as "client detected
+malformed response from server: ...". It is not retried; such items are never
+skipped or filled with empty values. A permissionship newer than this client
+is not malformed: it maps to `Permissionship::Unspecified`, which never grants.
 
 ## Test
+
+The in-memory double does not evaluate your schema. A permission such as
+`view = reader + writer + parent->read` is granted on the double only by a
+stored relationship whose relation is named `view`, or by a check resolver
+you install; the double never derives it from `reader`, `writer` or `parent`.
+Use the double for code that consumes check and lookup results (model the
+permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
+or a container) for tests of the permission logic in the schema. Projects
+whose permissions are all computed (unions, arrows) get little from
+stored-relation grants on the double, so model them with the resolver or test
+against SpiceDB.
 
 ```rust
 let fake = InMemorySpiceDB::with_relationships([
@@ -271,21 +325,31 @@ fake.set_check_result(
     Permissionship::HasPermission,
 );
 let client = fake.client()?; // a real SpiceDBClient over an in-memory channel
+// Tests over IDs generated at run time: grant every check (and lookup).
+fake.set_check_resolver(spicedb::testing::grant_all);
 ```
 
 Code under test keeps taking a `SpiceDBClient`; no trait is needed. The double
 applies SpiceDB's write semantics (preconditions, `create` conflicts, atomic
 transactions, empty writes), filtered and paged reads and exports, atomic
 imports, bounded and all-or-nothing deletes, schema reads and writes, and
-registered check and reflection results (`set_check_result`, default
-`NoPermission`; `set_reflect_schema_result`); `fake.relationships()` shows the
-store. Errors come through the real client, so they have its codes and
+registered reflection results (`set_reflect_schema_result`);
+`fake.relationships()` shows the store. It evaluates no schema: a check
+resolves to a result registered for that exact question (`set_check_result`),
+then to a resolver's answer (`set_check_resolver(|check| ...)` returning
+`Some(Resolution)` or `None` to decline; `grant_all` grants everything), then to
+the stored relationships (a relationship whose relation is the permission's
+name, with the subject or a `type:*` wildcard, grants; a caveated one only
+conditionally; expired ones never), then `NoPermission`. `lookup_resources`
+and `lookup_subjects` return the stored objects of the requested type that
+check resolution grants, honoring the permissionship filter, limits and
+cursors. Errors come through the real client, so they have its codes and
 messages, and every option is honored as sent on the wire. Build expected errors with
 `SpiceDBError::new(tonic::Code::FailedPrecondition, "...")`.
 
 Failure paths and option assertions need no hand-written server: the double
 records every RPC and injects faults before any RPC, before each import batch,
-before an import commits and before each read or export item.
+before an import commits and before each read, export or lookup item.
 
 ```rust
 use spicedb::testing::{server_error, FaultStage};
@@ -304,7 +368,7 @@ let request_id = reads[0].metadata().get("x-request-id");
 Each RPC is one recorded call, so client retries and pages appear separately,
 and an injected `Unavailable` is retried by the client as SpiceDB's would be.
 Every client method reaches the double: operations it does not model
-(lookups, expand, watch, schema introspection, counters, Materialize) are
+(expand, watch, schema introspection, counters, Materialize) are
 recorded, consult the fault hook, and otherwise fail with
 `tonic::Code::Unimplemented` through the real client.
 

@@ -307,27 +307,29 @@ async fn rejects_mixed_consistency_embedded_options_empty_tokens_and_lossy_conte
 async fn bulk_chunks_share_one_total_budget() {
     let mock = MockPermissionsService::new();
     let calls = mock.check_bulk_permissions_calls();
-    mock.stall_check_bulk_permissions(Duration::from_millis(250));
+    // Each chunk stalls 500 ms under an 800 ms total: a budget restarted per chunk would let
+    // both finish (1 s in all) and succeed.
+    mock.stall_check_bulk_permissions(Duration::from_millis(500));
     mock.push_check_bulk_permissions_response(bulk_response(1000, false));
     mock.push_check_bulk_permissions_response(bulk_response(1, false));
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(
-        addr.to_string(),
-        "token",
-        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
-    )
-    .await
-    .unwrap();
+    let client = SpiceDBClient::builder(addr.to_string(), "token")
+        .plaintext()
+        // Connect at build, untimed: the budget below covers the chunks, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
+        .build()
+        .await
+        .unwrap();
     let start = tokio::time::Instant::now();
     let error = client
         .check_bulk(
             BulkCheckRequest::new((0..1001).map(|i| question(&i.to_string())).collect())
-                .with_options(CheckOptions::new().with_timeout(Duration::from_millis(400))),
+                .with_options(CheckOptions::new().with_timeout(Duration::from_millis(800))),
         )
         .await
         .unwrap_err();
     assert!(matches!(error, SpiceDBError::DeadlineExceeded(_)));
-    assert!(start.elapsed() < Duration::from_millis(650));
+    assert!(start.elapsed() < Duration::from_millis(1300));
     // The budget may expire after the first response, before RPC 2 starts.
     assert!((1..=2).contains(&calls.load(Ordering::SeqCst)));
 }
@@ -477,7 +479,9 @@ async fn retries_share_deadline_and_task_abort_stops_new_attempts() {
 async fn delete_pages_share_budget_and_timeout_retains_only_acknowledged_progress() {
     let mock = MockPermissionsService::new();
     let calls = mock.delete_relationships_calls();
-    mock.stall_delete_relationships(Duration::from_millis(250));
+    // Each page stalls 500 ms under an 800 ms total: page one fits with room for a busy
+    // machine, and page two exhausts the same budget.
+    mock.stall_delete_relationships(Duration::from_millis(500));
     for _ in 0..2 {
         mock.push_delete_relationships_response(proto::DeleteRelationshipsResponse {
             deleted_at: Some(proto::ZedToken {
@@ -490,18 +494,18 @@ async fn delete_pages_share_budget_and_timeout_retains_only_acknowledged_progres
             }),
         });
     }
-    let address = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(
-        address.to_string(),
-        "token",
-        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
-    )
-    .await
-    .unwrap();
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::builder(addr.to_string(), "token")
+        .plaintext()
+        // Connect at build, untimed: the budget below covers the chunks, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
+        .build()
+        .await
+        .unwrap();
     let error = client
         .delete_all_relationships_non_atomic(
             DeleteAllRequest::new(Filter::new("document"))
-                .with_options(DeleteAllOptions::new().with_timeout(Duration::from_millis(400))),
+                .with_options(DeleteAllOptions::new().with_timeout(Duration::from_millis(800))),
         )
         .await
         .unwrap_err();

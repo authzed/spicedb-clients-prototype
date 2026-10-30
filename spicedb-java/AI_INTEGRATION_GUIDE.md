@@ -70,12 +70,33 @@ try (var tc = TypedClient.createSystemTls("spicedb.example.com:443", System.gete
 }
 ```
 
+The client connects lazily. To fail at startup when the endpoint is wrong or
+down, call `awaitReady(Duration.ofSeconds(10))` on the client right after
+creating it: it throws `UnavailableException` or `DeadlineExceededException`
+naming the endpoint. Endpoints are `host:port`, `http://host:port`,
+`https://host[:port]`, `dns:///host:port` (client-side load balancing) or
+`unix:/path` (Linux only; refused at construction elsewhere).
+
 `createPlaintext` is for local development; a non-loopback plaintext target
 additionally needs
 `ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build()`.
+Keepalive and other channel settings go beside the options:
+`TypedClient.createSystemTls(endpoint, token, options, b ->
+b.keepAliveTime(60, TimeUnit.SECONDS))` (the same overload exists for
+`createPlaintext` and on `SpiceDBClient`). The customizer must not change the
+transport security.
+Install the artifacts and check the protobuf-java floor (4.33.2; Spring Boot 4.1
+needs no override) as [README.md](README.md) describes.
 For an existing `io.grpc.Channel` (in-process, SpiceDB's test server), use
 `new TypedClient(SpiceDBClient.fromChannel(channel), true)`; `close` never shuts a
-supplied channel down.
+supplied channel down. `new TypedClient(api)` wraps any `SpiceDBApi`, including
+`InMemorySpiceDB` for unit tests.
+
+An empty or whitespace-only preshared key (usually an unset environment
+variable) throws `LocalValidationException` at construction, and so does a
+`caCertificate`, `clientCertificate` or `clientKey` file that cannot be read or
+parsed, or a `clientKey` that is not the private key of `clientCertificate`;
+the message names the option and path.
 
 ## Check (fail closed)
 
@@ -92,7 +113,9 @@ if (!result.hasPermission()) {
 ```
 
 - Need to observe a write? Store `written.revision().value()` and check with
-  `Consistency.atLeast(new ZedToken(stored))`.
+  `Consistency.atLeast(new ZedToken(stored))`. An empty or whitespace-only
+  token throws `LocalValidationException`; for a token that may be missing use
+  `Consistency.atLeastOrFull(...)`, which falls back to full consistency.
 - Reporting what was denied: `perm.toString()` is `organization:acme#view`.
 - Several at once:
 
@@ -104,6 +127,12 @@ List<CheckResult> results =
 // results.get(i) matches input i; only results.get(i).hasPermission() grants.
 ```
 
+  By default the first item error throws. With
+  `CheckOptions.builder().bulkItemErrors(BulkItemErrors.RETURNED)` each errored
+  item instead carries `error()` and never grants; a malformed item in the
+  server's response (such as an unset permissionship) still fails the whole
+  call with an `INTERNAL` error.
+
 - Permission names chosen at runtime (e.g. per API method):
 
 ```java
@@ -112,6 +141,28 @@ CheckResult byName = tc.check(Consistency.minLatency(), perm.forDynamicSubject(U
 ```
 
   At startup, verify every configured name is in `OrganizationPermissions.names()`.
+
+- Type and permission names received at runtime (policy expressions such as a
+  Spring Security permission evaluator, admin tools) stay typed, with no switch over
+  definitions and no native call:
+
+```java
+var check =
+    definitionByName(type) // throws NotInSchemaException for an unknown type
+        .permissionByName(id, permission)
+        .forDynamicSubject(User(userId)); // throws SubjectNotAllowedException
+boolean allowed = tc.check(Consistency.minLatency(), check).hasPermission();
+
+try (var found =
+    tc.lookupResources(Consistency.minLatency(), type, permission, User(userId), grantedOnly)) {
+  // names and subject are validated against the schema before the call
+}
+```
+
+  `permissionRefByName(type, permission)` gives a resource-less `PermissionRef<?>`.
+  Use `Definitions.ORGANIZATION` and `Definitions.names()` instead of a hand-kept type
+  list, and `tc.writeSchema(Permissions.SCHEMA)` (the schema text the code was
+  generated from) instead of loading the `.zed` from the classpath.
 
 ## List what a subject can access
 
@@ -212,6 +263,11 @@ client.readSchema(
 com.authzed.api.v1.Relationship wire = ProtoConv.toProto(r); // protocol-shaped output
 ```
 
+Deletes: `client.deleteRelationships(filter)` is one all-or-nothing request (the
+raw filter-only `DeleteRelationships`); `deleteRelationships(filter, limit)` may
+delete part of the matches; `deleteAllRelationshipsNonAtomic(filter)` deletes
+any number in batches.
+
 Every operation's options accept `.transport(...)`. Use `ProtoConv` with
 protobuf's `JsonFormat` for protocol-shaped JSON.
 
@@ -235,7 +291,27 @@ including local validation errors and the client's `CancellationException`.
 `StatusRuntimeException`. Forward `e.serverMessage()`, not `getMessage()`, when
 relaying an error to another party.
 
+Local validation (`Relationship.fromTuple`, builders) throws
+`LocalValidationException`, a subclass of `InvalidArgumentException` that is
+not an `IllegalArgumentException`: catch `LocalValidationException` around
+parsing (the server's `INVALID_ARGUMENT` is a plain `InvalidArgumentException`).
+`serverMessage()` is never null; for a local error it is the message. Reads, lookups and exports put the
+client default deadline (30 s) on each page (your processing time between items
+does not count), so a stalled server ends them with
+`DeadlineExceededException`; a response missing a required field fails with
+`INTERNAL` and is not retried.
+
 ## Test
+
+The in-memory double does not evaluate your schema. A permission such as
+`view = reader + writer + parent->read` is granted on the double only by a
+stored relationship whose relation is named `view`, or by a check resolver
+you install; the double never derives it from `reader`, `writer` or `parent`.
+Use the double for code that consumes check and lookup results (model the
+permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
+or a container) for tests of the permission logic in the schema. Projects whose
+permissions are all computed (unions, arrows) get little from stored-relation
+grants on the double, so model them with the resolver or test against SpiceDB.
 
 ```java
 var db = new InMemorySpiceDB();
@@ -253,19 +329,31 @@ db.failNext(
 List<InMemorySpiceDB.Call> writes = db.callsOf(ClientOperation.WRITE);
 String resumeAfterTwo = InMemorySpiceDB.cursorAfter(2);
 db.setReadSchemaRevision(InMemorySpiceDB.SchemaRevision.OMITTED);
+// Checks with no registered result: a resolver (null declines), or grant everything.
+db.setCheckResolver(
+    check ->
+        check.permission().equals("view")
+            ? new CheckResult(Permissionship.HAS_PERMISSION, List.of(), null, null, null)
+            : null);
+db.setCheckResolver(InMemorySpiceDB.grantAll());
 ```
 
 Depend on `PermissionsApi` (`write`, `readRelationships`, `deleteRelationships`,
 `check`, `checkBulk`, `importRelationships`, `exportRelationships`, `readSchema`,
 `writeSchema`, `reflectSchema`), or on `SpiceDBApi` for the client's full method set;
-both `SpiceDBClient` and `InMemorySpiceDB` implement both, and a `TypedClient` provides
-one through `tc.client()`. Operations the double cannot run in memory (lookups, expand,
+both `SpiceDBClient` and `InMemorySpiceDB` implement both. `TypedClient` wraps either
+(`new TypedClient(new InMemorySpiceDB())`) and returns it from `tc.client()` as
+`SpiceDBApi`. Checks resolve in order: registered result, resolver, then a
+stored relationship whose relation is the permission's name (exact subject or `type:*`
+wildcard), else no permission; the double never evaluates the schema. `lookupResources`
+and `lookupSubjects` apply that resolution to every object of the requested type the
+stored relationships mention. Operations the double cannot run in memory (expand,
 watch, schema analysis, experimental calls) are recorded and throw `UNIMPLEMENTED` unless
 the fault hook fails them first. The double applies
 preconditions, `CREATE` conflicts and filter semantics like the server. It
 records every call (`calls()`, `callsOf(op)`: arguments and options) and
 injects faults with `setFaultHook` (before a call, each import batch, the
-import commit, each read/export item) or `failNext`; a failed write or import
+import commit, each read/export/lookup item) or `failNext`; a failed write or import
 applies nothing.
 For integration tests, run `authzed/spicedb serve-testing` and assert both
 granted and denied cases.

@@ -1,8 +1,14 @@
 version: v2
+# Plugin versions are pinned. The protoc version sets the protobuf-java
+# runtime floor: generated classes refuse an older runtime at class load. v33.2
+# (protobuf-java 4.33.2) is the floor proto-google-common-protos already needs,
+# and is below the 4.34.2 Spring Boot 4.1 manages, so a Spring Boot host needs no
+# protobuf override. grpc-java v1.80.0 is the version Spring Boot 4.1.0 manages;
+# its stubs are identical to later 1.8x plugins. See DESIGN.md "Invariants".
 plugins:
-  - remote: buf.build/protocolbuffers/java
+  - remote: buf.build/protocolbuffers/java:v33.2
     out: gen
-  - remote: buf.build/grpc/java
+  - remote: buf.build/grpc/java:v1.80.0
     out: gen
 inputs:
   - module: buf.build/authzed/api

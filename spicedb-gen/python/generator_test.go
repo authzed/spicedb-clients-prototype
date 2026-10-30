@@ -86,11 +86,16 @@ func TestSyncAndAioAreEquivalent(t *testing.T) {
 		"async def ", "def ",
 		"await ", "",
 		"AsyncStream", "Stream",
+		"AsyncClientProtocol", "ClientProtocol",
+		"AsyncInMemoryClient", "InMemoryClient",
 		"spicedb.aio", "spicedb.sync",
 		"grpc.aio.Channel", "grpc.Channel",
 		"import grpc.aio\n", "import grpc\n",
 		"AsyncIterable, ", "",
 		"Iterable[Relationship] | AsyncIterable[Relationship]", "Iterable[Relationship]",
+		"AsyncGenerator[Any, None]", "Generator[Any, None, None]",
+		"import AsyncGenerator\n", "import Generator\n",
+		"    return\n    yield\n", "    yield from ()\n",
 	)
 	assert.Equal(t, files["sync.py"], normalize.Replace(files["aio.py"]))
 }
@@ -208,6 +213,10 @@ func TestCollisionsFailGeneration(t *testing.T) {
 			zed:  "definition doc {}\ndefinition doc_relations {}",
 			want: []string{"DocRelations", "relation names of doc", "definition doc_relations"},
 		},
+		"definition vs schema-level names": {
+			zed:  "definition definition_names {}",
+			want: []string{"DefinitionNames", "generated support code", "definition definition_names"},
+		},
 		"userset subject vs definition": {
 			zed:  "definition user {}\ndefinition team {\n relation member: user\n}\ndefinition team_member {}\ndefinition doc {\n relation viewer: team#member\n}",
 			want: []string{"TeamMember", "definition team_member", "subject team#member"},
@@ -312,9 +321,24 @@ func TestTypedTransactionExposesUpdatesAndAnyRelationFilter(t *testing.T) {
 	assert.Contains(t, types, "It always constrains the subject relation")
 }
 
+// The context-manager exits return None: mypy rejects an `-> bool` __exit__
+// that always returns False (exit-return), so generated code would fail
+// mypy in applications that check their whole tree.
+func TestContextManagerExitReturnsNone(t *testing.T) {
+	files := generate(t, testSchema(t), nil)
+	assert.Contains(t, files["sync.py"], "    def __exit__(self, *exc: object) -> None:\n")
+	assert.Contains(t, files["aio.py"], "    async def __aexit__(self, *exc: object) -> None:\n")
+	for _, name := range []string{"sync.py", "aio.py"} {
+		assert.NotContains(t, files[name], "-> bool:\n        self.close()", name)
+	}
+}
+
 func TestEmptySchema(t *testing.T) {
 	files := generate(t, &schema.Schema{}, nil)
 	assert.Contains(t, files["permissions.py"], "class Permission:")
+	assert.Contains(t, files["permissions.py"], "SchemaObject: TypeAlias = Any\n")
+	assert.Contains(t, files["permissions.py"], "SubjectSet: TypeAlias = Any\n")
+	assert.Contains(t, files["permissions.py"], "_SUBJECT_RULES: Final[tuple[str, ...]] = ()\n")
 	for _, name := range []string{"sync.py", "aio.py"} {
 		assert.Contains(t, files[name], "class TypedClient:", name)
 		assert.NotContains(t, files[name], "@overload", name)
@@ -375,13 +399,95 @@ definition holder {
 			cmd.Stdout, cmd.Stderr = &out, &out
 			assert.NoError(t, cmd.Run(), "%s is not ruff-format clean:\n%s", name, out.String())
 
-			cmd = exec.Command(ruff, "check", "--isolated", "--select", "E4,E7,E9,F", "--stdin-filename", name, "-")
+			cmd = exec.Command(ruff, "check", "--isolated", "--line-length", "88", "--select", "E4,E7,E9,F,E501", "--stdin-filename", name, "-")
 			cmd.Stdin = strings.NewReader(content)
 			out.Reset()
 			cmd.Stdout, cmd.Stderr = &out, &out
 			assert.NoError(t, cmd.Run(), "%s fails ruff check:\n%s", name, out.String())
 		}
 	}
+}
+
+// TestLineLengthWithExtremeNames requires E501 to pass at 88 columns for a
+// schema whose names are long enough that some lines cannot be wrapped (a
+// class name alone overflows its indent): those carry a targeted noqa, and
+// everything else wraps.
+func TestLineLengthWithExtremeNames(t *testing.T) {
+	ruff, err := exec.LookPath("ruff")
+	if err != nil {
+		t.Skip("ruff not installed")
+	}
+	s := parse(t, `
+use expiration
+caveat regional_network_policy_for_service_accounts(allowed_network_range_for_service_accounts string, maximum_allowed_request_count_for_window int) {
+	allowed_network_range_for_service_accounts == "" && maximum_allowed_request_count_for_window > 0
+}
+definition service_account_identity_with_long_name {}
+definition organization_workspace_project_with_long_name {
+	relation delegated_administrator_with_long_name: service_account_identity_with_long_name | service_account_identity_with_long_name with regional_network_policy_for_service_accounts | service_account_identity_with_long_name:* | service_account_identity_with_long_name with expiration | organization_workspace_project_with_long_name#delegated_administrator_with_long_name
+	permission administer_billing_settings_with_long_name = delegated_administrator_with_long_name
+}
+definition holder_of_grants_with_a_long_name {
+	relation grant_with_a_rather_long_relation_name: organization_workspace_project_with_long_name#administer_billing_settings_with_long_name with expiration | service_account_identity_with_long_name
+	permission view_with_a_rather_long_permission_name = grant_with_a_rather_long_relation_name
+}`)
+	for _, opts := range []map[string]string{nil, {"names-only": "true"}} {
+		for name, content := range generate(t, s, opts) {
+			cmd := exec.Command(ruff, "check", "--isolated", "--line-length", "88", "--select", "E501,E4,E7,E9,F", "--stdin-filename", name, "-")
+			cmd.Stdin = strings.NewReader(content)
+			out, err := cmd.CombinedOutput()
+			assert.NoError(t, err, "%s fails ruff check:\n%s", name, out)
+		}
+	}
+}
+
+func TestLineLengthHelpers(t *testing.T) {
+	long := strings.Repeat("word ", 30)
+	d := doc(4, long)
+	for _, l := range strings.Split(d, "\n") {
+		assert.LessOrEqual(t, len(l), lineLength, l)
+		assert.True(t, strings.HasPrefix(l, "    "), l)
+	}
+	assert.True(t, strings.HasPrefix(d, `    """word`))
+	assert.True(t, strings.HasSuffix(d, `word"""`))
+	assert.Equal(t, `    """Short."""`, doc(4, "Short."))
+
+	chunks := textChunks("\trelation viewer: " + strings.Repeat("user_with_name | ", 10) + "user\n")
+	assert.Greater(t, len(chunks), 1)
+	for i, c := range chunks {
+		assert.LessOrEqual(t, len("    "+pyStr(c)), lineLength, c)
+		assert.False(t, strings.HasSuffix(c, " "), "chunk %d ends in a space", i)
+	}
+
+	assert.Equal(t, `        raise E(f"x has no relation {name!r}")`, raiseMsg(8, "E", "x", " has no relation {name!r}"))
+	name := strings.Repeat("n", 60)
+	assert.Equal(t, "        raise E(\n            \""+name+"#"+name+"\"\n            f\" does not admit {subject}\"\n        )",
+		raiseMsg(8, "E", name+"#"+name, " does not admit {subject}"))
+
+	assert.Equal(t, `        return "a", self.id, ""`, returnTuple(8, list(`"a"`, "self.id", `""`)))
+	assert.Equal(t, "        return (\n            \""+name+"\",\n            self.id,\n            \"\",\n        )",
+		returnTuple(8, list(`"`+name+`"`, "self.id", `""`)))
+
+	assert.Equal(t, `    "a": A,`, entry("a", "A"))
+	assert.Equal(t, "    \""+name+"\": (\n        "+name+"\n    ),", entry(name, name))
+
+	over := strings.Repeat("x", 90)
+	marked := markOverlong([]string{
+		"    a = " + over,  // overlong: marked
+		"    " + over,      // a single word: E501 skips it
+		`    """Doc`,       // a docstring holding an overlong line...
+		"    two " + over,  //
+		`    """`,          // ...is marked where it closes
+		`    """Short."""`, // one-line docstring: untouched
+	})
+	assert.Equal(t, []string{
+		"    a = " + over + noqaLong,
+		"    " + over,
+		`    """Doc`,
+		"    two " + over,
+		`    """` + noqaLong,
+		`    """Short."""`,
+	}, marked)
 }
 
 func TestFormattingHelpers(t *testing.T) {
@@ -431,6 +537,23 @@ func TestEscapeKeyword(t *testing.T) {
 	assert.Equal(t, "viewer", escapeKeyword("viewer"))
 }
 
+// Writers pass the subject union they admit, so a value that is not one of
+// those subjects is a LocalValidationError naming them, never an
+// AttributeError; by-name lookups type-check names before a dict lookup.
+func TestWritersAndLookupsTypeCheckTheirArguments(t *testing.T) {
+	perms := generate(t, testSchema(t), nil)["permissions.py"]
+	assert.Contains(t, perms, `return _relationship("team", self.id, "member", subject, TeamMemberSubject)`)
+	assert.Contains(t, perms, `"document", self.id, "viewer", subject, DocumentViewerSubject`)
+	assert.Contains(t, perms, `"document", self.id, "viewer", subject, DocumentViewerKeySubject`)
+	assert.NotRegexp(t, `self\.id, "\w+", subject\)`, perms, "every writer passes the subjects it admits")
+	assert.Contains(t, perms, `cls = _DEFINITIONS.get(_require_name(name, "definition name"))`)
+	assert.Contains(t, perms, `_require_name(name, "permission name")`)
+	assert.Contains(t, perms, "if oid is not None and not isinstance(oid, str):")
+	sync := generate(t, testSchema(t), nil)["sync.py"]
+	assert.Contains(t, sync, "requests = _named_checks(checks)")
+	assert.NotContains(t, sync, "ObjectRef(sub_type, sub_id)", "lookups build subjects through _subject, which checks the ID")
+}
+
 func TestCelTypeToPyType(t *testing.T) {
 	for input, expected := range map[string]string{
 		"string": "str", "int": "int", "uint": "int", "double": "float",
@@ -438,4 +561,71 @@ func TestCelTypeToPyType(t *testing.T) {
 	} {
 		assert.Equal(t, expected, celTypeToPyType(input), "input=%q", input)
 	}
+}
+
+// TestSchemaLevelNamesAndLookups: code that receives definition and permission
+// names at runtime gets validated lookups, name constants and the schema text.
+func TestSchemaLevelNamesAndLookups(t *testing.T) {
+	files := generate(t, testSchema(t), nil)
+	types := files["permissions.py"]
+	for _, want := range []string{
+		"class DefinitionNames:\n",
+		`    DOCUMENT: Final = "document"`,
+		"DEFINITION_NAMES: Final[tuple[str, ...]] = (\n    \"user\",\n",
+		"SCHEMA_TEXT: Final[str] = (\n    \"use expiration\\n\"\n",
+		`    '    allowed_cidr == "0.0.0.0/0"\n'`,
+		"def definition_by_name(name: str) -> DefinitionClass:",
+		`    "document": Document,`,
+		"def permission_ref_by_name(definition: str, permission: str) -> PermissionRef:",
+		"        DOCUMENT_VIEW,\n",
+		"    _admits: ClassVar[Any] = DocumentViewSubject\n",
+		"SchemaObject: TypeAlias = User | Team | Document | Organization | Invitation\n",
+		"SubjectSet: TypeAlias = TeamMember | OrganizationCanAdmin\n",
+		"    \"team#member\": TeamMember,\n",
+		"def subject_set_by_name(definition: str, object_id: str, relation: str) -> SubjectSet:",
+		"def object_by_name(definition: str, object_id: str) -> SchemaObject:",
+		"def parse_object(text: str) -> SchemaObject:",
+		"def parse_subject(text: str) -> SchemaSubject:",
+		"SchemaSubject: TypeAlias = SchemaObject | SubjectSet | UserWildcard\n",
+		"    \"user\": UserWildcard(),\n",
+		"class NotInSchemaError(LocalValidationError):",
+		"class SubjectNotAllowedError(LocalValidationError):",
+		"def relationship_from_triple(\n",
+		"    \"organization#creator\",\n",
+		"    \"document#viewer@user[ip_range]\",\n",
+		"    \"organization#creator@user:*\",\n",
+		"    \"invitation#grant@organization#can_admin\",\n",
+		"    \"invitation#timed_grant@organization#can_admin[expiration]\",\n",
+	} {
+		assert.Contains(t, types, want)
+	}
+	for _, name := range []string{"sync.py", "aio.py"} {
+		assert.Contains(t, files[name], "def lookup_resources_by_name(", name)
+		assert.Contains(t, files[name], "        target = _lookup_target(resource_type, \"\", permission)\n", name)
+		assert.Contains(t, files[name], "    def lookup_subjects_by_name(\n", name)
+		assert.Contains(t, files[name], "_no_results)\n", name)
+	}
+	assert.Contains(t, files["sync.py"], "    def __init__(self, client: ClientProtocol) -> None:")
+	assert.Contains(t, files["aio.py"], "    def __init__(self, client: AsyncClientProtocol) -> None:")
+
+	// The schema text is embedded exactly, whatever it contains.
+	text := "definition user {}\n// it's \"quoted\" \\ and\ttabbed\n"
+	out := generate(t, parse(t, text), nil)["permissions.py"]
+	assert.Contains(t, out, `SCHEMA_TEXT: Final[str] = 'definition user {}\n// it\'s "quoted" \\ and\ttabbed\n'`)
+}
+
+func TestTextConst(t *testing.T) {
+	assert.Equal(t, `X = ""`, textConst("X", ""))
+	assert.Equal(t, `X = "a\nb\n"`, textConst("X", "a\nb\n"))
+	assert.Equal(t, `X = 'say "hi"'`, textConst("X", `say "hi"`))
+	assert.Equal(t, `X = "it's"`, textConst("X", "it's"))
+	assert.Equal(t, `X = "\x00\\"`, textConst("X", "\x00\\"))
+	a := strings.Repeat("a", 50)
+	assert.Equal(t, "X = (\n    \""+a+"\\n\"\n    \""+a+"\\n\"\n)", textConst("X", a+"\n"+a+"\n"))
+	short := strings.Repeat("c", 40)
+	assert.Equal(t, "LONGER_NAME: Final[str] = (\n    \""+short+"\\n"+short+"\"\n)",
+		textConst("LONGER_NAME: Final[str]", short+"\n"+short),
+		"lines that fit together are one literal, as ruff format joins them")
+	long := strings.Repeat("b", 100)
+	assert.Equal(t, `X = "`+long+`"`, textConst("X", long), "a single line is never split")
 }

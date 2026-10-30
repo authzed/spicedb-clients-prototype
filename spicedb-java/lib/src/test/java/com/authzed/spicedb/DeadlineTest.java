@@ -318,66 +318,279 @@ class DeadlineTest {
   }
 
   @Test
-  void streamingCallDoesNotInheritTheUnaryDefault() throws Exception {
+  void watchDoesNotInheritTheUnaryDefault() throws Exception {
     var service =
-        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+        new com.authzed.api.v1.WatchServiceGrpc.WatchServiceImplBase() {
           @Override
-          public void readRelationships(
-              ReadRelationshipsRequest request,
-              StreamObserver<ReadRelationshipsResponse> responseObserver) {
+          public void watch(
+              com.authzed.api.v1.WatchRequest request,
+              StreamObserver<com.authzed.api.v1.WatchResponse> responseObserver) {
             waitOutStallOrCancellation(STALL_MS);
             responseObserver.onNext(
-                ReadRelationshipsResponse.newBuilder()
-                    .setRelationship(
-                        Relationship.newBuilder()
-                            .setResource(
-                                ObjectReference.newBuilder()
-                                    .setObjectType("document")
-                                    .setObjectId("a")
-                                    .build())
-                            .setRelation("viewer")
-                            .setSubject(
-                                SubjectReference.newBuilder()
-                                    .setObject(
-                                        ObjectReference.newBuilder()
-                                            .setObjectType("user")
-                                            .setObjectId("jimmy")
-                                            .build())
-                                    .build())
-                            .build())
+                com.authzed.api.v1.WatchResponse.newBuilder()
+                    .setChangesThrough(
+                        com.authzed.api.v1.ZedToken.newBuilder().setToken("r1").build())
                     .build());
             responseObserver.onCompleted();
           }
         };
 
-    // defaultTimeout is far smaller than the server's stall. If readRelationships inherited it,
-    // this would throw DeadlineExceededException instead of yielding the item.
+    // defaultTimeout is far smaller than the server's stall: a long-lived stream keeps no default.
     try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(100))) {
       SpiceDBClient client = harness.client();
-
       long start = System.nanoTime();
-      List<com.authzed.spicedb.Relationship> items =
+      var events =
           runOrThrow(
               () -> {
-                try (var stream =
-                    client
-                        .readRelationships(Consistency.full(), Filter.of("document"))
-                        .map(com.authzed.spicedb.ReadRelationship::relationship)) {
+                try (var stream = client.updates(List.of("document"), null)) {
                   return stream.toList();
                 }
               });
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
-
-      assertEquals(1, items.size());
-      assertEquals("a", items.get(0).resource().objectId());
+      assertEquals(1, events.size());
       assertTrue(
-          elapsedMs >= STALL_MS,
-          "the stream must outlive the tiny unary default -- it should have waited out the "
-              + "server's "
-              + STALL_MS
-              + "ms stall (elapsed="
-              + elapsedMs
-              + "ms)");
+          elapsedMs >= STALL_MS, "watch must outlive the default (elapsed=" + elapsedMs + ")");
+    }
+  }
+
+  private static ReadRelationshipsResponse readItem(String id, String cursor) {
+    return ReadRelationshipsResponse.newBuilder()
+        .setRelationship(
+            Relationship.newBuilder()
+                .setResource(ObjectReference.newBuilder().setObjectType("document").setObjectId(id))
+                .setRelation("viewer")
+                .setSubject(
+                    SubjectReference.newBuilder()
+                        .setObject(
+                            ObjectReference.newBuilder()
+                                .setObjectType("user")
+                                .setObjectId("jimmy"))))
+        .setAfterResultCursor(com.authzed.api.v1.Cursor.newBuilder().setToken(cursor))
+        .build();
+  }
+
+  @Test
+  void lookupStallingOnThirdPageFailsAfterThePerPageDefault() throws Exception {
+    var requests = new java.util.concurrent.atomic.AtomicInteger();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupResources(
+              com.authzed.api.v1.LookupResourcesRequest request,
+              StreamObserver<com.authzed.api.v1.LookupResourcesResponse> out) {
+            int page = requests.incrementAndGet();
+            if (page == 3) waitOutStallOrCancellation(STALL_MS);
+            for (int i = 0; i < 2; i++)
+              out.onNext(
+                  com.authzed.api.v1.LookupResourcesResponse.newBuilder()
+                      .setResourceObjectId("doc" + page + "-" + i)
+                      .setPermissionship(
+                          com.authzed.api.v1.LookupPermissionship
+                              .LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
+                      .setAfterResultCursor(
+                          com.authzed.api.v1.Cursor.newBuilder().setToken("c" + page + "-" + i))
+                      .build());
+            out.onCompleted();
+          }
+        };
+
+    // No caller timeout: only the client default (300ms), applied to each page, can end the stall.
+    try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(300))) {
+      SpiceDBClient client = harness.client();
+      var seen = new java.util.concurrent.CopyOnWriteArrayList<String>();
+      long start = System.nanoTime();
+      Throwable thrown =
+          runWithWatchdog(
+              () -> {
+                try (var stream =
+                    client.lookupResources(
+                        Consistency.full(),
+                        "document",
+                        "view",
+                        SubjectRef.direct(new ObjectRef("user", "jimmy")),
+                        LookupOptions.builder().pageSize(2).build())) {
+                  stream.forEach(r -> seen.add(r.resourceId()));
+                }
+                return seen;
+              });
+      long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+      assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
+      assertEquals(List.of("doc1-0", "doc1-1", "doc2-0", "doc2-1"), List.copyOf(seen));
+      assertEquals(3, requests.get());
+      assertTrue(
+          elapsedMs < STALL_MS, "must fail at the per-page default (elapsed=" + elapsedMs + ")");
+    }
+  }
+
+  @Test
+  void eachReadPageCarriesThePerPageDefault() throws Exception {
+    var deadlines = new java.util.concurrent.CopyOnWriteArrayList<io.grpc.Deadline>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void readRelationships(
+              ReadRelationshipsRequest request, StreamObserver<ReadRelationshipsResponse> out) {
+            deadlines.add(Context.current().getDeadline());
+            String cursor =
+                request.hasOptionalCursor() ? request.getOptionalCursor().getToken() : "";
+            if (cursor.isEmpty()) {
+              out.onNext(readItem("a", "c1"));
+              out.onNext(readItem("b", "c2"));
+            } else {
+              out.onNext(readItem("c", "c3"));
+            }
+            out.onCompleted();
+          }
+        };
+    try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofSeconds(30))) {
+      var items =
+          runOrThrow(
+              () -> {
+                try (var stream =
+                    harness
+                        .client()
+                        .readRelationships(
+                            Consistency.full(),
+                            Filter.of("document"),
+                            ReadOptions.builder().pageSize(2).build())) {
+                  return stream.toList();
+                }
+              });
+      assertEquals(3, items.size());
+      assertEquals(2, deadlines.size());
+      for (var d : deadlines) {
+        assertNotNull(d, "every page request carries the client default");
+        assertTrue(d.timeRemaining(TimeUnit.SECONDS) > 20, "the page deadline is the default");
+      }
+    }
+  }
+
+  @Test
+  void disabledDefaultLeavesPagesUnbounded() throws Exception {
+    var deadlines = new java.util.concurrent.CopyOnWriteArrayList<String>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void readRelationships(
+              ReadRelationshipsRequest request, StreamObserver<ReadRelationshipsResponse> out) {
+            deadlines.add(String.valueOf(Context.current().getDeadline()));
+            out.onNext(readItem("a", "c1"));
+            out.onCompleted();
+          }
+        };
+    String name = InProcessServerBuilder.generateName();
+    Server server = InProcessServerBuilder.forName(name).addService(service).build().start();
+    ManagedChannel channel = InProcessChannelBuilder.forName(name).build();
+    try {
+      var client =
+          SpiceDBClient.forChannel(
+              channel, ClientOptions.builder().defaultDeadline(DefaultDeadline.DISABLED).build());
+      try (var stream = client.readRelationships(Consistency.full(), Filter.of("document"))) {
+        assertEquals(1, stream.toList().size());
+      }
+      assertEquals(List.of("null"), List.copyOf(deadlines));
+    } finally {
+      channel.shutdownNow();
+      server.shutdownNow();
+    }
+  }
+
+  @Test
+  void callerTotalDeadlineWinsWhenEarlierThanThePerPageDefault() throws Exception {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void readRelationships(
+              ReadRelationshipsRequest request, StreamObserver<ReadRelationshipsResponse> out) {
+            waitOutStallOrCancellation(STALL_MS);
+            out.onCompleted();
+          }
+        };
+    try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofSeconds(30))) {
+      long start = System.nanoTime();
+      Throwable thrown =
+          runWithWatchdog(
+              () -> {
+                try (var stream =
+                    harness
+                        .client()
+                        .readRelationships(
+                            Consistency.full(),
+                            Filter.of("document"),
+                            ReadOptions.builder().timeout(Duration.ofMillis(200)).build())) {
+                  return stream.toList();
+                }
+              });
+      long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+      assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
+      assertTrue(elapsedMs < STALL_MS, "the caller's 200ms total wins (elapsed=" + elapsedMs + ")");
+    }
+  }
+
+  @Test
+  void lookupSubjectsStallFailsAfterThePerPageDefault() throws Exception {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupSubjects(
+              com.authzed.api.v1.LookupSubjectsRequest request,
+              StreamObserver<com.authzed.api.v1.LookupSubjectsResponse> out) {
+            waitOutStallOrCancellation(STALL_MS);
+            out.onCompleted();
+          }
+        };
+    try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(200))) {
+      Throwable thrown =
+          runWithWatchdog(
+              () -> {
+                try (var stream =
+                    harness
+                        .client()
+                        .lookupSubjects(
+                            Consistency.full(), new ObjectRef("document", "a"), "view", "user")) {
+                  return stream.toList();
+                }
+              });
+      assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
+    }
+  }
+
+  @Test
+  void exportStallingBetweenPagesFailsAfterThePerPageDefault() throws Exception {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void exportBulkRelationships(
+              com.authzed.api.v1.ExportBulkRelationshipsRequest request,
+              StreamObserver<com.authzed.api.v1.ExportBulkRelationshipsResponse> out) {
+            out.onNext(
+                com.authzed.api.v1.ExportBulkRelationshipsResponse.newBuilder()
+                    .addRelationships(readItem("a", "c1").getRelationship())
+                    .setAfterResultCursor(com.authzed.api.v1.Cursor.newBuilder().setToken("c1"))
+                    .build());
+            waitOutStallOrCancellation(STALL_MS);
+            out.onCompleted();
+          }
+        };
+    try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(300))) {
+      var seen = new java.util.concurrent.CopyOnWriteArrayList<String>();
+      long start = System.nanoTime();
+      Throwable thrown =
+          runWithWatchdog(
+              () -> {
+                try (var stream =
+                    harness
+                        .client()
+                        .exportRelationships(Consistency.full(), Filter.of("document"))) {
+                  stream.forEach(r -> seen.add(r.relationship().resourceId()));
+                }
+                return seen;
+              });
+      long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+      assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
+      assertEquals(List.of("a"), List.copyOf(seen));
+      assertTrue(
+          elapsedMs < STALL_MS, "must fail at the per-page default (elapsed=" + elapsedMs + ")");
     }
   }
 

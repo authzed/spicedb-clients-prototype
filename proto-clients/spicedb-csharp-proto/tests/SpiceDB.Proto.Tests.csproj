@@ -8,6 +8,12 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
+  <!-- DescriptorProbe/ is its own program; keep its sources out of this assembly. -->
+  <ItemGroup>
+    <Compile Remove="DescriptorProbe/**" />
+    <None Remove="DescriptorProbe/**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -25,6 +31,8 @@
     <ProjectReference Include="../SpiceDB.Proto.csproj" />
     <ProjectReference Include="../bridge/Authzed.Net/Authzed.Net.csproj" />
     <ProjectReference Include="../bridge/generator/AuthzedNetBridgeGen.csproj" ReferenceOutputAssembly="false" />
+    <!-- Built, not referenced: DescriptorInitializationTest runs it as a separate process. -->
+    <ProjectReference Include="DescriptorProbe/DescriptorProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
@@ -35,6 +43,10 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>BridgeForwards</_Parameter1>
       <_Parameter2>$(MSBuildThisFileDirectory)../bridge/Authzed.Net/TypeForwards.g.cs</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>DescriptorProbe</_Parameter1>
+      <_Parameter2>$(MSBuildThisFileDirectory)DescriptorProbe/bin/$(Configuration)/net10.0/DescriptorProbe.dll</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
 

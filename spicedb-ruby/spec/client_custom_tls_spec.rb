@@ -234,7 +234,79 @@ RSpec.describe 'SpiceDB::Client.new_custom_tls argument validation' do
     expect do
       SpiceDB::Client.new(endpoint: 'evil.example.com:443', token: 'testtoken', transport: SpiceDB::TransportSecurity::PLAINTEXT,
                           ca_cert: 'pem')
-    end.to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /RemoteCredentials::ALLOW_PLAINTEXT/)
+  end
+
+  # Root DESIGN.md, "Reject unusable credentials and trust material at
+  # construction". gRPC's C-core accepts a non-PEM ca_cert, and the first call
+  # then fails with "empty address list" and a C-core trace naming nothing.
+  {
+    'a non-PEM ca_cert' => [{ ca_cert: 'not a certificate' }, /ca_cert is not a PEM-encoded X\.509 certificate/],
+    'a ca_cert with a corrupt body' => [{ ca_cert: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n" },
+                                        /ca_cert is not a PEM-encoded X\.509 certificate/],
+    'a non-PEM client_cert' => [{ client_cert: 'garbage', client_key: :real }, /client_cert is not a PEM-encoded X\.509 certificate/],
+    'a non-PEM client_key' => [{ client_cert: :real, client_key: 'garbage' }, /client_key is not a PEM-encoded private key/]
+  }.each do |name, (material, message)|
+    it "refuses #{name} at construction, naming the input" do
+      real = { client_cert: TestPki.client[:cert].to_pem, client_key: TestPki.client[:key].to_pem }
+      material = material.to_h { |key, value| [key, value == :real ? real.fetch(key) : value] }
+      expect do
+        SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', **material)
+      end.to raise_error(SpiceDB::LocalValidationError, message)
+    end
+  end
+
+  it 'accepts parseable CA and client identity material' do
+    client = SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', ca_cert: TestPki.ca[:cert].to_pem,
+                                                                            client_cert: TestPki.client[:cert].to_pem,
+                                                                            client_key: TestPki.client[:key].to_pem)
+    client.close
+  end
+
+  # A client certificate is checked against its key at construction, so a
+  # key from another pair names the inputs instead of failing the first
+  # handshake.
+  describe 'a client key from a different key pair' do
+    def self_signed(key)
+      cert = TestPki.base_cert('/CN=spicedb mismatched client', key.public_key, 9)
+      cert.issuer = cert.subject
+      cert.sign(key, OpenSSL::Digest.new('SHA256'))
+      cert
+    end
+
+    {
+      'an RSA key from another pair' => -> { OpenSSL::PKey::RSA.new(2048) },
+      'an EC key' => -> { OpenSSL::PKey::EC.generate('prime256v1') }
+    }.each do |name, other_key|
+      it "refuses #{name} at construction, naming client_key and client_cert" do
+        cert = self_signed(OpenSSL::PKey::RSA.new(2048))
+        expect do
+          SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', client_cert: cert.to_pem, client_key: other_key.call.to_pem)
+        end.to raise_error(SpiceDB::LocalValidationError, /client_key does not match client_cert/)
+      end
+    end
+
+    it 'accepts a self-signed certificate with its own key' do
+      key = OpenSSL::PKey::RSA.new(2048)
+      SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', client_cert: self_signed(key).to_pem, client_key: key.to_pem, &:close)
+    end
+
+    it 'checks the key against the leaf, the first certificate of a chain' do
+      chain = TestPki.client[:cert].to_pem + TestPki.ca[:cert].to_pem
+      SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', client_cert: chain, client_key: TestPki.client[:key].to_pem, &:close)
+      expect do
+        SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', client_cert: chain, client_key: TestPki.ca[:key].to_pem)
+      end.to raise_error(SpiceDB::LocalValidationError, /client_key does not match client_cert/)
+    end
+  end
+
+  ['', ' ', "\t\n"].each do |token|
+    it "refuses the blank token #{token.inspect} at construction" do
+      expect { SpiceDB::Client.new_plaintext('localhost:50116', token) }
+        .to raise_error(SpiceDB::LocalValidationError, /token must not be empty or whitespace/)
+      expect { SpiceDB::Client.new_system_tls('localhost:50116', token) }
+        .to raise_error(SpiceDB::LocalValidationError, /token must not be empty or whitespace/)
+    end
   end
 
   it 'does not expose the block-form helper as a public class method' do

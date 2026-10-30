@@ -13,7 +13,7 @@ This is a tonic-generated Rust proto client for SpiceDB.
 ## File layout
 
 - `proto/` — buf-exported proto files (DO NOT MODIFY, not checked in)
-- `build.rs` — tonic-build code generation from proto files
+- `build.rs` — tonic-prost-build code generation from proto files
 - `src/lib.rs` — module declarations and proto includes
 - `src/client.rs` — SpiceDBProtoClient struct, constructor, interceptor
 - `tests/client_test.rs` — integration tests

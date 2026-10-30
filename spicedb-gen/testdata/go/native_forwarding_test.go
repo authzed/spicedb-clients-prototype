@@ -81,7 +81,7 @@ func newNativeForwardingClient(t *testing.T, s *nativeForwardingServer) *TypedCl
 	require.NoError(t, err)
 	typed := NewTypedClient(native)
 	t.Cleanup(func() { require.NoError(t, typed.Close()) })
-	require.Same(t, native, typed.Client)
+	require.Same(t, native, typed.Interface)
 	return typed
 }
 func TestTypedNativeDeletionOptionsCursorsAndProgress(t *testing.T) {

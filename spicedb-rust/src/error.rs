@@ -53,6 +53,8 @@ pub struct ErrorPayload {
     /// transport failures. Kept as an `Arc` rather than a `Box` so the payload
     /// stays `Clone`, which is how `tonic::Status` holds its own source.
     cause: Option<Arc<dyn Error + Send + Sync + 'static>>,
+    /// Set when this client, not the server, found the response malformed.
+    client_detected: bool,
 }
 
 impl ErrorPayload {
@@ -75,6 +77,7 @@ impl ErrorPayload {
                 status,
             })),
             cause: None,
+            client_detected: false,
         }
     }
 
@@ -89,6 +92,7 @@ impl ErrorPayload {
             message,
             detail: None,
             cause: Some(Arc::new(cause)),
+            client_detected: false,
         }
     }
 
@@ -272,6 +276,18 @@ impl SpiceDBError {
         self.payload().detail.as_deref()
     }
 
+    /// `true` when this client detected the failure in a response it could
+    /// not interpret (a missing required field, an unset permissionship,
+    /// a cursor that does not advance), rather than the server returning an
+    /// error status. Such errors have code `Internal`, no
+    /// [`status`](Self::status), and `Display` as
+    /// `"client detected malformed response from server: ..."` so they are not
+    /// mistaken for an `INTERNAL` status the server sent. Bulk-item and
+    /// delete-progress wrappers report their cause's origin.
+    pub fn is_client_detected(&self) -> bool {
+        self.payload().client_detected
+    }
+
     /// The prefix `Display` puts in front of the message.
     fn prefix(&self) -> &'static str {
         match self {
@@ -303,6 +319,9 @@ impl fmt::Display for SpiceDBError {
                 "delete interrupted after {} confirmed deletions: {}",
                 progress.deleted_count, source
             ),
+            SpiceDBError::Status { message, .. } if message.client_detected => {
+                write!(f, "{CLIENT_DETECTED}: {message}")
+            }
             SpiceDBError::Status { code, message } => {
                 write!(f, "grpc status {code}: {message}")
             }
@@ -398,6 +417,9 @@ impl SpiceDBError {
         let code = self.code();
         match self.status() {
             Some(status) if status.code() == code => status.clone(),
+            _ if self.is_client_detected() => {
+                Status::new(code, format!("{CLIENT_DETECTED}: {}", self.message()))
+            }
             _ => Status::new(code, self.message().to_string()),
         }
     }
@@ -551,16 +573,26 @@ pub(crate) fn from_grpc_status_with_message(status: Status, message: String) -> 
     }
 }
 
+/// How `Display` introduces an error the client detected in a response.
+const CLIENT_DETECTED: &str = "client detected malformed response from server";
+
 /// Constructs a [`SpiceDBError`] for a locally-detected protocol invariant
 /// violation that has no backing gRPC status at all — e.g. a `oneof` field
 /// the proto schema guarantees is always populated (such as
 /// `CheckBulkPermissionsPair.response`) arriving unset. Uses gRPC code 13
 /// (INTERNAL) so the error is classified consistently with a genuine
-/// server-side internal error rather than any of the more specific variants.
+/// server-side internal error rather than any of the more specific variants,
+/// and marks it [client-detected](SpiceDBError::is_client_detected) so its
+/// `Display` (`"client detected malformed response from server: ..."`) never
+/// reads as a status the server sent.
 pub fn internal(message: String) -> SpiceDBError {
     SpiceDBError::Status {
         code: codes::INTERNAL,
-        message: message.into(),
+        message: ErrorPayload {
+            message,
+            client_detected: true,
+            ..ErrorPayload::default()
+        },
     }
 }
 

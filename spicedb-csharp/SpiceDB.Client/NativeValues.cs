@@ -18,14 +18,28 @@ public sealed record SubjectRef
 {
     public ObjectRef Object { get; }
     public string? Relation { get; }
+    /// <summary>
+    /// A subject: <paramref name="object"/> itself when <paramref name="relation"/> is null or
+    /// <c>...</c> (SpiceDB's direct-subject relation), otherwise the subject set
+    /// <c>object#relation</c>.
+    /// </summary>
     public SubjectRef(ObjectRef @object, string? relation = null)
     {
         Object = @object ?? throw new InvalidArgumentException("Subject object is required.");
-        if (relation is "" or "...") throw new InvalidArgumentException("Use null for a direct subject relation.");
-        Relation = relation;
+        if (relation is "") throw new InvalidArgumentException("Use null or \"...\" for a direct subject relation.");
+        Relation = relation is DirectRelation ? null : relation;
     }
+
+    /// <summary>The subject relation SpiceDB uses for a direct subject.</summary>
+    internal const string DirectRelation = "...";
+
     public static SubjectRef Direct(ObjectRef value) => new(value);
+
+    /// <summary>The subject set <c>value#relation</c>; <c>...</c> gives the direct subject, as tuple and proto parsing do.</summary>
     public static SubjectRef Named(ObjectRef value, string relation) => new(value, Native.Required(relation, nameof(relation)));
+
+    /// <summary>The direct subject for <paramref name="value"/>, so an object can be passed wherever a subject is expected.</summary>
+    public static implicit operator SubjectRef(ObjectRef value) => value is null ? null! : Direct(value);
     /// <summary>Formats the subject as <c>type:id</c> or <c>type:id#relation</c>.</summary>
     public override string ToString() => Relation is null ? Object.ToString() : $"{Object}#{Relation}";
     internal Authzed.Api.V1.SubjectReference ToProto() => new() { Object = Object.ToProto(), OptionalRelation = Relation ?? "" };
@@ -78,7 +92,15 @@ public sealed class PermissionCheck
 internal static class Native
 {
     internal static T Required<T>(T? value, string path) where T : class => value ?? throw new InvalidArgumentException($"{path} is required.");
-    internal static string Required(string value, string path) => string.IsNullOrEmpty(value) ? throw new InvalidArgumentException($"{path} must not be empty.") : value;
+    internal static string Required(string? value, string path) => string.IsNullOrEmpty(value) ? throw new InvalidArgumentException($"{path} must not be empty.") : value;
+    /// <summary>
+    /// A credential that must hold something: an empty or whitespace-only key (usually an
+    /// unset environment variable) would otherwise be sent as a bare "Bearer" header the
+    /// server rejects on the first call.
+    /// </summary>
+    internal static string Credential(string? value, string path) => string.IsNullOrWhiteSpace(value)
+        ? throw new InvalidArgumentException($"{path} must not be empty or whitespace (check that the variable holding it is set).")
+        : value;
     internal static IReadOnlyList<T> List<T>(IEnumerable<T> values) => Array.AsReadOnly((values ?? throw new InvalidArgumentException("Collection cannot be null.")).ToArray());
     internal static IReadOnlyDictionary<string, object?>? Context(IReadOnlyDictionary<string, object?>? value) => value is null ? null : (IReadOnlyDictionary<string, object?>)Snapshot(value, "context", new HashSet<object>(ReferenceEqualityComparer.Instance))!;
     private static object? Snapshot(object? value, string path, HashSet<object> visiting)

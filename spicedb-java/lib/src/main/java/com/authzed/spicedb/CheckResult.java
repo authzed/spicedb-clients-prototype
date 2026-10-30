@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import com.authzed.spicedb.errors.SpiceDBException;
 import java.util.List;
 
@@ -20,7 +21,7 @@ public record CheckResult(
   public CheckResult {
     missingContext = List.copyOf(missingContext);
     if (error != null && permissionship != Permissionship.UNSPECIFIED)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+      throw new LocalValidationException(
           "an errored check result must have UNSPECIFIED permissionship");
   }
 
@@ -36,8 +37,7 @@ public record CheckResult(
 
   /** An errored bulk item ({@link BulkItemErrors#RETURNED}). */
   public static CheckResult ofError(SpiceDBException error, ZedToken checkedAt) {
-    if (error == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("error must not be null");
+    if (error == null) throw new LocalValidationException("error must not be null");
     return new CheckResult(Permissionship.UNSPECIFIED, List.of(), checkedAt, null, null, error);
   }
 

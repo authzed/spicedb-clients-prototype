@@ -10,7 +10,7 @@ Concrete Python for the rules in the repository-wide
 | `spicedb` | `import spicedb` / `from spicedb import ...` | values, filters, `Transaction`, consistency, `ZedToken`, options, results |
 | `spicedb.sync` / `spicedb.aio` | `from spicedb.sync import SpiceDBClient` | native client, blocking or asyncio (same names and arguments) |
 | `spicedb.errors` | `from spicedb.errors import FailedPreconditionError` | typed errors (`SpiceDBError` is a `grpc.RpcError`) |
-| `spicedb.testing` | `from spicedb.testing import InMemoryClient` | in-memory test doubles (`InMemoryClient`, `AsyncInMemoryClient`; `Call`, `Fault`, `FaultStage`, `SchemaRevision`, `cursor_after`) |
+| `spicedb.testing` | `from spicedb.testing import InMemoryClient` | in-memory test doubles (`InMemoryClient`, `AsyncInMemoryClient`; `Call`, `Fault`, `FaultStage`, `SchemaRevision`, `CheckResolver`, `grant_all`, `cursor_after`) |
 | `spicedb.protocols` | `from spicedb.protocols import ClientProtocol` | full client surface (`ClientProtocol`, `AsyncClientProtocol`) satisfied by the clients and the doubles |
 | `spicedb.protoconv` | `from spicedb import protoconv` | protocol conversions (tools only) |
 
@@ -69,7 +69,17 @@ from myapp.authz.sync import TypedClient
 tc = TypedClient.connect("spicedb.example.com:443", os.environ["SPICEDB_TOKEN"])  # TLS
 ```
 
-Create one client per process and `close()` it (or use `with`). Plaintext is
+Create one sync client per process and `close()` it (or use `with`). An
+asyncio client binds to the event loop it is first used on: create one
+`aio` client **per event loop** (in each loop's startup or lifespan hook, e.g.
+one for the web server and one for a worker that runs its own loop), never
+one shared at import time; another loop gets `EventLoopBindingError`.
+The client connects lazily: to fail at startup on a wrong or unreachable
+endpoint, call `tc.ready(timeout=5.0)` (`await` it on `aio`), which raises
+`UnavailableError` or
+`DeadlineExceededError`. The endpoint is `host:port`, `https://host`,
+`http://host:port`, `dns:///host:port` (client-side load balancing) or
+`unix:/path`. Plaintext is
 `transport_security=TransportSecurity.PLAINTEXT`, for loopback and unix
 sockets; a non-loopback plaintext host additionally needs
 `remote_credentials=RemoteCredentials.ALLOW`. Custom trust and mTLS:
@@ -91,6 +101,20 @@ async with AsyncTypedClient.connect("spicedb.example.com:443", os.environ["SPICE
         async for res in stream:
             ids.append(res.resource_id)
 ```
+
+An empty or whitespace-only `token` (usually an unset environment variable)
+raises `LocalValidationError` at construction, and so do `ca_cert`,
+`client_cert` or `client_key` bytes that do not parse as PEM, and a
+`client_key` from a different key pair than `client_cert`; the message names
+the argument.
+
+Names and IDs must be `str`: `ObjectRef("document", 42)`, a permission or
+relation of `True`, or `lookup_resources(resource_type=42, ...)` raises
+`LocalValidationError` before any request, never sending a coerced value.
+Convert numeric IDs yourself with `str(...)`. An empty or whitespace-only
+`ZedToken` passed to `at_least`, `snapshot` or a watch or materialize start/at
+revision raises `LocalValidationError`; `at_least_or_full` and
+`at_least_or_min_latency` treat it as no revision and fall back.
 
 ## Check (fail closed)
 
@@ -116,6 +140,11 @@ results = tc.check_bulk(
 # results[i] matches input i; only results[i].has_permission grants.
 ```
 
+  With `item_errors=BulkItemErrors.RETURN`, a per-item error the server
+  reports lands on `results[i].error` (never a grant) instead of raising; a
+  malformed item in the server's response (such as an unset permissionship)
+  still fails the whole call with the client-detected `InternalError`.
+
 - Permission names chosen at runtime (e.g. per API method):
 
 ```python
@@ -125,6 +154,41 @@ allowed = tc.check_dynamic(min_latency(), perm, User(user_id)).has_permission
 
   At startup, verify every configured name is in
   `authz.ORGANIZATION_PERMISSION_NAMES`.
+
+- Type and permission names both chosen at runtime (a policy layer, an admin
+  tool), still validated against the schema before any call:
+
+```python
+resource = authz.definition_by_name(type_name)(resource_id)  # raises NotInSchemaError
+allowed = tc.check_dynamic(min_latency(), resource.permission_by_name(perm_name), User(user_id))
+ref = authz.permission_ref_by_name(type_name, perm_name)      # resource-less, for lookups
+with tc.lookup_resources_by_name(min_latency(), type_name, perm_name, User(user_id)) as stream:
+    ids = [r.resource_id for r in stream]
+```
+
+  Lookups by name accept relations as well as permissions. A subject type
+  that cannot reach the permission yields nothing without a call (SpiceDB's
+  answer); unknown names raise `NotInSchemaError`. The rest of the typed tier
+  is reachable from strings too, each validated against the schema:
+
+```python
+obj = authz.parse_object("organization:acme")             # Organization("acme"); also object_by_name(t, id)
+admins = authz.subject_set_by_name("organization", "acme", "can_admin")  # the subject organization:acme#can_admin
+rel = authz.relationship_from_triple("organization:acme", "member", "user:alice")  # schema-checked
+tc.touch(rel)
+allowed = tc.check_by_name(min_latency(), "organization", org_id, perm_name, authz.parse_subject(subject)).has_permission  # "user:alice" or "group:eng#member"
+results = tc.check_bulk_by_name(min_latency(), [("organization", org_id, "view", User(user_id))])
+with tc.lookup_subjects_by_name(min_latency(), "organization", org_id, "view", "user") as stream:
+    members = [s.subject.subject_id for s in stream]
+```
+
+  `authz.SchemaObject` is the union of every generated object class,
+  `authz.SubjectSet` of every subject-set class and `authz.SchemaSubject` of
+  everything `parse_subject` returns, for annotating such code.
+  `authz.DefinitionNames.ORGANIZATION` and `authz.DEFINITION_NAMES` name the
+  definitions; `authz.SCHEMA_TEXT` is the schema the module was generated
+  from, so `tc.write_schema(authz.SCHEMA_TEXT)` at startup needs no `.zed`
+  file at runtime.
 
 ## List what a subject can access
 
@@ -187,7 +251,7 @@ exactly one request, as the raw API does.
 ## Schema-agnostic code (native tier)
 
 ```python
-r = Relationship.from_tuple("document:readme#viewer@user:alice")  # raises InvalidArgumentError
+r = Relationship.from_tuple("document:readme#viewer@user:alice")  # raises LocalValidationError (a ValueError)
 written = c.write(Transaction().touch(r))
 result = c.check(
     PermissionCheck(
@@ -198,6 +262,12 @@ result = c.check(
     consistency=at_least(written.revision),
 )
 ```
+
+`ObjectRef.parse("document:readme")` and `SubjectRef.parse("team:eng#member")`
+read the string forms; `ObjectRef` refuses what SpiceDB's tuple syntax does
+(`ObjectRef("", "")` raises). Prebuilt `Update` values (from a queue or a
+replayed watch) go in with `Transaction().add(update)` or
+`.extend(updates)`.
 
 `c` is a `spicedb.sync.SpiceDBClient(endpoint, token=...)`. Tuple syntax
 covers `[caveat:{...}]` and `[expiration:...]`; `str(relationship)` formats
@@ -245,6 +315,16 @@ if isinstance(err, SpiceDBError):
     print(err.server_message)  # what the server said, verbatim
 ```
 
+Errors raised by local validation, before any RPC, are `LocalValidationError`:
+an `InvalidArgumentError` and also a `ValueError`, so `except ValueError`
+around parsing input works. A server `INVALID_ARGUMENT` is a plain
+`InvalidArgumentError`. A bad endpoint or constructor argument is local
+validation too. A response the client cannot interpret (a missing required
+field, an unset permissionship, a cursor that does not advance) raises
+`InternalError`, whose message begins "client detected malformed response
+from server" (the server sent no such status); it is not retried: treat it as
+a server or proxy bug, not a transient error.
+
 Native errors are `grpc.RpcError`s: existing `except grpc.RpcError` handlers
 and `err.code()` / `err.details()` keep working, including for local
 validation, local deadlines and errors you construct. Forward
@@ -252,20 +332,46 @@ validation, local deadlines and errors you construct. Forward
 
 ## Test
 
+The in-memory double does not evaluate your schema. A permission such as
+`view = reader + writer + parent->read` is granted on the double only by a
+stored relationship whose relation is named `view`, or by a check resolver
+you install; the double never derives it from `reader`, `writer` or `parent`.
+Use the double for code that consumes check and lookup results (model the
+permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
+or a container) for tests of the permission logic in the schema. Projects
+whose permissions are all computed (unions, arrows) get little from
+stored-relation grants on the double, so model them with the resolver or test
+against SpiceDB.
+
 ```python
 fake = InMemoryClient([Relationship.from_tuple("organization:acme#admin@user:alice")])
+tc = TypedClient(fake)  # a generated TypedClient wraps the double
+# A stored relationship grants the check of its own relation name...
+assert tc.check(full(), Organization("acme").admin_relation, User("alice")).has_permission
+# ...but the double evaluates no schema: permissions need a result or a resolver.
 fake.set_check_result(
     ObjectRef("organization", "acme"),
     "view",
     SubjectRef(ObjectRef("user", "alice")),
     Permissionship.HAS_PERMISSION,
 )
+fake.set_check_resolver(lambda c: True if c.subject.object.object_id == "root" else None)
+fake.set_check_resolver(grant_all)  # or grant everything
 err = SpiceDBError.from_code(grpc.StatusCode.FAILED_PRECONDITION, "precondition failed")
 assert isinstance(err, FailedPreconditionError)
 ```
 
+A check resolves to the result registered for that exact question, else to
+the resolver's answer (None defers), else to the stored relationships (a
+relationship whose relation is the permission's name and whose subject
+matches exactly, or a wildcard for direct subjects; caveated ones are
+conditional, expired ones absent), else to no permission. `lookup_resources`
+and `lookup_subjects` enumerate the objects the double knows (from its
+relationships) and return those that check resolution grants, honoring
+`permissionship_filter`, `limit`, `cursor` and `wildcards`.
+
 `InMemoryClient` (and `AsyncInMemoryClient`) implement `write`, `check`,
-`check_bulk`, `read_relationships`, `delete_relationships`,
+`check_bulk`, `lookup_resources`, `lookup_subjects`, `read_relationships`, `delete_relationships`,
 `delete_all_relationships_non_atomic`, `import_relationships`,
 `export_relationships`, `read_schema`, `write_schema` and `reflect_schema`
 (`set_reflect_schema_result`) with the real clients' signatures, SpiceDB's
@@ -285,11 +391,11 @@ print(last_read.request, last_read.options["cursor"])
 ```
 
 `FaultStage` is `CALL`, `IMPORT_BATCH` (`f.batch` holds that batch's
-relationships), `IMPORT_COMMIT` or `ITEM` (before each read or export item).
+relationships), `IMPORT_COMMIT` or `ITEM` (before each read, export or lookup item).
 `cursor_after(n)` builds the double's resume cursor after `n` items, and
 `fake.set_read_schema_revision(SchemaRevision.OMITTED)` makes `read_schema`
 report no revision. The doubles implement every client method; the ones
-without in-memory semantics (lookups, expand, watch, ...) are recorded and
+without in-memory semantics (expand, watch, ...) are recorded and
 raise `UNIMPLEMENTED`, so script them with the fault hook.
 
 Type your code against `spicedb.protocols.ClientProtocol` (or

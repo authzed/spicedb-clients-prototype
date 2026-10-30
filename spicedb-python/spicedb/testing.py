@@ -6,7 +6,8 @@ implements its client's whole public surface with the same signatures, so
 it satisfies :class:`spicedb.protocols.ClientProtocol` (or
 :class:`spicedb.protocols.AsyncClientProtocol`), as the real client does, and
 code written against that protocol (or a smaller one of your own) accepts
-either. ``write``, ``check``, ``check_bulk``, ``read_relationships``,
+either. ``write``, ``check``, ``check_bulk``, ``lookup_resources``,
+``lookup_subjects``, ``read_relationships``,
 ``delete_relationships``, ``delete_all_relationships_non_atomic``,
 ``import_relationships``, ``export_relationships``, ``read_schema``,
 ``write_schema``, ``reflect_schema`` and ``close`` work in memory; every
@@ -24,9 +25,18 @@ and local validation runs the real clients' own request builders, raising the
 same ``InvalidArgumentError`` (``server_message`` is None) before any state
 changes.
 
-They do not evaluate a schema: checks return results registered with
-:meth:`InMemoryClient.set_check_result` (default ``NO_PERMISSION``),
-``write_schema`` stores the text without compiling it, and
+They do not evaluate a schema or caveats. A check resolves, in order, to
+the result registered for that exact question with
+:meth:`InMemoryClient.set_check_result`; then to the answer of the resolver
+installed with :meth:`InMemoryClient.set_check_resolver` (None defers;
+:func:`grant_all` grants everything); then to the stored relationships, where
+an unexpired relationship on the resource whose relation is the permission's
+name and whose subject matches exactly (or by wildcard, for a direct subject)
+grants it, conditionally when it carries a caveat; otherwise
+``NO_PERMISSION``. ``lookup_resources`` and ``lookup_subjects`` enumerate the
+objects of the requested type found in the stored relationships (as resource
+or subject, first appearance first) and yield those the check resolution
+grants. ``write_schema`` stores the text without compiling it, and
 ``reflect_schema`` returns the result registered with
 :meth:`InMemoryClient.set_reflect_schema_result`.
 
@@ -47,14 +57,14 @@ request and its keyword options exactly as passed, so tests assert on what
 was sent without a strict mock. Faults are injected at defined points
 (:meth:`InMemoryClient.set_fault_hook`, :meth:`InMemoryClient.fail_next`):
 before any call, before each import batch, before an import commits and
-before each read or export item, so failure paths need no fake gRPC server.
+before each read, export or lookup item, so failure paths need no fake gRPC server.
 Build injected errors with :meth:`spicedb.SpiceDBError.from_code`, which
 produces exactly what the real client raises for that server failure. A
 failed write or import applies nothing. An import-batch fault carries that
 batch's relationships (:attr:`Fault.batch`).
 
 Read and export cursors are the decimal count of matching relationships
-already yielded; :func:`cursor_after` builds one, and the format is stable
+already yielded, and lookup cursors that of granted resources; :func:`cursor_after` builds one, and the format is stable
 for tests. :meth:`InMemoryClient.set_read_schema_revision` makes
 ``read_schema`` report no revision, as some servers do.
 """
@@ -64,6 +74,7 @@ from __future__ import annotations
 import enum
 import inspect
 import threading
+from datetime import datetime, timezone
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -76,7 +87,7 @@ from spicedb._budget import Budget
 from spicedb._client_base import mutation_retry_policy, response_target, write_is_idempotent
 from spicedb._streams import AsyncStream, Stream
 from spicedb.consistency import Consistency
-from spicedb.errors import InvalidArgumentError, SpiceDBError
+from spicedb.errors import LocalValidationError, SpiceDBError
 from spicedb.options import (
     BulkItemErrors,
     CallOptions,
@@ -104,6 +115,7 @@ from spicedb.types import (
     LookupResource,
     LookupSubject,
     ObjectRef,
+    PartialCaveatInfo,
     PermissionCheck,
     PermissionSetCursor,
     PermissionSetDownload,
@@ -115,6 +127,7 @@ from spicedb.types import (
     ReflectSchemaResult,
     Relationship,
     RelationsResult,
+    ResolvedSubject,
     RoaringLookupResourcesResult,
     SchemaDiffResult,
     SchemaFilter,
@@ -133,7 +146,9 @@ __all__ = [
     "Fault",
     "FaultStage",
     "SchemaRevision",
+    "CheckResolver",
     "cursor_after",
+    "grant_all",
 ]
 
 # SpiceDB's default for a delete request without an explicit limit.
@@ -174,7 +189,7 @@ class FaultStage(enum.Enum):
     IMPORT_COMMIT = "import_commit"
     """After every batch, before the import commits."""
     ITEM = "item"
-    """Before a read or export yields item ``Fault.item`` (0-based)."""
+    """Before a read, export or lookup yields item ``Fault.item`` (0-based)."""
 
 
 @dataclass(frozen=True)
@@ -184,7 +199,8 @@ class Fault:
     call: Call
     stage: FaultStage
     item: int = 0
-    """The batch index for IMPORT_BATCH, the item index for ITEM, else 0."""
+    """The batch index for IMPORT_BATCH, the item index for ITEM (counting
+    yielded items), else 0."""
     batch: tuple[Relationship, ...] = ()
     """The relationships in the batch at IMPORT_BATCH; empty otherwise."""
 
@@ -203,17 +219,74 @@ class SchemaRevision(enum.Enum):
 def cursor_after(n: int) -> str:
     """The cursor that resumes a double's ``read_relationships`` or
     ``export_relationships`` after the first ``n`` matching relationships (in
-    insertion order): the same cursor the double puts on the ``n``-th item.
+    insertion order), or its ``lookup_resources`` after the first ``n``
+    resources the check resolution grants (counting those a permissionship
+    filter skips): the same cursor the double puts on the ``n``-th item.
 
     The format, the decimal count ``n``, is stable for tests. It is not a
     SpiceDB cursor; never send it to a real server.
     """
     if isinstance(n, bool) or not isinstance(n, int) or n < 0:
-        raise InvalidArgumentError("n: expected non-negative integer")
+        raise LocalValidationError("n: expected non-negative integer")
     return str(n)
 
 
 FaultHook = Callable[[Fault], "BaseException | None"]
+
+CheckResolver = Callable[[PermissionCheck], "CheckResult | Permissionship | bool | None"]
+"""A check resolver: receives each check the double cannot answer from a
+registered result (its ``context`` is the call-level context merged with the
+check's own, as sent to SpiceDB) and returns a :class:`spicedb.CheckResult`, a
+:class:`spicedb.Permissionship`, a bool (True grants, False denies), or None to
+defer to the stored relationships."""
+
+
+def grant_all(check: PermissionCheck) -> Permissionship:
+    """A check resolver that grants every check:
+    ``double.set_check_resolver(grant_all)``."""
+    return Permissionship.HAS_PERMISSION
+
+
+def _direct(relation: str | None) -> str | None:
+    """A subject relation, with ``...`` (direct) as None."""
+    return None if relation in (None, "...") else relation
+
+
+def _expired(relationship: Relationship, now: datetime) -> bool:
+    expiration = relationship.expiration
+    if expiration is None:
+        return False
+    if expiration.tzinfo is None:
+        expiration = expiration.replace(tzinfo=timezone.utc)
+    return expiration <= now
+
+
+def _resolved(value: Any) -> CheckResult | None:
+    """A check resolver's answer as a result, or None to defer."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        value = Permissionship.HAS_PERMISSION if value else Permissionship.NO_PERMISSION
+    if isinstance(value, Permissionship):
+        value = CheckResult(value, (), ZedToken(""))
+    if isinstance(value, CheckResult):
+        return _answer(value, "check resolver")
+    raise LocalValidationError(
+        f"check resolver: expected CheckResult, Permissionship, bool or None, got {value!r}"
+    )
+
+
+def _answer(result: CheckResult, what: str) -> CheckResult:
+    """``result``, refused when it has no answer. A real server always sets a
+    check's permissionship (the client fails an unset one as a
+    malformed response), so the double never returns UNSPECIFIED except on a
+    per-item error result."""
+    if result.error is None and result.permissionship is Permissionship.UNSPECIFIED:
+        raise LocalValidationError(
+            f"{what}: Permissionship.UNSPECIFIED is not an answer a server gives; "
+            "use HAS_PERMISSION, NO_PERMISSION or CONDITIONAL_PERMISSION, or set error"
+        )
+    return result
 
 
 def _key(relationship: Relationship):
@@ -235,12 +308,12 @@ def _precondition_error(text: str) -> SpiceDBError:
 
 def _call_options(call_options: CallOptions | None) -> None:
     if call_options is not None and not isinstance(call_options, CallOptions):
-        raise InvalidArgumentError(f"call_options: expected CallOptions, got {call_options!r}")
+        raise LocalValidationError(f"call_options: expected CallOptions, got {call_options!r}")
 
 
 def _positive(value, field):
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise InvalidArgumentError(f"{field}: expected positive integer")
+        raise LocalValidationError(f"{field}: expected positive integer")
 
 
 class _Store:
@@ -248,6 +321,7 @@ class _Store:
         self.lock = threading.RLock()
         self.relationships: dict[Any, Relationship] = {}
         self.checks: dict[Any, CheckResult] = {}
+        self.resolver: CheckResolver | None = None
         self.revision = 0
         self.schema: str | None = None
         self.reflection: ReflectSchemaResult | None = None
@@ -259,7 +333,7 @@ class _Store:
         self.schema_revision = SchemaRevision.INCLUDED
         for relationship in relationships:
             if not isinstance(relationship, Relationship):
-                raise InvalidArgumentError("relationships: expected Relationship values")
+                raise LocalValidationError("relationships: expected Relationship values")
             self.relationships[_key(relationship)] = relationship
 
     def token(self) -> ZedToken:
@@ -284,7 +358,7 @@ class _Store:
             return None
         error = hook(Fault(call, stage, item, batch))
         if error is not None and not isinstance(error, BaseException):
-            raise InvalidArgumentError(f"fault hook: expected an exception or None, got {error!r}")
+            raise LocalValidationError(f"fault hook: expected an exception or None, got {error!r}")
         return error
 
     def begin_or_raise(self, operation: Operation, request: Any, options: dict[str, Any]) -> Call:
@@ -334,7 +408,7 @@ class _Store:
                 elif update.operation is UpdateOperation.DELETE:
                     staged.pop(key, None)
                 else:
-                    raise InvalidArgumentError("unknown update operation")
+                    raise LocalValidationError("unknown update operation")
             self.relationships = staged
             self.revision += 1
             return WriteResult(self.token())
@@ -398,13 +472,78 @@ class _Store:
                 None,
             )
 
-    def check(self, check: PermissionCheck) -> CheckResult:
+    def check(self, check: PermissionCheck, context: JSONObject | None = None) -> CheckResult:
+        """Resolve one check: the registered result, then the resolver, then
+        the stored relationships; otherwise NO_PERMISSION."""
         with self.lock:
             result = self.checks.get(_check_key(check.resource, check.permission, check.subject))
+            resolver = self.resolver
             token = self.token()
+        if result is None and resolver is not None:
+            merged = _requests._merge_check_context(context, check.context)
+            result = _resolved(resolver(replace(check, context=merged)))
         if result is None:
-            return CheckResult(Permissionship.NO_PERMISSION, (), token)
+            with self.lock:
+                return CheckResult(self.stored(check), (), token)
         return replace(result, checked_at=token)
+
+    def stored(self, check: PermissionCheck) -> Permissionship:
+        """What the stored relationships grant: a live relationship on the
+        resource whose relation is the permission's name and whose subject
+        matches exactly or by wildcard. A caveated one is conditional, since
+        the double evaluates no caveat."""
+        subject = check.subject
+        relation = _direct(subject.relation)
+        now = datetime.now(timezone.utc)
+        found = Permissionship.NO_PERMISSION
+        for r in self.relationships.values():
+            if r.resource != check.resource or r.relation != check.permission:
+                continue
+            stored = r.subject
+            if stored.object.object_type != subject.object.object_type or _direct(stored.relation) != relation:
+                continue
+            if stored.object.object_id not in (subject.object.object_id, "*") or _expired(r, now):
+                continue
+            if r.caveat is None:
+                return Permissionship.HAS_PERMISSION
+            found = Permissionship.CONDITIONAL_PERMISSION
+        return found
+
+    def known_objects(self, object_type: str) -> list[ObjectRef]:
+        """The objects of a type appearing in the stored relationships, as
+        resource or subject, in first-appearance order."""
+        with self.lock:
+            seen: dict[ObjectRef, None] = {}
+            for r in self.relationships.values():
+                for o in (r.resource, r.subject.object):
+                    if o.object_type == object_type:
+                        seen.setdefault(o, None)
+            return list(seen)
+
+    def granted(self, check: PermissionCheck, context: JSONObject | None):
+        """The lookup permissionship and missing context of a check, or None
+        when it does not grant."""
+        result = self.check(check, context)
+        if result.error is not None:
+            return None
+        if result.permissionship is Permissionship.HAS_PERMISSION:
+            return Permissionship.HAS_PERMISSION, None
+        if result.permissionship is Permissionship.CONDITIONAL_PERMISSION:
+            return Permissionship.CONDITIONAL_PERMISSION, PartialCaveatInfo(tuple(result.missing_context))
+        return None
+
+
+def _cursor_start(cursor: str | None, operation: str) -> int:
+    """The number of results a double's cursor has already passed."""
+    if cursor is None:
+        return 0
+    try:
+        start = int(cursor)
+    except ValueError:
+        start = -1
+    if start < 0:
+        raise SpiceDBError.from_code(grpc.StatusCode.INVALID_ARGUMENT, f"{operation}: invalid cursor")
+    return start
 
 
 def _unimplemented_error(operation: str) -> SpiceDBError:
@@ -447,18 +586,37 @@ class InMemoryClient:
         subject: SubjectRef,
         result: CheckResult | Permissionship,
     ) -> None:
-        """Register what ``check``/``check_bulk`` return for this triple."""
+        """Register what ``check``/``check_bulk`` (and lookups) return for
+        this triple. A registered result takes precedence over the check
+        resolver and the stored relationships."""
         if isinstance(result, Permissionship):
             result = CheckResult(result, (), ZedToken(""))
         if not isinstance(result, CheckResult):
-            raise InvalidArgumentError("result: expected CheckResult or Permissionship")
+            raise LocalValidationError("result: expected CheckResult or Permissionship")
+        result = _answer(result, "result")
         with self._store.lock:
             self._store.checks[_check_key(resource, permission, subject)] = result
+
+    def set_check_resolver(self, resolver: CheckResolver | None) -> None:
+        """Install ``resolver``, consulted for every check (including those
+        that lookups make) without a registered result, before the stored
+        relationships.
+
+        It receives the :class:`spicedb.PermissionCheck` and returns a
+        ``CheckResult``, a ``Permissionship``, a bool, or None to defer to the
+        stored relationships, so tests over generated IDs need no per-ID
+        registration: ``set_check_resolver(grant_all)`` grants everything.
+        It must not call the double. Pass None to remove it.
+        """
+        if resolver is not None and not callable(resolver):
+            raise LocalValidationError("resolver: expected callable or None")
+        with self._store.lock:
+            self._store.resolver = resolver
 
     def set_reflect_schema_result(self, result: ReflectSchemaResult) -> None:
         """Register what ``reflect_schema`` returns (stamped with the current revision)."""
         if not isinstance(result, ReflectSchemaResult):
-            raise InvalidArgumentError("result: expected ReflectSchemaResult")
+            raise LocalValidationError("result: expected ReflectSchemaResult")
         with self._store.lock:
             self._store.reflection = result
 
@@ -478,7 +636,7 @@ class InMemoryClient:
         (:attr:`SchemaRevision.INCLUDED`, the default) or ``ZedToken("")``
         (:attr:`SchemaRevision.OMITTED`)."""
         if not isinstance(mode, SchemaRevision):
-            raise InvalidArgumentError(f"mode: expected SchemaRevision, got {mode!r}")
+            raise LocalValidationError(f"mode: expected SchemaRevision, got {mode!r}")
         with self._store.lock:
             self._store.schema_revision = mode
 
@@ -492,7 +650,7 @@ class InMemoryClient:
         hook must not call the double. Pass None to remove it.
         """
         if hook is not None and not callable(hook):
-            raise InvalidArgumentError("hook: expected callable or None")
+            raise LocalValidationError("hook: expected callable or None")
         with self._store.lock:
             self._store.hook = hook
 
@@ -500,9 +658,9 @@ class InMemoryClient:
         """Make the next call of ``operation`` raise ``error`` before doing
         anything; later calls succeed. Replaces any fault hook."""
         if not isinstance(operation, Operation):
-            raise InvalidArgumentError(f"operation: expected Operation, got {operation!r}")
+            raise LocalValidationError(f"operation: expected Operation, got {operation!r}")
         if not isinstance(error, BaseException):
-            raise InvalidArgumentError("error: expected an exception")
+            raise LocalValidationError("error: expected an exception")
         lock = threading.Lock()
         pending = [True]
 
@@ -543,7 +701,7 @@ class InMemoryClient:
         )
         Budget(timeout)
         if not isinstance(transaction, Transaction):
-            raise InvalidArgumentError("transaction: expected Transaction")
+            raise LocalValidationError("transaction: expected Transaction")
         mutation_retry_policy(call_options, write_is_idempotent(transaction), "write")
         _requests.write_request(transaction)
         _requests.context_struct(metadata)
@@ -560,7 +718,8 @@ class InMemoryClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> CheckResult:
-        """Return the registered result, stamped with the current revision."""
+        """Resolve the check (registered result, then the check resolver, then
+        the stored relationships), stamped with the current revision."""
         self._store.begin_or_raise(Operation.CHECK, check, {
             "consistency": consistency, "context": context, "tracing": tracing,
             "timeout": timeout, "call_options": call_options,
@@ -569,7 +728,7 @@ class InMemoryClient:
         _call_options(call_options)
         _requests.check_request(check, consistency, context, tracing)
         self._store.respond(call_options)
-        return self._store.check(check)
+        return self._store.check(check, context)
 
     def check_bulk(
         self,
@@ -582,7 +741,7 @@ class InMemoryClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> list[CheckResult]:
-        """Return the registered results in input order."""
+        """Resolve each check as :meth:`check` does, in input order."""
         self._store.begin_or_raise(Operation.CHECK_BULK, list(checks), {
             "consistency": consistency, "context": context, "tracing": tracing,
             "item_errors": item_errors, "timeout": timeout, "call_options": call_options,
@@ -592,7 +751,7 @@ class InMemoryClient:
         _call_options(call_options)
         _requests.check_bulk_request(consistency, checks, context, tracing)
         self._store.respond(call_options)
-        return [self._store.check(c) for c in checks]
+        return [self._store.check(c, context) for c in checks]
 
     def read_relationships(
         self,
@@ -616,10 +775,10 @@ class InMemoryClient:
         _positive(page_size, "page_size")
         _call_options(call_options)
         if not isinstance(filter, Filter):
-            raise InvalidArgumentError("filter: expected Filter")
+            raise LocalValidationError("filter: expected Filter")
         _requests.read_relationships_request(filter, consistency, page_size, None)
         if cursor is not None and (not isinstance(cursor, str) or not cursor):
-            raise InvalidArgumentError("cursor: expected nonempty cursor string")
+            raise LocalValidationError("cursor: expected nonempty cursor string")
         store = self._store
 
         def factory(_owner):
@@ -655,10 +814,10 @@ class InMemoryClient:
         _positive(page_size, "page_size")
         _call_options(call_options)
         if filter is not None and not isinstance(filter, Filter):
-            raise InvalidArgumentError("filter: expected Filter")
+            raise LocalValidationError("filter: expected Filter")
         _requests.export_request(consistency, filter._to_proto() if filter is not None else None, page_size, None)
         if cursor is not None and (not isinstance(cursor, str) or not cursor):
-            raise InvalidArgumentError("cursor: expected nonempty cursor string")
+            raise LocalValidationError("cursor: expected nonempty cursor string")
         store = self._store
         match = filter.matches if filter is not None else (lambda _r: True)
 
@@ -696,7 +855,7 @@ class InMemoryClient:
         mutation_retry_policy(call_options, False, "import relationships")
         for relationship in batch:
             if not isinstance(relationship, Relationship):
-                raise InvalidArgumentError("relationships: expected Relationship values")
+                raise LocalValidationError("relationships: expected Relationship values")
             relationship._to_proto()
         for start in range(0, len(batch), batch_size):
             contents = tuple(batch[start:start + batch_size])
@@ -737,7 +896,7 @@ class InMemoryClient:
     @staticmethod
     def _validate_delete(filter, must_match, must_not_match, limit, allow_partial, metadata) -> None:
         if not isinstance(filter, Filter):
-            raise InvalidArgumentError("filter: expected Filter")
+            raise LocalValidationError("filter: expected Filter")
         _requests.delete_relationships_request(
             filter, list(must_match), list(must_not_match), limit, None, allow_partial
         )
@@ -768,7 +927,7 @@ class InMemoryClient:
         mutation_retry_policy(call_options, False, "delete relationships")
         _positive(page_size, "page_size")
         if on_progress is not None and not callable(on_progress):
-            raise InvalidArgumentError("on_progress: expected callable")
+            raise LocalValidationError("on_progress: expected callable")
         must_match, must_not_match = tuple(must_match), tuple(must_not_match)
         self._validate_delete(filter, must_match, must_not_match, page_size, True, metadata)
         self._store.respond(call_options)
@@ -815,7 +974,7 @@ class InMemoryClient:
         Budget(timeout)
         mutation_retry_policy(call_options, True, "write schema")
         if not isinstance(schema, str):
-            raise InvalidArgumentError("schema: expected str")
+            raise LocalValidationError("schema: expected str")
         self._store.respond(call_options)
         with self._store.lock:
             self._store.schema = schema
@@ -843,6 +1002,14 @@ class InMemoryClient:
             if self._store.reflection is None:
                 raise SpiceDBError.from_code(grpc.StatusCode.NOT_FOUND, _NO_SCHEMA)
             return replace(self._store.reflection, revision=self._store.token())
+
+    def ready(self, *, timeout: float | None = None) -> None:
+        """Do nothing beyond validating ``timeout``: the double is always ready.
+
+        Not recorded and never faulted, like ``close()``: it is lifecycle,
+        not an operation.
+        """
+        Budget(timeout)
 
     def close(self) -> None:
         """Do nothing; the double holds no transport and stays usable."""
@@ -1007,13 +1174,64 @@ class InMemoryClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> Stream[LookupResource]:
-        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
-        return self._unimplemented_stream(Operation.LOOKUP_RESOURCES, None, {
+        """Yield the objects of ``resource_type`` found in the stored
+        relationships (as resource or subject, in first-appearance order) that
+        the check resolution grants, conditional ones as CONDITIONAL_PERMISSION.
+
+        ``permissionship_filter``, ``limit`` and ``cursor`` behave as on the
+        real client; each item's cursor is the decimal count of granted
+        resources up to and including it (see :func:`cursor_after`).
+        """
+        call, call_error = self._store.begin(Operation.LOOKUP_RESOURCES, None, {
             "resource_type": resource_type, "permission": permission, "subject": subject,
             "consistency": consistency, "context": context, "permissionship_filter": permissionship_filter,
             "limit": limit, "page_size": page_size, "debug": debug, "cursor": cursor, "paging": paging,
             "timeout": timeout, "call_options": call_options,
         })
+        _option(paging, Paging)
+        _option(permissionship_filter, LookupPermissionshipFilter)
+        _option(debug, LookupDebug)
+        Budget(timeout)
+        _positive(page_size, "page_size")
+        if limit is not None:
+            _positive(limit, "limit")
+        _call_options(call_options)
+        if not isinstance(subject, SubjectRef):
+            raise LocalValidationError("subject: expected SubjectRef")
+        _requests.lookup_resources_request(
+            resource_type, permission, subject._to_proto(), _requests.context_struct(context), consistency,
+            page_size, None,
+        )
+        if cursor is not None and (not isinstance(cursor, str) or not cursor):
+            raise LocalValidationError("cursor: expected nonempty cursor string")
+        has_only = permissionship_filter is LookupPermissionshipFilter.HAS_PERMISSION_ONLY
+        store = self._store
+
+        def factory(_owner):
+            if call_error is not None:
+                raise call_error
+            start = _cursor_start(cursor, "lookup resources")
+            store.respond(call_options)
+            token = store.token()
+            position = yielded = 0
+            for obj in store.known_objects(resource_type):
+                if obj.object_id == "*":
+                    continue
+                granted = store.granted(PermissionCheck(obj, permission, subject), context)
+                if granted is None:
+                    continue
+                position += 1
+                if position <= start or (has_only and granted[0] is not Permissionship.HAS_PERMISSION):
+                    continue
+                if limit is not None and yielded >= limit:
+                    return
+                error = store.fault(call, FaultStage.ITEM, yielded)
+                if error is not None:
+                    raise error
+                yielded += 1
+                yield LookupResource(obj.object_id, granted[0], granted[1], token, str(position))
+
+        return Stream(factory)
 
     def lookup_subjects(
         self,
@@ -1030,13 +1248,56 @@ class InMemoryClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> Stream[LookupSubject]:
-        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
-        return self._unimplemented_stream(Operation.LOOKUP_SUBJECTS, None, {
+        """Yield the objects of ``subject_type`` found in the stored
+        relationships (in first-appearance order) that the check resolution
+        grants as subjects (with ``subject_relation``), conditional ones as
+        CONDITIONAL_PERMISSION. A stored wildcard subject (``*``) is yielded
+        too unless ``wildcards=Wildcards.EXCLUDE``. ``limit`` bounds the
+        results; ``page_size`` is validated and otherwise ignored.
+        """
+        call, call_error = self._store.begin(Operation.LOOKUP_SUBJECTS, None, {
             "resource": resource, "permission": permission, "subject_type": subject_type,
             "consistency": consistency, "subject_relation": subject_relation, "context": context,
             "page_size": page_size, "limit": limit, "wildcards": wildcards,
             "timeout": timeout, "call_options": call_options,
         })
+        exclude_wildcards = _option(wildcards, Wildcards) == Wildcards.EXCLUDE.value
+        Budget(timeout)
+        if page_size is not None:
+            _positive(page_size, "page_size")
+        if limit is not None:
+            _positive(limit, "limit")
+        _call_options(call_options)
+        if not isinstance(resource, ObjectRef):
+            raise LocalValidationError("resource: expected ObjectRef")
+        _requests.lookup_subjects_request(
+            resource, permission, subject_type, subject_relation, _requests.context_struct(context),
+            consistency,
+        )
+        store = self._store
+
+        def factory(_owner):
+            if call_error is not None:
+                raise call_error
+            store.respond(call_options)
+            token = store.token()
+            yielded = 0
+            for obj in store.known_objects(subject_type):
+                if obj.object_id == "*" and (exclude_wildcards or subject_relation):
+                    continue
+                check = PermissionCheck(resource, permission, SubjectRef(obj, subject_relation or None))
+                granted = store.granted(check, context)
+                if granted is None:
+                    continue
+                if limit is not None and yielded >= limit:
+                    return
+                error = store.fault(call, FaultStage.ITEM, yielded)
+                if error is not None:
+                    raise error
+                yielded += 1
+                yield LookupSubject(ResolvedSubject(obj.object_id, granted[0], granted[1]), (), token)
+
+        return Stream(factory)
 
     def watch(
         self,
@@ -1111,8 +1372,13 @@ class AsyncInMemoryClient:
         subject: SubjectRef,
         result: CheckResult | Permissionship,
     ) -> None:
-        """Register what ``check``/``check_bulk`` return for this triple."""
+        """See :meth:`InMemoryClient.set_check_result`."""
         self._sync.set_check_result(resource, permission, subject, result)
+
+    def set_check_resolver(self, resolver: CheckResolver | None) -> None:
+        """See :meth:`InMemoryClient.set_check_resolver`. The resolver is a
+        plain (not async) callable."""
+        self._sync.set_check_resolver(resolver)
 
     def set_reflect_schema_result(self, result: ReflectSchemaResult) -> None:
         """Register what ``reflect_schema`` returns (stamped with the current revision)."""
@@ -1168,7 +1434,7 @@ class AsyncInMemoryClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> CheckResult:
-        """Return the registered result, stamped with the current revision."""
+        """See :meth:`InMemoryClient.check`."""
         return self._sync.check(
             check, consistency=consistency, context=context, tracing=tracing, timeout=timeout, call_options=call_options
         )
@@ -1184,7 +1450,7 @@ class AsyncInMemoryClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> list[CheckResult]:
-        """Return the registered results in input order."""
+        """See :meth:`InMemoryClient.check_bulk`."""
         return self._sync.check_bulk(
             checks, consistency=consistency, context=context, tracing=tracing,
             item_errors=item_errors, timeout=timeout, call_options=call_options,
@@ -1313,6 +1579,10 @@ class AsyncInMemoryClient:
         return self._sync.reflect_schema(
             consistency=consistency, filters=filters, timeout=timeout, call_options=call_options
         )
+
+    async def ready(self, *, timeout: float | None = None) -> None:
+        """Do nothing beyond validating ``timeout``: the double is always ready."""
+        self._sync.ready(timeout=timeout)
 
     async def close(self) -> None:
         """Do nothing; the double holds no transport and stays usable."""

@@ -69,9 +69,12 @@ const (
 	// ItemErrorsFail fails the whole call with a *BulkCheckError for the first
 	// failing item. This is the default.
 	ItemErrorsFail BulkItemErrors = iota
-	// ItemErrorsReturned returns every item's result; a failed item's result
-	// has Err set (a *BulkCheckError) and PermissionshipUnspecified, so it
-	// never grants.
+	// ItemErrorsReturned returns a result for every item the server reports
+	// an error for (or local validation rejects) instead of failing the call;
+	// such a result has Err set (a *BulkCheckError) and
+	// PermissionshipUnspecified, so it never grants. A malformed item in the
+	// server's response (such as an unset permissionship) is not a per-item
+	// error: it still fails the whole call with ErrInternal.
 	ItemErrorsReturned
 )
 

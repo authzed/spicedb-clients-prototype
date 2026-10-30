@@ -1,7 +1,9 @@
 using System.Runtime.CompilerServices;
 using M = Authzed.Api.Materialize.V0;
+using System.Text.Json.Serialization;
 namespace SpiceDB.Client;
 
+[JsonConverter(typeof(JsonStringEnumConverter<PermissionSetOperation>))]
 public enum PermissionSetOperation { Unspecified, Added, Removed }
 public sealed record PermissionSetReference(ObjectRef Object, string PermissionOrRelation);
 public sealed record PermissionSetMember(ObjectRef Object, string? PermissionOrRelation);
@@ -70,7 +72,7 @@ public sealed partial class SpiceDBClient
     {
         using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, watch: true);
         options?.Validate();
-        var request = new M.WatchPermissionSetsRequest { OptionalStartingAfter = startRevision is { } token ? new() { Token = token.Value } : null };
+        var request = new M.WatchPermissionSetsRequest { OptionalStartingAfter = RevisionInput.Optional(startRevision, nameof(startRevision)) is { } token ? new() { Token = token } : null };
         await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.WatchPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
             yield return response.ResponseCase switch
             {
@@ -84,8 +86,8 @@ public sealed partial class SpiceDBClient
     /// <summary>Experimental explicit single-page lookup. Retain the last cursor to request the next page.</summary>
     public async IAsyncEnumerable<LookupPermissionSet> ExperimentalLookupPermissionSetsAsync(int limit, ZedToken? atRevision, PermissionSetLookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
-        var request = new M.LookupPermissionSetsRequest { Limit = (uint)Positive(limit, nameof(limit)), OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null, OptionalStartingAfterCursor = options?.ResumeCursor?.ToProto() };
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, paged: true);
+        var request = new M.LookupPermissionSetsRequest { Limit = (uint)Positive(limit, nameof(limit)), OptionalAtRevision = RevisionInput.Optional(atRevision, nameof(atRevision)) is { } token ? new() { Token = token } : null, OptionalStartingAfterCursor = options?.ResumeCursor?.ToProto() };
         await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.LookupPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
             yield return new(response.Change is null ? null : MapSetChange(response.Change), PermissionSetCursor.FromProto(response.Cursor));
     }
@@ -94,7 +96,7 @@ public sealed partial class SpiceDBClient
     {
         using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
-        var request = new M.DownloadPermissionSetsRequest { OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null };
+        var request = new M.DownloadPermissionSetsRequest { OptionalAtRevision = RevisionInput.Optional(atRevision, nameof(atRevision)) is { } token ? new() { Token = token } : null };
         var response = await Unary(budget, o => RawProto().MaterializePermissionSets.DownloadPermissionSetsAsync(request, o.Headers, o.Deadline, o.CancellationToken));
         return new(response.Files.Select(x => new PermissionSetFile(x.Name, x.Url)), response.Timestamp?.ToDateTimeOffset(), new(response.AtRevision?.Token ?? ""));
     }
@@ -103,8 +105,11 @@ public sealed partial class SpiceDBClient
         value.ParentSet is null ? null : MapSet(value.ParentSet), value.ChildCase switch
         {
             M.PermissionSetChange.ChildOneofCase.ChildSet => new PermissionSetChild.Set(MapSet(value.ChildSet)),
-            M.PermissionSetChange.ChildOneofCase.ChildMember => new PermissionSetChild.Member(new(new(value.ChildMember.ObjectType, value.ChildMember.ObjectId), value.ChildMember.OptionalPermissionOrRelation == "" ? null : value.ChildMember.OptionalPermissionOrRelation)),
+            M.PermissionSetChange.ChildOneofCase.ChildMember => new PermissionSetChild.Member(new(SetObject(value.ChildMember.ObjectType, value.ChildMember.ObjectId, "child member"), value.ChildMember.OptionalPermissionOrRelation == "" ? null : value.ChildMember.OptionalPermissionOrRelation)),
             _ => new PermissionSetChild.Unspecified(),
         });
-    private static PermissionSetReference MapSet(M.SetReference value) => new(new(value.ObjectType, value.ObjectId), value.PermissionOrRelation);
+    private static PermissionSetReference MapSet(M.SetReference value) => new(SetObject(value.ObjectType, value.ObjectId, "set"),
+        string.IsNullOrEmpty(value.PermissionOrRelation) ? throw Response.Malformed("PermissionSets", "set has no permission or relation") : value.PermissionOrRelation);
+    private static ObjectRef SetObject(string type, string id, string field) =>
+        string.IsNullOrEmpty(type) || string.IsNullOrEmpty(id) ? throw Response.Malformed("PermissionSets", $"{field} has no object type or id") : new(type, id);
 }

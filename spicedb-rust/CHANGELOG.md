@@ -2,6 +2,143 @@
 
 ## Unreleased
 
+- Tests: the deadline, consumer-time and shared-budget tests against a real server build their clients with `ConnectMode::Eager`, so a short allowance never has to cover connection setup on a busy machine; the shared-budget tests use wider stalls and budgets, and the consumer-time tests a 500 ms per-page default (5 x 250 ms of caller work), since moving one 3 MiB message through a debug build once took over 200 ms.
+- `consistency::Strategy` implements `Display` (`full`, `min_latency`, `at_least(<token>)`, `snapshot(<token>)`) and, with the `serde` feature, `Serialize` as `{"strategy":"at_least","token":"<token>"}` (no token for `full` and `min_latency`), like the other native values. It had only `Debug`.
+- An `http://` endpoint without a port fails with its example once: the accepted-forms list after the reason no longer repeats `for example http://host:50051`.
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: <what> permissionship is unset` (it said "is unspecified"), and the docs, guides and comments match. `Permissionship::Unspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
+- **Behavior change:** an empty or whitespace-only token fails at construction with `SpiceDBError::InvalidArgument` (`new_plaintext`, `new_system_tls`, `builder(...).build()`, and `from_channel(...).token(...).build()`), before any dial, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- Docs: with bulk item errors returned (`BulkItemErrors::Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the `BulkItemErrors::Returned` rustdoc, design notes, migration guide and AI guide now say so.
+- **Behavior change:** a whitespace-only revision token is refused like an empty one. `consistency::at_least` and `consistency::snapshot` with an empty or whitespace-only token fail with `SpiceDBError::InvalidArgument` before any request (previously only an empty token was refused), `at_least_or_full` and `at_least_or_min_latency` treat one as absent, and an empty or whitespace-only `with_start_revision` on `updates` or `watch_permission_sets` now fails with `InvalidArgument` instead of being sent.
+- Docs: the migration and AI guides say that only an unset permissionship is a malformed response; a value newer than the client maps to `Permissionship::Unspecified` and never fails the call.
+- A malformed response the client detects now says so: `Display` reads
+  `client detected malformed response from server: missing relationship`
+  instead of `grpc status 13: malformed response: missing relationship`, which
+  read as an `INTERNAL` status the server sent. The code is still `Internal`;
+  the new `SpiceDBError::is_client_detected()` tells the two apart (bulk-item
+  and delete-progress wrappers report their cause's), and `to_status()` keeps
+  the prefix when forwarding. `error::internal` builds a client-detected error.
+- A check, bulk-check item, resource lookup result or subject lookup result
+  whose permissionship is unset fails with `Internal` as a
+  client-detected malformed response instead of returning
+  `Permissionship::Unspecified`. Unknown future values still map to
+  `Unspecified`. The `testing` double never sends an unset
+  permissionship: a registered result or resolver answer of `Unspecified`
+  reaches the client as `NoPermission`.
+- The AI integration guide notes that projects whose permissions are all
+  computed get little from stored-relation grants on the double.
+- No change for resume cursors: errors carry none in this client; resume
+  from the last item's `after_result_cursor`, which the double sets as the
+  client does.
+
+- The per-page default deadline bounds only waiting on the server, never the
+  time the caller spends on items. Reads, resource lookups, exports and
+  permission-set lookups receive each page in full within its deadline before
+  yielding its items (a page holds at most the page size); an unpaged subject
+  lookup bounds each wait for the server's next message and no longer sends
+  the page budget as the request's gRPC timeout. Previously a caller doing
+  slow work per item on a large page could fail with `DeadlineExceeded`
+  against a healthy server.
+- **Breaking:** finite paged reads (`read_relationships`, `lookup_resources`,
+  `lookup_subjects`, `export_relationships`, `lookup_permission_sets`) apply
+  the client default deadline (30 s, `default_timeout`) to each page, from
+  requesting it to its last item, so a server that stalls mid-read fails the
+  stream with `DeadlineExceeded` ("page deadline exceeded") instead of hanging
+  it. A per-call `with_timeout` still bounds the whole stream and wins when
+  earlier; `DefaultDeadline::Disabled` removes the page bound; watches keep no
+  default.
+- **Breaking:** a response the client cannot interpret fails with `Internal`
+  ("malformed response: missing ..."), which no default retry policy retries,
+  instead of being skipped or filled with empty values: a read response
+  without its relationship (previously skipped, which made a full page look
+  short and ended the read early), a watch update without its relationship
+  (previously dropped), a relationship missing its resource, subject or
+  subject object (previously empty strings), a lookup result with no resource
+  ID or subject, and an expand tree missing its root, expanded object or a
+  leaf subject's object. A tree node of a kind the client does not know is
+  still `PermissionTree::Unknown`.
+- On Unix platforms, `unix:/path/to/socket`, `unix:///path` and
+  `unix:relative/path` endpoints dial that Unix domain socket (plaintext; with
+  `builder` the scheme selects plaintext; a local socket needs no remote
+  credentials opt-in; `new_system_tls` refuses one). They were refused
+  before. `spicedb-proto` gains `EndpointScheme::Unix`.
+- gRPC resolver targets the transport cannot honor are refused at
+  construction with `InvalidArgument` naming the accepted forms:
+  `dns:///host:port` and `dns:host:port` (this client dials one address and
+  does no client-side load balancing; use `host:port`), and `ipv4:`, `ipv6:`,
+  `unix-abstract:`, `vsock:` and `xds:` targets.
+- **Breaking:** a plaintext endpoint must name its port in every form, not
+  only as an `http://` URL: `localhost`, `127.0.0.1`, `::1` or `[::1]` with
+  `new_plaintext` or `.plaintext()` now fails at construction with
+  `InvalidArgument` naming `host:50051`, instead of silently dialing port 80.
+  A TLS endpoint without a port (bare host or `https://` URL) still uses 443.
+- Endpoint errors name the actual problem. The form (scheme, path, query,
+  fragment, userinfo, port, host) is validated before the remote credentials
+  policy, so `http://127.0.0.1:50066/x` reports "a path is not supported" and
+  `http://127.0.0.1:50066@evil.com` reports userinfo, instead of a
+  remote-plaintext refusal, and a path or query is no longer reported as a
+  port problem. Bare `host:port` endpoints carrying `user@` or a non-ASCII
+  host are now `InvalidArgument` form errors too (still refused before
+  anything is dialed). The remote-plaintext refusal now names the endpoint and
+  is only raised for a well-formed remote host.
+- An `http://` URL must name its port: `http://spicedb` now fails at
+  construction (naming `http://host:50051`) instead of dialing port 80. An
+  `https://` URL without a port uses 443. `host:port` is unchanged.
+- Connection failures name the endpoint and cause:
+  `transport error: connecting to http://spicedb:50051: tcp connect error:
+  Connection refused (os error 61)` (likewise DNS and TLS failures) instead of
+  `transport error: transport error`. `source()` is unchanged.
+  `spicedb-proto`'s `SpiceDBProtoClientError::Transport` displays the cause
+  too, via the new `client::transport_cause`.
+- **Breaking:** the client and `spicedb-proto` move to tonic 0.14, tonic-types
+  0.14, tonic-prost 0.14 and prost 0.14 (tower 0.5; stubs generated by
+  tonic-prost-build). An application on tonic 0.14 now links one tonic, prost,
+  tower and hyper stack, and `tonic::Status::from(SpiceDBError)`,
+  `SpiceDBClient::from_channel` with its own `Channel` and `spicedb::tonic`
+  interoperate with its code. Applications on tonic 0.12 or 0.13 must upgrade.
+- Endpoints accept `http://host:port` and `https://host[:port]` URLs as well
+  as `host:port`. With `builder` the scheme selects plaintext or TLS;
+  `new_plaintext`, `.plaintext()` and `new_system_tls` require it to agree.
+  The loopback check runs on the URL's host, so `http://127.0.0.1:50051`
+  connects as loopback plaintext and a remote `http://` host is still refused
+  under the default policy. Previously a URL built a client whose every call
+  failed with a DNS error, and a loopback URL was reported as remote. Any other
+  scheme, a disagreeing one, userinfo, a path, a query or a non-numeric port
+  now fails at construction with `InvalidArgument` naming the accepted forms
+  (`spicedb-proto`: `SpiceDBProtoClientError::InvalidEndpoint`, a new variant).
+- `SpiceDBClientBuilder::connect_mode(ConnectMode::Eager)` connects during
+  `build`, so a wrong or unreachable SpiceDB fails at startup with
+  `SpiceDBError::Transport`; plaintext still connects on the first call by
+  default. `ConnectMode::Lazy` also lets a TLS client start without SpiceDB.
+  `spicedb-proto` adds `SpiceDBProtoClient::new_with_connect_mode`,
+  `ConnectMode`, `EndpointScheme` and `client::endpoint_scheme`.
+- `SubjectRef::direct(object)` and `From<ObjectRef> for SubjectRef` build a
+  direct subject in one infallible call (`user.into()`). The subject relation
+  `"..."` now means a direct subject wherever a subject relation is accepted
+  (`SubjectRef::new`, `SubjectRelationFilter::Named("...")` in filters, and
+  `LookupSubjectsOptions::with_subject_relation`) instead of being rejected.
+- `testing::InMemorySpiceDB` resolves checks in a fixed order: a result
+  registered for the exact question, then a check resolver
+  (`set_check_resolver`, `clear_check_resolver`; `testing::grant_all` grants
+  everything; it returns a `testing::Resolution` or declines), then the stored
+  relationships (relation equal to the permission, subject equal or a
+  wildcard over a direct subject; caveated matches are conditional, an
+  uncaveated match wins, expired relationships never grant), then
+  `NoPermission`. Previously unregistered checks were always `NoPermission`.
+  The resolver sees the check as sent, including merged caveat context, and
+  a conditional answer carries its missing context to `CheckResult`.
+- `testing::InMemorySpiceDB` serves `lookup_resources` and `lookup_subjects`
+  (previously `UNIMPLEMENTED`): objects of the requested type in the stored
+  relationships, in first-appearance order, that check resolution grants,
+  with conditional results and their missing context. Lookup-resources
+  cursors (`testing::cursor_after`) count granted results, so the
+  permissionship filter, limits, page sizes and resume behave as against
+  SpiceDB; lookup-subjects reports a stored wildcard as `*`, honors the
+  wildcard option, subject relation and limit, and has no cursor. The item
+  fault hook runs before each lookup result.
+- Docs: a README, and a MIGRATION.md with requirements and a guide for
+  projects moving off a hand-written tonic client and mock server over the
+  protos, including keeping a local `spicedb` crate alongside this one.
+
 - Paged `read_relationships` and `export_relationships` fail with `INTERNAL`
   ("... page did not advance continuation cursor") when a full page ends with
   an empty cursor or the cursor that was sent, as `lookup_resources` already

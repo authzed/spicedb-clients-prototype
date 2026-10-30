@@ -2,6 +2,110 @@
 
 ## Unreleased
 
+- Tests: the timing tests against a real server (page deadlines, the shared paged-read and delete-all deadline, `CheckIter`'s timeout start) connect the client before starting a clock or a short deadline, so an allowance never has to cover connection setup on a busy machine; the shared-deadline and `CheckIter` allowances are wider.
+- `consistency.Strategy` has a readable string form (`Full`, `MinLatency`, `AtLeast(<token>)`, `Snapshot(<token>)`) and a JSON form (`{"strategy":"atLeast","token":"<token>"}`; no token for `full` and `minLatency`). It used to print as `{3 {<token>}}` and serialize as `{}`. `consistency.ZedToken` now serializes as its exact string (`MarshalText` and `UnmarshalText`) instead of `{}`, so results carrying a revision serialize it too.
+- A plaintext bare host without a port (`NewPlaintext("localhost", ...)`) fails with one example, built from the host: `a plaintext endpoint needs an explicit port, e.g. localhost:50051; expected host:port, http://host:port (plaintext), ...`. The message used to repeat the example (`...e.g. localhost:50051; expected host:port (e.g. localhost:50051), ...`), and an IP host was shown `localhost` as its example.
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check: permissionship is unset` (it said "is unspecified"), and the docs and comments match. `PermissionshipUnspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
+- **Behavior change:** an empty or whitespace-only preshared key fails at construction (`NewPlaintext`, `NewSystemTLS`, `NewWithOpts`) with `ErrInvalidArgument`, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- **Behavior change:** a whitespace-only revision token is rejected like an empty one: `AtLeast`/`Snapshot` strategies and the permission-set revision and watch-start options fail locally with `ErrInvalidArgument`, `AtLeastOrFull`/`AtLeastOrMinLatency` treat it as absent, and `WithUpdatesStart` rejects it (the zero token still starts at the current revision). New `ZedToken.IsBlank` reports either form.
+- Docs: with bulk item errors returned (`ItemErrorsReturned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the option's doc comment, `CheckResult.Err`, the design notes, migration guide and AI guide now say so.
+- A response the client cannot interpret now says so: its `ErrInternal`
+  message reads `spicedb: <operation>: client detected malformed response from
+  server: <detail>`, so it is not mistaken for a status the server sent. Bulk
+  check pair mismatches, a page cursor that does not advance, an unknown
+  delete progress and a counter response with no state use the same wording.
+- A check, bulk-check item, `LookupResources` result or `LookupSubjects`
+  subject whose permissionship is unset fails with
+  `ErrInternal` as a client-detected malformed response instead of yielding
+  `PermissionshipUnspecified`; a permissionship newer than the client still
+  maps to `PermissionshipUnspecified` (never a grant) and does not fail; `LookupHasPermissionOnly` no longer silently
+  drops such a row. The `clienttest.Store` never produces an unset
+  permissionship: a registered or resolved result left at `PermissionshipUnspecified` (such as a
+  zero `CheckResult`) without an `Err` reports `PermissionshipNoPermission`.
+- The AI integration guide notes that projects whose permissions are all
+  computed (unions, arrows) get little from stored-relation grants on the
+  double, and should model them with the resolver or test against SpiceDB.
+- The per-page default deadline on paged reads counts only time spent waiting
+  on the server, never the time the caller spends on an item: its clock
+  pauses while the caller's loop body runs. Previously a deadline on the page
+  stream kept running through the loop body, so a caller doing slow work per
+  item could fail a healthy read with `CodeDeadlineExceeded` once a page
+  outgrew gRPC's flow-control window. `LookupSubjects`, which has no pages,
+  bounds each wait for the next message instead of the whole stream.
+- Finite paged reads (`ReadRelationships`, `LookupResources`,
+  `ExportRelationships`, and the single streams of `LookupSubjects` and
+  `LookupPermissionSets`) apply the client default deadline (30 seconds, or
+  `WithDefaultTimeout`) to each page request, from opening it to receiving its
+  last item (not counting time the caller holds an item; `LookupSubjects`
+  bounds each wait for the next message), so a server that stalls mid-read
+  fails the read with
+  `CodeDeadlineExceeded` instead of hanging it. Previously they had no default
+  deadline. A caller's total deadline (context or `With<Operation>Timeout`)
+  still bounds the whole read and wins when earlier;
+  `WithDefaultDeadline(DefaultDeadlineDisabled)` removes the per-page default.
+  Watches keep no default.
+- A response the client cannot interpret fails with `CodeInternal`
+  (`ErrInternal`), which no default policy retries, instead of being skipped
+  or filled with empty values: a read, export or watch item without its
+  relationship (or with a relationship missing its resource or subject), a
+  resource lookup without a resource ID, a subject lookup without a subject
+  (or with an excluded subject without an ID), an expand response without a
+  tree or with a leaf subject missing its object, and a permission set change
+  missing its change, parent set or child object. Malformed relationships
+  previously failed with `CodeUnknown`, and the other cases yielded empty
+  values.
+- `(*Client).Ready(ctx, opts...)` is a startup readiness check: constructors
+  connect lazily, and `Ready` connects and waits for the endpoint to serve
+  (via the gRPC health service), failing within the client default deadline
+  or `WithReadyTimeout` with `CodeDeadlineExceeded` naming the endpoint and
+  the latest connection error (refused, DNS, TLS). It is on `client.Interface`,
+  and `clienttest.Store.Ready` is a no-op.
+- gRPC targets are accepted only for the schemes this client dials and tests:
+  `dns:///host:port` (and `dns:host:port`), `unix:/path` and `unix:///path`,
+  and `passthrough:///host:port`. Any other scheme, including other
+  registered gRPC resolvers such as `unix-abstract:`, now fails at
+  construction with `ErrInvalidArgument` naming the accepted forms, instead of
+  being passed through to gRPC. The remote-plaintext check still judges the
+  resolved host (a unix socket is loopback; a `dns://` authority is remote).
+- Constructors accept `http://host:port` (plaintext) and
+  `https://host[:port]` (TLS, 443 by default) endpoints, and reject at
+  construction with `ErrInvalidArgument` any endpoint they cannot dial: a URL
+  whose scheme disagrees with the constructor, an `http://` URL without a
+  port, an unsupported scheme, or a path, query, fragment, userinfo or
+  non-numeric port. A bare plaintext host without a port (`localhost`,
+  `127.0.0.1`, `::1`, `[::1]`) is rejected the same way, naming the form
+  `localhost:50051`; a bare TLS host still defaults to 443. These are checked
+  before the remote-plaintext policy,
+  whose refusal now appears only for a well-formed remote host. Previously a
+  URL built a TLS client whose every call failed, and a plaintext constructor
+  reported any URL as a remote host.
+- The remote-plaintext refusal names every option that allows it, as this
+  package spells them (`NewPlaintext(endpoint, key,
+  WithRemotePlaintextCredentials(RemotePlaintextAllowed))`, or `WithInsecure()`
+  with the same opt-in under `NewWithOpts`), instead of the proto tier's
+  `WithInsecureAllowRemoteHost()`.
+- `clienttest.Store` resolves checks in a fixed order: a result registered
+  with `SetCheckResult`, then a resolver set with `SetCheckResolver`
+  (`SetCheckResolver(clienttest.GrantAll)` grants every check, so tests over
+  generated IDs need no per-ID registration), then the stored relationships
+  (a relationship whose relation is the permission's name and whose subject
+  matches exactly or by wildcard grants it; caveated ones grant conditionally,
+  expired ones never), and otherwise `NoPermission`. Previously only
+  registered results granted. This applies to `Check`, `CheckBulk` and
+  `CheckIter`.
+- `clienttest.Store` serves `LookupResources` and `LookupSubjects` (they
+  failed with `CodeUnimplemented`): they enumerate objects of the requested
+  type found in stored relationships and return those check resolution grants,
+  conditional results as conditional, honoring the permissionship filter,
+  limit and `CursorAfter` cursors, with call recording and `StageItem` faults.
+- Generated `TypedClient` embeds `client.Interface` instead of
+  `*client.Client`, and `NewTypedClient` accepts any `client.Interface`, so a
+  typed client wraps `clienttest.Store`. The embedded field is now
+  `tc.Interface` (it was `tc.Client`).
+- spicedb-gen (Go): `DefinitionByName`, `PermissionRefByName`,
+  `LookupResourcesByName` (names validated against the schema, failing with
+  `ErrNotInSchema`), `Definitions`/`DefinitionNames()` and the `SchemaText`
+  constant, for code that receives type and permission names at runtime.
 - Paged reads and lookups send the page size as every request's limit,
   whatever the total limit, so a cursor from a limited call resumes an
   unlimited one with the same page size.
@@ -75,7 +179,8 @@
   filters, preconditions, updates, consistency and tokens, plus result→proto
   conversions for checks (with traces), lookups, expand, reads and writes.
 - `WithBulkItemErrors(ItemErrorsReturned)` returns per-item errors on
-  `CheckResult.Err` instead of failing the whole bulk check.
+  `CheckResult.Err` instead of failing the whole bulk check (a malformed item
+  in the server's response still fails the call).
 - `WithCallOptions[O]` and `WithResponseMetadata[O]` pass gRPC call options
   and capture headers/trailers on any operation.
 - `WithUpdatesSchemaChanges(SchemaChangesIncluded)` and

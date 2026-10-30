@@ -66,6 +66,8 @@ describe("isLoopbackEndpoint", () => {
     "localhost:50051", "LOCALHOST:50051", "localhost",
     "127.0.0.1:50051", "127.0.0.1", "127.55.66.77:50051",
     "[::1]:50051", "::1",
+    "http://127.0.0.1:50051", "http://localhost:50051", "http://[::1]:50051",
+    "https://localhost", "HTTP://127.0.0.1:50051/",
   ])("treats %s as loopback", (endpoint) => {
     expect(isLoopbackEndpoint(endpoint)).toBe(true);
   });
@@ -104,6 +106,9 @@ describe("isLoopbackEndpoint", () => {
     "localhost\\evil.com",
     "127.0.0.1\\evil.com",
     "localhost\\@evil.com",
+    // Malformed URLs are not loopback, whatever host they name.
+    "http://127.0.0.1:50051/x", "http://u@127.0.0.1:50051", "ftp://127.0.0.1:1",
+    "http://localhost", "http://example.com:50051",
   ])("does not treat %s as loopback", (endpoint) => {
     expect(isLoopbackEndpoint(endpoint)).toBe(false);
   });
@@ -147,9 +152,10 @@ describe("createSpiceDBClient insecure host guard", () => {
       // Guard rail on the premise: this endpoint really does dial elsewhere.
       expect(new URL(`http://${endpoint}`).hostname).toBe("evil.com");
 
+      // Refused as malformed (userinfo), ahead of the remote-plaintext policy.
       expect(() =>
         createSpiceDBClient(endpoint, "super-secret-token", { insecure: true }),
-      ).toThrowError(/allowInsecureRemoteCredentials/);
+      ).toThrowError(/userinfo is not supported/);
 
       expect(http2SessionManagerCtor).not.toHaveBeenCalled();
       expect(capturedAuth).toEqual([]);
@@ -195,16 +201,45 @@ describe("createSpiceDBClient insecure host guard", () => {
    * above -- but it is not a legal URL authority, so while the guard bracketed
    * it for its own parse and `createSpiceDBClient` built its `baseUrl` from
    * the raw endpoint, `new URL("http://::1")` threw `Invalid URL` and no
-   * client could be created at all.
+   * client could be created at all. A plaintext endpoint must name its port,
+   * so the port-less literals are exercised over TLS (port 443).
    */
-  it.each(["::1", "[::1]", "0:0:0:0:0:0:0:1", "[::1]:50051", "127.0.0.1"])(
-    "constructs a client for bare IPv6 loopback %s",
+  it.each(["[::1]:50051", "[0:0:0:0:0:0:0:1]:50051", "127.0.0.1:50051"])(
+    "constructs a plaintext client for IPv6 loopback %s",
     async (endpoint) => {
       const { createSpiceDBClient } = await import("../client.js");
 
       const client = createSpiceDBClient(endpoint, "test-token", { insecure: true });
       expect(client).toBeDefined();
       client.close();
+    },
+  );
+
+  it.each([
+    ["::1", "https://[::1]"],
+    ["[::1]", "https://[::1]"],
+    ["0:0:0:0:0:0:0:1", "https://[0:0:0:0:0:0:0:1]"],
+  ])("constructs a TLS client for bare IPv6 literal %s on port 443", async (endpoint, baseUrl) => {
+    const { createSpiceDBClient } = await import("../client.js");
+    http2SessionManagerCtor.mockClear();
+
+    createSpiceDBClient(endpoint, "test-token").close();
+    expect(http2SessionManagerCtor.mock.calls[0]![0]).toBe(baseUrl);
+  });
+
+  it.each(["localhost", "127.0.0.1", "::1", "[::1]", "0:0:0:0:0:0:0:1"])(
+    "refuses port-less plaintext endpoint %s before any session is created",
+    async (endpoint) => {
+      const { createSpiceDBClient, InvalidEndpointError } = await import("../client.js");
+      http2SessionManagerCtor.mockClear();
+
+      expect(() => createSpiceDBClient(endpoint, "test-token", { insecure: true })).toThrowError(
+        InvalidEndpointError,
+      );
+      expect(() => createSpiceDBClient(endpoint, "test-token", { insecure: true })).toThrowError(
+        /a plaintext endpoint needs an explicit port, e\.g\. localhost:50051/,
+      );
+      expect(http2SessionManagerCtor).not.toHaveBeenCalled();
     },
   );
 
@@ -229,5 +264,73 @@ describe("createSpiceDBClient insecure host guard", () => {
     client.close();
 
     expect(capturedAuth).toEqual(["Bearer remote-token"]);
+  });
+});
+
+describe("createSpiceDBClient endpoint forms", () => {
+  beforeEach(() => {
+    http2SessionManagerCtor.mockClear();
+    capturedAuth.length = 0;
+  });
+
+  it.each([
+    ["http://127.0.0.1:50051", { insecure: true }, "http://127.0.0.1:50051"],
+    ["http://127.0.0.1:50051/", { insecure: true }, "http://127.0.0.1:50051"],
+    ["http://[::1]:50051", { insecure: true }, "http://[::1]:50051"],
+    ["https://spicedb.example.com", {}, "https://spicedb.example.com"],
+    ["https://spicedb.example.com:8443", {}, "https://spicedb.example.com:8443"],
+    ["spicedb.example.com:443", {}, "https://spicedb.example.com:443"],
+  ] as const)("dials %s through the parsed authority", async (endpoint, options, baseUrl) => {
+    const { createSpiceDBClient } = await import("../client.js");
+    createSpiceDBClient(endpoint, "t", options).close();
+    expect(http2SessionManagerCtor).toHaveBeenCalledTimes(1);
+    expect(http2SessionManagerCtor.mock.calls[0]![0]).toBe(baseUrl);
+  });
+
+  it.each([
+    ["http://127.0.0.1:50051", {}, /http:\/\/ selects plaintext, but this client was configured for TLS/],
+    ["https://127.0.0.1:50051", { insecure: true }, /https:\/\/ selects TLS, but this client was configured for plaintext/],
+    ["http://localhost", { insecure: true }, /needs an explicit port/],
+    ["http://127.0.0.1:50051/x", { insecure: true }, /a path is not supported/],
+    ["http://127.0.0.1:50051?a=b", { insecure: true }, /a query is not supported/],
+    ["http://127.0.0.1:50051#f", { insecure: true }, /a fragment is not supported/],
+    ["http://u@127.0.0.1:50051", { insecure: true }, /userinfo is not supported/],
+    ["localhost:http", { insecure: true }, /the port "http" is not a number/],
+    ["ftp://host:1", { insecure: true }, /unsupported scheme "ftp"/],
+    // Malformed remote endpoints are reported as malformed, not as a
+    // remote-plaintext refusal.
+    ["http://example.com:50051/x", { insecure: true }, /a path is not supported/],
+  ] as const)("refuses %s before any session is created", async (endpoint, options, problem) => {
+    const { createSpiceDBClient, InvalidEndpointError } = await import("../client.js");
+    let error: unknown;
+    try {
+      createSpiceDBClient(endpoint, "t", options);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(InvalidEndpointError);
+    expect((error as Error).message).toMatch(problem);
+    expect((error as Error).message).toMatch(/expected host:port, http:\/\/host:port/);
+    expect(http2SessionManagerCtor).not.toHaveBeenCalled();
+  });
+
+  it("applies the remote-plaintext policy to a well-formed remote http:// URL", async () => {
+    const { createSpiceDBClient, InsecureRemoteHostError } = await import("../client.js");
+    expect(() => createSpiceDBClient("http://example.com:50051", "t", { insecure: true })).toThrowError(
+      InsecureRemoteHostError,
+    );
+    expect(() => createSpiceDBClient("spicedb:50051", "t", { insecure: true })).toThrowError(
+      'spicedb: refusing to send credentials over plaintext to non-loopback endpoint "spicedb:50051": ' +
+        "use TLS (omit insecure), or, for a remote plaintext server such as a Docker Compose service, " +
+        "pass both insecure: true and allowInsecureRemoteCredentials: true",
+    );
+  });
+
+  it("exposes the scheme for the idiomatic layer", async () => {
+    const { endpointScheme } = await import("../client.js");
+    expect(endpointScheme("http://localhost:50051")).toBe("http");
+    expect(endpointScheme("HTTPS://spicedb.example.com")).toBe("https");
+    expect(endpointScheme("localhost:50051")).toBeUndefined();
+    expect(endpointScheme("ftp://host:1")).toBeUndefined();
   });
 });

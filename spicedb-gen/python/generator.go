@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"unicode/utf8"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
@@ -23,6 +24,10 @@ func init() {
 
 // DefaultModule is the name of the emitted types module (permissions.py).
 const DefaultModule = "permissions"
+
+// DefaultNamesOnlyModule is the module --python.names-only writes (names.py)
+// unless --python.module names another.
+const DefaultNamesOnlyModule = "names"
 
 // Generator implements generator.LanguageGenerator for Python.
 type Generator struct{}
@@ -42,6 +47,29 @@ type TemplateData struct {
 	SealedUnions   []SealedUnionData
 	Checkables     []CheckableData
 	StaticPermRefs []StaticPermRefData
+
+	// SchemaText is the schema source the code was generated from.
+	SchemaText string
+	// DefinitionNameList lists every definition's schema name, in order.
+	DefinitionNameList []string
+	// RelationKeys lists every relation as "definition#relation", in schema
+	// order, for relationship_from_triple's relation check.
+	RelationKeys []string
+	// SubjectRules lists every subject shape a relation admits, as
+	// "definition#relation@" + subjectRule(st), for relationship_from_triple.
+	SubjectRules []string
+	// SubjectSets lists the base userset subject classes (no caveat or
+	// expiration), for subject_set_by_name and the SubjectSet alias.
+	SubjectSets []SubjectSetData
+	// Wildcards lists the base wildcard subject classes, keyed by definition
+	// name, for parse_subject.
+	Wildcards []SubjectSetData
+	// SchemaSubjectMembers are the members of the SchemaSubject alias.
+	SchemaSubjectMembers []string
+	// SubjectClasses lists every generated subject class, definitions and
+	// every subject ref variant, for the runtime check that a value is a
+	// generated subject.
+	SubjectClasses []string
 
 	// ClientTypeImports lists the names, sorted and deduplicated, that
 	// sync.py/aio.py reference from the types module.
@@ -86,6 +114,7 @@ type CheckableData struct {
 type DefinitionData struct {
 	ClassName   string // e.g. "Document"
 	Name        string // e.g. "document"
+	ConstName   string // e.g. "DOCUMENT": its DefinitionNames member
 	WithMethods []WithMethodData
 	SubRefs     []DefSubRefData
 	Permissions []DefPermissionData
@@ -136,6 +165,12 @@ type StaticPermRefData struct {
 type SealedUnionData struct {
 	AliasName string
 	Members   []string
+}
+
+// SubjectSetData is one userset subject class, keyed by "definition#relation".
+type SubjectSetData struct {
+	Key       string // e.g. "team#member"
+	ClassName string // e.g. "TeamMember"
 }
 
 type CaveatContextData struct {
@@ -251,11 +286,23 @@ func parseRenames(v string) (map[string]string, error) {
 //     identifiers (e.g. `definition subject` and the Subject protocol).
 //     Renames change Python identifiers only; the schema names sent to
 //     SpiceDB never change.
+//   - names-only (--python.names-only): emit only the name constants, name
+//     tuples and SCHEMA_TEXT into one module (default "names.py", or
+//     --python.module), importing only the standard library, so a shared
+//     package can use the names without depending on the client.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	module := DefaultModule
+	moduleSet := false
+	namesOnly := false
 	renames := map[string]string{}
 	for k, v := range opts {
 		switch k {
+		case generator.NamesOnlyOption:
+			b, err := generator.BoolOption("python", k, v)
+			if err != nil {
+				return nil, err
+			}
+			namesOnly = b
 		case "rename":
 			r, err := parseRenames(v)
 			if err != nil {
@@ -267,6 +314,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 				return nil, fmt.Errorf("--python.module=%q must be a Python identifier other than a keyword, \"sync\" or \"aio\"", v)
 			}
 			module = v
+			moduleSet = true
 		default:
 			return nil, fmt.Errorf("unknown Python option --python.%s", k)
 		}
@@ -292,18 +340,51 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 	data.Module = module
+	data.SchemaText = s.Source
+	for _, def := range s.Definitions {
+		data.DefinitionNameList = append(data.DefinitionNameList, def.Name)
+		for _, rel := range def.Relations {
+			key := def.Name + "#" + rel.Name
+			data.RelationKeys = append(data.RelationKeys, key)
+			for _, st := range rel.AllowedSubjects {
+				data.SubjectRules = append(data.SubjectRules, key+"@"+subjectRule(st))
+			}
+		}
+	}
+
+	if namesOnly && !moduleSet {
+		module = DefaultNamesOnlyModule
+	}
 
 	tmpl, err := template.New("permissions.py.tmpl").Funcs(template.FuncMap{
-		"alias":      formatAlias,
-		"bracket":    bracket,
-		"tuple":      tuple,
-		"assign":     assign,
-		"assignCall": assignCall,
-		"list":       list,
-		"quote":      quote,
+		"alias":       formatAlias,
+		"bracket":     bracket,
+		"tuple":       tuple,
+		"nameTuple":   nameTuple,
+		"assign":      assign,
+		"assignCall":  assignCall,
+		"list":        list,
+		"quote":       quote,
+		"textConst":   textConst,
+		"doc":         doc,
+		"raiseMsg":    raiseMsg,
+		"returnTuple": returnTuple,
+		"entry":       entry,
+		"typeArgs":    typeArgs,
+		"defClasses":  defClasses,
+		"defNames":    defNames,
+		"setNames":    setNames,
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
+	}
+
+	if namesOnly {
+		var names bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&names, "names_only.py.tmpl", data); err != nil {
+			return nil, fmt.Errorf("executing template names_only.py.tmpl: %w", err)
+		}
+		return []generator.GeneratedFile{{Path: module + ".py", Content: tidy(names.Bytes())}}, nil
 	}
 
 	var types bytes.Buffer
@@ -334,8 +415,106 @@ func tidy(b []byte) []byte {
 	for i, l := range lines {
 		lines[i] = strings.TrimRight(l, " \t")
 	}
-	out := blankRuns.ReplaceAllString(strings.Join(lines, "\n"), "\n\n\n")
+	out := blankRuns.ReplaceAllString(strings.Join(markOverlong(lines), "\n"), "\n\n\n")
 	return []byte(strings.TrimRight(out, "\n") + "\n")
+}
+
+// noqaLong is the pragma for a line no layout brings within lineLength.
+const noqaLong = "  # noqa: E501"
+
+// markOverlong appends noqaLong to each line over lineLength that ruff's
+// E501 would report, so projects that enable it lint the generated code
+// clean. The helpers above wrap everything that can be wrapped; what is left
+// is a schema-derived identifier or string too long to fit at its indent,
+// which no layout can break. E501 skips a line of a single word, so those are
+// left alone. An overlong line inside a triple-quoted string marks the line
+// that closes the string, where ruff reads the pragma.
+func markOverlong(lines []string) []string {
+	inString, pending := false, false
+	for i, l := range lines {
+		long := utf8.RuneCountInString(l) > lineLength && len(strings.Fields(l)) > 1
+		toggles := strings.Count(l, `"""`)%2 == 1
+		switch {
+		case inString && toggles:
+			if long || pending {
+				lines[i] += noqaLong
+			}
+			inString, pending = false, false
+		case inString:
+			pending = pending || long
+		case toggles:
+			inString, pending = true, long
+		case long && !strings.HasSuffix(l, noqaLong):
+			lines[i] += noqaLong
+		}
+	}
+	return lines
+}
+
+// doc renders a docstring at indent, wrapped at word boundaries to
+// lineLength. ruff format leaves a docstring's line breaks as written.
+func doc(indent int, text string) string {
+	ind := strings.Repeat(" ", indent)
+	words := strings.Fields(text)
+	words[0] = `"""` + words[0]
+	words[len(words)-1] += `"""`
+	var b strings.Builder
+	line := ind
+	for _, w := range words {
+		switch {
+		case line == ind:
+			line += w
+		case utf8.RuneCountInString(line)+1+utf8.RuneCountInString(w) <= lineLength:
+			line += " " + w
+		default:
+			b.WriteString(line + "\n")
+			line = ind + w
+		}
+	}
+	b.WriteString(line)
+	return b.String()
+}
+
+// raiseMsg renders `raise <exc>(f"<head><tail>")` at indent, where head is
+// schema text (no braces) and tail is f-string text. When neither layout of
+// one literal fits, the message splits into two implicitly concatenated
+// literals, the schema text alone on the first, which ruff format keeps.
+func raiseMsg(indent int, exc, head, tail string) string {
+	msg := "f" + pyStr(head+tail)
+	ind := strings.Repeat(" ", indent)
+	inner := ind + "    " + msg
+	if one := ind + "raise " + exc + "(" + msg + ")"; utf8.RuneCountInString(one) <= lineLength ||
+		utf8.RuneCountInString(inner) <= lineLength {
+		return bracket(indent, "raise "+exc, list(msg), "")
+	}
+	return ind + "raise " + exc + "(\n" + ind + "    " + pyStr(head) + "\n" +
+		ind + "    f" + pyStr(tail) + "\n" + ind + ")"
+}
+
+// entry renders one `"<key>": <value>,` line of a module-level dict literal,
+// parenthesizing a value that does not fit beside its key, as ruff format
+// keeps it.
+func entry(key, value string) string {
+	if one := "    " + quote(key) + ": " + value + ","; utf8.RuneCountInString(one) <= lineLength {
+		return one
+	}
+	return "    " + quote(key) + ": (\n        " + value + "\n    ),"
+}
+
+// returnTuple renders `return a, b, c` at indent; ruff format splits a
+// tuple that does not fit one element per line, with a trailing comma.
+func returnTuple(indent int, items []string) string {
+	ind := strings.Repeat(" ", indent)
+	if one := ind + "return " + strings.Join(items, ", "); utf8.RuneCountInString(one) <= lineLength {
+		return one
+	}
+	var b strings.Builder
+	b.WriteString(ind + "return (\n")
+	for _, item := range items {
+		b.WriteString(ind + "    " + item + ",\n")
+	}
+	b.WriteString(ind + ")")
+	return b.String()
 }
 
 // lineLength is ruff format's default line length.
@@ -431,6 +610,166 @@ func tuple(lhs string, items []string) string {
 	}
 	b.WriteString(")")
 	return b.String()
+}
+
+// nameTuple renders `<lhs> = (...)` for a tuple of unquoted names, formatted
+// as ruff formats it: one line when it fits, else one name per line.
+func nameTuple(lhs string, items []string) string {
+	switch {
+	case len(items) == 0:
+		return lhs + " = ()"
+	case len(items) == 1 && len(lhs+" = ("+items[0]+",)") <= lineLength:
+		return lhs + " = (" + items[0] + ",)"
+	}
+	if one := lhs + " = (" + strings.Join(items, ", ") + ")"; len(items) > 1 && len(one) <= lineLength {
+		return one
+	}
+	var b strings.Builder
+	b.WriteString(lhs + " = (\n")
+	for _, item := range items {
+		b.WriteString("    " + item + ",\n")
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// pyStr renders s as a Python string literal the way ruff format normalizes
+// it: double quotes unless single quotes need fewer escapes.
+func pyStr(s string) string {
+	q := '"'
+	if strings.Count(s, `"`) > strings.Count(s, `'`) {
+		q = '\''
+	}
+	var b strings.Builder
+	b.WriteRune(q)
+	for _, r := range s {
+		switch {
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == q:
+			b.WriteRune('\\')
+			b.WriteRune(q)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteRune(q)
+	return b.String()
+}
+
+// textConst renders `<lhs> = <text>` at module level: one literal when it
+// fits on a line (or is a single line), else one implicitly concatenated
+// literal per source line inside parentheses.
+func textConst(lhs, text string) string {
+	one := lhs + " = " + pyStr(text)
+	parts := strings.SplitAfter(text, "\n")
+	if parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	if utf8.RuneCountInString(one) <= lineLength || len(parts) <= 1 {
+		return one
+	}
+	// ruff format joins implicitly concatenated literals that fit on one line.
+	if joined := "    " + pyStr(text); utf8.RuneCountInString(joined) <= lineLength {
+		return lhs + " = (\n" + joined + "\n)"
+	}
+	var b strings.Builder
+	b.WriteString(lhs + " = (\n")
+	for _, p := range parts {
+		for _, c := range textChunks(p) {
+			b.WriteString("    " + pyStr(c) + "\n")
+		}
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// textChunks splits one line of text into pieces whose literals each fit at
+// indent 4, breaking before a space so no literal ends in whitespace. A word
+// too long to fit stays whole, and markOverlong marks its line.
+func textChunks(line string) []string {
+	fits := func(s string) bool { return utf8.RuneCountInString("    "+pyStr(s)) <= lineLength }
+	if fits(line) {
+		return []string{line}
+	}
+	var chunks []string
+	cur := ""
+	rest := line
+	for rest != "" {
+		// The next piece is any leading spaces plus one word.
+		i := 0
+		for i < len(rest) && rest[i] == ' ' {
+			i++
+		}
+		if j := strings.IndexByte(rest[i:], ' '); j >= 0 {
+			i += j
+		} else {
+			i = len(rest)
+		}
+		piece := rest[:i]
+		rest = rest[i:]
+		if cur != "" && !fits(cur+piece) {
+			chunks = append(chunks, cur)
+			cur = ""
+		}
+		cur += piece
+	}
+	return append(chunks, cur)
+}
+
+// subjectRule is the admission key of one allowed subject shape, matching
+// the generated _subject_rule: "user", "user:*", "team#member", then
+// "[caveat]" and "[expiration]" suffixes when the shape requires them.
+func subjectRule(st schema.SubjectType) string {
+	rule := st.Definition
+	if st.Wildcard {
+		rule += ":*"
+	}
+	if st.Relation != "" {
+		rule += "#" + st.Relation
+	}
+	if st.CaveatName != "" {
+		rule += "[" + st.CaveatName + "]"
+	}
+	if st.Expiration {
+		rule += "[expiration]"
+	}
+	return rule
+}
+
+// defNames lists the definition classes, for the SchemaObject alias.
+func defNames(defs []DefinitionData) []string {
+	out := make([]string, len(defs))
+	for i, d := range defs {
+		out[i] = d.ClassName
+	}
+	return out
+}
+
+// setNames lists the userset subject classes, for the SubjectSet alias.
+func setNames(sets []SubjectSetData) []string {
+	out := make([]string, len(sets))
+	for i, s := range sets {
+		out[i] = s.ClassName
+	}
+	return out
+}
+
+// defClasses lists the definition classes, for the DefinitionClass alias.
+func defClasses(defs []DefinitionData) []string {
+	out := make([]string, len(defs))
+	for i, d := range defs {
+		out[i] = "type[" + d.ClassName + "]"
+	}
+	return out
 }
 
 func typeArgs(members []string) []string {
@@ -579,6 +918,12 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		"ClassVar", "Final", "Protocol", "TypeAlias", "Caveat", "Filter", "InvalidArgumentError",
 		"ObjectRef", "PermissionCheck", "Precondition", "Relationship", "SubjectFilter", "SubjectRef",
 		"SubjectRelationFilter", "Transaction", "Update",
+		"DefinitionNames", "DEFINITION_NAMES", "DefinitionClass", "SCHEMA_TEXT", "definition_by_name",
+		"permission_ref_by_name", "_DEFINITIONS", "_PERMISSION_REFS", "LocalValidationError",
+		"SchemaObject", "object_by_name", "parse_object", "relationship_from_triple",
+		"_RELATIONS", "_SUBJECT_RULES", "_subject_rule", "SubjectSet", "subject_set_by_name",
+		"_SUBJECT_SETS", "_lookup_target", "_reaches", "get_args", "SchemaSubject", "parse_subject",
+		"_WILDCARDS", "_require_subject",
 	} {
 		n.claim("", fixed, "generated support code")
 	}
@@ -836,6 +1181,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		dd := DefinitionData{
 			ClassName:        pascal,
 			Name:             def.Name,
+			ConstName:        upper,
 			WithMethods:      baseWithMethods(subjectBase{definition: def.Name}),
 			RelationsClass:   pascal + "Relations",
 			PermissionsClass: pascal + "Permissions",
@@ -967,6 +1313,27 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		Checkables:     checkables,
 		StaticPermRefs: staticPermRefs,
 	}
+	for _, sr := range subjectRefs {
+		if sr.SubRelation != "" && !sr.Wildcard && !sr.HasCaveat && !sr.HasExpiration {
+			data.SubjectSets = append(data.SubjectSets, SubjectSetData{
+				Key:       sr.DefinitionName + "#" + sr.SubRelation,
+				ClassName: sr.ClassName,
+			})
+		}
+		if sr.Wildcard && !sr.HasCaveat && !sr.HasExpiration {
+			data.Wildcards = append(data.Wildcards, SubjectSetData{Key: sr.DefinitionName, ClassName: sr.ClassName})
+		}
+	}
+	data.SchemaSubjectMembers = []string{"SchemaObject", "SubjectSet"}
+	for _, w := range data.Wildcards {
+		data.SchemaSubjectMembers = append(data.SchemaSubjectMembers, w.ClassName)
+	}
+	for _, d := range data.Definitions {
+		data.SubjectClasses = append(data.SubjectClasses, d.ClassName)
+	}
+	for _, sr := range data.SubjectRefs {
+		data.SubjectClasses = append(data.SubjectClasses, sr.ClassName)
+	}
 	for _, c := range checkables {
 		if c.SubjectUnion != "" {
 			data.CheckOverloads = append(data.CheckOverloads, c)
@@ -994,11 +1361,20 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 // a TypedClient body (sync.py/aio.py) references.
 func clientTypeImports(data TemplateData) []string {
 	set := map[string]bool{
-		"Permission":        true,
-		"RelationshipKey":   true,
-		"Subject":           true,
-		"TypedRelationship": true,
-		"TypedTransaction":  true,
+		"Permission":             true,
+		"_lookup_target":         true,
+		"_named_checks":          true,
+		"_object":                true,
+		"_reaches":               true,
+		"_require_name":          true,
+		"_require_subject":       true,
+		"_subject":               true,
+		"definition_by_name":     true,
+		"SubjectNotAllowedError": true,
+		"RelationshipKey":        true,
+		"Subject":                true,
+		"TypedRelationship":      true,
+		"TypedTransaction":       true,
 	}
 	for _, c := range data.Checkables {
 		if c.SubjectUnion == "" {
@@ -1098,5 +1474,6 @@ func (g *Generator) Options() []generator.Option {
 	return []generator.Option{
 		{Name: "module", Value: "<name>", Description: "Python package name the generated sync/aio modules import from."},
 		{Name: "rename", Value: "<definition>=<ClassName>[,...]", Description: "Class-name stem for a definition whose generated names collide; schema names on the wire are unchanged."},
+		generator.NamesOnlyOptionDescription,
 	}
 }

@@ -2,6 +2,126 @@
 
 ## Unreleased
 
+- Tests: the deadline tests against a real Kestrel server (`DeadlineTests`, `PageDeadlineTests`, `SlowConsumerPageDeadlineTests`) warm the connection with an untimed call before timing anything, so a short allowance never has to cover connection setup, and `DeadlineTests`' stall and `PageDeadlineTests`' per-page default are wider (3 s, 1 s). Two of them each failed about once in 36 solution runs on a busy machine.
+- Docs: the CS0104 note in the AI guide and migration guide now lists every type name `SpiceDB.Client` shares with `Grpc.Core` (`CallOptions`, `WriteOptions`) and with `Authzed.Api.V1` (`Relationship`, `Consistency`, `ZedToken`, `Precondition`, `RelationshipUpdate`, `ResolvedSubject`, `PartialCaveatInfo`, `DebugInformation`, `CheckDebugTrace`), with one alias block for a file importing all three. It covered only `CallOptions`. `NamespaceCollisionTests` finds the shared names by reflection and fails on a new one; `CallOptionsAliasTests` compiles the documented block.
+- `Consistency` is observable: `ToString()` returns `Full`, `MinLatency`, `AtLeast(<token>)` or `Snapshot(<token>)` (it printed `Consistency { }`), and `System.Text.Json` writes `{"strategy":"atLeast","token":"<token>"}` (no token for `full` and `minLatency`) and reads that form back (it wrote `{}` for every strategy). `AtLeastOrFull` and `AtLeastOrMinLatency` show as the strategy they chose.
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `check: client detected malformed response from server: permissionship is unset` (it said "is unspecified"; a bulk item says `bulk response permissionship is unset`), and the docs and comments match. `Permissionship.Unspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
+- **Behavior change:** a whitespace-only preshared key throws `InvalidArgumentException` at construction (`CreatePlaintext`, `CreateSystemTls`, `CreateFromChannel`), as an empty one already did, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- `InMemorySpiceDBClient` rejects `Permissionship.Unspecified` with `SetCheckResult was given permissionship Unspecified` (before: `SetCheckResult returned ...`, though it registers a value); a resolver's answer still reads `The check resolver returned ...`.
+- Docs: the AI guide and migration guide note that `SpiceDB.Client.CallOptions` collides with `Grpc.Core.CallOptions` (CS0104) in a file that imports both. The fix they show aliases the bare name to the type the file means (`using CallOptions = Grpc.Core.CallOptions;`, with `using SpiceDBCallOptions = SpiceDB.Client.CallOptions;` alongside if needed); aliasing only this library's type, as an earlier note suggested, leaves `CallOptions` ambiguous. A unit test compiles a custom `CallInvoker` in a file importing both namespaces.
+- **Behavior change:** `Consistency.AtLeast` and `Consistency.Snapshot` reject a whitespace-only revision token with `InvalidArgumentException`, as they already rejected an empty one, instead of sending it to the server; `AtLeastOrFull` and `AtLeastOrMinLatency` treat it like an empty token and use their fallback. A watch start revision (`UpdatesAsync`, `ExperimentalWatchPermissionSetsAsync`) or materialize at-revision (`ExperimentalLookupPermissionSetsAsync`, `ExperimentalDownloadPermissionSetsAsync`) that is present but empty or whitespace-only now throws `InvalidArgumentException` before any RPC, instead of being sent and read as no revision; null still means absent.
+- Docs: the `BulkItemErrors.Returned` and `CheckOptions.ItemErrors` API docs no longer claim every item gets a result: a malformed item in the server's response still fails the whole bulk check.
+- Docs: with bulk item errors returned (`BulkItemErrors.Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
+
+### Deadlines, malformed responses, readiness and target schemes
+
+- Relationship reads, lookups (resources, subjects, permission sets) and exports apply the
+  client default deadline (`ClientOptions.DefaultTimeout`, 30 seconds) to each page request,
+  from opening it to its last item, so a server that stalls mid-read fails the read with
+  `DeadlineExceededException` instead of hanging it. They still have no default total
+  deadline; a per-call `Timeout` bounds the whole read and wins when earlier.
+  `DefaultDeadline.Disabled` removes the per-page default too. Watch keeps no default.
+- The per-page default bounds only waiting on the server, never the caller's processing:
+  its clock runs while the client waits for the next message and stops while the caller
+  holds an item, and LookupSubjects and `Paging.SingleRequest` reads (not bounded by a page
+  size) give each wait for a message the whole default. Items still stream as they arrive.
+  A slow consumer of a healthy read no longer fails with `DeadlineExceededException`.
+- A response the client cannot interpret fails with an `Internal`-status `SpiceDBException`
+  (not retried by default) instead of being mapped with empty values or failing with the
+  wrong category: a missing relationship, resource, subject or subject object in reads,
+  exports and watch; a missing resource id in LookupResources; a missing subject id in
+  LookupSubjects; an incomplete expanded tree; incomplete permission-set references.
+  Client-detected faults that reported `Unknown` (bulk check pair count or echo mismatch, a
+  missing bulk item, unknown deletion progress, an empty counter response) now report
+  `Internal`; a non-advancing cursor already did.
+- A check, bulk-check item, LookupResources result or LookupSubjects subject whose
+  permissionship is unset (the wire zero value `PERMISSIONSHIP_UNSPECIFIED`, which SpiceDB never sends)
+  now fails with an `Internal`-status `SpiceDBException` instead of returning
+  `Permissionship.Unspecified`; a bulk item's error carries its `InputIndex`, and
+  `PermissionshipFilter.HasPermissionOnly` no longer skips such a result silently. A
+  permissionship value newer than this client still maps to `Permissionship.Unspecified`.
+  `InMemorySpiceDBClient` never produces it: `SetCheckResult` with
+  `Permissionship.Unspecified`, or a check resolver returning it, fails with
+  `InvalidArgumentException`.
+- Every malformed-response error the client detects says so: its message reads
+  `<operation>: client detected malformed response from server: <detail>.`, so it is not
+  mistaken for an `Internal` status the server sent. The bulk-check echo and missing-item
+  errors use the same wording after their `check item N:` prefix.
+- The AI integration guide notes that projects whose permissions are all computed (unions,
+  arrows) get little from stored-relation grants on the double, and should model them with
+  the check resolver or test against SpiceDB.
+- Tests: the slow-consumer per-page deadline tests use a 1 s allowance against 5 × 500 ms of
+  caller work (was 200 ms against 5 × 100 ms), so CPU contention in parallel runs no longer
+  eats the allowance; the caller's time still exceeds it, so a deadline that counted the
+  caller's processing still fails them. The bulk-check total-deadline test's second chunk
+  no longer answers at all, so a starved timer thread cannot let its reply beat the deadline.
+- `ConnectAsync(ConnectOptions?, CancellationToken)`, on `SpiceDBClient` and
+  `ISpiceDBClient`: a startup readiness check for these lazily connecting clients. It
+  waits for the endpoint to answer an authenticated request within `ConnectOptions.Timeout`
+  (default: the client default deadline) and fails with `DeadlineExceededException` naming
+  the endpoint, `UnavailableException`, or `UnauthenticatedException` for a rejected key. The
+  in-memory double completes immediately.
+- gRPC target syntax: `dns:///host:port` (Grpc.Net.Client's DNS resolver with round-robin
+  client-side load balancing; the loopback check judges its host) and `unix:/path`,
+  `unix:///path` or `unix:relative/path` (plaintext only; dials the socket directly) are
+  accepted. `unix:` targets were previously refused. Other schemes (`xds:`, `ipv4:`, a
+  `dns://authority/` target) are rejected at construction naming the accepted forms.
+- Local cancellation is unchanged and now covered by a test: it surfaces as an
+  `OperationCanceledException` carrying the caller's token, never as a raw
+  `RpcException(Cancelled)` from the transport.
+
+### Adoption fixes from migrating real applications
+
+- Endpoints accept `http://host:port` (plaintext) and `https://host[:port]` (TLS, port 443
+  by default) besides `host:port`. A plaintext endpoint without a port (`localhost`, `::1`,
+  `http://localhost`) is rejected with an error suggesting `host:50051` instead of silently
+  dialing port 80; a port-less TLS endpoint uses 443. A scheme that disagrees with the factory, a path, query, fragment, `user@`, a bad port or another scheme now
+  throws `InvalidArgumentException` at construction naming the problem, checked before the
+  remote-plaintext policy; previously these built a client whose every call failed, or were
+  reported as remote plaintext. Connection failures name the endpoint and socket error
+  instead of only "Error connecting to subchannel."
+- The remote-plaintext refusal (for example a Docker Compose endpoint `spicedb:50051`) names
+  both settings that permit it, as written in C#: `SpiceDBClient.CreatePlaintext(...)` with
+  `new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow }`, or
+  `CreateSystemTls` for TLS. `CreateFromChannel`'s refusal names its opt-in the same way.
+
+- Generated protocol messages initialise again: `ToString()`, `JsonFormatter.Default.Format`
+  and `.Descriptor` threw `TypeInitializationException` for every SpiceDB message, directly
+  and through the `Authzed.Net` bridge, because the stub descriptors for the transitive
+  validation and OpenAPI protos all had an empty file name and collided. Each stub now
+  carries its real file name; tests format every generated message in-process and in a
+  fresh process.
+- `SpiceDB.Client`, `SpiceDB.Proto` and the `Authzed.Net` bridge target `net8.0`, `net9.0`
+  and `net10.0` (previously `net10.0` only, which a net8.0 or net9.0 host could not
+  reference), and build with warnings as errors. The CS8604 nullability warning in
+  `PermissionCheck.Builder.Build` that surfaced in consumer builds is fixed.
+- `System.Text.Json` writes every public enum as its name (`"Permissionship":"HasPermission"`
+  instead of `1`) and `ZedToken` as its string (instead of `{"Value":"..."}`), and reads them
+  back the same way.
+- `LookupResource.ResourceId` and `ResolvedSubject.SubjectId` replace `ResourceID` and
+  `SubjectID`, matching `Id` everywhere else; the old names remain as `[Obsolete]` aliases
+  and are no longer serialized.
+- `ObjectRef` converts implicitly to its direct `SubjectRef`. `SubjectRef.Named(obj, "...")`,
+  `new SubjectRef(obj, "...")` and `SubjectRelationFilter.Named("...")` now mean a direct
+  subject instead of throwing, as tuple and proto parsing already did.
+- `SpiceDBException.ServerMessage` is never null: for local and caller-built errors it is the
+  error's `Message` (it was null). MIGRATION.md explains why `SpiceDBException` is not an
+  `RpcException` and maps legacy `catch (RpcException)` handlers to the native members.
+- `InMemorySpiceDBClient` resolves checks in a fixed order: a registered result or error,
+  then a check resolver (`SetCheckResolver(Func<PermissionCheck, CheckResult?>)`, which sees
+  the call's context merged into the check's and returns null to decline;
+  `InMemorySpiceDBClient.GrantAll` / `GrantAllChecks()` grant everything), then the stored
+  relationships (relation named like the permission, exact or wildcard subject, conditional
+  when caveated, expired ones ignored), then `NoPermission`. Unregistered checks used to be
+  `NoPermission` regardless of stored relationships.
+- `InMemorySpiceDBClient.LookupResourcesAsync` and `LookupSubjectsAsync` work in memory
+  (they failed with `Unimplemented`): they yield the known objects of the type that check
+  resolution grants, with conditional results and their missing context, the permissionship
+  filter, limits, resource-lookup cursors (`CursorAfter(n)`) and per-item fault hooks.
+- New `README.md` (installation from source or a local feed, a first call, links), a
+  Requirements section at the top of MIGRATION.md, and a legacy-to-new table of renamed
+  response members (for example `ReadSchemaResponse.SchemaText` to `SchemaResult.Schema`).
+
 ### Paging and watch fixes
 
 - Paged reads, lookups and exports fail with an Internal-status `SpiceDBException` ("...

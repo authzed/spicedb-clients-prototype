@@ -109,11 +109,40 @@ Create a `lib/spicedb_proto/client.rb` file with:
    TLS were configured), and on `client_cert` without `client_key` or the
    reverse.
 
+2c. **`.validate_connection!(endpoint, insecure:, allow_insecure_remote_credentials:,
+   ca_cert:, client_cert:, client_key:)`** -- every refusal `#initialize` applies
+   (`.parse_endpoint` and URL-scheme/transport agreement, then non-loopback
+   plaintext without the opt-in judged on the parsed host, then
+   `.validate_tls_material!`), in that order, creating no gRPC object, and
+   returns the target to dial. `#initialize` calls it first. It lets a
+   caller that opens its channel later (the idiomatic client connects on first
+   use, so a client built before a fork works in forked children) still fail at
+   construction.
+
+2d. **`.parse_endpoint(endpoint, insecure:)`** -- root DESIGN.md, "Accept the
+   endpoint forms deployments use, or reject them at construction". Accepts
+   `host[:port]` (`unix:` targets pass unchanged), `http://host:port` and
+   `https://host[:port]`, reducing each to the `host:port` the C-core dials,
+   since the C-core does not understand `http(s)://` targets. Plaintext needs an
+   explicit port, with or without a scheme; TLS defaults to 443. It also
+   accepts `dns:///host[:port]`, which the C-core dials through its DNS
+   resolver (client-side load balancing), with the same port rule; the
+   remote-plaintext check in `.validate_connection!` runs on its host. A DNS
+   server authority (`dns://8.8.8.8/host:port`) and the slashless
+   `dns:host:port` are refused. Raises `InvalidEndpointError` (an `ArgumentError`)
+   naming the problem and the accepted forms for any other scheme or gRPC
+   target form (`ipv4:`, `xds:`), userinfo, a
+   path, query or fragment, or a non-numeric port. `insecure: true` with
+   `https://`, or `insecure: false` with `http://`, is refused the same way.
+
 2b. **`.from_channel(channel, interceptors: [])`** -- wraps a caller-owned
    `GRPC::Core::Channel` (root DESIGN.md: every client has a constructor from an
    existing connection). No credential or TLS argument applies; `interceptors`
    are passed to every stub (call credentials on a plaintext channel). Raises
    `ArgumentError` for anything but a `GRPC::Core::Channel`.
+
+2d. **`#channel`** -- the `GRPC::Core::Channel` every stub shares, so a caller
+   can wait for readiness (`connectivity_state`, `watch_connectivity_state`).
 
 3. **`#close`** -- closes the underlying gRPC channel when this client created
    it; a channel supplied to `.from_channel` stays open

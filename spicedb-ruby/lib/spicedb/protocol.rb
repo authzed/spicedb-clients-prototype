@@ -12,9 +12,9 @@ module SpiceDB
     end
 
     def require_proto_client!
-      return if @proto_client
+      return if @proto_client || @connect
 
-      raise SpiceDB::Error,
+      raise SpiceDB::FailedPreconditionError,
             'proto client not available — ensure the spicedb_proto gem is installed and buf-generated stubs exist'
     end
 
@@ -23,7 +23,7 @@ module SpiceDB
     end
 
     def filter_to_proto(filter)
-      raise InvalidArgumentError, 'expected Filter' unless filter.is_a?(Filter)
+      raise LocalValidationError, 'expected Filter' unless filter.is_a?(Filter)
 
       subject = filter.subject
       subject_proto = if subject
@@ -39,7 +39,7 @@ module SpiceDB
     end
 
     def relationship_to_proto(rel)
-      raise InvalidArgumentError, 'expected Relationship' unless rel.is_a?(Relationship)
+      raise LocalValidationError, 'expected Relationship' unless rel.is_a?(Relationship)
 
       caveat = rel.caveat && Authzed::Api::V1::ContextualizedCaveat.new(caveat_name: rel.caveat.name,
                                                                         context: caveat_context_to_struct(rel.caveat.context))
@@ -49,16 +49,42 @@ module SpiceDB
                                          optional_expires_at: expiration)
     end
 
-    def relationship_from_proto(rel)
-      caveat = rel.optional_caveat && Caveat.new(name: rel.optional_caveat.caveat_name,
-                                                 context: rel.optional_caveat.context && struct_to_caveat_context(rel.optional_caveat.context))
-      Relationship.new(resource: object_from_proto(rel.resource), relation: rel.relation,
-                       subject: subject_ref_from_proto(rel.subject), caveat: caveat,
-                       expiration: rel.optional_expires_at && Time.at(rel.optional_expires_at.seconds, rel.optional_expires_at.nanos, :nsec))
+    # A response this client cannot interpret (a missing required field, an
+    # unset permissionship, a cursor that does not advance, an echo that
+    # does not match): INTERNAL, which no default retry policy retries. Never
+    # skip such a response or fill its missing fields with empty values. The
+    # message says the client detected it, so it is not mistaken for a status
+    # the server sent.
+    def malformed_response(message)
+      Error.new("spicedb: client detected malformed response from server: #{message}", code: GRPC::Core::StatusCodes::INTERNAL)
     end
 
-    def object_from_proto(object)
-      ObjectRef.new(object_type: object.object_type, object_id: object['object_id'])
+    # Runs a conversion of server data, reporting a value the native types
+    # refuse (an empty name or ID) as a malformed response rather than as the
+    # caller's invalid argument.
+    def from_server(field)
+      yield
+    rescue InvalidArgumentError => e
+      raise malformed_response("#{field}: #{e.message}")
+    end
+
+    def relationship_from_proto(rel, field = 'relationship')
+      raise malformed_response("#{field} is missing") if rel.nil?
+
+      caveat = rel.optional_caveat && Caveat.new(name: rel.optional_caveat.caveat_name,
+                                                 context: rel.optional_caveat.context && struct_to_caveat_context(rel.optional_caveat.context))
+      resource = object_from_proto(rel.resource, "#{field}.resource")
+      subject = subject_ref_from_proto(rel.subject, "#{field}.subject")
+      from_server(field) do
+        Relationship.new(resource: resource, relation: rel.relation, subject: subject, caveat: caveat,
+                         expiration: rel.optional_expires_at && Time.at(rel.optional_expires_at.seconds, rel.optional_expires_at.nanos, :nsec))
+      end
+    end
+
+    def object_from_proto(object, field = 'object')
+      raise malformed_response("#{field} is missing") if object.nil?
+
+      from_server(field) { ObjectRef.new(object_type: object.object_type, object_id: object['object_id']) }
     end
 
     OPERATION_MAP = {
@@ -83,14 +109,14 @@ module SpiceDB
     end
 
     def call_expand_permission_tree(consistency, resource_type, resource_id, permission, timeout_seconds)
-      resp = invoke(@proto_client.permissions, :expand_permission_tree,
+      resp = invoke(proto_client.permissions, :expand_permission_tree,
                     Authzed::Api::V1::ExpandPermissionTreeRequest.new(
                       consistency: build_consistency(consistency),
                       resource: Authzed::Api::V1::ObjectReference.new(
                         object_type: resource_type,
                         object_id: resource_id
                       ),
-                      permission: permission
+                      permission: Values.name(permission, 'permission')
                     ),
                     timeout_seconds)
 
@@ -127,7 +153,7 @@ module SpiceDB
       end
 
       owner = make_stream { nil }
-      call = @proto_client.permissions.import_bulk_relationships(requests, **stub_kwargs(budget), return_op: true)
+      call = proto_client.permissions.import_bulk_relationships(requests, **stub_kwargs(budget), return_op: true)
       owner.attach(call)
       begin
         response = call.execute
@@ -148,7 +174,7 @@ module SpiceDB
     end
 
     def call_register_relationship_counter(name, filter, timeout_seconds)
-      invoke(@proto_client.experimental, :experimental_register_relationship_counter,
+      invoke(proto_client.experimental, :experimental_register_relationship_counter,
              Authzed::Api::V1::ExperimentalRegisterRelationshipCounterRequest.new(
                name: name,
                relationship_filter: filter_to_proto(filter)
@@ -157,7 +183,7 @@ module SpiceDB
     end
 
     def call_count_relationships(name, timeout_seconds)
-      resp = invoke(@proto_client.experimental, :experimental_count_relationships,
+      resp = invoke(proto_client.experimental, :experimental_count_relationships,
                     Authzed::Api::V1::ExperimentalCountRelationshipsRequest.new(
                       name: name
                     ),
@@ -180,7 +206,7 @@ module SpiceDB
     end
 
     def call_unregister_relationship_counter(name, timeout_seconds)
-      invoke(@proto_client.experimental, :experimental_unregister_relationship_counter,
+      invoke(proto_client.experimental, :experimental_unregister_relationship_counter,
              Authzed::Api::V1::ExperimentalUnregisterRelationshipCounterRequest.new(
                name: name
              ),

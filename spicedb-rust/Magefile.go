@@ -34,7 +34,7 @@ const (
 	// filter that selects nothing makes libtest exit 0, so the count the run
 	// reports is asserted rather than trusted -- the same reason
 	// .github/workflows/rust.yaml greps its output for "1 passed".
-	wantLiveTestCount = 5
+	wantLiveTestCount = 7
 )
 
 // wantExamples is every example this runner expects under examples/, by name.

@@ -2,6 +2,150 @@
 
 ## Unreleased
 
+- `Consistency.toJson()` gives the structured diagnostic form the other native values have: `{"strategy":"atLeast","token":"<token>"}`, with no token for `full` and `minLatency`. `toString()` already named the strategy.
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check response: permissionship is unset` (it said "check response has no permissionship"; lookups likewise), and the docs and comments match. `Permissionship.UNSPECIFIED` names only the safe value a permissionship newer than this client maps to, which never fails the call.
+- **Behavior change:** an empty or whitespace-only preshared key throws `LocalValidationException` at construction (`createPlaintext`, `createSystemTls`, `create`), before any channel is built, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- **Behavior change:** `caCertificate`, `clientCertificate` and `clientKey` are each read and parsed at construction, and a file that cannot be read or does not parse throws `LocalValidationException` naming the option and path (before: one `invalid TLS configuration` message for all three).
+- **Behavior change:** a `clientKey` from a different key pair than `clientCertificate` throws `LocalValidationException` at construction naming both paths, instead of failing the TLS handshake on the first call.
+- **Behavior change:** `Consistency.atLeast` and `Consistency.snapshot` reject a whitespace-only `ZedToken` with `LocalValidationException`, as they reject an empty one; `atLeastOrFull` and `atLeastOrMinLatency` treat a whitespace-only token as absent and use their fallback. An empty or whitespace-only start or at revision passed to `updates`, `experimentalWatchPermissionSets`, `experimentalLookupPermissionSets` or `experimentalDownloadPermissionSets` also throws `LocalValidationException` before any request (it was sent to the server); pass `null` to omit it.
+- Docs: a permissionship value newer than the client maps to `UNSPECIFIED` (never grants) without failing the call; only an unset permissionship is a malformed response. The design notes, migration guide and the entry below said an unknown value was malformed too. A regression test now covers the newer-value case.
+- Docs: with bulk item errors returned (`BulkItemErrors.RETURNED`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide, AI guide and the `BulkItemErrors` and `CheckOptions.Builder.bulkItemErrors` Javadoc now say so.
+
+### Client-detected errors, unset permissionship and validation
+
+- A malformed response's `INTERNAL` message now reads `client detected
+  malformed response from server: ...`, so it is not mistaken for a status the
+  server sent. A page whose cursor does not advance uses the same wording.
+- A check, bulk-check item, looked-up resource or looked-up subject whose permissionship is
+  unset fails with that `INTERNAL` error, even under the
+  `HAS_PERMISSION_ONLY` filter, instead of
+  returning `UNSPECIFIED`. A value newer than the client still maps to
+  `UNSPECIFIED` (never grants) without failing the call. The double never produces one: `setCheckResult`
+  rejects `UNSPECIFIED` or null with `LocalValidationException`, and a
+  `CheckResolver` result carrying one throws `IllegalStateException`.
+- The grpc-java floor error names Maven's `<grpc.version>`, Spring Boot's
+  `<grpc-java.version>` (the property its dependency management uses) and
+  `io.grpc:grpc-bom`; it named only `<grpc.version>`, which Spring Boot ignores.
+- A null pre-shared key, a null `ClientOption` (or array) passed to `create`,
+  and a null consistency on `readRelationships` or `lookupResources` throw
+  `LocalValidationException` instead of `NullPointerException` (or, for the
+  key, sending `Bearer null`).
+- AI guide: projects whose permissions are all computed get little from
+  stored-relation grants on the double; model them with the resolver or test
+  against SpiceDB.
+
+### Per-page deadlines, malformed responses and startup readiness
+
+- Relationship reads, lookups and exports apply the client default deadline
+  (30 s unless changed) to each page, so a server that stalls mid-read fails
+  the read with `DeadlineExceededException` instead of hanging it. It bounds
+  only waiting on the server, never the caller's processing time: paged reads
+  and resource lookups receive each page whole under the deadline before
+  yielding it, and single streams (exports, subject and permission-set lookups,
+  single-request reads) bound each wait for the server's next message. An
+  operation `timeout` still bounds the whole read and wins when earlier;
+  `DefaultDeadline.DISABLED` removes it. Watches keep no default.
+- Fixed: the per-page deadline on relationship reads and resource and subject
+  lookups first counted the caller's time between items, so a caller spending
+  50 ms per item on a 1,000-item page failed at the 30 s default against a
+  healthy server.
+- A response the client cannot interpret fails with `INTERNAL`
+  (`malformed response: ...`), which no retry policy retries by default,
+  instead of `UNKNOWN`, `INVALID_ARGUMENT` or empty values: a relationship
+  missing its resource, relation or subject, an object without type or ID, a
+  lookup result without an ID, a watch update without a relationship, an expand
+  response without a tree (`ProtoConv.fromProto(null)` no longer returns an
+  empty tree), a counter without a value, a permission-set change without a
+  parent set, a malformed bulk-check pair and an unknown deletion progress.
+- `SpiceDBClient.awaitReady(Duration)` (also on `SpiceDBApi`; a no-op on
+  `InMemorySpiceDB`) connects now and waits for the connection, throwing
+  `UnavailableException` or `DeadlineExceededException` naming the endpoint, so
+  a wrong endpoint can fail at startup.
+- Endpoints accept `dns:///host[:port]` (gRPC's DNS target, for client-side
+  load balancing; the loopback check runs on the host, and the port rule is the
+  `host:port` one). `unix:` sockets now work on Linux: the client selects
+  Netty's native epoll domain-socket transport (shared daemon event loop),
+  where before every platform failed with gRPC's raw `IllegalArgumentException`
+  when building the channel. Where epoll is unavailable (macOS, Windows) a
+  `unix:` endpoint fails at construction with `InvalidArgumentException`
+  naming the accepted forms; an empty `unix:` path is rejected.
+- Local validation throws the new `LocalValidationException`, a subclass of
+  `InvalidArgumentException` (existing `catch` blocks still match), so callers
+  can tell it from the server's `INVALID_ARGUMENT`, which stays a plain
+  `InvalidArgumentException`. It cannot also be an `IllegalArgumentException`
+  in Java; MIGRATION.md documents catching it around parsing.
+- `SpiceDBException.serverMessage()` is never `null`: for local and
+  caller-built errors it is the error's message (it was `null`).
+
+### Endpoint forms
+
+- `createPlaintext`, `createSystemTls` and `create` accept `http://host:port`
+  and `https://host[:port]` besides `host:port` (and `unix:`). The scheme must
+  agree with the constructor; `http://` needs an explicit port and `https://`
+  defaults to 443. Previously a URL fell into the remote-plaintext refusal
+  (even for loopback) or a raw `IllegalArgumentException` from gRPC.
+- Bare hosts follow the same port rule: a plaintext endpoint without a port
+  (`localhost`, `127.0.0.1`, `[::1]`, `::1`) fails at construction naming the
+  `host:50051` form, and a TLS endpoint without one dials 443 explicitly.
+- Any other scheme, path, query, fragment, userinfo or invalid port fails at
+  construction with `InvalidArgumentException` naming the problem and the
+  accepted forms, before the remote-plaintext check, which now judges the
+  parsed host.
+- A connection failure's `UnavailableException` names the endpoint and the root
+  cause (`Connection refused`, `not an SSL/TLS record`) instead of only
+  `io exception` and a Netty pipeline dump.
+- The remote-plaintext refusal names every choice that allowing it takes, as
+  written: `createPlaintext(..., ClientOptions.builder()
+  .remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build())` or
+  `create(..., withInsecure(), allowInsecureRemoteCredentials())`, and TLS
+  otherwise. README shows the Docker Compose (`spicedb:50051`) case.
+
+### Publishing, dependency floors and Spring Boot hosts
+
+- Both builds apply `maven-publish`: `gradle publishToMavenLocal` installs
+  `com.authzed.spicedb:spicedb-java` (was `com.authzed:lib:0.1.0-SNAPSHOT`) and
+  `com.authzed.spicedb:spicedb-java-proto`, both at 0.1.0, with sources jars.
+  The client's POM names the proto artifact with its version (it was
+  versionless, so Maven rejected the POM and dropped every transitive
+  dependency), and every dependency in both POMs carries its resolved version.
+  A Maven or Gradle consumer needs only the client coordinate.
+- The protocol classes are generated with protoc v33.2 (pinned in
+  `buf.gen.yaml`, with grpc-java v1.80.0), lowering the protobuf-java floor from
+  4.36.2 to 4.33.2. A Spring Boot 4.1 host, which manages protobuf-java 4.34.2
+  and gRPC 1.80.0, now works with no override.
+- Every `SpiceDBClient` constructor checks the protobuf-java runtime first: one
+  older than 4.33.2 throws `IllegalStateException` naming the version found and
+  the `protobuf-java.version` property to raise, instead of failing at the
+  first call.
+- Every constructor also checks the grpc-java runtime: one older than 1.80.0
+  (the version the service stubs were generated with) throws
+  `IllegalStateException` naming the version found and the `grpc.version`
+  property or `grpc-bom` to raise. The check is skipped when the version cannot
+  be read. Tested with gRPC 1.80.0 through 1.84.0.
+- New `README.md` (installation before publication, first call), and
+  MIGRATION.md opens with a Requirements section and a legacy-to-new member map.
+
+### Channel options, filter-only delete and the test double
+
+- `createPlaintext(endpoint, key, options, channelCustomizer)` and
+  `createSystemTls(endpoint, key, options, channelCustomizer)` take a
+  `Consumer<ManagedChannelBuilder<?>>` beside `ClientOptions`, so keepalive and
+  other channel settings no longer need `create(..., ClientOption...)`.
+- `deleteRelationships(Filter)` (also on `PermissionsApi`, `SpiceDBApi` and the
+  double) sends the raw filter-only request: one all-or-nothing delete with the
+  server's default limit.
+- `InMemorySpiceDB` resolves checks: a registered result, then a
+  `CheckResolver` (`setCheckResolver`, `InMemorySpiceDB.grantAll()`), then
+  stored relationships named after the permission (exact subject or `type:*`
+  wildcard; caveated matches are conditional), then no permission. Unregistered
+  checks that a stored relationship grants now return `HAS_PERMISSION` instead
+  of `NO_PERMISSION`.
+- `InMemorySpiceDB.lookupResources` and `lookupSubjects` now return results
+  (they threw `UNIMPLEMENTED`): every object of the requested type the stored
+  relationships mention that check resolution grants, honoring the
+  permissionship filter, limit and cursor, with recording and the `CALL`/`ITEM`
+  fault hooks.
+
 ### Paging and watch fixes
 
 - A paged read or lookup whose full page ends without an after-result cursor,

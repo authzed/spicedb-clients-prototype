@@ -91,7 +91,14 @@ func (c *Client) Check(ctx context.Context, request PermissionCheck, opts ...Che
 	if e != nil {
 		return CheckResult{}, e
 	}
-	return checkResultFromProto(resp), nil
+	result := checkResultFromProto(resp)
+	// Only an unset permissionship is malformed. A value newer than this
+	// client maps to PermissionshipUnspecified, which never grants, so a
+	// SpiceDB upgrade cannot turn into a client-side failure.
+	if resp.GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED {
+		return CheckResult{}, malformed("check", "permissionship is unset")
+	}
+	return result, nil
 }
 func (c *Client) CheckBulk(ctx context.Context, requests []PermissionCheck, opts ...CheckOption) ([]CheckResult, error) {
 	o := operationOptions{}
@@ -149,12 +156,12 @@ func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1
 		return nil, e
 	}
 	if len(resp.GetPairs()) != len(items) {
-		return nil, &Error{Code: CodeInternal, Message: fmt.Sprintf("spicedb: check bulk returned %d pairs for %d items at index %d", len(resp.GetPairs()), len(items), offset)}
+		return nil, malformed("check bulk", "%d pairs for %d items at index %d", len(resp.GetPairs()), len(items), offset)
 	}
 	out := make([]CheckResult, len(items))
 	for i, pair := range resp.GetPairs() {
 		if pair.GetRequest() == nil || !proto.Equal(pair.GetRequest(), items[i]) {
-			return nil, &BulkCheckError{indices[i], &Error{Code: CodeInternal, Message: "spicedb: missing, duplicate or misordered response request"}}
+			return nil, &BulkCheckError{indices[i], malformed("check bulk", "missing, duplicate or misordered response request")}
 		}
 		if perr := pair.GetError(); perr != nil {
 			itemErr := &BulkCheckError{indices[i], mapGRPCError("check bulk", status.FromProto(perr).Err())}
@@ -165,9 +172,12 @@ func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1
 			continue
 		}
 		if pair.GetItem() == nil {
-			return nil, &BulkCheckError{indices[i], &Error{Code: CodeInternal, Message: "spicedb: response pair has neither result nor error"}}
+			return nil, &BulkCheckError{indices[i], malformed("check bulk", "response pair has neither result nor error")}
 		}
 		out[i] = checkResultFromBulkItem(pair.GetItem(), resp.GetCheckedAt().GetToken())
+		if pair.GetItem().GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED {
+			return nil, &BulkCheckError{indices[i], malformed("check bulk", "item permissionship is unset")}
+		}
 	}
 	return out, nil
 }

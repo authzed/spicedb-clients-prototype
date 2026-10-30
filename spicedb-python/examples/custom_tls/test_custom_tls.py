@@ -24,6 +24,7 @@ material. It brings up its own TLS-terminated gRPC endpoint with a throwaway
 CA instead, so what you see below is a real handshake against a certificate no
 public root set would accept.
 """
+from authzed.api.v1 import core_pb2 as core_pb2_revision
 from spicedb import TransportSecurity
 
 from spicedb import ObjectRef, SubjectRef, PermissionCheck
@@ -130,7 +131,7 @@ def _serve_tls(pki, *, require_client_auth: bool):
                 "authzed.api.v1.PermissionsService",
                 {
                     "CheckPermission": grpc.unary_unary_rpc_method_handler(
-                        lambda request, context: psp.CheckPermissionResponse(
+                        lambda request, context: psp.CheckPermissionResponse(checked_at=core_pb2_revision.ZedToken(token="t"),
                             permissionship=2
                         ).SerializeToString(),
                         lambda b: b,

@@ -1,5 +1,7 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
+
 public sealed interface SubjectRelationFilter
     permits SubjectRelationFilter.Any, SubjectRelationFilter.Direct, SubjectRelationFilter.Named {
   static SubjectRelationFilter any() {
@@ -21,8 +23,7 @@ public sealed interface SubjectRelationFilter
   record Named(String name) implements SubjectRelationFilter {
     public Named {
       JsonContext.required(name, "subject relation");
-      if (name.equals("..."))
-        throw new com.authzed.spicedb.errors.InvalidArgumentException("use direct relation filter");
+      if (name.equals("...")) throw new LocalValidationException("use direct relation filter");
     }
   }
 }

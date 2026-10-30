@@ -54,6 +54,7 @@ from spicedb.errors import (
     EventLoopBindingError,
     FailedPreconditionError,
     InvalidArgumentError,
+    LocalValidationError,
     NotFoundError,
     OutOfRangeError,
     PermissionDeniedError,
@@ -61,6 +62,7 @@ from spicedb.errors import (
     SpiceDBError,
     UnauthenticatedError,
     UnavailableError,
+    InternalError,
 )
 from spicedb.types import (
     SchemaTypeReference,
@@ -155,8 +157,10 @@ __all__ = [
     "NotFoundError",
     "AlreadyExistsError",
     "InvalidArgumentError",
+    "LocalValidationError",
     "FailedPreconditionError",
     "UnavailableError",
+    "InternalError",
     "CancelledError",
     "DeadlineExceededError",
     "ResourceExhaustedError",

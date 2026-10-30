@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, ClassVar, Final, Protocol, TypeAlias
+from typing import Any, ClassVar, Final, Protocol, TypeAlias, get_args
 
 from spicedb import (
     Caveat,
     Filter,
     InvalidArgumentError,
+    LocalValidationError,
     ObjectRef,
     PermissionCheck,
     Precondition,
@@ -24,12 +26,18 @@ from spicedb import (
 # --- Errors ---
 
 
-class NotInSchemaError(ValueError):
-    """A by-name lookup named a permission or relation the schema lacks."""
+class NotInSchemaError(LocalValidationError):
+    """A by-name lookup named a permission or relation the schema lacks.
+
+    A LocalValidationError, so also an InvalidArgumentError and a ValueError.
+    """
 
 
-class SubjectNotAllowedError(ValueError):
-    """The schema does not admit the subject in this position."""
+class SubjectNotAllowedError(LocalValidationError):
+    """The schema does not admit the subject in this position.
+
+    A LocalValidationError, so also an InvalidArgumentError and a ValueError.
+    """
 
 
 # --- Base value types ---
@@ -48,13 +56,61 @@ class Subject(Protocol):
     def _expiration(self) -> datetime | None: ...
 
 
+def _require_name(value: object, what: str) -> str:
+    """Rejects a missing or non-str name (None, a list or another type from
+    an untyped caller) as local validation, before a dict lookup on it."""
+    if value is None:
+        raise LocalValidationError(f"{what} is required")
+    if not isinstance(value, str):
+        raise LocalValidationError(
+            f"{what}: expected str, got {type(value).__name__} {value!r}"
+        )
+    return value
+
+
 def _object(object_type: str, object_id: str) -> ObjectRef:
+    oid: object = object_id
+    if oid is not None and not isinstance(oid, str):
+        raise LocalValidationError(
+            f"{object_type} object id: expected str, got {type(oid).__name__} {oid!r}"
+        )
     if not object_id:
-        raise InvalidArgumentError(f"{object_type}: object id is required")
+        raise LocalValidationError(f"{object_type}: object id is required")
     return ObjectRef(object_type, object_id)
 
 
+def _subject_classes(admits: Any) -> tuple[type, ...]:
+    """The generated classes in admits, a class or a union of classes."""
+    members = get_args(admits) or (admits,)
+    return tuple(m for m in members if isinstance(m, type) and m is not Any)
+
+
+def _require_subject(
+    subject: object, admits: Any = None, *, allow_class: bool = False
+) -> None:
+    """Rejects a missing subject (None from an untyped caller), or a value
+    that is not a generated subject, as local validation, before an attribute
+    lookup on it.
+
+    admits narrows the accepted subjects to a writer's union; allow_class
+    also accepts a subject class, as filters do.
+    """
+    if subject is None:
+        raise LocalValidationError("subject is required")
+    expected = _SUBJECT_CLASSES if admits is None else _subject_classes(admits)
+    if isinstance(subject, type):
+        ok = allow_class and issubclass(subject, expected)
+    else:
+        ok = isinstance(subject, expected)
+    if not ok:
+        names = ", ".join(c.__name__ for c in expected) or "none"
+        raise LocalValidationError(
+            f"subject must be one of {names}, got {type(subject).__name__}"
+        )
+
+
 def _subject(subject: Subject) -> SubjectRef:
+    _require_subject(subject)
     sub_type, sub_id, sub_rel = subject._subject_ref()
     return SubjectRef(_object(sub_type, sub_id), sub_rel or None)
 
@@ -110,6 +166,7 @@ class Permission:
         permission to subject. Subject-attached caveat context becomes check
         context.
         """
+        _require_subject(subject)
         if self._admits is None or not isinstance(subject, self._admits):
             raise SubjectNotAllowedError(f"{self} cannot be checked for {subject}")
         caveat = subject._caveat_info()
@@ -127,6 +184,7 @@ class PermissionRef:
 
     _resource_type: str
     _permission: str
+    _admits: ClassVar[Any] = None
 
     @property
     def resource_type(self) -> str:
@@ -138,6 +196,17 @@ class PermissionRef:
 
     def __str__(self) -> str:
         return f"{self._resource_type}#{self._permission}"
+
+    def _admit(self, subject: Subject) -> SubjectRef:
+        """The native subject of a lookup_resources of this permission.
+
+        Raises SubjectNotAllowedError when the schema cannot grant this
+        permission to subject.
+        """
+        _require_subject(subject)
+        if self._admits is None or not isinstance(subject, self._admits):
+            raise SubjectNotAllowedError(f"{self} cannot be looked up for {subject}")
+        return _subject(subject)
 
 
 def checks_for(subject: Subject, *permissions: Permission) -> list[PermissionCheck]:
@@ -154,6 +223,7 @@ def with_subject(f: Filter, subject: Subject | type[Subject]) -> Filter:
     team:eng#member. Use with_subject_any_relation to leave the subject
     relation unconstrained.
     """
+    _require_subject(subject, allow_class=True)
     if isinstance(subject, type):
         sub_type, sub_id, sub_rel = subject._type, None, subject._relation
     else:
@@ -172,6 +242,7 @@ def with_subject(f: Filter, subject: Subject | type[Subject]) -> Filter:
 def with_subject_any_relation(f: Filter, subject: Subject | type[Subject]) -> Filter:
     """Narrow f to subject's type and ID (unless subject is a class), matching
     any subject relation, direct or userset."""
+    _require_subject(subject, allow_class=True)
     if isinstance(subject, type):
         sub_type, sub_id = subject._type, None
     else:
@@ -228,7 +299,7 @@ class TypedRelationship(_RelationshipValue):
             if not (
                 r.resource.object_type and r.relation and r.subject.object.object_type
             ):
-                raise InvalidArgumentError(
+                raise LocalValidationError(
                     "relationship: type and relation are required"
                 )
             _object(r.resource.object_type, r.resource.object_id)
@@ -252,9 +323,10 @@ class RelationshipKey(_RelationshipValue):
 
 
 def _relationship(
-    resource_type: str, resource_id: str, relation: str, subject: Subject
+    resource_type: str, resource_id: str, relation: str, subject: Subject, admits: Any
 ) -> TypedRelationship:
     try:
+        _require_subject(subject, admits)
         caveat = subject._caveat_info()
         r = Relationship(
             resource=_object(resource_type, resource_id),
@@ -269,9 +341,10 @@ def _relationship(
 
 
 def _relationship_key(
-    resource_type: str, resource_id: str, relation: str, subject: Subject
+    resource_type: str, resource_id: str, relation: str, subject: Subject, admits: Any
 ) -> RelationshipKey:
     try:
+        _require_subject(subject, admits)
         r = Relationship(
             resource=_object(resource_type, resource_id),
             relation=relation,
@@ -386,7 +459,7 @@ class {{$cav.ClassName}}:
         d: dict[str, Any] = {}
 {{- range $p := $cav.Params}}
         if self.{{$p.FieldName}} is not None:
-            d["{{$p.RawName}}"] = self.{{$p.FieldName}}
+{{assign 12 (printf "d[%s]" (quote $p.RawName)) (print "self." $p.FieldName)}}
 {{- end}}
         return d
 {{end}}
@@ -396,7 +469,7 @@ class {{$cav.ClassName}}:
 
 @dataclass(frozen=True)
 class {{$def.ClassName}}:
-    """An object of definition {{$def.Name}}: a resource and a subject."""
+{{doc 4 (print "An object of definition " $def.Name ": a resource and a subject.")}}
 
     id: str
     _type: ClassVar[str] = {{$name}}
@@ -421,11 +494,11 @@ class {{$def.ClassName}}:
 
     @classmethod
     def type_filter(cls) -> Filter:
-        """Matches every {{$def.Name}} relationship."""
+{{doc 8 (print "Matches every " $def.Name " relationship.")}}
         return Filter({{$name}})
 
     def filter(self) -> Filter:
-        """Matches every relationship on this {{$def.Name}}."""
+{{doc 8 (print "Matches every relationship on this " $def.Name ".")}}
 {{bracket 8 "return _resource_filter" (list $name "self.id" "None") ""}}
 {{- range $sr := $def.SubRefs}}
 
@@ -443,41 +516,43 @@ class {{$def.ClassName}}:
 {{- if $r.HasSubjects}}
 
 {{bracket 4 (printf "def %s" $r.WriterName) (list "self" (printf "subject: %s" $r.SubjectUnion)) " -> TypedRelationship:"}}
-{{bracket 8 "return _relationship" (list $name "self.id" (quote $r.Name) "subject") ""}}
+{{bracket 8 "return _relationship" (list $name "self.id" (quote $r.Name) "subject" $r.SubjectUnion) ""}}
 {{- end}}
 {{- if $r.HasKeySubject}}
 
 {{bracket 4 (printf "def %s" $r.KeyName) (list "self" (printf "subject: %s" $r.KeyUnion)) " -> RelationshipKey:"}}
-        """Identifies the {{$r.Name}} relationship by identity, for deletes."""
-{{bracket 8 "return _relationship_key" (list $name "self.id" (quote $r.Name) "subject") ""}}
+{{doc 8 (print "Identifies the " $r.Name " relationship by identity, for deletes.")}}
+{{bracket 8 "return _relationship_key" (list $name "self.id" (quote $r.Name) "subject" $r.KeyUnion) ""}}
 {{- end}}
 
     @property
 {{bracket 4 (printf "def %s" $r.CheckName) (list "self") (printf " -> %s:" $r.CheckClass)}}
-        """Checks the {{$r.Name}} relation directly."""
+{{doc 8 (print "Checks the " $r.Name " relation directly.")}}
 {{bracket 8 (printf "return %s" $r.CheckClass) (list $name "self.id" (quote $r.Name)) ""}}
 
 {{bracket 4 (printf "def %s" $r.FilterName) (list "self") " -> Filter:"}}
-        """Matches every {{$r.Name}} relationship on this {{$def.Name}}."""
+{{doc 8 (print "Matches every " $r.Name " relationship on this " $def.Name ".")}}
 {{bracket 8 "return _resource_filter" (list $name "self.id" (quote $r.Name)) ""}}
 {{- end}}
 
     def permission_by_name(self, name: str) -> Permission:
         """The named permission. Raises NotInSchemaError for an unknown name."""
+        _require_name(name, "permission name")
 {{- range $p := $def.Permissions}}
         if name == {{quote $p.Name}}:
             return self.{{$p.PropName}}
 {{- end}}
-{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no permission {name!r}\"" $def.Name)) ""}}
+{{raiseMsg 8 "NotInSchemaError" $def.Name " has no permission {name!r}"}}
 
     def relation_by_name(self, name: str) -> Permission:
         """A check of the named relation. Raises NotInSchemaError for an
         unknown name."""
+        _require_name(name, "relation name")
 {{- range $r := $def.Relations}}
         if name == {{quote $r.Name}}:
             return self.{{$r.CheckName}}
 {{- end}}
-{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no relation {name!r}\"" $def.Name)) ""}}
+{{raiseMsg 8 "NotInSchemaError" $def.Name " has no relation {name!r}"}}
 
     def relationship_by_name(
         self, relation: str, subject: Subject
@@ -485,15 +560,17 @@ class {{$def.ClassName}}:
         """A relationship on the named relation. Raises NotInSchemaError for
         an unknown relation and SubjectNotAllowedError for a subject the
         relation does not admit."""
+        _require_name(relation, "relation name")
+        _require_subject(subject)
 {{- range $r := $def.Relations}}
         if relation == {{quote $r.Name}}:
 {{- if $r.HasSubjects}}
 {{bracket 12 "if isinstance" (list "subject" $r.SubjectUnion) ":"}}
                 return self.{{$r.WriterName}}(subject)
 {{- end}}
-{{bracket 12 "raise SubjectNotAllowedError" (list (printf "f\"%s#%s does not admit {subject}\"" $def.Name $r.Name)) ""}}
+{{raiseMsg 12 "SubjectNotAllowedError" (print $def.Name "#" $r.Name) " does not admit {subject}"}}
 {{- end}}
-{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no relation {relation!r}\"" $def.Name)) ""}}
+{{raiseMsg 8 "NotInSchemaError" $def.Name " has no relation {relation!r}"}}
 {{end}}
 
 # --- Subject refs: usersets, wildcards, and caveat or expiration variants ---
@@ -501,7 +578,7 @@ class {{$def.ClassName}}:
 
 @dataclass(frozen=True)
 class {{$srt.ClassName}}:
-    """The subject {{$srt.Describe}}."""
+{{doc 4 (print "The subject " $srt.Describe ".")}}
 {{if not $srt.Wildcard}}
     id: str
 {{- end}}
@@ -515,7 +592,7 @@ class {{$srt.ClassName}}:
     _relation: ClassVar[str] = {{quote $srt.SubRelation}}
 
     def _subject_ref(self) -> tuple[str, str, str]:
-        return {{quote $srt.DefinitionName}}, {{if $srt.Wildcard}}"*"{{else}}self.id{{end}}, {{quote $srt.SubRelation}}
+{{returnTuple 8 (list (quote $srt.DefinitionName) (or (and $srt.Wildcard "\"*\"") "self.id") (quote $srt.SubRelation))}}
 
     def _caveat_info(self) -> tuple[str, dict[str, Any]] | None:
 {{- if $srt.HasCaveat}}
@@ -540,6 +617,9 @@ class {{$srt.ClassName}}:
 {{- end}}
 {{end}}
 
+# Every generated subject class, for the check that a value is a subject.
+{{nameTuple "_SUBJECT_CLASSES: Final[tuple[type, ...]]" .SubjectClasses}}
+
 # --- Sealed subject unions ---
 {{range $u := .SealedUnions}}
 {{alias $u.AliasName $u.Members}}
@@ -550,7 +630,7 @@ class {{$srt.ClassName}}:
 
 @dataclass(frozen=True)
 {{bracket 0 (printf "class %s" $c.ClassName) (list "Permission") ":"}}
-    """{{$c.Describe}} on one resource."""
+{{doc 4 (print $c.Describe " on one resource.")}}
 
 {{assign 4 "_admits: ClassVar[Any]" (or $c.SubjectUnion "None")}}
 {{- if $c.RefClassName}}
@@ -562,7 +642,9 @@ class {{$srt.ClassName}}:
 
 @dataclass(frozen=True)
 {{bracket 0 (printf "class %s" $c.RefClassName) (list "PermissionRef") ":"}}
-    """{{$c.Describe}} on any resource, for lookup_resources."""
+{{doc 4 (print $c.Describe " on any resource, for lookup_resources.")}}
+
+{{assign 4 "_admits: ClassVar[Any]" (or $c.SubjectUnion "None")}}
 {{- end}}
 {{end}}
 
@@ -571,23 +653,249 @@ class {{$srt.ClassName}}:
 {{assignCall (printf "%s: Final" $p.ConstName) $p.RefClassName (list (quote $p.ResourceType) (quote $p.Permission))}}
 {{- end}}
 
-# --- Relation and permission names ---
-{{range $def := .Definitions}}
+{{template "names" .}}
 
-class {{$def.RelationsClass}}:
-    """Relation names on {{$def.Name}}."""
-{{range $r := $def.Relations}}
-{{assign 4 (printf "%s: Final" $r.ConstName) (quote $r.Name)}}
-{{- end}}
-
-
-class {{$def.PermissionsClass}}:
-    """Permission names on {{$def.Name}}."""
-{{range $p := $def.Permissions}}
-{{assign 4 (printf "%s: Final" $p.ConstName) (quote $p.Name)}}
-{{- end}}
-
-
-{{tuple (printf "%s: Final[tuple[str, ...]]" $def.RelationNames) $def.RelationNameList}}
-{{tuple (printf "%s: Final[tuple[str, ...]]" $def.PermissionNames) $def.PermissionNameList}}
+{{if .Definitions}}{{alias "DefinitionClass" (defClasses .Definitions)}}
+{{alias "SchemaObject" (defNames .Definitions)}}
+{{else}}DefinitionClass: TypeAlias = Any
+SchemaObject: TypeAlias = Any
 {{end}}
+{{if .SubjectSets}}{{alias "SubjectSet" (setNames .SubjectSets)}}
+{{else}}SubjectSet: TypeAlias = Any
+{{end}}
+{{alias "SchemaSubject" .SchemaSubjectMembers}}
+
+{{if .Definitions}}_DEFINITIONS: Final[dict[str, DefinitionClass]] = {
+{{- range $def := .Definitions}}
+{{entry $def.Name $def.ClassName}}
+{{- end}}
+}
+{{else}}_DEFINITIONS: Final[dict[str, DefinitionClass]] = {}
+{{end}}
+
+def definition_by_name(name: str) -> DefinitionClass:
+    """The generated class of the named definition, for names received at
+    runtime: definition_by_name("document")("doc1").permission_by_name("view").
+
+    Raises NotInSchemaError for a name the schema does not define and
+    LocalValidationError (a ValueError) for a name that is not a str.
+    """
+    cls = _DEFINITIONS.get(_require_name(name, "definition name"))
+    if cls is None:
+        raise NotInSchemaError(f"schema has no definition {name!r}")
+    return cls
+
+
+{{if .StaticPermRefs}}_PERMISSION_REFS: Final[dict[tuple[str, str], PermissionRef]] = {
+    (ref.resource_type, ref.name): ref
+    for ref in [
+{{- range $p := .StaticPermRefs}}
+        {{$p.ConstName}},
+{{- end}}
+    ]
+}
+{{else}}_PERMISSION_REFS: Final[dict[tuple[str, str], PermissionRef]] = {}
+{{end}}
+
+def permission_ref_by_name(definition: str, permission: str) -> PermissionRef:
+    """The named permission on a definition, without a resource ID, for
+    lookup_resources with names received at runtime.
+
+    Raises NotInSchemaError for a definition or permission the schema lacks.
+    """
+    definition_by_name(definition)
+    ref = _PERMISSION_REFS.get((definition, _require_name(permission, "permission")))
+    if ref is None:
+        raise NotInSchemaError(f"{definition} has no permission {permission!r}")
+    return ref
+
+
+def object_by_name(definition: str, object_id: str) -> SchemaObject:
+    """The typed object for a definition name and ID received at runtime:
+    object_by_name("document", "readme") == Document("readme").
+
+    Raises NotInSchemaError for a definition the schema lacks and
+    LocalValidationError (a ValueError) for an ID SpiceDB would reject.
+    """
+    cls = definition_by_name(definition)
+    _object(definition, object_id)
+    return cls(object_id)
+
+
+def parse_object(text: str) -> SchemaObject:
+    """The typed object for "type:id" text: parse_object("document:readme")
+    == Document("readme").
+
+    Raises LocalValidationError (a ValueError) for malformed text and
+    NotInSchemaError for a type the schema does not define.
+    """
+    ref = ObjectRef.parse(_require_name(text, "object reference"))
+    return object_by_name(ref.object_type, ref.object_id)
+
+
+{{if .SubjectSets}}_SUBJECT_SETS: Final[dict[str, type[SubjectSet]]] = {
+{{- range $ss := .SubjectSets}}
+{{entry $ss.Key $ss.ClassName}}
+{{- end}}
+}
+{{else}}_SUBJECT_SETS: Final[dict[str, type[SubjectSet]]] = {}
+{{end}}
+
+def subject_set_by_name(definition: str, object_id: str, relation: str) -> SubjectSet:
+    """The typed subject set for names received at runtime:
+    subject_set_by_name("team", "eng", "member") == TeamMember("eng"), the
+    subject team:eng#member.
+
+    Raises NotInSchemaError for a definition the schema lacks or a relation
+    or permission that no relation admits as a subject, and
+    LocalValidationError (a ValueError) for an ID SpiceDB would reject.
+    """
+    definition_by_name(definition)
+    cls = _SUBJECT_SETS.get(f"{definition}#{_require_name(relation, 'relation')}")
+    if cls is None:
+        raise NotInSchemaError(
+            f"{definition}#{relation} is not a subject set in the schema"
+        )
+    _object(definition, object_id)
+    return cls(object_id)
+
+
+{{if .Wildcards}}_WILDCARDS: Final[dict[str, SchemaSubject]] = {
+{{- range $w := .Wildcards}}
+{{entry $w.Key (print $w.ClassName "()")}}
+{{- end}}
+}
+{{else}}_WILDCARDS: Final[dict[str, SchemaSubject]] = {}
+{{end}}
+
+def parse_subject(text: str) -> SchemaSubject:
+    """The typed subject for "type:id" or "type:id#relation" text ("#..." is
+    direct): parse_subject("user:alice") == User("alice"),
+    parse_subject("team:eng#member") == TeamMember("eng"), and "type:*" is
+    the wildcard subject where the schema allows that wildcard.
+
+    Raises LocalValidationError (a ValueError) for malformed text and
+    NotInSchemaError for a type or relation the schema lacks, a relation or
+    permission that no relation admits as a subject, or a wildcard the schema
+    never allows.
+    """
+    ref = SubjectRef.parse(_require_name(text, "subject"))
+    definition, object_id = ref.object.object_type, ref.object.object_id
+    if ref.relation is not None:
+        if object_id == "*":
+            raise LocalValidationError(
+                f"subject: invalid {text!r}; a wildcard has no relation"
+            )
+        return subject_set_by_name(definition, object_id, ref.relation)
+    if object_id != "*":
+        return object_by_name(definition, object_id)
+    definition_by_name(definition)
+    wildcard = _WILDCARDS.get(definition)
+    if wildcard is None:
+        raise NotInSchemaError(f"{definition}:* is not a subject in the schema")
+    return wildcard
+
+
+def _lookup_target(definition: str, resource_id: str, name: str) -> Permission:
+    """The checkable permission or relation named on definition."""
+    obj = definition_by_name(definition)(resource_id)
+    try:
+        return obj.permission_by_name(name)
+    except NotInSchemaError:
+        pass
+    try:
+        return obj.relation_by_name(name)
+    except NotInSchemaError:
+        pass
+    raise NotInSchemaError(f"{definition} has no permission or relation {name!r}")
+
+
+def _named_checks(
+    checks: Iterable[tuple[str, str, str, Subject]],
+) -> list[PermissionCheck]:
+    """Native checks of (resource_type, resource_id, permission, subject)
+    items named at runtime, each validated as _lookup_target and
+    permission_check validate it."""
+    if checks is None or isinstance(checks, (str, bytes)):
+        raise LocalValidationError("checks must be an iterable of tuples")
+    out: list[PermissionCheck] = []
+    for i, item in enumerate(checks):
+        entry: object = item
+        if not isinstance(entry, (tuple, list)) or len(entry) != 4:
+            raise LocalValidationError(
+                f"checks[{i}] must be a (resource_type, resource_id, permission,"
+                f" subject) tuple, got {type(entry).__name__}"
+            )
+        resource_type, resource_id, permission, s = item
+        target = _lookup_target(resource_type, resource_id, permission)
+        out.append(target.permission_check(s))
+    return out
+
+
+def _reaches(target: Permission, subject_type: str, subject_relation: str) -> bool:
+    """Whether any subject of this type and relation can reach target."""
+    admits = target._admits
+    if admits is None:
+        return False
+    members = get_args(admits) or (admits,)
+    return any(
+        m._type == subject_type and m._relation == subject_relation for m in members
+    )
+
+
+{{tuple "_RELATIONS: Final[tuple[str, ...]]" .RelationKeys}}
+
+{{tuple "_SUBJECT_RULES: Final[tuple[str, ...]]" .SubjectRules}}
+
+
+def _subject_rule(r: Relationship) -> str:
+    s = r.subject
+    rule = s.object.object_type
+    if s.object.object_id == "*":
+        rule += ":*"
+    if s.relation:
+        rule += f"#{s.relation}"
+    if r.caveat is not None:
+        rule += f"[{r.caveat.name}]"
+    if r.expiration is not None:
+        rule += "[expiration]"
+    return rule
+
+
+def relationship_from_triple(
+    resource: str,
+    relation: str,
+    subject: str,
+    *,
+    caveat: Caveat | None = None,
+    expiration: datetime | None = None,
+) -> TypedRelationship:
+    """A schema-checked relationship from tuple text received at runtime:
+    relationship_from_triple("document:readme", "viewer", "user:alice").
+
+    resource is "type:id" and subject "type:id" or "type:id#relation"
+    ("#..." is direct). The subject, with the caveat and expiration given,
+    must be one the relation admits, exactly as SpiceDB checks a write.
+    Raises LocalValidationError (a ValueError) for malformed text,
+    NotInSchemaError for an unknown definition or relation, and
+    SubjectNotAllowedError for a subject the relation does not admit.
+    """
+    for name, value in (
+        ("resource", resource),
+        ("relation", relation),
+        ("subject", subject),
+    ):
+        _require_name(value, name)
+    r = Relationship.from_triple(
+        resource, relation, subject, caveat=caveat, expiration=expiration
+    )
+    for definition in (r.resource.object_type, r.subject.object.object_type):
+        definition_by_name(definition)
+    key = f"{r.resource.object_type}#{r.relation}"
+    if key not in _RELATIONS:
+        raise NotInSchemaError(
+            f"{r.resource.object_type} has no relation {r.relation!r}"
+        )
+    if f"{key}@{_subject_rule(r)}" not in _SUBJECT_RULES:
+        raise SubjectNotAllowedError(f"{key} does not admit {_subject_rule(r)}")
+    return TypedRelationship(r)

@@ -46,7 +46,20 @@ Create a `Client.cs` file in the package root with:
    - A refusal, before any channel/credential/handler exists, when `insecure` is combined
      with a non-loopback `endpoint` and `allowInsecureRemoteCredentials` is false — root
      DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in".
-     `unix:` targets are refused outright (this transport would dial the DNS name `unix`).
+     Plaintext `unix:/path`, `unix:///path` and `unix:relative/path` targets are dialed
+     through a `SocketsHttpHandler` `ConnectCallback` on the socket path (never as a host
+     named `unix`), skip the loopback guard because they never leave the host, and are
+     refused for TLS, with an authority, or without a path (`internal static string
+     UnixSocketPath(string endpoint, bool insecure)`). `dns:///host:port` targets use
+     Grpc.Net.Client's DNS resolver with a round-robin `ServiceConfig`; the loopback guard
+     judges their parsed host. Other target schemes (`xds:`, `ipv4:`, `dns://authority/`)
+     are refused by `ParseEndpoint`.
+   - Endpoint forms `host:port`, `http://host:port` (needs `insecure: true`) and
+     `https://host[:port]` (needs `insecure: false`). A plaintext endpoint without a port is
+     rejected (no silent port 80); a TLS one uses 443. Parsed by
+     `internal static string ParseEndpoint(string endpoint, bool insecure)`. Any other form
+     throws `ArgumentException` naming the problem and `EndpointForms`, before the
+     loopback guard, which then judges the parsed authority.
 
 3. **Constructor: `SpiceDBProtoClient(GrpcChannel channel, string token)`** — the escape
    hatch for a caller-built channel (behind `SpiceDBClient.CreateFromChannel`). Attaches
@@ -74,12 +87,18 @@ Create a `Client.cs` file in the package root with:
    opt-in", for why a hand-rolled split is prohibited here. `internal` so the guard tests
    can drive it directly.
 
-7. **`TransitiveProtoStubs.cs`** — stub types for transitive proto dependencies that the
-   buf-generated descriptor registrations reference (`Buf.Validate`,
-   `Grpc.Gateway.ProtocGenOpenapiv2.Options`, and similar). Metadata only, never called at
-   runtime. It exists so the project builds without BSR NuGet authentication or packages
-   that do not exist on nuget.org. Hand-written, but not to be edited except when buf's
-   output starts or stops referencing such a dependency.
+7. **`TransitiveProtoStubs.cs`** — stub descriptors for transitive proto dependencies that
+   the buf-generated descriptor registrations reference (`buf/validate/validate.proto`,
+   `validate/validate.proto`, and the openapiv2 `annotations.proto`/`openapiv2.proto`).
+   The SpiceDB protos use them only as custom options, so each stub is an otherwise empty
+   `FileDescriptorProto` that **must carry the dependency's real file name and package**
+   (and its own dependencies), built once and cached. The descriptor pool keys files by
+   name: stubs built from empty bytes all had the name `""`, collided, and made every
+   SpiceDB descriptor throw `TypeInitializationException`, which broke `ToString()`,
+   `JsonFormatter` and `.Descriptor` for every message. It exists so the project builds
+   without BSR NuGet authentication or packages that do not exist on nuget.org.
+   Hand-written, but not to be edited except when buf's output starts or stops referencing
+   such a dependency.
 
 9. **Constructor: `SpiceDBProtoClient(CallInvoker callInvoker)`** — the existing-connection
    constructor behind `SpiceDBClient.CreateFromCallInvoker` (root DESIGN.md, "Keep protocol
@@ -118,6 +137,12 @@ the library package depends on no test framework (root DESIGN.md, dependency flo
 exact minimum package versions (no floating wildcards). `spicedb-csharp/SpiceDB.Client.sln`
 includes the test project, so the C# unit job runs it; `mage test` runs it directly.
 
+`DescriptorInitializationTest.cs` initialises the descriptor of every generated file and
+calls `ToString()`, `JsonFormatter.Default.Format` and `.Descriptor` on every message in it,
+does the same through an `Authzed.Net` type name, and runs `tests/DescriptorProbe` (a
+console program built but not referenced by the test project) as a separate process, so a
+type initialiser failure is caught in a fresh process too.
+
 `AuthzedNetBridgeTest.cs` loads the bridge `Authzed.Net` and this assembly in one process
 and proves: every exported generated type is forwarded here; assembly-qualified legacy
 names (`Authzed.Api.V1.X, Authzed.Net`, as compiled legacy binaries record them) resolve to
@@ -152,9 +177,9 @@ dropped. It must keep covering, at minimum:
    that a constructor threw.
 4. **Bare IPv6 loopback constructs a real client**, rather than passing the guard and then
    throwing `UriFormatException` out of `GrpcChannel.ForAddress`.
-5. **`unix:` targets are refused outright**, before either `insecure` or
-   `allowInsecureRemoteCredentials` is consulted — this transport would resolve the DNS
-   name `unix`.
+5. **Plaintext `unix:` targets construct without the remote opt-in**, and TLS, authority
+   or empty-path `unix:` targets are refused before any handler is reached. A real call
+   over a unix socket and over `dns:///` runs in `spicedb-csharp/examples/EndpointForms`.
 6. **Null arguments throw `ArgumentNullException`.**
 
 ### Deprecation Handling
@@ -166,7 +191,8 @@ Any methods or fields marked deprecated in the proto definitions must carry
 
 - No business logic — only plumbing (connection, auth)
 - Generated files under `gen/` are never modified
-- Project targets `net10.0` (`SpiceDB.Proto.csproj`)
+- `SpiceDB.Proto.csproj` and the bridge target `net8.0;net9.0;net10.0` and build with
+  `TreatWarningsAsErrors`; the test, probe and generator projects target `net10.0`
 - Package references are exact floors (currently Grpc 2.80.0, Google.Protobuf 3.34.1,
   Google.Api.CommonProtos 2.17.0, matching the legacy Authzed.Net 1.6.0)
 

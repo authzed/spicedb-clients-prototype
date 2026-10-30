@@ -1,11 +1,18 @@
+using System.Text.Json.Serialization;
 namespace SpiceDB.Client;
 
 /// <summary>How bulk checks report per-item failures.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<BulkItemErrors>))]
 public enum BulkItemErrors
 {
     /// <summary>The first failing item fails the whole call with an exception carrying its input index. The default.</summary>
     Fail,
-    /// <summary>Every item gets a result; a failed item's <see cref="CheckResult.Error"/> is set and it never grants.</summary>
+    /// <summary>
+    /// A server-reported failure for an item becomes that item's result: its
+    /// <see cref="CheckResult.Error"/> is set and it never grants. A malformed item in the
+    /// server's response (such as an unset permissionship) is not a per-item error: it still
+    /// fails the whole call with the client-detected malformed-response error.
+    /// </summary>
     Returned,
 }
 
@@ -20,6 +27,9 @@ public sealed class CheckOptions
     private CheckTracing _tracing;
     public CheckTracing Tracing { get => _tracing; init => _tracing = BehaviorOptions.Defined(value, nameof(Tracing)); }
     private BulkItemErrors _itemErrors;
-    /// <summary>Bulk checks only: <see cref="BulkItemErrors.Returned"/> returns per-item errors on the results.</summary>
+    /// <summary>
+    /// Bulk checks only: <see cref="BulkItemErrors.Returned"/> returns per-item errors on the
+    /// results. A malformed item in the server's response still fails the whole call.
+    /// </summary>
     public BulkItemErrors ItemErrors { get => _itemErrors; init => _itemErrors = BehaviorOptions.Defined(value, nameof(ItemErrors)); }
 }

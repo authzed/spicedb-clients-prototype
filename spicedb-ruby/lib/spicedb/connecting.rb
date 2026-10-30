@@ -32,11 +32,12 @@ module SpiceDB
     # DESIGN.md, "RULE: Credentials over insecure transport require an explicit
     # opt-in".
     #
-    # @param endpoint [String] the SpiceDB server address (e.g., "localhost:50051")
+    # @param endpoint [String] the SpiceDB server: "localhost:50051" or "http://localhost:50051"
+    #   (an http:// URL needs a port; https:// is refused here)
     # @param token [String] the preshared key for authentication
     # @param default_timeout [Numeric] seconds applied to every unary call that
-    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
-    #   applied to streaming calls.
+    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}), and to each page
+    #   of a relationship read, lookup or export. Not applied to watch or imports.
     # @param remote_credentials [RemoteCredentials] explicit opt-in to send
     #   credentials in cleartext to a non-loopback endpoint.
     # @yield [client] optionally yields the client for block-scoped usage
@@ -62,11 +63,12 @@ module SpiceDB
     # so a CA an operator installed on the machine is not honoured here. Use
     # {#new_custom_tls} for that case.
     #
-    # @param endpoint [String] the SpiceDB server address (e.g., "grpc.example.com:443")
+    # @param endpoint [String] the SpiceDB server: "grpc.example.com:443" or
+    #   "https://grpc.example.com[:port]" (port 443 by default; http:// is refused here)
     # @param token [String] the preshared key for authentication
     # @param default_timeout [Numeric] seconds applied to every unary call that
-    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
-    #   applied to streaming calls.
+    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}), and to each page
+    #   of a relationship read, lookup or export. Not applied to watch or imports.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
     def new_system_tls(endpoint, token, **, &)
@@ -94,14 +96,14 @@ module SpiceDB
     # to them; that is the C-core's behavior, and it is generally what a deployment
     # pinning a private CA wants.
     #
-    # @param endpoint [String] the SpiceDB server address (e.g., "spicedb.internal:443")
+    # @param endpoint [String] the SpiceDB server: "spicedb.internal:443" or "https://spicedb.internal[:port]"
     # @param token [String] the preshared key for authentication
     # @param ca_cert [String, nil] PEM root certificate(s) verifying SpiceDB's certificate
     # @param client_cert [String, nil] PEM certificate chain identifying this client
     # @param client_key [String, nil] PEM private key for +client_cert+
     # @param default_timeout [Numeric] seconds applied to every unary call that
-    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
-    #   applied to streaming calls.
+    #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}), and to each page
+    #   of a relationship read, lookup or export. Not applied to watch or imports.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
     # @raise [ArgumentError] if all three of +ca_cert+, +client_cert+ and
@@ -111,7 +113,7 @@ module SpiceDB
     #   if exactly one of +client_cert+/+client_key+ is supplied.
     def new_custom_tls(endpoint, token, ca_cert: nil, client_cert: nil, client_key: nil, **, &)
       if ca_cert.nil? && client_cert.nil? && client_key.nil?
-        raise InvalidArgumentError,
+        raise LocalValidationError,
               'spicedb: new_custom_tls needs at least one of ca_cert:, client_cert: or ' \
               'client_key: -- with none of them it would silently be new_system_tls, which ' \
               'uses the roots compiled into gRPC. Call new_system_tls directly if that is ' \

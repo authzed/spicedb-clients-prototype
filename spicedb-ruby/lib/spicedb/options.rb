@@ -20,7 +20,7 @@ module SpiceDB
     def self.values = @values
 
     def self.validate(value)
-      raise InvalidArgumentError, "expected #{self}: #{values.map(&:name).join(', ')}" unless values.include?(value)
+      raise LocalValidationError, "expected #{self}: #{values.map(&:name).join(', ')}" unless values.include?(value)
 
       value
     end
@@ -75,7 +75,11 @@ module SpiceDB
   end
 
   # How check_bulk reports a per-item failure: RAISED fails the call with the
-  # first item's error; RETURNED puts each item's error on its CheckResult.
+  # first item's error; RETURNED puts each item's error on its CheckResult
+  # (whose permissionship is :unspecified, never a grant). Either way, a
+  # malformed item in the server's response (such as an unset
+  # permissionship) is not a per-item error: it fails the whole call with
+  # the client-detected malformed-response error (code INTERNAL).
   class BulkItemErrors < Option
     cases :RAISED, :RETURNED
   end

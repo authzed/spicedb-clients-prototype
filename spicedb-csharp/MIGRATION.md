@@ -5,6 +5,22 @@
 the idiomatic client built on `SpiceDB.Proto`, the canonical generated binding. This
 guide lists every behavior change a migrating application will see.
 
+## Requirements
+
+| Requirement | Floor |
+| --- | --- |
+| .NET | `net8.0`, `net9.0` or `net10.0` (each package targets all three) |
+| SpiceDB server | 1.30 or later (older servers' trailer-only data is reachable through `RawProto()`) |
+| `Grpc.Net.Client`, `Grpc.Core.Api`, `Grpc.StatusProto` | 2.80.0 |
+| `Google.Protobuf` | 3.34.1 |
+| `Google.Api.CommonProtos` | 2.17.0 |
+| Legacy code in the same process | `Authzed.Net` 2.0.0 (the bridge); 1.x cannot be referenced alongside |
+
+The dependency floors are the same as `Authzed.Net` 1.6.0's, so adopting the client raises
+nothing a migrating application already has. NuGet versions are minimums: newer releases
+of these packages work. The packages are not on NuGet yet; see the [README](README.md) for
+consuming them from a local feed.
+
 ## Migrate incrementally: both in one process
 
 The generated types (`Authzed.Api.V1.*`, `Authzed.Api.Materialize.V0.*`) exist once, in
@@ -37,13 +53,23 @@ var permissions = new PermissionsService.PermissionsServiceClient(channel);
 await using var client = SpiceDBClient.CreateSystemTls("spicedb.example.com:443", token);
 ```
 
-- Endpoints are `host:port`, without a scheme. The preshared key is a positional
-  argument; the client adds the bearer header.
+- Endpoints are `host:port`, `http://host:port` (plaintext, port required) or
+  `https://host[:port]` (TLS, port defaults to 443). A plaintext endpoint always needs a
+  port (`localhost` alone is rejected; write `localhost:50051`); a port-less TLS endpoint
+  uses 443. A URL's scheme must match the
+  factory: `CreatePlaintext` rejects `https://` and `CreateSystemTls` rejects `http://`.
+  `dns:///host:port` (client-side round-robin across the resolved addresses) and
+  `unix:/path/to/socket` (plaintext) gRPC targets are accepted too. Paths, `user@` and other
+  schemes are rejected at construction. The preshared key is a
+  positional argument; the client adds the bearer header.
+- Channels connect lazily, as `GrpcChannel` does. To fail at startup on a wrong or
+  unreachable endpoint, call `await client.ConnectAsync(new ConnectOptions { Timeout =
+  TimeSpan.FromSeconds(5) }, ct)`.
 - Plaintext with credentials to a non-loopback host is refused unless you opt in:
 
   ```csharp
   // Before: any http:// address with an auth interceptor
-  // After
+  // After (also for a Docker Compose service name such as "spicedb:50051")
   SpiceDBClient.CreatePlaintext("spicedb.internal:50051", token,
       new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow });
   ```
@@ -51,6 +77,58 @@ await using var client = SpiceDBClient.CreateSystemTls("spicedb.example.com:443"
 - Keep an existing channel or invoker (DI singleton, test server, interceptors): use
   `CreateFromChannel(channel, token)`, or `CreateFromCallInvoker(invoker)` when the invoker
   already carries credentials. The client never disposes either.
+
+An empty or whitespace-only preshared key (usually an unset environment
+variable) throws `InvalidArgumentException` at construction.
+
+`SpiceDB.Client` shares type names with two namespaces its callers often import:
+
+- `Grpc.Core`: `CallOptions` and `WriteOptions`.
+- `Authzed.Api.V1` (the protocol types, for example in code moving off `authzed-dotnet` or
+  using the raw escape hatch): `Relationship`, `Consistency`, `ZedToken`, `Precondition`,
+  `RelationshipUpdate`, `ResolvedSubject`, `PartialCaveatInfo`, `DebugInformation` and
+  `CheckDebugTrace`.
+
+A file that imports `SpiceDB.Client` and either of them fails with CS0104 wherever it writes
+one of those names. Aliasing only one side does not help, because both namespace imports stay
+in scope. Alias the bare name to the type you mean (a using-alias takes precedence over
+namespace imports), and give the other type a prefixed alias. A file that imports all three
+can copy this block whole; keep the lines for the namespaces it imports:
+
+```csharp
+using Authzed.Api.V1;
+using Grpc.Core;
+using SpiceDB.Client;
+
+// Shared with Grpc.Core
+using CallOptions = SpiceDB.Client.CallOptions;
+using WriteOptions = SpiceDB.Client.WriteOptions;
+using GrpcCallOptions = Grpc.Core.CallOptions;   // CallInvoker overrides
+using GrpcWriteOptions = Grpc.Core.WriteOptions;
+
+// Shared with Authzed.Api.V1
+using Relationship = SpiceDB.Client.Relationship;
+using Consistency = SpiceDB.Client.Consistency;
+using ZedToken = SpiceDB.Client.ZedToken;
+using Precondition = SpiceDB.Client.Precondition;
+using RelationshipUpdate = SpiceDB.Client.RelationshipUpdate;
+using ResolvedSubject = SpiceDB.Client.ResolvedSubject;
+using PartialCaveatInfo = SpiceDB.Client.PartialCaveatInfo;
+using DebugInformation = SpiceDB.Client.DebugInformation;
+using CheckDebugTrace = SpiceDB.Client.CheckDebugTrace;
+using ProtoRelationship = Authzed.Api.V1.Relationship;
+using ProtoConsistency = Authzed.Api.V1.Consistency;
+using ProtoZedToken = Authzed.Api.V1.ZedToken;
+using ProtoPrecondition = Authzed.Api.V1.Precondition;
+using ProtoRelationshipUpdate = Authzed.Api.V1.RelationshipUpdate;
+using ProtoResolvedSubject = Authzed.Api.V1.ResolvedSubject;
+using ProtoPartialCaveatInfo = Authzed.Api.V1.PartialCaveatInfo;
+using ProtoDebugInformation = Authzed.Api.V1.DebugInformation;
+using ProtoCheckDebugTrace = Authzed.Api.V1.CheckDebugTrace;
+```
+
+`NamespaceCollisionTests` finds these names by reflection and fails when a new one appears, and
+`CallOptionsAliasTests` compiles a file with exactly this block.
 
 ## Requests and consistency
 
@@ -76,10 +154,61 @@ var allowed = result.HasPermission; // only an unconditional grant
   includes the schema reads (`ReflectSchemaAsync`, `ComputablePermissionsAsync`,
   `DependentRelationsAsync`, `DiffSchemaAsync`): where your raw requests left consistency
   unset, pass `Consistency.MinLatency()`, which is what SpiceDB applies when it is absent.
+- `Consistency.AtLeast(token)` and `Snapshot(token)` throw `InvalidArgumentException` for an
+  empty or whitespace-only token rather than sending it; use `AtLeastOrFull` or
+  `AtLeastOrMinLatency` when a stored token may be missing. Watch start revisions and
+  materialize at-revisions take `ZedToken?`: pass null, not an empty token, to omit one.
 - Singular checks call `CheckPermission`. Bulk checks (`CheckBulkAsync`) split into chunks
   of 1,000, validate every echoed item, and throw for the first failed item unless
-  `CheckOptions.ItemErrors = BulkItemErrors.Returned`.
+  `CheckOptions.ItemErrors = BulkItemErrors.Returned`. A malformed item in the server's
+  response (such as an unset permissionship) still fails the whole call.
 - `ZedToken` is a native value: `new ZedToken(text)`, `.Value` to persist it.
+- A direct subject is one step from an object: `ObjectRef` converts implicitly to
+  `SubjectRef`, or call `SubjectRef.Direct(obj)`. A subject relation of `...` (as tuples,
+  the protocol and user input spell a direct subject) means direct everywhere:
+  `SubjectRef.Named(obj, "...")` and `SubjectRelationFilter.Named("...")` return the direct
+  forms, so input can be passed through without a hand mapping.
+- Native results serialize with `System.Text.Json` as canonical values: enums as names
+  (`"Permissionship":"HasPermission"`) and `ZedToken` as its string. For the protocol
+  messages themselves, `Google.Protobuf.JsonFormatter` and `ToString()` work as before.
+
+## Renamed members
+
+Code that read the generated response messages reads native results instead. The members
+that changed name or shape:
+
+| Legacy (`Authzed.Api.V1`) | `SpiceDB.Client` |
+| --- | --- |
+| `ReadSchemaResponse.SchemaText` | `SchemaResult.Schema` |
+| `ReadSchemaResponse.ReadAt.Token` | `SchemaResult.Revision.Value` |
+| `WriteSchemaResponse.WrittenAt.Token` | the returned `ZedToken`'s `.Value` |
+| `CheckPermissionResponse.Permissionship == ...Types.Permissionship.HasPermission` | `CheckResult.HasPermission` (or `.Permissionship == Permissionship.HasPermission`) |
+| `CheckPermissionResponse.CheckedAt.Token` | `CheckResult.CheckedAt.Value` |
+| `CheckPermissionResponse.PartialCaveatInfo.MissingRequiredContext` | `CheckResult.MissingContext` |
+| `CheckPermissionResponse.OptionalExpiresAt` | `CheckResult.Expiration` |
+| `CheckBulkPermissionsResponse.Pairs[i].Item` / `.Error` | `CheckBulkAsync(...)[i]` / `CheckResult.Error` (with `ItemErrors = Returned`) |
+| `WriteRelationshipsResponse.WrittenAt.Token` | `WriteResult.Revision.Value` |
+| `DeleteRelationshipsResponse.DeletedAt` | `DeleteResult.Revision` |
+| `DeleteRelationshipsResponse.RelationshipsDeletedCount` | `DeleteResult.DeletedCount` |
+| `DeleteRelationshipsResponse.DeletionProgress` | `DeleteResult.Completed` |
+| `ReadRelationshipsResponse.Relationship` / `.ReadAt` / `.AfterResultCursor.Token` | `ReadRelationship.Relationship` / `.ReadAt` / `.AfterResultCursor` |
+| `Relationship.Resource.ObjectType` / `.ObjectId` | `Relationship.ResourceType` / `.ResourceId` |
+| `Relationship.Subject.Object.ObjectId` / `.Subject.OptionalRelation` | `Relationship.SubjectId` / `.SubjectRelation` (null when direct) |
+| `Relationship.OptionalCaveat.CaveatName` / `.Context` | `Relationship.CaveatName` / `.CaveatContext` |
+| `Relationship.OptionalExpiresAt` | `Relationship.Expiration` |
+| `LookupResourcesResponse.ResourceObjectId` | `LookupResource.ResourceId` |
+| `LookupResourcesResponse.LookedUpAt.Token` / `.AfterResultCursor.Token` | `LookupResource.LookedUpAt.Value` / `.AfterResultCursor` |
+| `LookupResourcesResponse.PartialCaveatInfo` | `LookupResource.PartialCaveat` |
+| `LookupSubjectsResponse.Subject.SubjectObjectId` | `LookupSubject.Subject.SubjectId` |
+| `LookupSubjectsResponse.ExcludedSubjects[i].SubjectObjectId` | `LookupSubject.ExcludedSubjects[i].SubjectId` |
+| `ExpandPermissionTreeResponse.TreeRoot` / `.ExpandedAt` | `ExpandResult.Tree` / `.Revision` |
+| `WatchResponse.Updates` / `.ChangesThrough` | `WatchEvent.Updates` / `.ChangesThrough` |
+| `ImportBulkRelationshipsResponse.NumLoaded` | the returned `ulong` |
+| `ExperimentalCountRelationshipsResponse.ReadCounterValue.RelationshipCount` | `CountResult.RelationshipCount` |
+
+Earlier builds of this client named the lookup identifiers `LookupResource.ResourceID` and
+`ResolvedSubject.SubjectID`. Those names remain as `[Obsolete]` aliases of `ResourceId` and
+`SubjectId`.
 
 ## Defaults: deadlines and retries
 
@@ -89,6 +218,10 @@ Authzed.Net applied no deadline and no retries.
   Restore the old behavior with
   `new ClientOptions { DefaultDeadline = DefaultDeadline.Disabled }`, or set
   `ClientOptions.DefaultTimeout` / a per-operation `Timeout`.
+- Relationship reads, lookups and exports have no total default, but each page request gets
+  the default deadline, so a stalled server fails the read rather than hanging it. Time your
+  loop spends processing items does not count against it. Watch has
+  no default. `DefaultDeadline.Disabled` removes both defaults.
 - Idempotent reads, and stream establishment before any item, retry Unavailable/Aborted
   up to three times with jittered backoff. Writes, deletes and imports never retry.
   If you already retry, avoid stacking policies:
@@ -127,17 +260,56 @@ catch (FailedPreconditionException e) { ... }
 catch (SpiceDBException e) when (e.StatusCode == StatusCode.FailedPrecondition) { ... }
 ```
 
+**`SpiceDBException` is not an `RpcException`, so an existing `catch (RpcException)` still
+compiles but no longer matches anything the client throws.** Search for every
+`catch (RpcException` and `when (... is RpcException` around client calls and convert it.
+The exception does not derive from `RpcException` because `RpcException` has no
+constructor that takes an inner exception: a subclass could not keep the server's
+`RpcException` as `InnerException`, which is where the server's status, trailers and
+`ErrorInfo` reason are preserved, and it would be re-caught by the client's own
+`catch (RpcException)` mapping. The mapping:
+
+| Legacy (`RpcException e`) | `SpiceDB.Client` (`SpiceDBException e`) |
+| --- | --- |
+| `catch (RpcException e)` | `catch (SpiceDBException e)` |
+| `e.StatusCode` | `e.StatusCode` (same `Grpc.Core.StatusCode`, also for local errors) |
+| `e.Status` | `e.Status` (the server's own status for server errors) |
+| `e.Status.Detail` | `e.ServerMessage` (never null; equals `e.Message` for local errors) |
+| `e.Trailers`, `e.GetRpcStatus()` | `e.Trailers`, `e.ToRpcException().GetRpcStatus()`, or `e.Reason` / `e.ReasonMetadata` |
+| `when (e.StatusCode == StatusCode.X)` | the typed subclass (`NotFoundException`, ...) or the same `when` on `SpiceDBException` |
+| code that must keep an `RpcException` | `e.ToRpcException()`, or `e.InnerException as RpcException` for server errors |
+| one handler for both tiers mid-migration | `catch (Exception e) when (SpiceDBException.CodeOf(e) == StatusCode.X)` |
+
 - The server's `RpcException` is the `InnerException`; `Status`, `Trailers` and
   `ToRpcException()` expose it (with `ErrorInfo` details), and `Reason`/`ReasonMetadata`
   surface SpiceDB's `ErrorInfo` directly.
-- `ServerMessage` is the server's message verbatim, for forwarding errors to others.
+- `ServerMessage` is the server's message verbatim, for forwarding errors to others. It is
+  never null: for local validation, deadlines and caller-built errors it equals `Message`,
+  so `e.ServerMessage ?? e.Message` fallbacks can be dropped.
 - Caller cancellation is an `OperationCanceledException` carrying your token, not an
   `RpcException(Cancelled)`. `SpiceDBException.CodeOf(ex)` classifies native, raw
   `RpcException` and cancellation exceptions alike.
-- Local validation failures are `InvalidArgumentException` before any RPC.
+- Local validation failures are `InvalidArgumentException` before any RPC, including
+  `Relationship.FromTuple` parse errors. It is a `SpiceDBException` (code `InvalidArgument`,
+  `ServerMessage` equal to `Message`, no inner `RpcException`), not an `ArgumentException` or
+  `FormatException`, because a .NET exception has one base class and native errors keep one
+  shape. Code that caught `ArgumentException` or `FormatException` around parsing catches
+  `InvalidArgumentException` instead. A server `INVALID_ARGUMENT` is also an
+  `InvalidArgumentException`; a local one has no `InnerException`.
+- A response the client cannot interpret (for example a relationship without a subject, or
+  a check, bulk-check item or lookup result whose permissionship is unset) fails with
+  an `Internal`-status `SpiceDBException` rather than yielding empty fields or
+  `Permissionship.Unspecified`. Its message reads `<operation>: client detected malformed
+  response from server: <detail>.`, so logs do not mistake it for an `Internal` status the
+  server sent. Code that branched on `Permissionship.Unspecified` from a check or lookup
+  only sees it now for a permissionship value newer than the client.
 - Test doubles: `SpiceDBException.Create(StatusCode.NotFound, "...")`, or use
-  `SpiceDB.Client.Testing.InMemorySpiceDBClient` behind `ISpiceDBRelationshipClient` and
-  `ISpiceDBSchemaClient`.
+  `SpiceDB.Client.Testing.InMemorySpiceDBClient` behind `ISpiceDBClient` (or
+  `ISpiceDBRelationshipClient` and `ISpiceDBSchemaClient`). It answers checks from
+  registrations, a resolver (`SetCheckResolver`, `GrantAllChecks()`) and its stored
+  relationships, and serves `LookupResourcesAsync` and `LookupSubjectsAsync`. It never
+  answers `Permissionship.Unspecified`: registering it, or returning it from a resolver,
+  fails with `InvalidArgumentException`.
 
 ## Relationships and reads
 
@@ -180,6 +352,4 @@ var version = sink.Headers?.GetValue("x-example-header");
 
 ## Minimum versions
 
-`SpiceDB.Client` supports SpiceDB 1.30 and later natively, and requires
-`Grpc.Net.Client` 2.80.0 and `Google.Protobuf` 3.34.1 or later, the same floors as
-Authzed.Net 1.6.0.
+See [Requirements](#requirements) at the top of this guide.

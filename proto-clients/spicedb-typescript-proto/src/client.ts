@@ -151,6 +151,110 @@ function transportAuthority(endpoint: string): string {
     : endpoint;
 }
 
+/** The scheme of an endpoint written as a URL: `http` is plaintext, `https` TLS. */
+export type EndpointScheme = "http" | "https";
+
+const ENDPOINT_FORMS =
+  "expected host:port, http://host:port (plaintext) or https://host[:port] (TLS)";
+
+/**
+ * Thrown when an endpoint is not one of the accepted forms (`host:port`,
+ * `http://host:port`, `https://host[:port]`), is malformed (path, query,
+ * fragment, userinfo, non-numeric port, unknown scheme), or carries a scheme
+ * that disagrees with the transport requested. The message names the problem
+ * and the accepted forms.
+ */
+export class InvalidEndpointError extends Error {
+  constructor(endpoint: string, reason: string) {
+    super(`spicedb: invalid endpoint "${endpoint}": ${reason}; ${ENDPOINT_FORMS}`);
+    this.name = "InvalidEndpointError";
+  }
+}
+
+interface ParsedEndpoint {
+  /** Undefined for the `host:port` form. */
+  readonly scheme?: EndpointScheme;
+  /** The authority the transport dials (IPv6 literals bracketed). */
+  readonly authority: string;
+  readonly hasPort: boolean;
+}
+
+/**
+ * Parses an endpoint into the authority the transport dials, or throws
+ * InvalidEndpointError naming the problem. One trailing "/" after a URL's
+ * authority is accepted, as deployment URLs often carry one.
+ */
+function parseEndpoint(endpoint: string): ParsedEndpoint {
+  const fail = (reason: string): never => {
+    throw new InvalidEndpointError(endpoint, reason);
+  };
+  if (/\s/.test(endpoint)) fail("whitespace is not allowed");
+  let scheme: EndpointScheme | undefined;
+  let rest = endpoint;
+  const url = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/(.*)$/s.exec(endpoint);
+  if (url) {
+    const name = url[1]!.toLowerCase();
+    if (name !== "http" && name !== "https") fail(`unsupported scheme "${url[1]}"`);
+    scheme = name as EndpointScheme;
+    rest = url[2]!.endsWith("/") ? url[2]!.slice(0, -1) : url[2]!;
+  }
+  if (rest === "") fail("no host");
+  if (rest.includes("@")) fail("userinfo is not supported");
+  if (rest.includes("#")) fail("a fragment is not supported");
+  if (rest.includes("?")) fail("a query is not supported");
+  if (/[/\\]/.test(rest)) fail("a path is not supported");
+
+  let host: string;
+  let port: string | undefined;
+  if (rest.startsWith("[")) {
+    const close = rest.indexOf("]");
+    if (close < 0) fail("unterminated IPv6 literal");
+    host = rest.slice(1, close);
+    const after = rest.slice(close + 1);
+    if (after !== "") {
+      if (!after.startsWith(":")) fail("not a valid host and port");
+      port = after.slice(1);
+    }
+  } else if ((rest.match(/:/g) ?? []).length > 1) {
+    // A bare IPv6 literal: no port can follow it unbracketed.
+    if (scheme !== undefined) fail("an IPv6 address in a URL must be bracketed");
+    host = rest;
+  } else {
+    const colon = rest.indexOf(":");
+    host = colon < 0 ? rest : rest.slice(0, colon);
+    port = colon < 0 ? undefined : rest.slice(colon + 1);
+  }
+  if (host === "") fail("no host");
+  if (port !== undefined) {
+    if (!/^\d+$/.test(port)) fail(`the port "${port}" is not a number`);
+    if (Number(port) < 1 || Number(port) > 65535) fail(`the port ${port} is out of range`);
+  }
+  if (scheme === "http" && port === undefined)
+    fail("an http:// endpoint needs an explicit port (SpiceDB's gRPC port is usually 50051)");
+
+  const authority = transportAuthority(rest);
+  try {
+    new URL(`http://${authority}`);
+  } catch {
+    fail("not a valid host and port");
+  }
+  return { scheme, authority, hasPort: port !== undefined };
+}
+
+/**
+ * The scheme of an endpoint written as an `http://` or `https://` URL, or
+ * undefined for the `host:port` form (and for anything construction
+ * rejects). The idiomatic client uses it to let the scheme select plaintext
+ * or TLS when the caller did not choose.
+ */
+export function endpointScheme(endpoint: string): EndpointScheme | undefined {
+  try {
+    return parseEndpoint(endpoint).scheme;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Thrown when a plaintext connection to a non-loopback endpoint is requested
  * without `allowInsecureRemoteCredentials`.
@@ -160,6 +264,24 @@ function transportAuthority(endpoint: string): string {
  * DESIGN.md, "RULE: Credentials over insecure transport require an explicit
  * opt-in", clause 4.
  */
+/**
+ * The remote-plaintext refusal, naming every option the caller must set to
+ * allow it, spelled as that caller writes them. The idiomatic layer passes its
+ * own spellings.
+ */
+export function remotePlaintextRefusal(
+  endpoint: string,
+  tlsChoice: string,
+  plaintextOption: string,
+  remoteOption: string,
+): string {
+  return (
+    `spicedb: refusing to send credentials over plaintext to non-loopback endpoint ` +
+    `"${endpoint}": use TLS (${tlsChoice}), or, for a remote plaintext server such as ` +
+    `a Docker Compose service, pass both ${plaintextOption} and ${remoteOption}`
+  );
+}
+
 export class InsecureRemoteHostError extends Error {
   constructor(message: string) {
     super(message);
@@ -171,24 +293,29 @@ export function isLoopbackEndpoint(endpoint: string): boolean {
   // There is deliberately no "unix:" exemption here -- see the doc comment
   // above, and the unconditional refusal in createSpiceDBClient below.
 
-  // Fail closed on any character that can shift which part of the string
-  // the URL parser treats as the authority: "@" (userinfo), "/" (path),
-  // "\" (which WHATWG URL treats as "/" for special schemes, so
-  // "localhost\evil.com" has the authority "localhost"), "?" (query), "#"
-  // (fragment), whitespace. Redundant with the URL parse below --
-  // deliberately so. The parse is what makes this function correct; this is
-  // what keeps it correct if some future edit ever reaches for a manual
-  // split again, which a backslash would defeat exactly as a slash does.
-  if (/[@/\\?#]|\s/.test(endpoint)) {
-    return false;
-  }
-
-  // Exactly the authority the transport will dial -- see transportAuthority,
+  // Exactly the authority the transport will dial -- see parseEndpoint,
   // which createSpiceDBClient uses to build its baseUrl. Using one function
   // for both is the point: while this bracketed a bare IPv6 literal and
   // createSpiceDBClient did not, "::1" passed the guard and then died in
-  // `new URL()` with "Invalid URL".
-  const authority = transportAuthority(endpoint);
+  // `new URL()` with "Invalid URL". An http:// or https:// URL is judged by
+  // its host, so "http://127.0.0.1:50051" is loopback.
+  let authority: string;
+  try {
+    authority = parseEndpoint(endpoint).authority;
+  } catch {
+    return false;
+  }
+
+  // Fail closed on any character left in the authority that can shift which
+  // part of the string the URL parser treats as the host: "@" (userinfo),
+  // "/" (path), "\" (which WHATWG URL treats as "/" for special schemes, so
+  // "localhost\evil.com" has the authority "localhost"), "?" (query), "#"
+  // (fragment), whitespace. parseEndpoint already refuses all of them --
+  // deliberately redundant, so a future edit to the parser that reaches for
+  // a manual split cannot reopen an authority-shifting bypass here.
+  if (/[@/\\?#]|\s/.test(authority)) {
+    return false;
+  }
 
   // The scheme is "http" because this guard only ever gates the insecure
   // path; either way, scheme does not affect how the authority is parsed.
@@ -305,10 +432,36 @@ export function createSpiceDBClient(
   // dialing a host called "unix" is not. Matched case-insensitively because
   // URL lower-cases the scheme, so "UNIX:" reaches the same place.
   if (/^unix:/i.test(endpoint)) {
-    throw new Error(
-      `spicedb: unix-domain-socket targets are not supported by this client's transport: "${endpoint}". ` +
-        `Node's http2 client would parse "unix" as a DNS hostname and connect there, not to the socket path. ` +
-        `Use a "host:port" endpoint instead.`,
+    throw new InvalidEndpointError(
+      endpoint,
+      `unix-domain-socket targets are not supported by this client's transport ` +
+        `(Node's http2 client would parse "unix" as a DNS hostname and connect there, not to the socket path)`,
+    );
+  }
+
+  // The endpoint's form is checked before the credential guard below, so a
+  // malformed endpoint is reported as such and the remote-plaintext message
+  // appears only for a well-formed remote host. A URL's scheme must agree
+  // with the requested transport.
+  const parsed = parseEndpoint(endpoint);
+  if (parsed.scheme === "http" && !options?.insecure) {
+    throw new InvalidEndpointError(
+      endpoint,
+      "http:// selects plaintext, but this client was configured for TLS",
+    );
+  }
+  if (parsed.scheme === "https" && options?.insecure) {
+    throw new InvalidEndpointError(
+      endpoint,
+      "https:// selects TLS, but this client was configured for plaintext",
+    );
+  }
+  // No client silently dials port 80: a plaintext endpoint, bare or URL,
+  // names its port. A TLS endpoint without one uses 443.
+  if (options?.insecure && !parsed.hasPort) {
+    throw new InvalidEndpointError(
+      endpoint,
+      "a plaintext endpoint needs an explicit port, e.g. localhost:50051",
     );
   }
 
@@ -326,10 +479,7 @@ export function createSpiceDBClient(
     !isLoopbackEndpoint(endpoint)
   ) {
     throw new InsecureRemoteHostError(
-      `spicedb: refusing to send credentials over an insecure (plaintext) connection to ` +
-        `non-loopback endpoint "${endpoint}": use TLS (omit insecure), or pass ` +
-        `allowInsecureRemoteCredentials: true if you intend to send a bearer token in ` +
-        `cleartext to a remote host`,
+      remotePlaintextRefusal(endpoint, "omit insecure", "insecure: true", "allowInsecureRemoteCredentials: true"),
     );
   }
 
@@ -390,8 +540,8 @@ export function createSpiceDBClient(
   // isLoopbackEndpoint vetted, so the two cannot disagree about where this
   // connection goes.
   const baseUrl = options?.insecure
-    ? `http://${transportAuthority(endpoint)}`
-    : `https://${transportAuthority(endpoint)}`;
+    ? `http://${parsed.authority}`
+    : `https://${parsed.authority}`;
   // Third constructor argument, NOT createGrpcTransport's `nodeOptions`.
   // Connect-ES documents that supplying a `sessionManager` "makes nodeOptions
   // as well as the HTTP/2 session options ineffective", and this client always

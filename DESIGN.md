@@ -133,7 +133,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     own chunk's revision; chunks do not imply a shared snapshot.
   - By default the first per-item failure fails the call. A named mode instead
     returns every item's result, with per-item errors carried on the result
-    alongside the other items' decisions. An errored item never grants.
+    alongside the other items' decisions. An errored item never grants. A
+    malformed item in the server's response (such as an unset permissionship)
+    still fails the whole call, since it is not a per-item error.
 
 - **Preserve caller data and represent immutability honestly.**
   - Merge call-level check context with per-item overrides by key; the item wins.
@@ -155,8 +157,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     the `Any`/`Direct`/`Named` subject relation distinction. Test doubles use this
     rather than reimplementing filter semantics.
   - Each client ships an in-memory test double for relationship writes (with
-    preconditions and create conflicts), filtered reads and deletes, and
-    registered check results, plus imports, exports and schema reads and writes.
+    preconditions and create conflicts), filtered reads and deletes, permission
+    checks, lookups, imports, exports and schema reads and writes.
     Its errors carry the same codes and message shape as the real client's for
     the same failure. It records every call with its request and resolved
     options, and accepts fault injection at defined points (before any call,
@@ -165,6 +167,30 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     failure paths and option assertions need neither a fake transport nor a
     strict mock. Its resume cursors have a documented format or constructor,
     and it can emulate servers whose schema reads report no revision.
+  - The double resolves a check in a fixed order: a result registered for
+    that exact question; then a caller-supplied check resolver (a callback
+    receiving the check, so tests over generated IDs need no per-ID
+    registration, and grant-all is one line); then the stored relationships,
+    where a relationship on the resource whose relation is the permission's
+    name and whose subject matches exactly or by wildcard grants it; anything
+    else is no permission. The double does not evaluate a schema, and each
+    double's docs and AI guide say so, pointing schema-logic tests at SpiceDB
+    itself (`serve-testing` or a container). The resolver
+    sees the check with the call's default context merged in (the check's own
+    keys win), returns a result or declines (falling through), and never
+    fails: failures come from the fault hooks. A wildcard matches only direct
+    subjects of its type. The double does not evaluate caveats, so a caveated
+    stored relationship grants conditionally, an uncaveated match wins over a
+    caveated one, and an expired relationship never grants.
+  - The double serves LookupResources and LookupSubjects: it enumerates the
+    objects of the requested type that appear in its stored relationships (as
+    resource or subject) and returns those its check resolution grants,
+    reporting conditional results as conditional and honoring the
+    permissionship filter, limit and cursor with the double's cursor format.
+    Objects are enumerated in first-appearance order, and a cursor counts
+    granted results, including ones the permissionship filter drops (as the
+    real client's cursor advances past them). A stored wildcard subject is
+    returned by LookupSubjects as the `*` subject.
   - Each client exports an interface (or protocol) with the full client's
     method set, kept in sync with the client by a test, and the double
     implements all of it: operations without in-memory semantics are recorded,
@@ -172,7 +198,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     shape. Its surface matches the real client's so one
     interface or protocol accepts both: caller-defined where the language is
     structurally typed (Go, TypeScript, Python protocols), library-provided and
-    implemented by both where it is nominally typed (C#, Java).
+    implemented by both where it is nominally typed (C#, Java). Generated typed
+    clients take that interface, so a typed client wraps the double.
   - Languages whose constructors return errors make constants and test fixtures
     one call: panicking variants where that is idiomatic (Go `Must*`), or a
     one-call parse from tuple text where call-site assertion is the convention
@@ -181,6 +208,13 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     call's options into an inspectable snapshot (cursor, limits, page size,
     response-metadata targets, retry override), so test doubles and wrappers
     can honor them without a fake transport.
+  - A direct subject is one call from an object (an implicit conversion, `From`,
+    or a `direct` constructor), and the subject relation `...` means a direct
+    subject everywhere a subject relation is accepted, as tuple and proto
+    parsing already treat it.
+  - Native results serialize with the ecosystem's default serializer as their
+    canonical forms: enums as names and tokens as strings, not as numbers or
+    wrapper objects.
   - Relationship accessors offer short paths for the most common fields
     (resource ID and subject ID) in addition to the nested object accessors.
   - Tuple parsing and formatting cover SpiceDB's full syntax, including
@@ -223,6 +257,14 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Streams and imports have no default lifetime timeout, but accept explicit
     total deadlines. Finite lookups and exports support deadlines even when
     their underlying RPC streams.
+  - Finite paged reads (relationship reads, lookups, exports) apply the client
+    default deadline to each page request, from opening it to receiving its
+    last item, so a server that stalls mid-read fails the read instead of
+    hanging it. The deadline bounds waiting on the server, never the caller's
+    processing: time the caller spends between items does not count (buffer
+    the page, which is at most the page size, or pause the timer while the
+    caller holds an item), so a slow consumer never fails a healthy read. A caller's total deadline still bounds the whole operation and
+    wins when earlier. Long-lived streams (watch) keep no default.
   - A named mode disables the client default deadline. The caller's own deadline
     or cancellation still applies. Zero or negative durations are never used as
     a magic "disabled" value.
@@ -364,11 +406,35 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Keep the server's status message verbatim in its own field. The display
     message may add operation context, but callers that forward errors must be
     able to reproduce exactly what the server said.
+  - Where the language has a standard invalid-input exception that callers
+    already catch around parsing (Python's `ValueError`), local validation
+    errors are also that type; server invalid-argument errors are not.
   - Native errors interoperate with the ecosystem's standard status inspection in
     both directions. A native error reports its matching transport status code
     through the language's status accessor, including errors for local
     cancellation, local validation, and errors built by caller code. Code
     classification helpers also accept raw transport status errors.
+  - Where the legacy client surfaced a transport exception type that the
+    language lets a library subclass, native errors are that type for the
+    matching code (or match it in the language's rescue/catch idiom), so
+    existing handlers keep catching. MIGRATION.md states the interop either
+    way. The verbatim server-message field always has a value: for local
+    errors it is the error's message.
+  - A response the client cannot interpret (a missing required field, an
+    unset enum the server always sets such as a check's permissionship, a
+    cursor that does not advance) fails with `INTERNAL`, which no retry policy
+    treats as retryable by default. Clients never skip such a response or fill
+    its missing fields with empty values: a skipped item makes a full page look
+    short and silently ends a paged read early. The error says the client
+    detected it, so it is not mistaken for a status the server sent. Only the
+    unset (zero) value is malformed: an enum value newer than the client maps
+    to the documented safe unknown (which never grants) and never fails the
+    call, so upgrading SpiceDB cannot turn into a client outage.
+    Docs, comments and error messages call the malformed zero value "unset"
+    (for example `permissionship is unset`); "unspecified" names only the safe
+    enum value, so a reader never takes an `Unspecified` result for a failure.
+  - Local cancellation surfaces as the client's cancelled error, never as the
+    platform's own abort exception, whose fields may resemble a status code.
   - Provide a public constructor for native errors from a code and message, so
     test doubles produce errors that every predicate treats like real ones.
   - Wrapper errors (bulk item, deletion progress) report their inner status
@@ -381,6 +447,46 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     differ from the host's managed trust store.
   - Reject TLS material combined with plaintext. Document actual TLS and mTLS
     capabilities rather than inferring them from system-root support.
+
+- **Accept the endpoint forms deployments use, or reject them at construction.**
+  - Constructors accept `host:port` and, where the transport understands them,
+    `http://` and `https://` URLs (the scheme selects plaintext or TLS and must
+    agree with the constructor). Any other form fails at construction with an
+    error naming the expected format: an endpoint never builds a client whose
+    every call fails. The loopback check runs on the parsed host. An
+    `http://` URL needs an explicit port (no client silently dials port 80);
+    an `https://` URL without one uses 443. The same holds for a bare host:
+    plaintext needs a port, TLS defaults to 443. Malformed forms (path, query,
+    userinfo, non-numeric port) fail with an error naming that problem,
+    checked before the remote-plaintext policy, whose message appears only
+    for a well-formed remote host.
+  - Connection errors display the endpoint and the root cause (refused, DNS,
+    TLS), not only a generic transport category.
+  - gRPC target syntax beyond `host:port` (`dns:///host:port` for client-side
+    load balancing, `unix:` sockets) is accepted where the transport supports
+    it, with the loopback check on the resolved host, and rejected at
+    construction elsewhere with an error naming the accepted forms. A target a
+    client accepts must work; clients do not pass unknown schemes through.
+  - Clients that connect lazily offer a startup readiness check (an
+    eager-connect option or an awaitable connect/ready call), so a wrong or
+    unreachable endpoint can still fail at startup.
+
+- **Reject unusable credentials and trust material at construction.**
+  - An empty or whitespace-only token is a local validation error, not a
+    bare `Bearer` header the server rejects later (a blank environment
+    variable is the usual cause).
+  - Custom CA, client certificate and key material is parsed when the client
+    is built; material that does not parse, or a client key that does not
+    match its certificate, fails with a local validation error naming which
+    input is wrong, never as an unexplained transport failure on the first
+    call.
+  - Caller-supplied revision tokens follow the same rule as credentials: an
+    empty or whitespace-only token is a local validation error.
+  - Dynamically typed clients check the types of names and IDs before use:
+    a value of the wrong type is a local validation error, never a server
+    round trip with a coerced value. Where a client deliberately accepts
+    another type for an ID (Ruby Integers, converted with `to_s`), its docs
+    say so.
 
 - **Require an explicit decision before sending credentials over remote plaintext.**
   - Every client library must expose a documented, named opt-in that permits
@@ -415,6 +521,28 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Validated by-name lookups resolve runtime permission and relation names to
     typed values, rejecting names (and subjects) the schema does not allow.
     Generated name lists support startup verification.
+  - Code that receives type and permission names at runtime (policy
+    expressions, admin tools) stays typed: generated code offers a schema-level
+    lookup of a definition by name, a resource-less permission ref by
+    definition and permission name, and a lookup of resources by runtime names,
+    each validated against the schema.
+  - String-keyed code reaches every typed value without hand-written
+    dispatch: a typed object from a type name and ID or from `type:id` text, a
+    subject set from type, ID and relation, a typed subject (object, subject
+    set or allowed wildcard) from `type:id[#relation]` text, a typed
+    relationship from tuple text whose subject the relation admits, checks
+    and bulk checks by name, and lookups of subjects as well as resources by
+    name, plus a type naming the union of generated objects. Schema
+    rejections of these names are local validation errors.
+  - By-name lookups accept relations as well as permissions, as SpiceDB does.
+    When the subject's type and relation cannot reach the target, they return
+    an empty result without a call, which is SpiceDB's answer; unknown names
+    still fail.
+  - Generated code exposes definition-name constants and the schema text it
+    was generated from, so callers need neither a hand-kept name list nor a
+    copy of the schema file to write it at startup.
+  - A names-only mode emits the name constants and schema text with no client
+    dependency, so a shared API package can use the names alone.
 
 - **Make generated values composable with the native layer in both directions.**
   - Typed permissions, permission refs and relationships expose their resource
@@ -467,6 +595,26 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     bypassed (grpc for Python and Ruby before 1.73 resolves `UNIX://host/...`
     as a DNS target, defeating the remote-plaintext loopback check). Verify
     floors by running the suites at exactly those versions.
+  - Floors and framework targets match the hosts consumers use: target every
+    supported LTS framework (.NET 8 and later), the current major of the
+    transport ecosystem (tonic and prost for Rust), and protobuf runtimes no
+    newer than the dominant host framework manages (Spring Boot for Java). A
+    runtime below the floor fails at client construction with a message naming
+    what to override.
+  - Each MIGRATION.md opens with a Requirements section listing runtime,
+    framework and dependency floors, and has a legacy-to-new table for renamed
+    request and response members.
+  - Each client directory has a README covering installation (including how to
+    consume it before it is published), a first call, and links to DESIGN,
+    MIGRATION and the AI integration guide.
+  - Published artifacts declare every dependency with a version, verified on
+    the generated manifest (POM, nuspec, gemspec, Cargo manifest), and the
+    client and proto artifacts share coordinates and version.
+  - Library builds treat compiler warnings as errors, so none surface in
+    consumer builds.
+  - Each client documents whether one instance may be shared across threads or
+    tasks, how it behaves across a fork, and where to build it in common
+    application servers.
 
 - **Verify observable behavior rather than merely successful execution.**
   - Reconcile examples against their runners by name, execute them in CI, and

@@ -102,8 +102,11 @@ def test_typed_relationships_round_trip() -> None:
     assert isinstance(broken.error, LookupError)
     with pytest.raises(LookupError):
         broken.to_relationship()
-    zero = TypedRelationship.from_relationship(Relationship(ObjectRef("", ""), "", SubjectRef(ObjectRef("", ""))))
-    assert isinstance(zero.error, InvalidArgumentError), "an empty native relationship is invalid"
+    # An empty object is refused when the native value is built, as SpiceDB would refuse it.
+    with pytest.raises(InvalidArgumentError):
+        ObjectRef("", "")
+    with pytest.raises(ValueError):
+        Relationship.from_triple("document:", "viewer", "user:alice")
 
 
 def test_writers_defer_construction_errors() -> None:

@@ -22,8 +22,12 @@ generated C# files in `gen/`.
 - `Client.cs` — SpiceDBProtoClient class, constructors, the loopback guard, IDisposable
 - `tests/` — `SpiceDB.Proto.Tests.csproj`: `ClientTest.cs` (construction, disposal, channel
   ownership), `InsecureHostGuardTest.cs` (insecure-transport credentials guard),
-  `AuthzedNetBridgeTest.cs` (legacy bridge, both assemblies in one process)
+  `EndpointFormTest.cs` (accepted and rejected endpoint forms),
+  `AuthzedNetBridgeTest.cs` (legacy bridge, both assemblies in one process),
+  `DescriptorInitializationTest.cs` (every generated descriptor initialises, in-process and
+  in a fresh process via `tests/DescriptorProbe/`)
 - `bridge/` — `generator/` writes `Authzed.Net/TypeForwards.g.cs` (DO NOT EDIT BY HAND);
   `Authzed.Net/` is the legacy-package bridge assembly
-- `TransitiveProtoStubs.cs` — metadata-only stubs for transitive proto dependencies
-- `SpiceDB.Proto.csproj` — `net10.0` project file
+- `TransitiveProtoStubs.cs` — metadata-only stub descriptors for transitive proto
+  dependencies, each with its real file name
+- `SpiceDB.Proto.csproj` — `net8.0;net9.0;net10.0` project file

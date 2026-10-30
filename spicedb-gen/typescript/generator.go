@@ -3,6 +3,7 @@ package typescript
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -37,12 +38,34 @@ const DefaultClientModule = "@spicedb/client"
 // TemplateData holds all pre-computed data needed by the template.
 type TemplateData struct {
 	ClientModule   string
+	SchemaText     string // the schema source as a JavaScript string literal
 	CaveatContexts []CaveatContextData
 	RefTypes       []RefTypeData // standalone subject refs (usersets, wildcards, variants)
 	Definitions    []DefinitionData
 	CheckOverloads []OverloadData
 	Lookups        []OverloadData
 	UsersetTypes   []UsersetTypeData
+	// Reaching lists, per relation and permission, the subject positions
+	// ("type" or "type#relation") that can reach it, for by-name operations.
+	Reaching []ReachingData
+	// SubjectSets lists every subject set a caller can build by name.
+	SubjectSets []SubjectSetData
+	// SubjectRules lists "definition#relation@shape" for every admitted subject shape.
+	SubjectRules []string
+}
+
+// ReachingData pairs a "definition#name" position with the subject positions
+// that reach it.
+type ReachingData struct {
+	Position string
+	Subjects []string
+}
+
+// SubjectSetData is one "definition#relation" subject set, its ref type and maker.
+type SubjectSetData struct {
+	Position string
+	RefType  string
+	Maker    string
 }
 
 // CaveatContextData represents a caveat context interface.
@@ -94,6 +117,7 @@ type WithMethodData struct {
 type DefinitionData struct {
 	Name            string // original name, e.g. "document"
 	PascalName      string // e.g. "Document"
+	Camel           string // key in the generated Definitions constant, e.g. "document"
 	RefType         string // e.g. "DocumentRef"
 	Maker           string // e.g. "makeDocumentRef"
 	WithMethods     []WithMethodData
@@ -210,12 +234,22 @@ func parseRenames(v string) (map[string]string, error) {
 //     definitions whose names would otherwise collide with generated
 //     identifiers. Renames change TypeScript identifiers only; the schema
 //     names sent to SpiceDB never change.
+//   - "names-only" (--typescript.names-only): emit only the name constants,
+//     literal unions and SchemaText into names.gen.ts, with no imports, so a
+//     shared package can use the names without depending on the client.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	module := DefaultClientModule
 	format := "none"
 	renames := map[string]string{}
+	namesOnly := false
 	for k, v := range opts {
 		switch k {
+		case generator.NamesOnlyOption:
+			b, err := generator.BoolOption("typescript", k, v)
+			if err != nil {
+				return nil, err
+			}
+			namesOnly = b
 		case "client-module":
 			if !clientModuleRe.MatchString(v) {
 				return nil, fmt.Errorf("--typescript.client-module=%q is not a valid module specifier", v)
@@ -235,6 +269,9 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		default:
 			return nil, fmt.Errorf("unknown TypeScript option --typescript.%s", k)
 		}
+	}
+	if _, ok := opts["client-module"]; ok && namesOnly {
+		return nil, fmt.Errorf("--typescript.client-module has no effect with --typescript.names-only, whose output imports nothing")
 	}
 	known := map[string]bool{}
 	for _, def := range s.Definitions {
@@ -256,17 +293,23 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 	data.ClientModule = module
+	data.SchemaText = jsString(s.Source)
 
 	tmpl, err := template.New("typed_client.ts.tmpl").Funcs(template.FuncMap{
-		"quoteList": quoteList,
-		"a":         withArticle,
+		"quoteList":   quoteList,
+		"a":           withArticle,
+		"makerParams": makerParams,
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
 	}
 
+	name, path := "typed_client.ts.tmpl", "typed_client.gen.ts"
+	if namesOnly {
+		name, path = "names_only.ts.tmpl", "names.gen.ts"
+	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
 		return nil, err
 	}
 
@@ -278,10 +321,21 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	}
 	return []generator.GeneratedFile{
 		{
-			Path:    "typed_client.gen.ts",
+			Path:    path,
 			Content: content,
 		},
 	}, nil
+}
+
+// jsString renders s as a JavaScript string literal. JSON string syntax is a
+// subset of it; encoding/json also escapes U+2028 and U+2029, which older
+// engines reject inside string literals.
+func jsString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err) // a Go string always marshals
+	}
+	return string(b)
 }
 
 // runPrettier formats TypeScript source with the project's own Prettier, so
@@ -325,6 +379,24 @@ func quoteList(items []string) string {
 		q[i] = fmt.Sprintf("%q", s)
 	}
 	return strings.Join(q, ", ")
+}
+
+// makerParams is the parameter list of a subject ref variant's maker: the ID
+// (a wildcard's is always "*"), then the caveat context and the expiration
+// where the variant has them. Each parameter is used, so the output passes
+// noUnusedParameters.
+func makerParams(rt RefTypeData) string {
+	var params []string
+	if !rt.Wildcard {
+		params = append(params, "id: string")
+	}
+	if rt.Caveat != "" {
+		params = append(params, "ctx: JSONObject")
+	}
+	if rt.Expiration {
+		params = append(params, "at: Date")
+	}
+	return strings.Join(params, ", ")
 }
 
 // subjectBase identifies a subject position independent of caveat and
@@ -422,7 +494,10 @@ var reservedModuleNames = []string{
 	"relationshipToString", "CheckResult", "CheckRequest", "Relationship", "RelationshipFilter", "SubjectRef", "LookupResource",
 	"LookupSubject", "ReadRelationship", "CheckOptions", "CallOptions", "LookupResourcesRequest", "LookupSubjectsRequest",
 	"ReadRelationshipsRequest", "SpiceDBClientOptions", "JSONObject", "JSONValue", "WriteResult", "RelationshipUpdate", "Precondition",
-	"Consistency", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
+	"Consistency", "SpiceDBClientInterface", "SchemaText", "Definitions", "DefinitionNames", "DefinitionName", "DefinitionInfo",
+	"AnyResourceRef", "definitionByName", "permissionRefByName", "subjectSetByName", "reachingSubjects", "reaches",
+	"resolveByName", "subjectPosition", "subjectSetMakers", "noResults", "objectByName", "parseObject", "parseSubject", "AnySubjectSet",
+	"subjectRules", "TripleOptions", "relationshipFromTriple", "NamedCheck", "checkTarget", "objectText", "requireId", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
 	"Promise", "Function", "RegExp", "BigInt", "Math", "Reflect", "Proxy", "Intl", "Record", "Readonly", "Partial",
 }
 
@@ -657,6 +732,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		dd := DefinitionData{
 			Name:        def.Name,
 			PascalName:  pascal,
+			Camel:       toCamelCase(pascal),
 			RefType:     refType,
 			Maker:       "make" + refType,
 			WithMethods: definitionWiths[def.Name],
@@ -776,7 +852,32 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		return TemplateData{}, n.err
 	}
 
+	var reaching []ReachingData
+	positions := s.ReachingSubjectPositions()
+	for _, def := range s.Definitions {
+		for _, r := range def.Relations {
+			p := schema.SubjectPosition(def.Name, r.Name)
+			reaching = append(reaching, ReachingData{Position: p, Subjects: positions[p]})
+		}
+		for _, perm := range def.Permissions {
+			p := schema.SubjectPosition(def.Name, perm.Name)
+			reaching = append(reaching, ReachingData{Position: p, Subjects: positions[p]})
+		}
+	}
+	var subjectSets []SubjectSetData
+	for _, p := range s.SubjectSetPositions() {
+		for _, rt := range refTypes {
+			if !rt.Wildcard && rt.Caveat == "" && !rt.Expiration && schema.SubjectPosition(rt.Definition, rt.Relation) == p {
+				subjectSets = append(subjectSets, SubjectSetData{Position: p, RefType: rt.TypeName, Maker: rt.Maker})
+				break
+			}
+		}
+	}
+
 	return TemplateData{
+		Reaching:       reaching,
+		SubjectSets:    subjectSets,
+		SubjectRules:   s.SubjectRules(),
 		CaveatContexts: caveatContexts,
 		RefTypes:       refTypes,
 		Definitions:    definitions,
@@ -911,5 +1012,6 @@ func (g *Generator) Options() []generator.Option {
 		{Name: "client-module", Value: "<specifier>", Description: `Module specifier the generated file imports the native client from (default "@spicedb/client").`},
 		{Name: "format", Value: "none|prettier", Description: `Format the output with the project's Prettier (default none).`},
 		{Name: "rename", Value: "<definition>=<Name>[,...]", Description: `Identifier stem for a definition whose generated names collide; schema names on the wire are unchanged.`},
+		generator.NamesOnlyOptionDescription,
 	}
 }

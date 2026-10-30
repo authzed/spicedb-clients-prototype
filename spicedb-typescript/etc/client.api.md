@@ -24,7 +24,7 @@ import { RelationshipUpdate as RelationshipUpdate_2 } from '@spicedb/proto';
 import { SpiceDBProtoClient } from '@spicedb/proto';
 import { SubjectReference } from '@spicedb/proto';
 import { TlsOptions } from '@spicedb/proto';
-import type { Transport } from '@connectrpc/connect';
+import { Transport } from '@connectrpc/connect';
 import { WriteRelationshipsResponse } from '@spicedb/proto';
 import { ZedToken as ZedToken_2 } from '@spicedb/proto';
 
@@ -36,10 +36,10 @@ export class AlreadyExistsError extends SpiceDBError {
 // @public (undocumented)
 export function atLeast(revision: ZedToken): Consistency;
 
-// @public (undocumented)
+// @public
 export function atLeastOrFull(revision: ZedToken | undefined): Consistency;
 
-// @public (undocumented)
+// @public
 export function atLeastOrMinLatency(revision: ZedToken | undefined): Consistency;
 
 // @public
@@ -155,6 +155,9 @@ export interface CheckRequest {
 
 // @public
 function checkRequestToProto(request: CheckRequest, defaultContext?: CheckRequest["context"]): CheckPermissionRequest;
+
+// @public
+export type CheckResolver = (check: CheckRequest) => Permissionship | undefined;
 
 // @public (undocumented)
 export class CheckResult {
@@ -559,7 +562,6 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult>;
     // (undocumented)
     dependentRelations(request: DependentRelationsRequest, options?: CallOptions): Promise<RelationsResult>;
-    // (undocumented)
     diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult>;
     // (undocumented)
     expandPermissionTree(request: ExpandPermissionTreeRequest, options?: CallOptions): Promise<ExpandResult>;
@@ -581,17 +583,18 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent>;
     exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
     failNext(operation: InMemoryOperation, error: Error): void;
+    static readonly grantAll: CheckResolver;
     importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
-    // (undocumented)
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource>;
-    // (undocumented)
     lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject>;
     raw(): SpiceDBProtoClient;
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
     readSchema(options?: CallOptions): Promise<SchemaResult>;
+    ready(options?: CallOptions): Promise<void>;
     reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
     get relationships(): readonly Relationship[];
     static serverError(code: Code, message: string, options?: Omit<SpiceDBErrorOptions, "code" | "cause" | "serverMessage">): SpiceDBError;
+    setCheckResolver(resolver: CheckResolver | undefined): void;
     setCheckResult(registration: CheckRegistration, result: Permissionship | SpiceDBError): void;
     setFaultHook(hook: FaultHook | undefined): void;
     setReadSchemaRevision(mode: SchemaRevision): void;
@@ -760,16 +763,12 @@ export function objectRefToString(object: ObjectRef): string;
 function objectToProto(object: ObjectRef): ObjectReference;
 
 // @public
-export class OperationAbortError extends DOMException {
+export class OperationAbortError extends CancelledError {
     constructor(reason: unknown);
-    // (undocumented)
-    readonly cause: unknown;
-    // (undocumented)
-    readonly deleteProgress?: DeleteResult;
 }
 
 // @public
-export type OperationName = "check" | "checkBulk" | "write" | "readRelationships" | "deleteRelationships" | "deleteAllRelationshipsNonAtomic" | "lookupResources" | "lookupSubjects" | "expandPermissionTree" | "importRelationships" | "exportRelationships" | "readSchema" | "writeSchema" | "reflectSchema" | "computablePermissions" | "dependentRelations" | "diffSchema" | "experimentalRegisterRelationshipCounter" | "experimentalCountRelationships" | "experimentalUnregisterRelationshipCounter" | "watch" | "experimentalCountRelationshipsByFilter" | "experimentalWatchPermissionSets" | "experimentalLookupPermissionSets" | "experimentalDownloadPermissionSets" | "experimentalRoaringLookupResources";
+export type OperationName = "check" | "checkBulk" | "write" | "readRelationships" | "deleteRelationships" | "deleteAllRelationshipsNonAtomic" | "lookupResources" | "lookupSubjects" | "expandPermissionTree" | "importRelationships" | "exportRelationships" | "readSchema" | "writeSchema" | "reflectSchema" | "computablePermissions" | "dependentRelations" | "diffSchema" | "experimentalRegisterRelationshipCounter" | "experimentalCountRelationships" | "experimentalUnregisterRelationshipCounter" | "watch" | "experimentalCountRelationshipsByFilter" | "experimentalWatchPermissionSets" | "experimentalLookupPermissionSets" | "experimentalDownloadPermissionSets" | "experimentalRoaringLookupResources" | "ready";
 
 // @public
 export type OperationRetryPolicies = {
@@ -1215,7 +1214,7 @@ export interface SchemaDiff {
     // (undocumented)
     readonly definitionName: string;
     // (undocumented)
-    readonly kind: string;
+    readonly kind: SchemaDiffKind;
     // (undocumented)
     readonly parameter?: SchemaCaveatParameter;
     // (undocumented)
@@ -1229,6 +1228,9 @@ export interface SchemaDiff {
     // (undocumented)
     readonly relationName: string;
 }
+
+// @public
+export type SchemaDiffKind = "definition_added" | "definition_removed" | "definition_doc_comment_changed" | "relation_added" | "relation_removed" | "relation_doc_comment_changed" | "relation_subject_type_added" | "relation_subject_type_removed" | "permission_added" | "permission_removed" | "permission_doc_comment_changed" | "permission_expr_changed" | "caveat_added" | "caveat_removed" | "caveat_doc_comment_changed" | "caveat_expr_changed" | "caveat_parameter_added" | "caveat_parameter_removed" | "caveat_parameter_type_changed" | "unknown";
 
 // @public (undocumented)
 export interface SchemaDiffResult {
@@ -1353,6 +1355,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
     // (undocumented)
     readSchema(options?: CallOptions): Promise<SchemaResult>;
+    ready(options?: CallOptions): Promise<void>;
     // (undocumented)
     reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
     // (undocumented)
@@ -1422,6 +1425,8 @@ export interface SpiceDBClientInterface {
     // (undocumented)
     readSchema(options?: CallOptions): Promise<SchemaResult>;
     // (undocumented)
+    ready(options?: CallOptions): Promise<void>;
+    // (undocumented)
     reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
     // (undocumented)
     watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent>;
@@ -1460,6 +1465,7 @@ export class SpiceDBError extends Error {
     readonly reason: string;
     readonly reasonDomain: string;
     readonly reasonMetadata: Readonly<Record<string, string>>;
+    readonly resumeCursor?: string;
     readonly serverMessage?: string;
     toConnectError(): ConnectError;
 }
@@ -1703,6 +1709,7 @@ export class ZedToken {
     equals(other: ZedToken): boolean;
     // (undocumented)
     toJSON(): string;
+    readonly token: string;
     // (undocumented)
     toString(): string;
 }

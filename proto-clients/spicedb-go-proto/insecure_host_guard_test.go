@@ -2,6 +2,7 @@ package spicedbgoproto
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -173,7 +174,14 @@ func TestRefusesAuthorityShiftingEndpointWithoutOptIn(t *testing.T) {
 			require.Error(t, err, "expected %q to be refused", endpoint)
 			require.Nil(t, client)
 			require.Contains(t, err.Error(), endpoint)
-			require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+			// A malformed host:port (userinfo, path, whitespace) is refused
+			// as an invalid endpoint before the remote-plaintext guard
+			// runs; a well-formed target reaches the guard. Either way
+			// nothing is dialed.
+			if !errors.Is(err, ErrInvalidEndpoint) {
+				require.ErrorIs(t, err, ErrInsecureRemoteHost)
+				require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+			}
 
 			require.EqualValues(t, 0, dialCount.Load(),
 				"the dialer that would carry the credential to the wire must never be invoked")

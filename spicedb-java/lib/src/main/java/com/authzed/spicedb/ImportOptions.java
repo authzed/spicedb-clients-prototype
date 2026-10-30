@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Duration;
 import java.util.*;
 
@@ -12,14 +13,12 @@ public final class ImportOptions {
   private ImportOptions(Builder b) {
     this.transport = b.transport;
     this.retryPolicy = b.retryPolicy;
-    if (transport == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
+    if (transport == null) throw new LocalValidationException("transport must not be null");
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
+      throw new LocalValidationException("timeout must be positive");
     this.batchSize = b.batchSize;
-    if (batchSize <= 0)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("batchSize must be positive");
+    if (batchSize <= 0) throw new LocalValidationException("batchSize must be positive");
   }
 
   public static Builder builder() {

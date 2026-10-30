@@ -134,20 +134,23 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 				size = uint32(min(uint64(size), o.limit-total))
 			}
 			req := &v1.ExportBulkRelationshipsRequest{Consistency: cs, OptionalLimit: size, OptionalCursor: cur, OptionalRelationshipFilter: f}
-			pageCtx, pageCancel := context.WithCancel(ctx)
+			// The page's clock pauses while the caller holds an item.
+			pageCtx, clock, pageCancel := c.serverClock(ctx, true)
 			count := uint32(0)
 			prev := cur.GetToken()
 			for resp, e := range receive(pageCtx, c.retrySettings(o), "export relationships", !exposed, func(ctx context.Context) (receiver[*v1.ExportBulkRelationshipsResponse], error) {
 				return c.psc.ExportBulkRelationships(ctx, req, o.callOptions...)
 			}) {
+				clock.hold()
 				if e != nil {
+					e = clock.err(pageCtx, "export relationships", e)
 					pageCancel()
 					yield(ExportedRelationship{}, e)
 					return
 				}
 				cur = resp.GetAfterResultCursor()
 				for _, p := range resp.GetRelationships() {
-					r, e := nativeRelationship(p)
+					r, e := nativeRelationship("export relationships", p)
 					if e != nil {
 						pageCancel()
 						yield(ExportedRelationship{}, e)
@@ -165,13 +168,14 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 						return
 					}
 				}
+				clock.wait()
 			}
 			pageCancel()
 			if count < size {
 				return
 			}
 			if cur.GetToken() == "" || cur.GetToken() == prev {
-				yield(ExportedRelationship{}, &Error{Code: CodeInternal, Message: "spicedb: export page did not advance cursor"})
+				yield(ExportedRelationship{}, malformed("export relationships", "page did not advance cursor"))
 				return
 			}
 		}

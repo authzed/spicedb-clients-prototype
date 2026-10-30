@@ -1,7 +1,6 @@
 import { create, clone } from "@bufbuild/protobuf";
 import { type Consistency as ProtoConsistency, ConsistencySchema, ZedTokenSchema } from "@spicedb/proto";
-import { InvalidArgumentError } from "./errors.js";
-import { ZedToken, tokenString } from "./token.js";
+import { ZedToken, requestToken } from "./token.js";
 /** Opaque, immutable read consistency. Use the named factories. */
 export class Consistency {
     private constructor(private readonly proto: ProtoConsistency) { Object.freeze(this); }
@@ -25,11 +24,15 @@ export class Consistency {
 export function full(): Consistency { return Consistency._wrap(create(ConsistencySchema, { requirement: { case: "fullyConsistent", value: true } })); }
 export function minLatency(): Consistency { return Consistency._wrap(create(ConsistencySchema, { requirement: { case: "minimizeLatency", value: true } })); }
 function tokenConsistency(revision: ZedToken, mode: "atLeastAsFresh" | "atExactSnapshot"): Consistency {
-    if (!(revision instanceof ZedToken) || !revision.toString())
-        throw new InvalidArgumentError("revision must be a nonempty ZedToken");
-    return Consistency._wrap(create(ConsistencySchema, { requirement: { case: mode, value: create(ZedTokenSchema, { token: tokenString(revision) }) } }));
+    return Consistency._wrap(create(ConsistencySchema, { requirement: { case: mode, value: create(ZedTokenSchema, { token: requestToken(revision) }) } }));
 }
 export function atLeast(revision: ZedToken): Consistency { return tokenConsistency(revision, "atLeastAsFresh"); }
 export function snapshot(revision: ZedToken): Consistency { return tokenConsistency(revision, "atExactSnapshot"); }
-export function atLeastOrFull(revision: ZedToken | undefined): Consistency { return revision === undefined ? full() : atLeast(revision); }
-export function atLeastOrMinLatency(revision: ZedToken | undefined): Consistency { return revision === undefined ? minLatency() : atLeast(revision); }
+/** True when there is no usable revision to wait for: absent, or a token that is empty or whitespace-only. */
+function noRevision(revision: ZedToken | undefined): boolean {
+    return revision === undefined || (revision instanceof ZedToken && revision.token.trim() === "");
+}
+/** `atLeast(revision)`, or `full()` when `revision` is absent, empty or whitespace-only. */
+export function atLeastOrFull(revision: ZedToken | undefined): Consistency { return noRevision(revision) ? full() : atLeast(revision!); }
+/** `atLeast(revision)`, or `minLatency()` when `revision` is absent, empty or whitespace-only. */
+export function atLeastOrMinLatency(revision: ZedToken | undefined): Consistency { return noRevision(revision) ? minLatency() : atLeast(revision!); }

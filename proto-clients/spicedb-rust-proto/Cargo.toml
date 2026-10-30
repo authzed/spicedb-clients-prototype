@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "SpiceDB proto client for Rust — thin wrapper over tonic-generated gRPC stubs"
 
-# Disable doctests: tonic-build generates doc comments containing JSON
+# Disable doctests: tonic-prost-build generates doc comments containing JSON
 # examples (e.g. `"reason": "ERROR_REASON_SCHEMA_PARSE_ERROR"`) that
 # Rust's doctest runner tries to parse as Rust code and fails.
 [lib]
@@ -13,15 +13,27 @@ doctest = false
 [dependencies]
 # Library requirements are the lowest versions that build and pass the tests
 # (root DESIGN.md, "Library modules declare the lowest dependency versions they
-# actually need"). tonic 0.12 and prost 0.13 are one coherent generation: never
-# bump one major without the other and tonic-build. Default features are off so
-# consumers do not inherit tonic's server stack; tests enable it below.
-tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "channel", "tls", "tls-native-roots"] }
-prost = "0.13"
-prost-types = "0.13"
+# actually need"). tonic 0.14, tonic-prost 0.14 and prost 0.14 are one
+# coherent generation: never bump one without the others and tonic-prost-build.
+# Default features are off so consumers do not inherit tonic's server stack or
+# router; tests enable the server below. TLS uses rustls with ring, as tonic
+# 0.12's `tls` feature did.
+tonic = { version = "0.14", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots"] }
+# The prost codec the generated stubs use (split out of tonic in 0.14).
+tonic-prost = "0.14"
+prost = "0.14"
+prost-types = "0.14"
+
+# Unix-domain-socket targets (`unix:/path`): a connector that dials the
+# socket, handed to tonic's Endpoint. All three are already in tonic's channel
+# stack; these lines only name the features the connector uses.
+[target.'cfg(unix)'.dependencies]
+tokio = { version = "1", default-features = false, features = ["net"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+hyper-util = { version = "0.1.4", default-features = false, features = ["tokio"] }
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-prost-build = "0.14"
 glob = "0.3"
 protoc-bin-vendored = "3.2.0"
 
@@ -32,4 +44,4 @@ protoc-bin-vendored = "3.2.0"
 # can learn the ephemeral port before the server starts serving.
 tokio-stream = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
-tonic = { version = "0.12", features = ["server"] }
+tonic = { version = "0.14", features = ["server", "router"] }

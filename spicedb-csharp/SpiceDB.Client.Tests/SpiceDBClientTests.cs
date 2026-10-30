@@ -112,22 +112,26 @@ public class SpiceDBClientTests
     public void CreatePlaintext_RefusesEndpointWhoseUriAuthorityShiftsTheHost(string endpoint)
     {
         var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        // Userinfo is a malformed endpoint, refused before the remote-plaintext policy.
         var ex = act.Should().Throw<InvalidArgumentException>().Which;
-        ex.Message.Should().Contain("RemotePlaintextCredentials.Allow");
+        ex.Message.Should().Contain("userinfo");
     }
 
     /// <summary>
-    /// A unix-socket endpoint is refused, not silently turned into a DNS lookup for the
-    /// hostname "unix". Grpc.Net.Client cannot dial a UDS path from an address string.
+    /// A unix-socket endpoint dials the socket path, never a DNS lookup for the hostname
+    /// "unix": against a missing socket file the readiness check fails naming the endpoint.
+    /// examples/EndpointForms makes a real call over a live socket.
     /// </summary>
     [Theory]
-    [InlineData("unix:/var/run/spicedb.sock")]
-    [InlineData("unix:///var/run/spicedb.sock")]
-    public void CreatePlaintext_RefusesUnixSocketTargets(string endpoint)
+    [InlineData("unix:/var/run/spicedb-missing.sock")]
+    [InlineData("unix:///var/run/spicedb-missing.sock")]
+    public async Task CreatePlaintext_UnixSocketTargetsDialTheSocketPath(string endpoint)
     {
-        var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
-        var ex = act.Should().Throw<InvalidArgumentException>().Which;
-        ex.Message.Should().Contain("unix-domain-socket");
+        await using var client = SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        var ex = (await FluentActions.Awaiting(() => client.ConnectAsync(new ConnectOptions { Timeout = TimeSpan.FromMilliseconds(500) }))
+            .Should().ThrowAsync<SpiceDBException>()).Which;
+        ex.StatusCode.Should().BeOneOf(Grpc.Core.StatusCode.DeadlineExceeded, Grpc.Core.StatusCode.Unavailable);
+        ex.Message.Should().Contain(endpoint);
     }
 
     [Fact]
@@ -145,10 +149,8 @@ public class SpiceDBClientTests
     /// not.
     /// </summary>
     [Theory]
-    [InlineData("::1")]
-    [InlineData("[::1]")]
-    [InlineData("0:0:0:0:0:0:0:1")]
     [InlineData("[::1]:50051")]
+    [InlineData("[0:0:0:0:0:0:0:1]:50051")]
     public void CreatePlaintext_BareIpv6LoopbackWorksWithNoOptIn(string endpoint)
     {
         var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");

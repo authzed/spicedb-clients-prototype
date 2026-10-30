@@ -142,7 +142,7 @@ public class StreamingEstablishmentRetryTests
         await foreach (var r in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default))
             got.Add(r);
 
-        got.Select(r => r.ResourceID).Should().Equal("doc1");
+        got.Select(r => r.ResourceId).Should().Equal("doc1");
         script.CallCount.Should().Be(2);
     }
 
@@ -178,7 +178,7 @@ public class StreamingEstablishmentRetryTests
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
-        got.Select(r => r.ResourceID).Should().Equal("doc1");
+        got.Select(r => r.ResourceId).Should().Equal("doc1");
         script.CallCount.Should().Be(1);
     }
 
@@ -209,7 +209,7 @@ public class StreamingEstablishmentRetryTests
         await foreach (var s in client.LookupSubjectsAsync(Consistency.Full(), new ObjectRef("document", "doc1"), "view", "user", null, default))
             got.Add(s);
 
-        got.Select(s => s.Subject.SubjectID).Should().Equal("alice");
+        got.Select(s => s.Subject.SubjectId).Should().Equal("alice");
         script.CallCount.Should().Be(2);
     }
 
@@ -243,7 +243,7 @@ public class StreamingEstablishmentRetryTests
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
-        got.Select(s => s.Subject.SubjectID).Should().Equal("alice");
+        got.Select(s => s.Subject.SubjectId).Should().Equal("alice");
         script.CallCount.Should().Be(1);
     }
 

@@ -164,11 +164,14 @@ impl Relationship {
             }),
         }
     }
-    pub(crate) fn from_proto(r: &proto::Relationship) -> Self {
-        Self {
-            resource: ObjectRef::from_proto(r.resource.as_ref()),
+    /// Maps a relationship in a server response. A missing resource or
+    /// subject is a response the client cannot interpret: `Internal`, never
+    /// an empty object.
+    pub(crate) fn from_response(r: &proto::Relationship) -> Result<Self, SpiceDBError> {
+        Ok(Self {
+            resource: ObjectRef::from_response(r.resource.as_ref(), "relationship resource")?,
             relation: r.relation.clone(),
-            subject: SubjectRef::from_proto(r.subject.as_ref()),
+            subject: SubjectRef::from_response(r.subject.as_ref(), "relationship subject")?,
             caveat_specified: r.optional_caveat.is_some(),
             caveat_name: r
                 .optional_caveat
@@ -184,8 +187,32 @@ impl Relationship {
                 .optional_expires_at
                 .as_ref()
                 .and_then(timestamp_from_proto),
-        }
+        })
     }
+}
+/// The error for a server response missing a field the client requires.
+pub(crate) fn missing_in_response(what: &str) -> SpiceDBError {
+    crate::error::internal(format!("missing {what}"))
+}
+/// Fails a check or lookup result whose permissionship is unset (the proto's
+/// zero `UNSPECIFIED` value): the server always sets it, so an unset one is a
+/// malformed response, never an answer. Values this client does not know are
+/// left to the mapping functions, which treat them as `Unspecified`.
+pub(crate) fn require_permissionship(value: i32, what: &str) -> Result<(), SpiceDBError> {
+    if value == 0 {
+        return Err(crate::error::internal(format!(
+            "{what} permissionship is unset"
+        )));
+    }
+    Ok(())
+}
+/// Refuses an empty or whitespace-only caller-supplied revision token, which
+/// can name no revision (usually an unset variable or a blank stored value).
+pub(crate) fn require_revision(field: &str, token: &ZedToken) -> Result<(), SpiceDBError> {
+    if token.as_ref().trim().is_empty() {
+        return Err(invalid(field, "must not be empty or whitespace"));
+    }
+    Ok(())
 }
 pub(crate) fn invalid(field: &str, reason: &str) -> SpiceDBError {
     SpiceDBError::InvalidArgument(format!("{field}: {reason}").into())
@@ -328,8 +355,14 @@ impl Filter {
     }
 
     /// Narrows the filter to a specific subject relation.
+    /// `SubjectRelationFilter::Named("...")` is read as
+    /// [`SubjectRelationFilter::Direct`]: `...` is SpiceDB's name for a
+    /// direct subject.
     pub fn with_subject_relation(mut self, relation: SubjectRelationFilter) -> Self {
-        self.subject_relation = relation;
+        self.subject_relation = match relation {
+            SubjectRelationFilter::Named(n) if n == "..." => SubjectRelationFilter::Direct,
+            other => other,
+        };
         self
     }
 
@@ -375,14 +408,13 @@ impl Filter {
             }),
             SubjectRelationFilter::Named(name) => {
                 required("subject_relation", name)?;
-                if name == "..." {
-                    return Err(invalid(
-                        "subject_relation",
-                        "ellipsis is not a named relation",
-                    ));
-                }
+                // `...` means a direct subject (the wire's empty relation).
                 Some(proto::subject_filter::RelationFilter {
-                    relation: name.clone(),
+                    relation: if name == "..." {
+                        String::new()
+                    } else {
+                        name.clone()
+                    },
                 })
             }
         };
@@ -529,7 +561,9 @@ impl WatchOptions {
         Self::default()
     }
 
-    /// Resumes from `revision` rather than from head.
+    /// Resumes from `revision` rather than from head. An empty or
+    /// whitespace-only revision fails the stream with `InvalidArgument`
+    /// before any request.
     pub fn with_start_revision(mut self, revision: ZedToken) -> Self {
         self.start_revision = Some(revision);
         self
@@ -755,15 +789,19 @@ impl ObjectRef {
             object_id: self.object_id.clone(),
         }
     }
-    pub(crate) fn from_proto(o: Option<&proto::ObjectReference>) -> Self {
-        o.map(|o| Self {
+    pub(crate) fn from_proto(o: &proto::ObjectReference) -> Self {
+        Self {
             object_type: o.object_type.clone(),
             object_id: o.object_id.clone(),
-        })
-        .unwrap_or(Self {
-            object_type: String::new(),
-            object_id: String::new(),
-        })
+        }
+    }
+    /// A required object in a server response; `None` is `Internal`.
+    pub(crate) fn from_response(
+        o: Option<&proto::ObjectReference>,
+        what: &str,
+    ) -> Result<Self, SpiceDBError> {
+        o.map(Self::from_proto)
+            .ok_or_else(|| missing_in_response(what))
     }
 }
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -774,14 +812,23 @@ pub struct SubjectRef {
     relation: Option<String>,
 }
 impl SubjectRef {
+    /// A subject: `object` itself when `relation` is `None` (or `"..."`,
+    /// SpiceDB's name for a direct subject), otherwise the subject set
+    /// `object#relation`. Fails only for an empty relation.
     pub fn new(object: ObjectRef, relation: Option<String>) -> Result<Self, SpiceDBError> {
+        let relation = relation.filter(|r| r != "...");
         if let Some(r) = &relation {
             required("subject_relation", r)?;
-            if r == "..." {
-                return Err(invalid("subject_relation", "use None for a direct subject"));
-            }
         }
         Ok(Self { object, relation })
+    }
+    /// The direct subject `object`, with no relation. Infallible; also
+    /// available as `SubjectRef::from(object)` and `object.into()`.
+    pub fn direct(object: ObjectRef) -> Self {
+        Self {
+            object,
+            relation: None,
+        }
     }
     pub fn object(&self) -> &ObjectRef {
         &self.object
@@ -795,19 +842,27 @@ impl SubjectRef {
             optional_relation: self.relation.clone().unwrap_or_default(),
         }
     }
-    pub(crate) fn from_proto(s: Option<&proto::SubjectReference>) -> Self {
-        s.map(|s| Self {
-            object: ObjectRef::from_proto(s.object.as_ref()),
+    /// A required subject in a server response; a missing subject or
+    /// subject object is `Internal`.
+    pub(crate) fn from_response(
+        s: Option<&proto::SubjectReference>,
+        what: &str,
+    ) -> Result<Self, SpiceDBError> {
+        let s = s.ok_or_else(|| missing_in_response(what))?;
+        Ok(Self {
+            object: ObjectRef::from_response(s.object.as_ref(), &format!("{what} object"))?,
             relation: if s.optional_relation.is_empty() || s.optional_relation == "..." {
                 None
             } else {
                 Some(s.optional_relation.clone())
             },
         })
-        .unwrap_or(Self {
-            object: ObjectRef::from_proto(None),
-            relation: None,
-        })
+    }
+}
+impl From<ObjectRef> for SubjectRef {
+    /// The direct subject `object` ([`SubjectRef::direct`]).
+    fn from(object: ObjectRef) -> Self {
+        Self::direct(object)
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -842,16 +897,20 @@ pub(crate) fn tree_operation_from_proto(v: i32) -> TreeOperation {
         _ => TreeOperation::Unspecified,
     }
 }
+/// Maps an expanded tree node. A node of a kind this client does not know is
+/// [`PermissionTree::Unknown`]; a node missing its expanded object, or a
+/// leaf subject missing its object, is `Internal`.
 pub(crate) fn permission_tree_from_proto(
-    t: Option<&proto::PermissionRelationshipTree>,
-) -> PermissionTree {
-    let Some(t) = t else {
-        return PermissionTree::Unknown;
+    t: &proto::PermissionRelationshipTree,
+) -> Result<PermissionTree, SpiceDBError> {
+    let Some(tree_type) = &t.tree_type else {
+        return Ok(PermissionTree::Unknown);
     };
-    let expanded_object = ObjectRef::from_proto(t.expanded_object.as_ref());
+    let expanded_object =
+        ObjectRef::from_response(t.expanded_object.as_ref(), "expanded tree object")?;
     let expanded_relation = t.expanded_relation.clone();
-    match &t.tree_type {
-        Some(proto::permission_relationship_tree::TreeType::Intermediate(i)) => {
+    Ok(match tree_type {
+        proto::permission_relationship_tree::TreeType::Intermediate(i) => {
             PermissionTree::Intermediate {
                 expanded_object,
                 expanded_relation,
@@ -859,21 +918,20 @@ pub(crate) fn permission_tree_from_proto(
                 children: i
                     .children
                     .iter()
-                    .map(|c| permission_tree_from_proto(Some(c)))
-                    .collect(),
+                    .map(permission_tree_from_proto)
+                    .collect::<Result<_, _>>()?,
             }
         }
-        Some(proto::permission_relationship_tree::TreeType::Leaf(l)) => PermissionTree::Leaf {
+        proto::permission_relationship_tree::TreeType::Leaf(l) => PermissionTree::Leaf {
             expanded_object,
             expanded_relation,
             subjects: l
                 .subjects
                 .iter()
-                .map(|s| SubjectRef::from_proto(Some(s)))
-                .collect(),
+                .map(|s| SubjectRef::from_response(Some(s), "expanded tree subject"))
+                .collect::<Result<_, _>>()?,
         },
-        None => PermissionTree::Unknown,
-    }
+    })
 }
 
 /// The result of an expand permission tree call.
@@ -1114,8 +1172,8 @@ pub(crate) fn check_permissionship_from_proto(v: i32) -> Permissionship {
 pub(crate) fn check_result_from_bulk_item(
     item: &proto::CheckBulkPermissionsResponseItem,
     checked_at: &str,
-) -> CheckResult {
-    CheckResult {
+) -> Result<CheckResult, SpiceDBError> {
+    Ok(CheckResult {
         permissionship: check_permissionship_from_proto(item.permissionship),
         missing_context: item
             .partial_caveat_info
@@ -1123,10 +1181,14 @@ pub(crate) fn check_result_from_bulk_item(
             .map(|c| c.missing_required_context.clone())
             .unwrap_or_default(),
         checked_at: checked_at.into(),
-        debug_trace: item.debug_trace.as_ref().map(DebugInformation::from_proto),
+        debug_trace: item
+            .debug_trace
+            .as_ref()
+            .map(DebugInformation::from_proto)
+            .transpose()?,
         expiration: None,
         error: None,
-    }
+    })
 }
 
 /// Merges call-level and per-item check-time caveat context per the
@@ -1184,21 +1246,12 @@ pub(crate) fn partial_caveat_from_proto(
     })
 }
 
-/// Maps a proto `ResolvedSubject` to its native equivalent. `None` maps to a
-/// zero-value `ResolvedSubject` (empty `subject_id`), which callers use as
-/// the trigger for falling back to deprecated response-level fields.
-pub(crate) fn resolved_subject_from_proto(v: Option<&proto::ResolvedSubject>) -> ResolvedSubject {
-    match v {
-        Some(v) => ResolvedSubject {
-            subject_id: v.subject_object_id.clone(),
-            permissionship: permissionship_from_proto(v.permissionship),
-            partial_caveat: partial_caveat_from_proto(v.partial_caveat_info.as_ref()),
-        },
-        None => ResolvedSubject {
-            subject_id: String::new(),
-            permissionship: Permissionship::Unspecified,
-            partial_caveat: None,
-        },
+/// Maps a proto `ResolvedSubject` to its native equivalent.
+pub(crate) fn resolved_subject_from_proto(v: &proto::ResolvedSubject) -> ResolvedSubject {
+    ResolvedSubject {
+        subject_id: v.subject_object_id.clone(),
+        permissionship: permissionship_from_proto(v.permissionship),
+        partial_caveat: partial_caveat_from_proto(v.partial_caveat_info.as_ref()),
     }
 }
 
@@ -1416,24 +1469,32 @@ pub struct CaveatEvaluation {
     pub name: String,
 }
 impl DebugInformation {
-    pub(crate) fn from_proto(p: &proto::DebugInformation) -> Self {
-        Self {
-            check: p.check.as_ref().map(CheckDebugTrace::from_proto),
+    pub(crate) fn from_proto(p: &proto::DebugInformation) -> Result<Self, SpiceDBError> {
+        Ok(Self {
+            check: p
+                .check
+                .as_ref()
+                .map(CheckDebugTrace::from_proto)
+                .transpose()?,
             schema_used: p.schema_used.clone(),
-        }
+        })
     }
 }
 impl CheckDebugTrace {
-    fn from_proto(p: &proto::CheckDebugTrace) -> Self {
-        Self {
-            resource: p.resource.as_ref().map(|r| ObjectRef::from_proto(Some(r))),
+    fn from_proto(p: &proto::CheckDebugTrace) -> Result<Self, SpiceDBError> {
+        Ok(Self {
+            resource: p.resource.as_ref().map(ObjectRef::from_proto),
             permission: p.permission.clone(),
             permission_type: match p.permission_type {
                 1 => PermissionType::Relation,
                 2 => PermissionType::Permission,
                 _ => PermissionType::Unspecified,
             },
-            subject: p.subject.as_ref().map(|s| SubjectRef::from_proto(Some(s))),
+            subject: p
+                .subject
+                .as_ref()
+                .map(|s| SubjectRef::from_response(Some(s), "debug trace subject"))
+                .transpose()?,
             result: check_permissionship_from_proto(p.result),
             caveat_evaluation: p.caveat_evaluation_info.as_ref().map(|c| CaveatEvaluation {
                 expression: c.expression.clone(),
@@ -1456,21 +1517,32 @@ impl CheckDebugTrace {
                 chrono::TimeDelta::try_seconds(d.seconds)
                     .and_then(|s| s.checked_add(&chrono::TimeDelta::nanoseconds(d.nanos as i64)))
             }),
-            resolution: p.resolution.as_ref().map(|r| match r {
-                proto::check_debug_trace::Resolution::WasCachedResult(c) => {
-                    TraceResolution::Cached(*c)
-                }
-                proto::check_debug_trace::Resolution::SubProblems(s) => {
-                    TraceResolution::Subproblems(s.traces.iter().map(Self::from_proto).collect())
-                }
-            }),
+            resolution: p
+                .resolution
+                .as_ref()
+                .map(|r| {
+                    Ok::<_, SpiceDBError>(match r {
+                        proto::check_debug_trace::Resolution::WasCachedResult(c) => {
+                            TraceResolution::Cached(*c)
+                        }
+                        proto::check_debug_trace::Resolution::SubProblems(s) => {
+                            TraceResolution::Subproblems(
+                                s.traces
+                                    .iter()
+                                    .map(Self::from_proto)
+                                    .collect::<Result<_, _>>()?,
+                            )
+                        }
+                    })
+                })
+                .transpose()?,
             expiration: p
                 .optional_expires_at
                 .as_ref()
                 .and_then(timestamp_from_proto),
             operation_id: p.trace_operation_id.clone(),
             source: p.source.clone(),
-        }
+        })
     }
 }
 
@@ -1830,8 +1902,11 @@ impl LookupSubjectsOptions {
         self.context = Some(value);
         self
     }
+    /// Looks up subject sets `type:id#relation`. `"..."` means direct
+    /// subjects, the default.
     pub fn with_subject_relation(mut self, value: impl Into<String>) -> Self {
-        self.subject_relation = Some(value.into());
+        let value = value.into();
+        self.subject_relation = (value != "...").then_some(value);
         self
     }
     pub fn with_limit(mut self, value: u32) -> Self {

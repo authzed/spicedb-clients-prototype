@@ -39,4 +39,34 @@ func typeErrors() {
 	_ = Invitation("x").Grant(Organization("acme").CanAdmin()) // should not compile
 	// WriteTxn does not shadow the native Write
 	_, _ = NewTypedClient(nil).Write(context.Background(), &Txn{}) // should not compile
+
+	// NewTypedClient takes a client.Interface, not an endpoint or a bare value
+	_ = NewTypedClient("localhost:50051") // should not compile
+	_ = NewTypedClient(struct{}{})        // should not compile
+	// By-name lookups report schema errors; their results cannot be used unchecked
+	var _ PermissionRef = PermissionRefByName("document", "view") // should not compile
+	var _ Definition = DefinitionByName("document")               // should not compile
+	// A Definition is not a PermissionRef, and only the schema builds one
+	var _ PermissionRef = Definition{}          // should not compile
+	_ = Definition{name: "document"}            // should not compile
+	_ = Definitions.Folder                      // should not compile
+	SchemaText = "definition folder {}"         // should not compile
+	_ = DefinitionNames()[0] + Definitions.User // fine: both are plain strings
+	// LookupResourcesByName takes a typed subject, not a tuple string
+	_ = LookupResourcesByName(context.Background(), NewTypedClient(nil), consistency.Full(), "document", "view", "user:alice") // should not compile
+	// LookupSubjectsByName takes a runtime subject type name, not a sentinel
+	_ = LookupSubjectsByName(context.Background(), NewTypedClient(nil), consistency.Full(), "document", "x", "view", UserType, "") // should not compile
+	// By-name entry points report schema errors; their results cannot be used unchecked
+	var _ DefinitionRef = ParseObject("user:alice")                                        // should not compile
+	var _ TypedRelationship = RelationshipFromTriple("document:x", "viewer", "user:alice") // should not compile
+	// RelationshipFromTriple takes options, not a bare caveat name or time
+	_, _ = RelationshipFromTriple("document:x", "viewer", "user:alice", "ip_range") // should not compile
+	// CheckByName takes a generated subject, not tuple text
+	_, _ = CheckByName(context.Background(), NewTypedClient(nil), consistency.Full(), "document", "x", "view", "user:alice") // should not compile
+	// SubjectSetByName reports schema errors; a subject set is not an object ref
+	var _ Subject = SubjectSetByName("team", "eng", "member") // should not compile
+	var _ DefinitionRef = Team("eng").Member()                // should not compile
+	// DefinitionRef is sealed: only generated refs implement it
+	var _ DefinitionRef = struct{ Subject }{} // should not compile
+	var _ DefinitionRef = Document("x")       // fine: every definition ref is one
 }

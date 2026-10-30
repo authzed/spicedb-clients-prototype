@@ -12,10 +12,13 @@ import com.authzed.spicedb.ExportOptions;
 import com.authzed.spicedb.ExportedRelationship;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.ImportOptions;
+import com.authzed.spicedb.LookupDebug;
 import com.authzed.spicedb.LookupOptions;
+import com.authzed.spicedb.LookupPermissionshipFilter;
 import com.authzed.spicedb.LookupResult;
 import com.authzed.spicedb.Materialize;
 import com.authzed.spicedb.ObjectRef;
+import com.authzed.spicedb.Paging;
 import com.authzed.spicedb.PartialDeletion;
 import com.authzed.spicedb.PermissionCheck;
 import com.authzed.spicedb.PermissionSetOptions;
@@ -36,7 +39,7 @@ import com.authzed.spicedb.WriteOptions;
 import com.authzed.spicedb.WriteResult;
 import com.authzed.spicedb.ZedToken;
 import com.authzed.spicedb.errors.ErrorMapper;
-import com.authzed.spicedb.errors.InvalidArgumentException;
+import com.authzed.spicedb.errors.LocalValidationException;
 import com.authzed.spicedb.errors.SpiceDBException;
 import io.grpc.Channel;
 import io.grpc.Metadata;
@@ -81,15 +84,31 @@ import java.util.stream.StreamSupport;
  *       with {@link #setReflectSchemaResult}.
  *   <li>{@link #readSchema} reports the current revision, or none after {@link
  *       #setReadSchemaRevision}{@code (SchemaRevision.OMITTED)}, as some SpiceDB deployments do.
- *   <li>Checks return registered results ({@link #setCheckResult}, {@link #setCheckError});
- *       unregistered checks are {@code NO_PERMISSION}, and {@code checkAny}/{@code checkAll} are
- *       bulk checks over them. The double does not evaluate schema.
+ *   <li>Checks resolve in a fixed order: a result registered for that exact question ({@link
+ *       #setCheckResult}, {@link #setCheckError}); then the {@link CheckResolver} ({@link
+ *       #setCheckResolver}; {@code setCheckResolver(InMemorySpiceDB.grantAll())} grants
+ *       everything), unless it declines; then the stored relationships, where a live relationship
+ *       on the resource whose relation is the permission's name and whose subject is the checked
+ *       subject, or a wildcard ({@code type:*}) of a direct subject's type, grants it. Caveats are
+ *       not evaluated: a caveated match grants {@code CONDITIONAL_PERMISSION}, an uncaveated match
+ *       wins over a caveated one, and an expired relationship never grants. Anything else is {@code
+ *       NO_PERMISSION}. {@code checkAny}/{@code checkAll} are bulk checks over the same resolution.
+ *       The double does not evaluate a schema: permissions computed from other relations need a
+ *       registered result or the resolver.
+ *   <li>{@link #lookupResources} and {@link #lookupSubjects} enumerate the objects of the requested
+ *       type that appear in the stored relationships (as resource or subject, in first-appearance
+ *       order) and return those check resolution grants, conditional results as conditional.
+ *       Resource lookups honor the permissionship filter, limit and cursor (the format of {@link
+ *       #cursorAfter}, counting granted results, including ones the filter drops); subject lookups
+ *       honor the limit and the subject relation option, and return a stored wildcard subject as
+ *       {@code *}.
  *   <li>{@link #deleteAllRelationshipsNonAtomic} deletes every match in one step after checking its
- *       preconditions and reports progress once; {@link #close} does nothing.
- *   <li>Operations without in-memory semantics (lookups, expand, schema analysis, watch, counters
- *       and the other experimental operations) are recorded and consult the fault hook like any
- *       other, then throw {@code UNIMPLEMENTED} in the client's error shape. {@link #rawChannel}
- *       returns {@code null}.
+ *       preconditions and reports progress once; {@link #close} does nothing and {@link
+ *       #awaitReady} returns at once.
+ *   <li>Operations without in-memory semantics (expand, schema analysis, watch, counters and the
+ *       other experimental operations) are recorded and consult the fault hook like any other, then
+ *       throw {@code UNIMPLEMENTED} in the client's error shape. {@link #rawChannel} returns {@code
+ *       null}.
  *   <li>Every operation reports the metadata registered with {@link #setResponseMetadata} to the
  *       call's {@link TransportOptions#responseMetadata()} capture.
  *   <li>Every call is recorded ({@link #calls}, {@link #callsOf}) with its arguments and options,
@@ -101,11 +120,11 @@ import java.util.stream.StreamSupport;
  *
  * <p>Errors have the real client's codes and message shape: server-side failures are built with
  * {@link ErrorMapper#newError} (so {@code serverMessage()} is SpiceDB's message), and local
- * validation raises {@code InvalidArgumentException} without a server message, as the client does.
- * Options are plain values: those that change results (cursors, limits, partial deletion,
- * preconditions, metadata capture, a per-call retry opt-in on a non-idempotent mutation) are
- * honored, and the rest are accepted and ignored. Consistency arguments are accepted and ignored:
- * the double is always fully consistent. Thread-safe.
+ * validation raises {@code LocalValidationException}, as the client does. Options are plain values:
+ * those that change results (cursors, limits, partial deletion, preconditions, metadata capture, a
+ * per-call retry opt-in on a non-idempotent mutation) are honored, and the rest are accepted and
+ * ignored. Consistency arguments are accepted and ignored: the double is always fully consistent.
+ * Thread-safe.
  */
 public final class InMemorySpiceDB implements SpiceDBApi {
   /** SpiceDB's default limit for {@code DeleteRelationships} without one. */
@@ -113,6 +132,36 @@ public final class InMemorySpiceDB implements SpiceDBApi {
 
   private final Map<String, Relationship> relationships = new LinkedHashMap<>();
   private final Map<String, CheckResult> checkResults = new HashMap<>();
+  private CheckResolver checkResolver;
+
+  /**
+   * Answers checks that have no registered result, so tests over IDs generated at run time need no
+   * per-ID registration. See {@link #setCheckResolver}.
+   */
+  @FunctionalInterface
+  public interface CheckResolver {
+    /**
+     * The result for {@code check}, or {@code null} to decline, which falls through to the stored
+     * relationships. {@code check} carries the call's default context merged in (its own keys win).
+     * Only the permissionship and missing context of the result are used; the double stamps its own
+     * revision. A resolver never fails: script failures with the fault hooks ({@link
+     * #setFaultHook}, {@link #failNext}) instead. A result with {@code UNSPECIFIED} (or null)
+     * permissionship is rejected, since a real server never sends one.
+     */
+    CheckResult resolve(PermissionCheck check);
+  }
+
+  private static final CheckResolver GRANT_ALL =
+      check -> new CheckResult(Permissionship.HAS_PERMISSION, List.of(), null, null, null);
+
+  /**
+   * A resolver that grants every check: {@code db.setCheckResolver(InMemorySpiceDB.grantAll())}.
+   * Lookups then return every object of the requested type the stored relationships mention.
+   */
+  public static CheckResolver grantAll() {
+    return GRANT_ALL;
+  }
+
   private final Clock clock;
   private long revision;
   private String schema;
@@ -162,7 +211,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
     IMPORT_BATCH,
     /** After every import batch, before the import commits. */
     IMPORT_COMMIT,
-    /** Before a read or export yields item {@link Fault#item()} (0-based). */
+    /** Before a read, export or lookup yields item {@link Fault#item()} (0-based). */
     ITEM
   }
 
@@ -197,7 +246,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
 
   /** Selects whether {@link #readSchema} reports a revision. */
   public synchronized void setReadSchemaRevision(SchemaRevision mode) {
-    if (mode == null) throw new InvalidArgumentException("mode must not be null");
+    if (mode == null) throw new LocalValidationException("mode must not be null");
     schemaRevision = mode;
   }
 
@@ -209,7 +258,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
    * "inmemory-cursor-"} followed by the decimal {@code n}, is stable for tests.
    */
   public static String cursorAfter(int n) {
-    if (n < 0) throw new InvalidArgumentException("n must not be negative");
+    if (n < 0) throw new LocalValidationException("n must not be negative");
     return CURSOR_PREFIX + n;
   }
 
@@ -237,7 +286,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
    */
   public void failNext(ClientOperation operation, RuntimeException error) {
     if (operation == null || error == null)
-      throw new InvalidArgumentException("operation and error must not be null");
+      throw new LocalValidationException("operation and error must not be null");
     var failed = new java.util.concurrent.atomic.AtomicBoolean();
     setFaultHook(
         f ->
@@ -292,6 +341,11 @@ public final class InMemorySpiceDB implements SpiceDBApi {
    * consumed and the {@link FaultStage#ITEM} hook before each item.
    */
   private <T> Stream<T> faultingStream(Call call, List<T> items) {
+    return faultingStream(call, items, null);
+  }
+
+  /** As {@link #faultingStream(Call, List)}, then throws {@code tail}, if any, after the items. */
+  private <T> Stream<T> faultingStream(Call call, List<T> items, RuntimeException tail) {
     Iterator<T> it =
         new Iterator<>() {
           private boolean started;
@@ -303,6 +357,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
               started = true;
               fault(call, FaultStage.CALL, 0);
             }
+            if (next >= items.size() && tail != null) throw tail;
             return next < items.size();
           }
 
@@ -363,7 +418,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   /** Rejects a per-call retry opt-in on a mutation that is not idempotent, as the client does. */
   private static void rejectRetry(RetryPolicy policy, String operation) {
     if (policy != null && policy.maxRetries() > 0)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           operation
               + " cannot be retried: only touch-only writes without preconditions and schema"
               + " writes are idempotent on replay");
@@ -412,9 +467,18 @@ public final class InMemorySpiceDB implements SpiceDBApi {
     return relationships.values().stream().filter(this::live).toList();
   }
 
-  /** Registers the result {@link #check} returns for this resource, permission and subject. */
+  /**
+   * Registers the result {@link #check} returns for this resource, permission and subject.
+   *
+   * @throws LocalValidationException when {@code result} is null or {@code UNSPECIFIED}, which a
+   *     real server never sends (the client treats it as a malformed response)
+   */
   public synchronized void setCheckResult(
       ObjectRef resource, String permission, SubjectRef subject, Permissionship result) {
+    if (result == null || result == Permissionship.UNSPECIFIED)
+      throw new LocalValidationException(
+          "check result must be NO_PERMISSION, HAS_PERMISSION or CONDITIONAL_PERMISSION, not "
+              + result);
     checkResults.put(
         checkKey(resource, permission, subject),
         new CheckResult(result, List.of(), null, null, null));
@@ -426,6 +490,22 @@ public final class InMemorySpiceDB implements SpiceDBApi {
     checkResults.put(checkKey(resource, permission, subject), CheckResult.ofError(error, null));
   }
 
+  /**
+   * Installs {@code resolver}, consulted for every check (and every candidate of a lookup) that has
+   * no registered result. It must not call this double. Pass {@code null} to remove it.
+   */
+  public synchronized void setCheckResolver(CheckResolver resolver) {
+    checkResolver = resolver;
+  }
+
+  /** {@code check} with the call's default context merged in; the check's own keys win. */
+  private static PermissionCheck withDefaults(PermissionCheck check, Map<String, Object> defaults) {
+    if (defaults == null) return check;
+    var merged = new LinkedHashMap<String, Object>(defaults);
+    if (check.context() != null) merged.putAll(check.context());
+    return check.withContext(merged);
+  }
+
   @Override
   public WriteResult write(Transaction txn) {
     return write(txn, WriteOptions.builder().build());
@@ -434,7 +514,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public synchronized WriteResult write(Transaction txn, WriteOptions options) {
     if (txn == null || options == null)
-      throw new InvalidArgumentException("transaction and options must not be null");
+      throw new LocalValidationException("transaction and options must not be null");
     begin(ClientOperation.WRITE, options, txn);
     if (!txn.isIdempotent()) rejectRetry(options.retryPolicy(), "write");
     respond(options.transport());
@@ -476,7 +556,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized Stream<ReadRelationship> readRelationships(
       Consistency consistency, Filter filter, ReadOptions options) {
     if (consistency == null || filter == null || options == null)
-      throw new InvalidArgumentException("consistency, filter and options must not be null");
+      throw new LocalValidationException("consistency, filter and options must not be null");
     var call = record(ClientOperation.READ_RELATIONSHIPS, options, consistency, filter);
     var matches = matching(filter);
     int start = cursorStart(options.cursor());
@@ -489,6 +569,16 @@ public final class InMemorySpiceDB implements SpiceDBApi {
     return faultingStream(call, out);
   }
 
+  /**
+   * One all-or-nothing delete with the server's default limit ({@link #DEFAULT_DELETE_LIMIT}),
+   * recorded with {@code PartialDeletion.DISALLOWED} options, as the client sends it.
+   */
+  @Override
+  public SpiceDBClient.DeleteResult deleteRelationships(Filter filter) {
+    return deleteRelationships(
+        filter, DeleteOptions.builder().partialDeletion(PartialDeletion.DISALLOWED).build());
+  }
+
   @Override
   public SpiceDBClient.DeleteResult deleteRelationships(Filter filter, int limit) {
     return deleteRelationships(filter, limit, DeleteOptions.builder().build());
@@ -497,20 +587,20 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public SpiceDBClient.DeleteResult deleteRelationships(
       Filter filter, int limit, DeleteOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(ClientOperation.DELETE_RELATIONSHIPS, options, filter, limit);
     rejectRetry(options.retryPolicy(), "delete relationships");
-    if (limit <= 0) throw new InvalidArgumentException("limit must be positive");
+    if (limit <= 0) throw new LocalValidationException("limit must be positive");
     return delete(filter, limit, options);
   }
 
   @Override
   public SpiceDBClient.DeleteResult deleteRelationships(Filter filter, DeleteOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(ClientOperation.DELETE_RELATIONSHIPS, options, filter);
     rejectRetry(options.retryPolicy(), "delete relationships");
     if (options.partialDeletion() != PartialDeletion.DISALLOWED)
-      throw new InvalidArgumentException(
+      throw new LocalValidationException(
           "deleteRelationships without a limit requires PartialDeletion.DISALLOWED");
     return delete(filter, DEFAULT_DELETE_LIMIT, options);
   }
@@ -518,7 +608,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   private synchronized SpiceDBClient.DeleteResult delete(
       Filter filter, int limit, DeleteOptions options) {
     if (filter == null || options == null)
-      throw new InvalidArgumentException("filter and options must not be null");
+      throw new LocalValidationException("filter and options must not be null");
     respond(options.transport());
     var preconditions = new ArrayList<Transaction.Precondition>();
     for (var f : options.mustMatch())
@@ -549,21 +639,77 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public synchronized CheckResult check(PermissionCheck request, CheckOptions options) {
     if (request == null || options == null)
-      throw new InvalidArgumentException("request and options must not be null");
+      throw new LocalValidationException("request and options must not be null");
     begin(ClientOperation.CHECK, options, request);
     respond(options.transport());
-    var r = lookup(request);
+    var r = lookup(withDefaults(request, options.context()));
     if (r.error() != null) throw r.error();
     return r;
   }
 
   private CheckResult lookup(PermissionCheck request) {
     var r = checkResults.get(checkKey(request.resource(), request.permission(), request.subject()));
-    if (r == null)
-      return new CheckResult(Permissionship.NO_PERMISSION, List.of(), token(), null, null);
-    return r.error() != null
-        ? CheckResult.ofError(r.error(), token())
-        : new CheckResult(r.permissionship(), r.missingContext(), token(), null, null);
+    if (r != null)
+      return r.error() != null
+          ? CheckResult.ofError(r.error(), token())
+          : new CheckResult(r.permissionship(), r.missingContext(), token(), null, null);
+    if (checkResolver != null) {
+      var resolved = checkResolver.resolve(request);
+      if (resolved != null) {
+        if (resolved.error() != null)
+          throw new IllegalStateException(
+              "a CheckResolver result must not carry an error; inject failures with the fault hook");
+        if (resolved.permissionship() == null
+            || resolved.permissionship() == Permissionship.UNSPECIFIED)
+          throw new IllegalStateException(
+              "a CheckResolver result must have NO_PERMISSION, HAS_PERMISSION or"
+                  + " CONDITIONAL_PERMISSION permissionship, not "
+                  + resolved.permissionship());
+        return new CheckResult(
+            resolved.permissionship(), resolved.missingContext(), token(), null, null);
+      }
+    }
+    return new CheckResult(storedPermissionship(request), List.of(), token(), null, null);
+  }
+
+  /**
+   * HAS_PERMISSION when a live relationship on the resource named after the permission has the
+   * checked subject (or a wildcard of a direct subject's type) and no caveat;
+   * CONDITIONAL_PERMISSION when only caveated ones do; NO_PERMISSION otherwise.
+   */
+  private Permissionship storedPermissionship(PermissionCheck request) {
+    var subject = request.subject();
+    boolean conditional = false;
+    for (var r : relationships.values()) {
+      if (!live(r)
+          || !r.resource().equals(request.resource())
+          || !r.relation().equals(request.permission())) continue;
+      var stored = r.subject();
+      boolean exact = stored.equals(subject);
+      boolean wildcard =
+          stored.relation() == null
+              && subject.relation() == null
+              && stored.object().objectId().equals("*")
+              && stored.object().objectType().equals(subject.object().objectType());
+      if (!exact && !wildcard) continue;
+      if (r.caveatName() == null) return Permissionship.HAS_PERMISSION;
+      conditional = true;
+    }
+    return conditional ? Permissionship.CONDITIONAL_PERMISSION : Permissionship.NO_PERMISSION;
+  }
+
+  /**
+   * Every object of {@code type} that a live relationship names as resource or subject, once each,
+   * in write order (resource before subject within a relationship).
+   */
+  private List<ObjectRef> objectsOfType(String type) {
+    var seen = new java.util.LinkedHashSet<ObjectRef>();
+    for (var r : relationships.values()) {
+      if (!live(r)) continue;
+      if (r.resource().objectType().equals(type)) seen.add(r.resource());
+      if (r.subject().object().objectType().equals(type)) seen.add(r.subject().object());
+    }
+    return new ArrayList<>(seen);
   }
 
   @Override
@@ -575,13 +721,13 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized List<CheckResult> checkBulk(
       Collection<PermissionCheck> requests, CheckOptions options) {
     if (requests == null || options == null)
-      throw new InvalidArgumentException("requests and options must not be null");
+      throw new LocalValidationException("requests and options must not be null");
     begin(ClientOperation.CHECK_BULK, options, new ArrayList<>(requests));
     respond(options.transport());
     var out = new ArrayList<CheckResult>();
     int i = 0;
     for (var request : requests) {
-      var r = lookup(request);
+      var r = lookup(withDefaults(request, options.context()));
       if (r.error() != null && options.bulkItemErrors() == BulkItemErrors.FAIL_CALL)
         throw ErrorMapper.toSpiceDBException(
             r.error().toStatusRuntimeException(),
@@ -601,13 +747,13 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized long importRelationships(
       Iterable<Relationship> input, ImportOptions options) {
     if (input == null || options == null)
-      throw new InvalidArgumentException("relationships and options must not be null");
+      throw new LocalValidationException("relationships and options must not be null");
     var call = begin(ClientOperation.IMPORT_RELATIONSHIPS, options, input);
     rejectRetry(options.retryPolicy(), "import relationships");
     int batchSize = Math.max(options.batchSize(), 1);
     var batch = new ArrayList<Relationship>();
     for (var r : input) {
-      if (r == null) throw new InvalidArgumentException("relationships must not contain null");
+      if (r == null) throw new LocalValidationException("relationships must not contain null");
       batch.add(r);
     }
     for (int start = 0; start < batch.size(); start += batchSize)
@@ -643,7 +789,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized Stream<ExportedRelationship> exportRelationships(
       Consistency consistency, Filter filter, ExportOptions options) {
     if (consistency == null || options == null)
-      throw new InvalidArgumentException("consistency and options must not be null");
+      throw new LocalValidationException("consistency and options must not be null");
     var call = record(ClientOperation.EXPORT_RELATIONSHIPS, options, consistency, filter);
     Predicate<Relationship> match = filter == null ? r -> true : filter::matches;
     var matches = new ArrayList<Relationship>();
@@ -666,7 +812,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   /** The schema last written, or {@code NOT_FOUND}, as SpiceDB does. */
   @Override
   public synchronized SpiceDBClient.SchemaResult readSchema(CallOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(ClientOperation.READ_SCHEMA, options);
     respond(options.transport());
     if (schema == null)
@@ -685,7 +831,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public synchronized ZedToken writeSchema(String schema, CallOptions options) {
     if (schema == null || options == null)
-      throw new InvalidArgumentException("schema and options must not be null");
+      throw new LocalValidationException("schema and options must not be null");
     begin(ClientOperation.WRITE_SCHEMA, options, schema);
     respond(options.transport());
     this.schema = schema;
@@ -706,7 +852,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   public synchronized SpiceDBClient.ReflectSchemaResult reflectSchema(
       Consistency consistency, CallOptions options) {
     if (consistency == null || options == null)
-      throw new InvalidArgumentException("consistency and options must not be null");
+      throw new LocalValidationException("consistency and options must not be null");
     begin(ClientOperation.REFLECT_SCHEMA, options, consistency);
     respond(options.transport());
     if (reflectResult == null)
@@ -751,10 +897,10 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   @Override
   public synchronized SpiceDBClient.DeleteResult deleteAllRelationshipsNonAtomic(
       Filter filter, DeleteAllOptions options) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(ClientOperation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC, options, filter);
     rejectRetry(options.retryPolicy(), "delete relationships");
-    if (filter == null) throw new InvalidArgumentException("filter must not be null");
+    if (filter == null) throw new LocalValidationException("filter must not be null");
     respond(options.transport());
     var preconditions = new ArrayList<Transaction.Precondition>();
     for (var f : options.mustMatch())
@@ -775,6 +921,16 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   /** Does nothing: the double holds no transport. */
   @Override
   public void close() {}
+
+  /**
+   * Validates {@code timeout} as the client does, then returns at once: the double is always ready.
+   * Not recorded, since it is not an operation.
+   */
+  @Override
+  public void awaitReady(java.time.Duration timeout) {
+    if (timeout == null || timeout.isZero() || timeout.isNegative())
+      throw new LocalValidationException("timeout must be positive");
+  }
 
   /** {@code null}: the double has no transport. */
   @Override
@@ -801,7 +957,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
 
   private <T> T unimplementedWithRetry(
       ClientOperation operation, Object options, RetryPolicy retry, Object... arguments) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     begin(operation, options, arguments);
     if (operation.isNeverIdempotent())
       rejectRetry(retry, operation.name().toLowerCase(java.util.Locale.ROOT).replace('_', ' '));
@@ -815,7 +971,7 @@ public final class InMemorySpiceDB implements SpiceDBApi {
    */
   private <T> Stream<T> unimplementedStream(
       ClientOperation operation, Object options, Object... arguments) {
-    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options == null) throw new LocalValidationException("options must not be null");
     var call = record(operation, options, arguments);
     Iterator<T> it =
         new Iterator<>() {
@@ -842,15 +998,76 @@ public final class InMemorySpiceDB implements SpiceDBApi {
         consistency, resourceType, permission, subject, LookupOptions.builder().build());
   }
 
+  /**
+   * The objects of {@code resourceType} in the stored relationships that check resolution grants
+   * {@code subject}, conditional results as conditional. Honors the permissionship filter, limit
+   * and cursor; each item's cursor counts granted results ({@link #cursorAfter}), so results the
+   * filter drops still advance it. A registered check error for a candidate fails the stream there.
+   */
   @Override
-  public Stream<LookupResult.LookupResource> lookupResources(
+  public synchronized Stream<LookupResult.LookupResource> lookupResources(
       Consistency consistency,
       String resourceType,
       String permission,
       SubjectRef subject,
       LookupOptions options) {
-    return unimplementedStream(
-        ClientOperation.LOOKUP_RESOURCES, options, consistency, resourceType, permission, subject);
+    if (options == null) throw new LocalValidationException("options must not be null");
+    var call =
+        record(
+            ClientOperation.LOOKUP_RESOURCES,
+            options,
+            consistency,
+            resourceType,
+            permission,
+            subject);
+    if (consistency == null || subject == null)
+      throw new LocalValidationException("consistency and subject must not be null");
+    if (options.subjectRelation() != null)
+      throw new LocalValidationException(
+          "lookupResources uses the required SubjectRef relation, not subjectRelation options");
+    var candidates = objectsOfType(resourceType);
+    int start = cursorStart(options.cursor());
+    respond(options.transport());
+    var out = new ArrayList<LookupResult.LookupResource>();
+    RuntimeException failure = null;
+    int granted = 0;
+    for (var candidate : candidates) {
+      if (options.limit() > 0 && out.size() >= options.limit()) break;
+      if (candidate.objectId().equals("*")) continue;
+      CheckResult r;
+      try {
+        r =
+            lookup(
+                new PermissionCheck(
+                    candidate, permission, subject, consistency, options.context()));
+      } catch (RuntimeException e) {
+        failure = e;
+        break;
+      }
+      if (r.error() != null) {
+        failure = r.error();
+        break;
+      }
+      var p = r.permissionship();
+      if (p != Permissionship.HAS_PERMISSION && p != Permissionship.CONDITIONAL_PERMISSION)
+        continue;
+      // The cursor counts granted results, including those the permissionship filter drops.
+      granted++;
+      if (granted <= start) continue;
+      if (p == Permissionship.CONDITIONAL_PERMISSION
+          && options.permissionshipFilter() == LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+        continue;
+      out.add(
+          new LookupResult.LookupResource(
+              candidate.objectId(), p, partialCaveat(r), token(), cursorAfter(granted)));
+    }
+    return faultingStream(call, out, failure);
+  }
+
+  private static LookupResult.PartialCaveatInfo partialCaveat(CheckResult r) {
+    return r.permissionship() == Permissionship.CONDITIONAL_PERMISSION
+        ? new LookupResult.PartialCaveatInfo(r.missingContext())
+        : null;
   }
 
   @Override
@@ -867,8 +1084,57 @@ public final class InMemorySpiceDB implements SpiceDBApi {
       String permission,
       String subjectType,
       LookupOptions options) {
-    return unimplementedStream(
-        ClientOperation.LOOKUP_SUBJECTS, options, consistency, resource, permission, subjectType);
+    if (options == null) throw new LocalValidationException("options must not be null");
+    var call =
+        record(
+            ClientOperation.LOOKUP_SUBJECTS,
+            options,
+            consistency,
+            resource,
+            permission,
+            subjectType);
+    if (consistency == null || resource == null)
+      throw new LocalValidationException("consistency and resource must not be null");
+    if (options.permissionshipFilter() != LookupPermissionshipFilter.ALL)
+      throw new LocalValidationException("lookupSubjects does not support permissionshipFilter");
+    if (options.debug() == LookupDebug.ENABLED
+        || options.pageSize() != 512
+        || options.paging() != Paging.AUTOMATIC)
+      throw new LocalValidationException(
+          "lookupSubjects does not support debug, pageSize or paging");
+    respond(options.transport());
+    var out = new ArrayList<LookupResult.LookupSubject>();
+    RuntimeException failure = null;
+    for (var candidate : objectsOfType(subjectType)) {
+      if (options.limit() > 0 && out.size() >= options.limit()) break;
+      CheckResult r;
+      try {
+        r =
+            lookup(
+                new PermissionCheck(
+                    resource,
+                    permission,
+                    new SubjectRef(candidate, options.subjectRelation()),
+                    consistency,
+                    options.context()));
+      } catch (RuntimeException e) {
+        failure = e;
+        break;
+      }
+      if (r.error() != null) {
+        failure = r.error();
+        break;
+      }
+      var p = r.permissionship();
+      if (p != Permissionship.HAS_PERMISSION && p != Permissionship.CONDITIONAL_PERMISSION)
+        continue;
+      out.add(
+          new LookupResult.LookupSubject(
+              new LookupResult.ResolvedSubject(candidate.objectId(), p, partialCaveat(r)),
+              List.of(),
+              token()));
+    }
+    return faultingStream(call, out, failure);
   }
 
   @Override

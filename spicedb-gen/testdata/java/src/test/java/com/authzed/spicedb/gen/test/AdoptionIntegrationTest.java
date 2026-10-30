@@ -75,6 +75,40 @@ class AdoptionIntegrationTest {
     }
   }
 
+  /**
+   * A policy layer passing type and permission names at run time: the generated schema text is
+   * written as-is, and lookups and checks by name reach the server with no native call.
+   */
+  @Test
+  void runtimeNamesAgainstServer() {
+    var endpoint = System.getenv().getOrDefault("SPICEDB_ENDPOINT", "localhost:50051");
+    try (var raw = SpiceDBClient.createPlaintext(endpoint, "somerandomkeyhere");
+        var tc = new TypedClient(raw)) {
+      assertEquals(SCHEMA, Permissions.SCHEMA);
+      tc.writeSchema(Permissions.SCHEMA);
+      var org = definitionByName(Definitions.ORGANIZATION);
+      tc.touch(
+          java.util.List.of(
+              org.ref("acme-runtime").relationshipByName("member", User("carol")),
+              org.ref("beta-runtime").relationshipByName("admin", User("carol"))));
+      var options =
+          com.authzed.spicedb.LookupOptions.builder()
+              .permissionshipFilter(
+                  com.authzed.spicedb.LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+              .build();
+      try (var found =
+          tc.lookupResourcesByName(Consistency.full(), "organization", "view", User("carol"), options)) {
+        assertEquals(
+            java.util.Set.of("acme-runtime", "beta-runtime"),
+            found
+                .map(com.authzed.spicedb.LookupResult.LookupResource::resourceId)
+                .collect(java.util.stream.Collectors.toSet()));
+      }
+      var check = org.permissionByName("beta-runtime", "can_admin").forDynamicSubject(User("carol"));
+      assertTrue(tc.check(Consistency.full(), check).hasPermission());
+    }
+  }
+
   @Test
   void adoptionAgainstServer() {
     var endpoint = System.getenv().getOrDefault("SPICEDB_ENDPOINT", "localhost:50051");

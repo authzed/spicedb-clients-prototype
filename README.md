@@ -21,11 +21,26 @@ Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go*
 > `has_permission`, `has_permission?`, `hasPermission()`), never the result object
 > itself. See [DESIGN.md](DESIGN.md#domain-types-and-checks).
 
-For typed examples, first generate the wrapper from your schema:
+For typed examples, first generate the wrapper from your schema. The generator
+is its own Go module, so build or install it from its directory (`go build
+./spicedb-gen/cmd/spicedb-gen` from the repository root fails):
 
 ```bash
-spicedb-gen --schema schema.zed --lang <go|typescript|java|python> --out <output-path>
+cd spicedb-gen && go build -o spicedb-gen ./cmd/spicedb-gen   # or: go install ./cmd/spicedb-gen
+./spicedb-gen --schema schema.zed --lang <go|typescript|java|python> --out <output-path>
 ```
+
+For a shared API package that needs the schema's names but must not depend on
+the client library, `--go.names-only`, `--typescript.names-only`,
+`--java.names-only` or `--python.names-only` emits only the definition,
+relation and permission name constants and the schema text, importing nothing
+beyond the standard library:
+
+```bash
+./spicedb-gen --schema schema.zed --lang go --go.package=apinames --go.names-only --out api/names.gen.go
+```
+
+`./spicedb-gen --help` lists every language's options.
 
 Tracing is optional and disabled by default; the examples enable it to make
 `CheckResult` debug information available. The snippets assume the schema below
@@ -278,6 +293,20 @@ to exclude conditional and unknown results before presenting accessible IDs. The
 client-side filter defaults to `All` when omitted; callers retaining all results
 must inspect permissionship before treating a result as a grant. Limits count
 results yielded after filtering, and pagination continues through skipped results.
+
+## Testing without a server
+
+Every client ships an in-memory test double that implements the client's full
+interface: it records calls, accepts fault injection, resolves checks from
+registered results, a resolver callback or stored relationships, and serves
+lookups. Each language's README and AI integration guide show its use.
+
+The doubles do not evaluate your schema. A computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).
 
 ## Tokens and connection policies
 

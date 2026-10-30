@@ -13,9 +13,16 @@ module SpiceDB
   # INVALID_ARGUMENT, an exhausted budget is DEADLINE_EXCEEDED). See root
   # DESIGN.md, "Expose native errors without losing server diagnostics".
   #
+  # Each error also matches grpc's per-code class for its code in a +rescue+
+  # (or +case+) clause: +rescue GRPC::AlreadyExists+ catches an
+  # AlreadyExistsError, and +rescue GRPC::Aborted+ a SpiceDB::Error whose code
+  # is ABORTED. Ruby has single inheritance, so this is done by extending
+  # those classes' +===+ (see GrpcCodeMatch); +is_a?(GRPC::AlreadyExists)+
+  # stays false.
+  #
   # +message+ is this client's display message. +server_message+ is the
-  # server's status message verbatim, or nil for an error that never reached
-  # the server. +details+ (the +GRPC::BadStatus+ field) is the server message
+  # server's status message verbatim; for an error that never reached the
+  # server it is the display message, so it always has a value. +details+ (the +GRPC::BadStatus+ field) is the server message
   # when there is one and the display message otherwise. +metadata+ carries a
   # server error's trailers, so +to_rpc_status+ still decodes the rich status.
   # A mapped error keeps the original exception as +cause+.
@@ -34,7 +41,8 @@ module SpiceDB
   #   @return [Hash{String=>String}] the specifics behind the reason, such as
   #     which precondition failed
   # @!attribute [r] server_message
-  #   @return [String, nil] the server's status message, verbatim
+  #   @return [String] the server's status message, verbatim, or the display
+  #     message for a local error
   class Error < GRPC::BadStatus
     attr_reader :delete_progress, :input_index, :reason, :reason_domain, :reason_metadata, :server_message
 
@@ -59,7 +67,7 @@ module SpiceDB
       display = message.nil? ? self.class.name : message.to_s
       super(code, server_message || display, metadata || {})
       @display_message = display
-      @server_message = server_message
+      @server_message = server_message || display
       @reason = reason
       @reason_domain = reason_domain
       # Copied, not aliased: the caller's Hash must not become a live handle
@@ -90,9 +98,35 @@ module SpiceDB
     def self.default_code = GRPC::Core::StatusCodes::ALREADY_EXISTS
   end
 
-  # The request contained an invalid argument. Local validation raises this.
+  # The request contained an invalid argument: the server's INVALID_ARGUMENT,
+  # or (as LocalValidationError) input this client rejected itself.
   class InvalidArgumentError < Error
     def self.default_code = GRPC::Core::StatusCodes::INVALID_ARGUMENT
+  end
+
+  # Input the client rejected locally, before sending any request: a
+  # malformed tuple, an empty object type or ID, an unknown option value,
+  # an endpoint it cannot dial, unrepresentable caveat context.
+  #
+  # It is an InvalidArgumentError (code INVALID_ARGUMENT), and +rescue
+  # ArgumentError+ also catches it, the Ruby idiom around bad input (see
+  # ArgumentErrorMatch; +is_a?(ArgumentError)+ stays false, since Ruby has
+  # single inheritance and every SpiceDB error is a GRPC::BadStatus). An
+  # INVALID_ARGUMENT from the server stays a plain InvalidArgumentError and
+  # is not caught by +rescue ArgumentError+.
+  class LocalValidationError < InvalidArgumentError
+  end
+
+  # Extends +ArgumentError.===+ so +rescue ArgumentError+ (and +case+) also
+  # matches a LocalValidationError. Only ArgumentError itself gains this:
+  # its subclasses (KeyError, a library's own ArgumentError subclass) match
+  # exactly as before.
+  module ArgumentErrorMatch
+    ArgumentError.singleton_class.prepend(Module.new do
+      define_method(:===) do |other|
+        super(other) || (equal?(ArgumentError) && other.is_a?(SpiceDB::LocalValidationError))
+      end
+    end)
   end
 
   # A precondition for the operation was not met.
@@ -138,6 +172,48 @@ module SpiceDB
     def self.default_code = GRPC::Core::StatusCodes::OUT_OF_RANGE
   end
 
+  # A client whose gRPC connection was opened in another process -- the one
+  # this process forked from -- was used here. gRPC refuses any use in a
+  # child once its parent has used it, so the fix is to make no SpiceDB call
+  # in the parent before forking (run startup checks in Puma's
+  # +on_worker_boot+): a client opens its connection on first use, so one
+  # built before the fork works in each child. grpc's own fork support
+  # (GRPC_ENABLE_FORK_SUPPORT=1 on Linux, with GRPC.prefork and
+  # GRPC.postfork_child around the fork) also allows it. Its code is
+  # FAILED_PRECONDITION.
+  class ForkedClientError < Error
+    def self.default_code = GRPC::Core::StatusCodes::FAILED_PRECONDITION
+
+    # @return [Integer, nil] the process that opened the connection
+    attr_reader :connected_pid
+
+    def initialize(message = nil, connected_pid: nil, current_pid: Process.pid, **)
+      @connected_pid = connected_pid
+      message ||= "SpiceDB::Client opened its gRPC connection in process #{connected_pid}, and this is process #{current_pid}, " \
+                  'forked from it: gRPC cannot be used in a child once its parent has used it. Make no SpiceDB call in the parent ' \
+                  "before forking (run startup checks in Puma's on_worker_boot, for example): a client opens its connection on " \
+                  "first use, so one built before the fork works in each child. grpc's fork support (GRPC_ENABLE_FORK_SUPPORT=1 " \
+                  'on Linux, with GRPC.prefork and GRPC.postfork_child) also allows it.'
+      super(message, **)
+    end
+
+    # The message for a new client in a child process whose parent (+used_pid+,
+    # nil when unknown) already used gRPC.
+    def self.fresh_client_message(used_pid, current_pid)
+      parent = used_pid ? "process #{used_pid}" : 'a parent process'
+      "spicedb: gRPC was already used in #{parent} before it forked this process (#{current_pid}), and gRPC cannot be used " \
+        'in a child once its parent has used it -- building a new SpiceDB::Client in the child does not help. Make no SpiceDB ' \
+        "(or other gRPC) call in the parent: connect only in each worker, for example SPICEDB.connect! in Puma's on_worker_boot. " \
+        "Or enable grpc's fork support where it is available (GRPC_ENABLE_FORK_SUPPORT=1 on Linux, with GRPC.prefork and " \
+        'GRPC.postfork_child around the fork).'
+    end
+
+    # Whether +error+ is grpc's own refusal to run in a forked child.
+    def self.grpc_fork_refusal?(error)
+      error.is_a?(RuntimeError) && error.message.match?(/before and after forking|GRPC\.prefork must be called/)
+    end
+  end
+
   # Maps gRPC status codes to SpiceDB exception classes. Codes without an
   # entry map to SpiceDB::Error, which still reports the original code.
   GRPC_CODE_TO_ERROR = {
@@ -153,6 +229,41 @@ module SpiceDB
     14 => UnavailableError,       # UNAVAILABLE
     16 => UnauthenticatedError    # UNAUTHENTICATED
   }.freeze
+
+  # Extends +===+ on each of grpc's per-code exception classes
+  # (GRPC::AlreadyExists, GRPC::FailedPrecondition, ...) so that it also
+  # matches a SpiceDB::Error with that class's status code. +rescue+ and
+  # +case+ use +===+, so a handler written for the raw grpc client keeps
+  # catching the native error for the same code. Nothing else about those
+  # classes changes: raw grpc errors match exactly as before, and
+  # +is_a?+/+ancestors+ are untouched.
+  module GrpcCodeMatch
+    # grpc's per-code classes and the status code each stands for.
+    CLASSES = {
+      GRPC::Cancelled => GRPC::Core::StatusCodes::CANCELLED,
+      GRPC::Unknown => GRPC::Core::StatusCodes::UNKNOWN,
+      GRPC::InvalidArgument => GRPC::Core::StatusCodes::INVALID_ARGUMENT,
+      GRPC::DeadlineExceeded => GRPC::Core::StatusCodes::DEADLINE_EXCEEDED,
+      GRPC::NotFound => GRPC::Core::StatusCodes::NOT_FOUND,
+      GRPC::AlreadyExists => GRPC::Core::StatusCodes::ALREADY_EXISTS,
+      GRPC::PermissionDenied => GRPC::Core::StatusCodes::PERMISSION_DENIED,
+      GRPC::ResourceExhausted => GRPC::Core::StatusCodes::RESOURCE_EXHAUSTED,
+      GRPC::FailedPrecondition => GRPC::Core::StatusCodes::FAILED_PRECONDITION,
+      GRPC::Aborted => GRPC::Core::StatusCodes::ABORTED,
+      GRPC::OutOfRange => GRPC::Core::StatusCodes::OUT_OF_RANGE,
+      GRPC::Unimplemented => GRPC::Core::StatusCodes::UNIMPLEMENTED,
+      GRPC::Internal => GRPC::Core::StatusCodes::INTERNAL,
+      GRPC::Unavailable => GRPC::Core::StatusCodes::UNAVAILABLE,
+      GRPC::DataLoss => GRPC::Core::StatusCodes::DATA_LOSS,
+      GRPC::Unauthenticated => GRPC::Core::StatusCodes::UNAUTHENTICATED
+    }.freeze
+
+    CLASSES.each do |klass, code|
+      klass.singleton_class.prepend(Module.new do
+        define_method(:===) { |other| super(other) || (other.is_a?(SpiceDB::Error) && other.code == code) }
+      end)
+    end
+  end
 
   # gRPC status codes the DEFAULT retry policy retries. RESOURCE_EXHAUSTED
   # (8) is deliberately excluded: in SpiceDB it signals memory load-shed or a
@@ -217,6 +328,24 @@ module SpiceDB
     return err.class if err.is_a?(Error)
 
     GRPC_CODE_TO_ERROR.fetch(code_of(err), Error)
+  end
+
+  # Whether grpc-ruby's fork support is enabled in this process: the
+  # GRPC_ENABLE_FORK_SUPPORT environment variable is "1" on Linux, the only
+  # platform grpc supports it on.
+  def grpc_fork_support?
+    ENV['GRPC_ENABLE_FORK_SUPPORT'] == '1' && RUBY_PLATFORM.include?('linux')
+  end
+
+  # The process that first opened a gRPC channel through this library (any
+  # client), or nil. A forked child inherits it, so a child can tell that
+  # its parent used gRPC, which grpc refuses to let the child do.
+  def grpc_used_pid = @grpc_used_pid
+
+  # Records that this process opened a gRPC channel (first use wins: a
+  # child keeps its ancestor's pid).
+  def note_grpc_use
+    @grpc_used_pid = Process.pid if @grpc_used_pid.nil?
   end
 
   # Returns true if the DEFAULT retry policy would retry the error.

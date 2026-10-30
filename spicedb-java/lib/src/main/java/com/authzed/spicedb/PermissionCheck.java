@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.util.Map;
 
 public record PermissionCheck(
@@ -10,8 +11,7 @@ public record PermissionCheck(
     Map<String, Object> context) {
   public PermissionCheck {
     if (resource == null || subject == null || consistency == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "resource, subject and consistency are required");
+      throw new LocalValidationException("resource, subject and consistency are required");
     JsonContext.required(permission, "permission");
     context = JsonContext.snapshot(context);
   }

@@ -26,7 +26,7 @@ from spicedb._mapping import lookup_resource as _lookup_resource
 from spicedb._mapping import lookup_subject as _lookup_subject
 from spicedb.consistency import Consistency, ConsistencyMode
 from spicedb._requests import check_fields as _check_fields
-from spicedb.errors import InvalidArgumentError, SpiceDBError
+from spicedb.errors import LocalValidationError, SpiceDBError
 from spicedb.token import ZedToken, _token_string
 from spicedb.types import (
     CheckDebugTrace,
@@ -105,7 +105,7 @@ def object_to_proto(value: ObjectRef) -> core_pb2.ObjectReference:
 
 
 def object_from_proto(value: core_pb2.ObjectReference) -> ObjectRef:
-    return ObjectRef(value.object_type, value.object_id)
+    return ObjectRef._unchecked(value.object_type, value.object_id)
 
 
 def subject_to_proto(value: SubjectRef) -> core_pb2.SubjectReference:
@@ -164,7 +164,7 @@ def precondition_from_proto(value: permission_service_pb2.Precondition) -> Preco
         permission_service_pb2.Precondition.OPERATION_MUST_NOT_MATCH: PreconditionOperation.MUST_NOT_MATCH,
     }.get(value.operation)
     if operation is None:
-        raise InvalidArgumentError("precondition.operation: unspecified or unknown")
+        raise LocalValidationError("precondition.operation: unspecified or unknown")
     return Precondition(operation, filter_from_proto(value.filter))
 
 
@@ -203,7 +203,7 @@ def consistency_from_proto(value: permission_service_pb2.Consistency) -> Consist
         return Consistency(ConsistencyMode.AT_LEAST, ZedToken(value.at_least_as_fresh.token))
     if kind == "at_exact_snapshot":
         return Consistency(ConsistencyMode.SNAPSHOT, ZedToken(value.at_exact_snapshot.token))
-    raise InvalidArgumentError("consistency: no requirement set")
+    raise LocalValidationError("consistency: no requirement set")
 
 
 def zed_token_to_proto(value: ZedToken | None) -> core_pb2.ZedToken | None:
@@ -255,7 +255,7 @@ def check_result_to_proto(value: CheckResult) -> permission_service_pb2.CheckPer
     """Includes the debug trace and expiration. A per-item ``error`` has no
     place in ``CheckPermissionResponse`` and is rejected."""
     if value.error is not None:
-        raise InvalidArgumentError("check_result: a result carrying an error has no CheckPermissionResponse form")
+        raise LocalValidationError("check_result: a result carrying an error has no CheckPermissionResponse form")
     return permission_service_pb2.CheckPermissionResponse(
         checked_at=zed_token_to_proto(value.checked_at),
         permissionship=_CHECK_PERMISSIONSHIP.get(value.permissionship, 0),
@@ -265,8 +265,19 @@ def check_result_to_proto(value: CheckResult) -> permission_service_pb2.CheckPer
     )
 
 
+def _caller_response(mapper, value):
+    """Map a response proto the caller supplies; a missing required field is
+    the caller's input error here, not a malformed server response."""
+    from spicedb.errors import InternalError
+
+    try:
+        return mapper(value)
+    except InternalError as error:
+        raise LocalValidationError(str(error).replace("client detected malformed response from server", "invalid response proto")) from None
+
+
 def check_result_from_proto(value: permission_service_pb2.CheckPermissionResponse) -> CheckResult:
-    return _check_result(value)
+    return _caller_response(_check_result, value)
 
 
 def check_request_to_proto(
@@ -312,7 +323,7 @@ def check_bulk_to_proto(
     Raises ``InvalidArgumentError`` when the two sequences differ in length.
     """
     if len(requests) != len(results):
-        raise InvalidArgumentError(
+        raise LocalValidationError(
             f"check_bulk: {len(requests)} requests but {len(results)} results"
         )
     response = permission_service_pb2.CheckBulkPermissionsResponse()
@@ -320,8 +331,8 @@ def check_bulk_to_proto(
         pair = response.pairs.add()
         try:
             pair.request.CopyFrom(check_request_to_proto(request, context=context))
-        except InvalidArgumentError as error:
-            raise InvalidArgumentError(f"check_bulk item {i}: {error}") from error
+        except LocalValidationError as error:
+            raise LocalValidationError(f"check_bulk item {i}: {error}") from error
         if result.error is not None:
             pair.error.CopyFrom(_status_to_proto(result.error))
         else:
@@ -410,7 +421,7 @@ def lookup_resource_to_proto(value: LookupResource) -> permission_service_pb2.Lo
 
 
 def lookup_resource_from_proto(value: permission_service_pb2.LookupResourcesResponse) -> LookupResource:
-    return _lookup_resource(value)
+    return _caller_response(_lookup_resource, value)
 
 
 def _resolved(value: ResolvedSubject) -> permission_service_pb2.ResolvedSubject:
@@ -442,7 +453,7 @@ def lookup_subject_to_proto(value: LookupSubject) -> permission_service_pb2.Look
 
 
 def lookup_subject_from_proto(value: permission_service_pb2.LookupSubjectsResponse) -> LookupSubject:
-    return _lookup_subject(value)
+    return _caller_response(_lookup_subject, value)
 
 
 def read_relationship_to_proto(value: ReadRelationship) -> permission_service_pb2.ReadRelationshipsResponse:

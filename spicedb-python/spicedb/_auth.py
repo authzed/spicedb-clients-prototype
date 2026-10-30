@@ -35,6 +35,25 @@ def _is_ascii_port(port: str) -> bool:
     return port.isascii() and port.isdigit()
 
 
+def require_token_usable(token: object) -> None:
+    """Refuse an empty or whitespace-only token at construction.
+
+    A blank environment variable is the usual cause; sending it would produce
+    a bare ``Bearer`` header the server rejects on the first call. See root
+    DESIGN.md, "Reject unusable credentials and trust material at
+    construction".
+
+    :raises spicedb.errors.LocalValidationError: when the token is blank.
+    """
+    from spicedb.errors import LocalValidationError
+
+    if not isinstance(token, str) or not token.strip():
+        raise LocalValidationError(
+            "spicedb: token must be a nonempty string, not empty or whitespace "
+            "(check that the variable holding it is set)"
+        )
+
+
 def bearer_metadata(token: str) -> list[tuple[str, str]]:
     """Build the gRPC metadata carrying the bearer token."""
     return [("authorization", f"Bearer {token}")]
@@ -44,10 +63,11 @@ def is_loopback_endpoint(endpoint: str) -> bool:
     """Report whether the connection this client would open for ``endpoint``
     terminates on a loopback destination.
 
-    True for the literal hostname "localhost", an IP in 127.0.0.0/8, the
-    IPv6 loopback ::1, or a unix domain socket target (a "unix:" prefix). A
-    unix socket never leaves the host's kernel, so it is loopback for this
-    check even though it has no IP at all.
+    True for the literal hostname "localhost", an IP in 127.0.0.0/8 or the
+    IPv6 loopback ::1 (each bare or as a ``dns:///`` target), or a unix
+    domain socket target (a "unix:" prefix). A unix socket never leaves the
+    host's kernel, so it is loopback for this check even though it has no IP
+    at all.
 
     That wording is deliberate. This does not answer "does this string look
     like it names a loopback host"; it answers "will the transport dial
@@ -103,6 +123,12 @@ def is_loopback_endpoint(endpoint: str) -> bool:
     if endpoint[:5].lower() == "unix:":
         return True
 
+    # A "dns:///" target resolves the host that follows the empty authority;
+    # the check below runs on that host. Anything left that could move the
+    # authority ("dns:////x", "dns:///a@b") still fails closed below.
+    if endpoint[:7].lower() == "dns:///":
+        endpoint = endpoint[7:]
+
     if _AUTHORITY_SHIFTING.search(endpoint):
         return False
 
@@ -147,7 +173,7 @@ def require_insecure_transport_allowed(
     any credential -- a rejected combination must never get far enough to
     put a bearer token on the wire.
 
-    :raises spicedb.errors.InvalidArgumentError: if ``insecure`` is True,
+    :raises spicedb.errors.LocalValidationError: if ``insecure`` is True,
         ``endpoint`` is not loopback, and ``allow_insecure_remote_credentials``
         is False.
     """
@@ -156,11 +182,12 @@ def require_insecure_transport_allowed(
         and not allow_insecure_remote_credentials
         and not is_loopback_endpoint(endpoint)
     ):
-        from spicedb.errors import InvalidArgumentError
+        from spicedb.errors import LocalValidationError
 
-        raise InvalidArgumentError(
+        raise LocalValidationError(
             f"spicedb: refusing to send credentials over an insecure (plaintext) connection "
-            f"to non-loopback endpoint {endpoint!r}: use TLS (insecure=False), or pass "
-            f"remote_credentials=RemoteCredentials.ALLOW if you intend to send a bearer token in "
-            f"cleartext to a remote host"
+            f"to non-loopback endpoint {endpoint!r}: use TLS (the default), or, to send the "
+            f"bearer token in cleartext to this host (for example a Docker Compose service), "
+            f"pass both transport_security=TransportSecurity.PLAINTEXT and "
+            f"remote_credentials=RemoteCredentials.ALLOW"
         )

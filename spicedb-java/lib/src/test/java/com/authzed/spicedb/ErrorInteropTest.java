@@ -1,8 +1,8 @@
 package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -67,7 +67,18 @@ class ErrorInteropTest {
     var e = assertThrows(InvalidArgumentException.class, () -> Filter.of(""));
     assertEquals(Status.Code.INVALID_ARGUMENT, e.code());
     assertEquals(Status.Code.INVALID_ARGUMENT, Status.fromThrowable(e).getCode());
-    assertNull(e.serverMessage(), "local errors carry no server message");
+    assertEquals(e.getMessage(), e.serverMessage(), "a local error's verbatim message is its own");
+    assertInstanceOf(com.authzed.spicedb.errors.LocalValidationException.class, e);
+  }
+
+  @Test
+  void serverInvalidArgumentIsNotLocalValidation() {
+    var server = ErrorMapper.newError(Status.Code.INVALID_ARGUMENT, "relation `x` not found");
+    assertInstanceOf(InvalidArgumentException.class, server);
+    assertFalse(server instanceof com.authzed.spicedb.errors.LocalValidationException);
+    assertEquals("relation `x` not found", server.serverMessage());
+    var built = new SpiceDBException("caller-built");
+    assertEquals("caller-built", built.serverMessage(), "never null");
   }
 
   @Test

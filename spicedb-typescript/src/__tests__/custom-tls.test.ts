@@ -17,14 +17,16 @@ import { TransportSecurity, Retries } from "../modes.js";
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as http2 from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
-import { PermissionsService } from "@spicedb/proto";
+import { CheckPermissionResponse_Permissionship, PermissionsService } from "@spicedb/proto";
 import { SpiceDBClient } from "../client.js";
 import { full } from "../consistency.js";
+import { InvalidArgumentError } from "../errors.js";
 const TOKEN = "test-token";
 /**
  * One real check. `checkBulk` with zero checks no longer reaches the
@@ -84,7 +86,7 @@ async function serve(): Promise<{
                 checkBulkPermissions: (req) => ({
                     pairs: req.items.map(item => ({
                         request: item,
-                        response: { case: "item" as const, value: {} }
+                        response: { case: "item" as const, value: { permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION } }
                     }))
                 })
             });
@@ -157,5 +159,59 @@ describe("SpiceDBClient tls option", () => {
             transportSecurity: TransportSecurity.Plaintext,
             tls: { caCert: "pem" }
         })).toThrow(/remoteCredentials/);
+    });
+    // Root DESIGN.md, "Reject unusable credentials and trust material at
+    // construction": node:tls silently accepts a non-PEM `ca` and then trusts
+    // nothing, so without this check the first call fails as a bare handshake
+    // error that never names the input.
+    it.each([
+        ["caCert not PEM", { caCert: "not a certificate" }, /tls\.caCert is not a PEM-encoded X\.509 certificate/],
+        ["caCert with a corrupt body", { caCert: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n" }, /tls\.caCert is not a PEM-encoded X\.509 certificate/],
+        ["clientCert not PEM", { clientCert: "garbage", clientKey: "use-real" }, /tls\.clientCert is not a PEM-encoded X\.509 certificate/],
+        ["clientKey not PEM", { clientCert: "use-real", clientKey: "garbage" }, /tls\.clientKey is not a PEM-encoded private key/],
+    ])("refuses unparseable %s at construction, naming the input", (_name, tls, message) => {
+        const material = Object.fromEntries(Object.entries(tls).map(([k, v]) => [k, v === "use-real" ? (k === "clientKey" ? serverKey : serverCert) : v]));
+        let thrown: unknown;
+        try {
+            new SpiceDBClient({ endpoint: "localhost:50116", token: TOKEN, tls: material });
+        }
+        catch (error) {
+            thrown = error;
+        }
+        expect(thrown).toBeInstanceOf(InvalidArgumentError);
+        expect((thrown as Error).message).toMatch(message);
+    });
+    it("accepts parseable CA and client identity material", () => {
+        const client = new SpiceDBClient({ endpoint: "localhost:50116", token: TOKEN, tls: { caCert: ca, clientCert: serverCert, clientKey: serverKey } });
+        client.close();
+    });
+    // Root DESIGN.md: a client key that does not match its certificate fails at
+    // construction naming both inputs, not as a handshake error on the first call.
+    it.each([
+        ["an RSA key from another pair (the CA's)", () => readFileSync(join(dir, "ca.key"))],
+        ["an EC key", () => generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ type: "pkcs8", format: "pem" })],
+    ])("refuses a client certificate paired with %s", (_name, otherKey) => {
+        let thrown: unknown;
+        try {
+            new SpiceDBClient({ endpoint: "localhost:50116", token: TOKEN, tls: { caCert: ca, clientCert: serverCert, clientKey: otherKey() } });
+        }
+        catch (error) {
+            thrown = error;
+        }
+        expect(thrown).toBeInstanceOf(InvalidArgumentError);
+        expect((thrown as Error).message).toMatch(/tls\.clientKey does not match tls\.clientCert/);
+    });
+    it.each(["", " ", "\t\n"])("refuses a blank token %j at construction", (token) => {
+        for (const transportSecurity of [TransportSecurity.Tls, TransportSecurity.Plaintext]) {
+            let thrown: unknown;
+            try {
+                new SpiceDBClient({ endpoint: "localhost:50116", token, transportSecurity });
+            }
+            catch (error) {
+                thrown = error;
+            }
+            expect(thrown).toBeInstanceOf(InvalidArgumentError);
+            expect((thrown as Error).message).toMatch(/token must be a nonempty string/);
+        }
     });
 });

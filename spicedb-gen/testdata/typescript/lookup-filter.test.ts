@@ -11,8 +11,8 @@ it("forwards the typed lookup filter and cancellation options without changing t
     try {
         const result = typed.lookupResources(full(), Document.view, User("alice"), { permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly, signal });
         expect(result).toBe(iterator);
-        expect(lookup.mock.calls[0][0].permissionshipFilter).toBe(LookupPermissionshipFilter.HasPermissionOnly);
-        expect(lookup.mock.calls[0][1]?.signal).toBe(signal);
+        expect(lookup.mock.calls[0]![0].permissionshipFilter).toBe(LookupPermissionshipFilter.HasPermissionOnly);
+        expect(lookup.mock.calls[0]![1]?.signal).toBe(signal);
         expect((await result.next()).value?.resourceId).toBe("readme");
     } finally { typed.close(); }
 });

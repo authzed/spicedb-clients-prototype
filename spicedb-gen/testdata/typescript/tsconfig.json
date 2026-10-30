@@ -4,6 +4,11 @@
         "module": "ESNext",
         "moduleResolution": "bundler",
         "strict": true,
+        "noImplicitAny": true,
+        "exactOptionalPropertyTypes": true,
+        "noUncheckedIndexedAccess": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
         "types": [

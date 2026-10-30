@@ -15,7 +15,7 @@ pub mod types;
 pub use client::{SpiceDBChannelBuilder, SpiceDBClient, SpiceDBClientBuilder};
 pub use error::SpiceDBError;
 pub use options::{
-    BulkItemErrors, CallOptions, DefaultDeadline, DeletePartial, Operation, Paging,
+    BulkItemErrors, CallOptions, ConnectMode, DefaultDeadline, DeletePartial, Operation, Paging,
     ResponseMetadata, RetryEvent, RetryMode, RetryPolicy, StreamRetryMode,
 };
 /// Authenticated protocol escape hatch; raw calls have caller-owned policies.

@@ -83,6 +83,7 @@ executed by CI and must be able to fail".
 | `LookupResources/` | Resource lookup, paged with a limit and resumed from a cursor |
 | `LookupSubjects/` | Subject lookup |
 | `CallDeadlines/` | `ClientOptions.DefaultTimeout`, per-operation `Timeout`, and confirming bulk import isn't bounded by the unary default |
+| `EndpointForms/` | A real call over `host:port`, `http://`, `dns:///` and `unix:` endpoints, and `ConnectAsync` failing fast on an unreachable one |
 | `ErrorMapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
 | `InsecureOptIn/` | Why `CreatePlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
 | `RetryPolicy/` | Which calls are retried for you and which are not, counted server-side |

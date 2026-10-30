@@ -2,7 +2,7 @@
 
 import math
 import time
-from spicedb.errors import InvalidArgumentError, DeadlineExceededError
+from spicedb.errors import LocalValidationError, DeadlineExceededError
 
 
 class Budget:
@@ -13,7 +13,7 @@ class Budget:
             or not math.isfinite(timeout)
             or timeout <= 0
         ):
-            raise InvalidArgumentError("timeout: expected a finite positive number")
+            raise LocalValidationError("timeout: expected a finite positive number")
         self.deadline = None if timeout is None else time.monotonic() + timeout
 
     def remaining(self):

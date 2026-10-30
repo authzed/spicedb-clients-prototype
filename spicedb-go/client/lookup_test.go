@@ -345,7 +345,7 @@ func TestLookupResourcesPermissionshipFilter(t *testing.T) {
 	for _, mode := range []LookupPermissionshipFilter{LookupAll, LookupHasPermissionOnly} {
 		t.Run(strconv.Itoa(int(mode)), func(t *testing.T) {
 			responses := []*v1.LookupResourcesResponse{}
-			for i, permission := range []v1.LookupPermissionship{2, 0, 99, 1, 2, 1, 1} {
+			for i, permission := range []v1.LookupPermissionship{2, 2, 2, 1, 2, 1, 1} {
 				responses = append(responses, &v1.LookupResourcesResponse{ResourceObjectId: strconv.Itoa(i), Permissionship: permission, AfterResultCursor: &v1.Cursor{Token: strconv.Itoa(i + 1)}, LookedUpAt: &v1.ZedToken{Token: "snapshot"}})
 			}
 			stub := &lookupStubServer{lookupResourcesResponses: responses, paginate: true}

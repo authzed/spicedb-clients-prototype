@@ -1,4 +1,5 @@
 """Filtering counts grants, while raw responses drive pagination and cleanup."""
+from authzed.api.v1 import core_pb2 as _core_tok
 from unittest.mock import Mock
 
 import grpc
@@ -36,7 +37,7 @@ def setup(client_type):
         start = int(request.optional_cursor.token or "0")
         requests.append((start, request.optional_limit))
         call = Call([
-            psp.LookupResourcesResponse(resource_object_id=str(i), permissionship=value,
+            psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), resource_object_id=str(i), permissionship=value,
                 after_result_cursor=core.Cursor(token=str(i + 1)))
             for i, value in enumerate(values[start:start + request.optional_limit], start)
         ])
@@ -108,7 +109,7 @@ async def test_retried_page_does_not_double_count_skipped_items(client_type):
 
     def responses(start, size):
         return [
-            psp.LookupResourcesResponse(resource_object_id=str(i), permissionship=value,
+            psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), resource_object_id=str(i), permissionship=value,
                 after_result_cursor=core.Cursor(token=str(i + 1)))
             for i, value in enumerate(values[start:start + size], start)
         ]

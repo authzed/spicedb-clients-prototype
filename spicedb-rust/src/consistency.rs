@@ -3,6 +3,16 @@ use crate::types::ZedToken;
 /// A consistency requirement for SpiceDB read operations.
 ///
 /// Use the free functions in this module to construct a `Strategy`.
+///
+/// `Display` names it: `full`, `min_latency`, `at_least(<token>)` or
+/// `snapshot(<token>)`. With the `serde` feature it serializes as
+/// `{"strategy":"at_least","token":"<token>"}`, with no token for `full`
+/// and `min_latency`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "strategy", content = "token", rename_all = "snake_case")
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Strategy {
@@ -16,6 +26,17 @@ pub enum Strategy {
     AtLeast(ZedToken),
     /// Read at the exact given revision (ZedToken).
     Snapshot(ZedToken),
+}
+
+impl std::fmt::Display for Strategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Strategy::Full => f.write_str("full"),
+            Strategy::MinLatency => f.write_str("min_latency"),
+            Strategy::AtLeast(token) => write!(f, "at_least({token})"),
+            Strategy::Snapshot(token) => write!(f, "snapshot({token})"),
+        }
+    }
 }
 
 /// Returns a strategy that requires full consistency. This is the least
@@ -41,25 +62,27 @@ pub fn snapshot(revision: ZedToken) -> Strategy {
     Strategy::Snapshot(revision)
 }
 
-/// Returns [`at_least`] if the revision is `Some`, otherwise [`full`].
+/// Returns [`at_least`] if the revision is `Some`, otherwise [`full`]. An
+/// empty or whitespace-only revision counts as absent.
 ///
 /// Use this when you have an optional revision from a previous write and want
 /// the safest fallback.
 pub fn at_least_or_full(revision: Option<ZedToken>) -> Strategy {
     match revision {
-        Some(r) if !r.as_ref().is_empty() => at_least(r),
+        Some(r) if !r.as_ref().trim().is_empty() => at_least(r),
         Some(_) => full(),
         None => full(),
     }
 }
 
 /// Returns [`at_least`] if the revision is `Some`, otherwise [`min_latency`].
+/// An empty or whitespace-only revision counts as absent.
 ///
 /// Use this when you have an optional revision but prefer performance over full
 /// consistency as the fallback.
 pub fn at_least_or_min_latency(revision: Option<ZedToken>) -> Strategy {
     match revision {
-        Some(r) if !r.as_ref().is_empty() => at_least(r),
+        Some(r) if !r.as_ref().trim().is_empty() => at_least(r),
         Some(_) => min_latency(),
         None => min_latency(),
     }
@@ -70,9 +93,9 @@ use spicedb_proto::authzed::api::v1 as proto;
 impl Strategy {
     pub(crate) fn validate(&self) -> Result<(), crate::error::SpiceDBError> {
         match self {
-            Self::AtLeast(t) | Self::Snapshot(t) if t.as_ref().is_empty() => Err(
-                crate::types::invalid("consistency.token", "must not be empty"),
-            ),
+            Self::AtLeast(t) | Self::Snapshot(t) => {
+                crate::types::require_revision("consistency.token", t)
+            }
             _ => Ok(()),
         }
     }

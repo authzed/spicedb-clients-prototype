@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/token"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -32,6 +33,11 @@ func (g *Generator) Language() string {
 // DefaultPackage is the generated package name when --go.package is not set.
 const DefaultPackage = "permissions"
 
+// DefaultNamesOnlyPackage is the package name --go.names-only uses when
+// --go.package is not set. It differs from DefaultPackage, so a file that
+// imports both the names-only package and the full one needs no import alias.
+const DefaultNamesOnlyPackage = "permissionnames"
+
 // TemplateData holds all pre-computed data needed by the Go template.
 type TemplateData struct {
 	Package            string
@@ -41,6 +47,28 @@ type TemplateData struct {
 	Definitions        []DefinitionData
 	SealedInterfaces   []SealedInterfaceData
 	PermissionVars     []PermissionVarData
+	// Reaching lists, per relation and permission, the subject positions
+	// ("type" or "type#relation") that can reach it, for by-name lookups.
+	Reaching []ReachingData
+	// SubjectSets lists every subject set a caller can build by name.
+	SubjectSets []SubjectSetData
+	// SubjectRules lists "definition#relation@shape" for every admitted subject shape.
+	SubjectRules []string
+	// SchemaLiteral is the source schema as a Go string literal.
+	SchemaLiteral string
+}
+
+// ReachingData pairs a "definition#name" position with the subject positions
+// that reach it.
+type ReachingData struct {
+	Position string
+	Subjects []string
+}
+
+// SubjectSetData is one "definition#relation" subject set and its ref type.
+type SubjectSetData struct {
+	Position string
+	RefType  string
 }
 
 // CaveatContextData holds data for generating a caveat context struct.
@@ -187,16 +215,26 @@ func parseRenames(v string) (map[string]string, error) {
 // (--go.rename=def=GoName,...) sets the Go identifier stem for definitions
 // whose names would otherwise collide with generated identifiers. Renames
 // change Go identifiers only; the schema names sent to SpiceDB never change.
+// "names-only" (--go.names-only) emits only the name constants and SchemaText
+// into names.gen.go, which imports nothing, so a shared API package can use
+// the names without depending on the client library.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
-	pkg := DefaultPackage
+	pkg, pkgSet := DefaultPackage, false
 	renames := map[string]string{}
+	namesOnly := false
 	for k, v := range opts {
 		switch k {
+		case generator.NamesOnlyOption:
+			b, err := generator.BoolOption("go", k, v)
+			if err != nil {
+				return nil, err
+			}
+			namesOnly = b
 		case "package":
 			if !token.IsIdentifier(v) || token.IsKeyword(v) {
 				return nil, fmt.Errorf("--go.package=%q is not a valid Go package name", v)
 			}
-			pkg = v
+			pkg, pkgSet = v, true
 		case "rename":
 			r, err := parseRenames(v)
 			if err != nil {
@@ -221,7 +259,11 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	if err != nil {
 		return nil, err
 	}
+	if namesOnly && !pkgSet {
+		pkg = DefaultNamesOnlyPackage
+	}
 	data.Package = pkg
+	data.SchemaLiteral = goStringLiteral(s.Source)
 
 	funcMap := template.FuncMap{
 		"hasWithMethods": func(s SubjectRefTypeData) bool {
@@ -237,8 +279,12 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 
+	name, path := "typed_client.go.tmpl", "permissions.gen.go"
+	if namesOnly {
+		name, path = "names_only.go.tmpl", "names.gen.go"
+	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
 		return nil, err
 	}
 	formatted, err := format.Source(buf.Bytes())
@@ -248,7 +294,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 
 	return []generator.GeneratedFile{
 		{
-			Path:    "permissions.gen.go",
+			Path:    path,
 			Content: formatted,
 		},
 	}, nil
@@ -528,7 +574,7 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 			dd.WildcardType = rn.refType(subjectBase{definition: def.Name, wildcard: true})
 			n.claim("", pascal+"Wildcard", "wildcard constructor for definition "+def.Name)
 		}
-		for _, m := range []string{"Filter", "PermissionByName", "RelationByName", "RelationshipByName", "String", "ID"} {
+		for _, m := range []string{"Filter", "PermissionByName", "RelationByName", "RelationshipByName", "String", "ID", "DefinitionName", "isDefinitionRef"} {
 			n.claim(refType, m, "built-in method "+m)
 		}
 
@@ -654,14 +700,40 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 	for _, fixed := range []string{"Subject", "Permission", "PermissionRef", "TypedRelationship", "RelationshipKey",
 		"Deletable", "TypedClient", "NewTypedClient", "Txn", "TypedCheck", "ChecksFor", "Check", "CheckBulk",
 		"LookupResources", "LookupSubjects", "FromRelationship", "ErrRelationship", "WithSubject", "WithSubjectAnyRelation",
-		"ErrNotInSchema", "ErrSubjectNotAllowed"} {
+		"ErrNotInSchema", "ErrSubjectNotAllowed", "schemaError", "SchemaText", "Definitions", "DefinitionNames", "Definition",
+		"DefinitionByName", "PermissionRefByName", "LookupResourcesByName", "definitionsByName",
+		"DefinitionRef", "SubjectSetByName", "LookupSubjectsByName", "reachingSubjects", "reaches",
+		"resolveByName", "schemaPosition", "emptyStream", "failedStream", "ObjectByName", "ParseObject", "ParseSubject",
+		"subjectRules", "TripleOption", "TripleCaveat", "TripleExpiration", "RelationshipFromTriple", "target",
+		"checkTarget", "CheckByName", "NamedCheck", "CheckBulkByName"} {
 		n.claim("", fixed, "generated support code")
 	}
 	if n.err != nil {
 		return TemplateData{}, n.err
 	}
 
+	var reaching []ReachingData
+	positions := s.ReachingSubjectPositions()
+	for _, def := range s.Definitions {
+		for _, r := range def.Relations {
+			p := schema.SubjectPosition(def.Name, r.Name)
+			reaching = append(reaching, ReachingData{Position: p, Subjects: positions[p]})
+		}
+		for _, perm := range def.Permissions {
+			p := schema.SubjectPosition(def.Name, perm.Name)
+			reaching = append(reaching, ReachingData{Position: p, Subjects: positions[p]})
+		}
+	}
+	var subjectSets []SubjectSetData
+	for _, p := range s.SubjectSetPositions() {
+		d, r, _ := strings.Cut(p, "#")
+		subjectSets = append(subjectSets, SubjectSetData{Position: p, RefType: rn.refType(subjectBase{definition: d, relation: r})})
+	}
+
 	return TemplateData{
+		Reaching:           reaching,
+		SubjectRules:       s.SubjectRules(),
+		SubjectSets:        subjectSets,
 		CaveatContextTypes: caveatContextTypes,
 		SubjectRefTypes:    subjectRefTypes,
 		TypeSentinels:      typeSentinels,
@@ -669,6 +741,16 @@ func buildTemplateData(s *schema.Schema, rn renamer) (TemplateData, error) {
 		SealedInterfaces:   sealedInterfaces,
 		PermissionVars:     permissionVars,
 	}, nil
+}
+
+// goStringLiteral renders text as a Go string literal: a raw string when it
+// can hold the text verbatim (no backquote or carriage return), otherwise an
+// interpreted one.
+func goStringLiteral(text string) string {
+	if strings.ContainsAny(text, "`\r") {
+		return strconv.Quote(text)
+	}
+	return "`" + text + "`"
 }
 
 func describe(b subjectBase, caveat string, expiration bool) string {
@@ -794,7 +876,8 @@ func celTypeToGoType(celType string) string {
 // Options lists the options this generator accepts, for the CLI's help.
 func (g *Generator) Options() []generator.Option {
 	return []generator.Option{
-		{Name: "package", Value: "<name>", Description: `Go package name of the generated file (default "permissions").`},
+		{Name: "package", Value: "<name>", Description: `Go package name of the generated file (default "` + DefaultPackage + `", or "` + DefaultNamesOnlyPackage + `" with --go.names-only so the two never share a name).`},
 		{Name: "rename", Value: "<definition>=<GoName>[,...]", Description: `Go identifier stem for a definition whose generated names collide; schema names on the wire are unchanged.`},
+		generator.NamesOnlyOptionDescription,
 	}
 }

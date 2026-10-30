@@ -27,7 +27,7 @@ func TestLanguage(t *testing.T) {
 
 func TestCanonicalRequestsAndDirectStreams(t *testing.T) {
 	output := generateSample(t, nil)
-	assert.Contains(t, output, "return this.client.check(p.checkRequest(s, c), options);")
+	assert.Contains(t, output, "return this.client.check(requirePermission(p).checkRequest(s, c), options);")
 	assert.Contains(t, output, "consistency: c,")
 	assert.NotContains(t, output, "Promise<AsyncIterableIterator<")
 	assert.NotContains(t, output, "async lookupResources(")
@@ -82,7 +82,8 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// Native capability forwarding and typed writes.
 	assert.Contains(t, output, `export class TypedClient {`)
-	assert.Contains(t, output, `readonly client: SpiceDBClient;`)
+	assert.Contains(t, output, `readonly client: SpiceDBClientInterface;`)
+	assert.Contains(t, output, `constructor(client: SpiceDBClientInterface) {`)
 	assert.Contains(t, output, `async writeTransaction(txn: TypedTransaction, options?: CallOptions): Promise<WriteResult> {`)
 	assert.Contains(t, output, `async checkBulkTyped(c: Consistency, checks: readonly TypedCheck[], options?: CheckOptions): Promise<readonly CheckResult[]> {`)
 }
@@ -171,7 +172,8 @@ definition doc {
 	relation viewer: user
 	permission name = viewer
 }`,
-		"definition vs global": `definition date {}`,
+		"definition vs global":           `definition date {}`,
+		"definition vs schema constants": `definition definitions {}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, err := schema.ParseString(src)
@@ -189,6 +191,57 @@ func TestGenerateEmptySchema(t *testing.T) {
 	output := string(files[0].Content)
 	assert.Contains(t, output, `export class TypedClient {`)
 	assert.NotContains(t, output, `export function User`)
+}
+
+func TestSchemaLevelNameLookups(t *testing.T) {
+	output := generateSample(t, nil)
+	// Definition-name constants and type.
+	assert.Contains(t, output, `export type DefinitionName = "user" | "team" | "document" | "organization" | "invitation";`)
+	assert.Contains(t, output, "export const Definitions = Object.freeze({\n    user: \"user\",")
+	assert.Contains(t, output, `export const DefinitionNames: readonly DefinitionName[] = Object.freeze(["user", "team", "document", "organization", "invitation"]);`)
+	assert.Contains(t, output, `export type AnyResourceRef = UserRef | TeamRef | DocumentRef | OrganizationRef | InvitationRef;`)
+	// Schema-level definition lookup and a resource-less permission ref by names.
+	assert.Contains(t, output, `export function definitionByName(name: string): DefinitionInfo {`)
+	assert.Contains(t, output, `"document": definitionInfo("document", DocumentRelationNames, DocumentPermissionNames, Document),`)
+	assert.Contains(t, output, `export function permissionRefByName(definition: string, permission: string): PermissionRef<DefinitionName, string> {`)
+	// Lookup of resources by runtime names on the typed client.
+	assert.Contains(t, output, `lookupResourcesByName(c: Consistency, definition: string, permission: string, s: AnySubject, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource> {`)
+	// Subject sets, checks and subject lookups by runtime names, with the
+	// reachability table that short-circuits unreachable subject types.
+	assert.Contains(t, output, `export function subjectSetByName(definition: string, id: string, relation: string): AnySubjectSet {`)
+	assert.Contains(t, output, `export type AnySubjectSet = TeamMemberRef | OrganizationCanAdminRef;`)
+	assert.Contains(t, output, `export function relationshipFromTriple(resource: string, relation: string, subject: string, options?: TripleOptions): TypedRelationship {`)
+	assert.Contains(t, output, `"invitation#inviter@user[expiration]"`)
+	assert.Contains(t, output, `export function parseObject(text: string): AnyResourceRef {`)
+	assert.Contains(t, output, `export function parseSubject(text: string): AnyResourceRef | AnySubjectSet | UserWildcardRef {`)
+	assert.Contains(t, output, "        case \"user\":\n            return UserWildcard();")
+	assert.Contains(t, output, `"team#member": (id: string) => makeTeamMemberRef(id),`)
+	assert.Contains(t, output, `"organization#can_admin": (id: string) => makeOrganizationCanAdminRef(id),`)
+	assert.Contains(t, output, `"document#view": ["team#member", "user"],`)
+	assert.Contains(t, output, `"invitation#accept": ["organization#can_admin", "user"],`)
+	assert.Contains(t, output, `async checkByName(c: Consistency, definition: string, id: string, permission: string, s: AnySubject, options?: CheckOptions): Promise<CheckResult> {`)
+	assert.Contains(t, output, "subjectRelation?: string,")
+	assert.Contains(t, output, `async checkBulkByName(c: Consistency, checks: readonly NamedCheck[], options?: CheckOptions): Promise<readonly CheckResult[]> {`)
+}
+
+func TestSchemaTextConstant(t *testing.T) {
+	src := "definition user {}\n\n// a \"quoted\" `tick` ${x} \\ comment\ndefinition doc {\n\trelation viewer: user\n}\n"
+	s, err := schema.ParseString(src)
+	require.NoError(t, err)
+	files, err := (&Generator{}).Generate(s, nil)
+	require.NoError(t, err)
+	output := string(files[0].Content)
+	assert.Contains(t, output, `export const SchemaText: string = "definition user {}\n\n// a \"quoted\" `+"`tick`"+` ${x} \\ comment\ndefinition doc {\n\trelation viewer: user\n}\n";`)
+	assert.NotContains(t, output, "\t")
+}
+
+func TestEmptySchemaHasEmptyNameLookups(t *testing.T) {
+	files, err := (&Generator{}).Generate(&schema.Schema{}, nil)
+	require.NoError(t, err)
+	output := string(files[0].Content)
+	assert.Contains(t, output, `export type DefinitionName = never;`)
+	assert.Contains(t, output, `export type AnyResourceRef = never;`)
+	assert.Contains(t, output, `export const SchemaText: string = "";`)
 }
 
 func TestToPascalCase(t *testing.T) {

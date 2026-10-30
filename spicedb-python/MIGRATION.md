@@ -7,6 +7,31 @@ lists a behavior change you will observe, followed by a before/after. If your
 application owns its schema, also consider the generated typed client
 (`spicedb-gen --lang python`); see [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md).
 
+## Requirements
+
+| Requirement | spicedb-python | authzed-py |
+| --- | --- | --- |
+| Python | 3.11 or later | |
+| `grpcio` | `>=1.73.0` | `~=1.63` |
+| `protobuf` | `>=5.26.1` (5.x, 6.x and 7.x tested) | `>=5.26` |
+| `googleapis-common-protos` | `>=1.56.1` | |
+| SpiceDB | 1.30 or later | |
+
+- grpcio 1.73 is the first release whose transport rejects an
+  authority-bearing `unix:` target, which the plaintext-credential guard
+  relies on. The bindings are generated as protobuf 5.26.1 code, so an
+  application on protobuf 5.x, 6.x or 7.x adopts the client without changing
+  its protobuf version; the suites pass at 5.26.1, 5.29.5, 6.33.2 and 7.36.2.
+  On Python 3.14, protobuf 5.26.1 fails to import (that runtime predates
+  Python 3.14); 5.29.5 and later work there.
+  Both floors are inside authzed-py's ranges, so one environment can hold both
+  clients (see below). Test tooling is only in the `dev` extra.
+- SpiceDB 1.30 and later is supported natively. Data older servers sent only
+  in trailers (for example check debug traces) is reachable through
+  `call_options=CallOptions(response_metadata=ResponseMetadata())`.
+- Installation, including from a checkout before publication:
+  [README.md](README.md).
+
 ## Installing both during the migration
 
 authzed-py and `spicedb-python-proto` (which spicedb-python depends on) both
@@ -29,21 +54,6 @@ The bridged authzed-py keeps its client classes and `grpcutil`, drops its own
 generated modules, and requires `spicedb-python-proto`, so `authzed.api.v1.CheckPermissionRequest`
 and spicedb-python's requests are the same class from one descriptor pool.
 Values pass between the two without conversion.
-
-## Dependency floors
-
-spicedb-python needs `grpcio>=1.73.0` (authzed-py: `~=1.63`) and
-`protobuf>=7.36.2` (authzed-py: `>=5.26`). grpcio 1.73 is the first release
-whose transport rejects an authority-bearing `unix:` target, which the
-plaintext-credential guard relies on; protobuf 7.36.2 is the bindings'
-generated-code version. Both are inside authzed-py's ranges. Test tooling is
-only in the `dev` extra.
-
-## SpiceDB version
-
-SpiceDB 1.30 and later is supported natively. Data older servers sent only in
-trailers (for example check debug traces) is reachable through
-`call_options=CallOptions(response_metadata=ResponseMetadata())`.
 
 ## Constructors and transport security
 
@@ -69,6 +79,17 @@ client = SpiceDBClient("spicedb:50051", token="key",
 - `InsecureClient` sent the token in plaintext to any host. Now plaintext to a
   non-loopback host (anything but `localhost`, `127.0.0.0/8`, `::1` or a unix
   socket) is refused unless you pass `remote_credentials=RemoteCredentials.ALLOW`.
+- The endpoint is `host:port`, `http://host:port` or `https://host[:port]`,
+  plus `dns:///host:port` and `unix:` socket targets. A plaintext endpoint
+  must name its port (`localhost:50051`; a bare `localhost` used to dial
+  443); a TLS endpoint without one uses 443. The scheme must agree with
+  `transport_security`. Other gRPC target URIs (`dns://8.8.8.8/host:port`,
+  `dns:host:port`, `ipv4:...`) and URLs with a path, query or userinfo are
+  rejected at construction with `LocalValidationError` (an
+  `InvalidArgumentError` and a `ValueError`, like every constructor
+  argument error); authzed-py passed them to grpc unchecked.
+- authzed-py had no readiness check either; a client that should fail at
+  startup calls `client.ready(timeout=...)` (`await` it on `aio`).
 - `bearer_token_credentials(token, certChain)` → `ca_cert=certChain`; mTLS uses
   `client_cert=` and `client_key=`.
 - Close the client (`close()`, `with`, `async with`); it owns its channel.
@@ -77,6 +98,28 @@ client = SpiceDBClient("spicedb:50051", token="key",
 ```python
 client = SpiceDBClient.from_channel(channel)   # channel keeps its own credentials; close() leaves it open
 ```
+
+- One `spicedb.aio.SpiceDBClient` per event loop. An asyncio client binds to
+  the loop it is first used on, like the `grpc.aio` channel under it; using it
+  from another loop raises `EventLoopBindingError`. An application whose web
+  server and background worker each run their own loop builds a client in
+  each (for example in each loop's startup or lifespan hook) instead of
+  sharing one built at import time. Genuinely synchronous code uses
+  `spicedb.sync.SpiceDBClient`, which any thread may share.
+
+An empty or whitespace-only `token` (usually an unset environment variable)
+raises `LocalValidationError` at construction, and so do `ca_cert`,
+`client_cert` or `client_key` bytes that do not parse as PEM, and a
+`client_key` from a different key pair than `client_cert`; the message names
+the argument.
+
+Names and IDs must be `str`: `ObjectRef("document", 42)`, a permission or
+relation of `True`, or `lookup_resources(resource_type=42, ...)` raises
+`LocalValidationError` before any request, never sending a coerced value.
+Convert numeric IDs yourself with `str(...)`. An empty or whitespace-only
+`ZedToken` passed to `at_least`, `snapshot` or a watch or materialize start/at
+revision raises `LocalValidationError`; `at_least_or_full` and
+`at_least_or_min_latency` treat it as no revision and fall back.
 
 ## Requests and results are native values
 
@@ -108,6 +151,43 @@ allowed = result.has_permission   # only an unconditional grant; CONDITIONAL nev
   `resource_type`, `subject_type`, `subject_relation`.
 - `Relationship.from_tuple("document:readme#viewer@user:alice[expiration:2030-01-01T00:00:00Z]")`
   parses SpiceDB's full tuple syntax; `str(relationship)` formats it.
+
+## Renamed request and response members
+
+Requests are keyword arguments and native values, and responses are frozen
+dataclasses. Where a protobuf member has a different name or shape:
+
+| authzed-py (protobuf) | spicedb-python |
+| --- | --- |
+| `ObjectReference(object_type=, object_id=)` | `ObjectRef(object_type, object_id)` |
+| `SubjectReference(object=, optional_relation=)` | `SubjectRef(object, relation)` (`None` or `"..."` is direct) |
+| `Relationship.subject.object.object_id` | `Relationship.subject_id` (also `resource_id`, `resource_type`, `subject_type`, `subject_relation`) |
+| `Relationship.optional_caveat`, `optional_expires_at` | `Relationship.caveat`, `expiration` (`datetime`) |
+| `ZedToken.token` | `str(token)` on a `ZedToken` |
+| `Consistency(fully_consistent=True)` / `(minimize_latency=True)` / `(at_least_as_fresh=t)` / `(at_exact_snapshot=t)` | `full()` / `min_latency()` / `at_least(t)` / `snapshot(t)` |
+| `CheckPermissionRequest.with_tracing` | `tracing=Tracing.ENABLED` |
+| `CheckPermissionResponse.permissionship == PERMISSIONSHIP_HAS_PERMISSION` | `CheckResult.has_permission` (or `permissionship is Permissionship.HAS_PERMISSION`) |
+| `CheckPermissionResponse.partial_caveat_info.missing_required_context` | `CheckResult.missing_context` |
+| `CheckPermissionResponse.checked_at` | `CheckResult.checked_at` |
+| `CheckBulkPermissionsResponse.pairs[i].item` / `.error` | `check_bulk(...)[i]` / `.error` with `item_errors=BulkItemErrors.RETURN` |
+| `WriteRelationshipsRequest.updates`, `optional_preconditions` | `Transaction().touch/create/delete(...)`, `.must_match/.must_not_match(filter)` |
+| `WriteRelationshipsResponse.written_at` | `WriteResult.revision` |
+| `RelationshipFilter(resource_type=, optional_resource_id=, optional_resource_id_prefix=, optional_relation=, optional_subject_filter=)` | `Filter(resource_type, resource_id=, resource_id_prefix=, relation=, subject=)` |
+| `SubjectFilter(subject_type=, optional_subject_id=, optional_relation=)` | `SubjectFilter(subject_type, subject_id=, relation=SubjectRelationFilter.any()/.direct()/.named(r))` |
+| `DeleteRelationshipsRequest.optional_limit`, `optional_allow_partial_deletions` | `delete_relationships(limit=, partial=DeletePartial.ALLOWED/DISALLOWED)` |
+| `DeleteRelationshipsResponse.deleted_at`, `relationships_deleted_count`, `deletion_progress` | `DeleteResult.revision`, `deleted_count`, `progress` |
+| `ReadRelationshipsRequest.optional_limit`, `optional_cursor` | `read_relationships(page_size=, cursor=)` (cursor is a `str`) |
+| `ReadRelationshipsResponse.after_result_cursor.token` | `ReadRelationship.after_result_cursor` |
+| `LookupResourcesRequest.resource_object_type`, `optional_limit`, `optional_cursor` | `lookup_resources(resource_type=, page_size=/limit=, cursor=)` |
+| `LookupResourcesResponse.resource_object_id`, `partial_caveat_info` | `LookupResource.resource_id`, `partial_caveat` |
+| `LookupSubjectsRequest.subject_object_type`, `optional_subject_relation`, `optional_concrete_limit`, `wildcard_option` | `lookup_subjects(subject_type=, subject_relation=, page_size=/limit=, wildcards=)` |
+| `LookupSubjectsResponse.subject.subject_object_id` (or deprecated `subject_object_id`) | `LookupSubject.subject.subject_id` |
+| `ExpandPermissionTreeResponse.tree_root`, `expanded_at` | `ExpandResult.tree`, `revision` |
+| `ReadSchemaResponse.schema_text`, `read_at` | `SchemaResult.schema`, `revision` |
+| `WriteSchemaResponse.written_at` | the returned `ZedToken` |
+| `WatchRequest.optional_object_types`, `optional_relationship_filters`, `optional_start_cursor` | `watch(object_types, filters=, start_revision=)` |
+| `WatchResponse.changes_through`, `optional_transaction_metadata` | `WatchEvent.changes_through`, `transaction_metadata` |
+| `ExportBulkRelationshipsResponse.relationships`, `after_result_cursor` | one `ExportedRelationship(relationship, after_result_cursor)` per relationship |
 
 ## Writes
 
@@ -141,6 +221,8 @@ results = client.check_bulk(checks, consistency=full(), item_errors=BulkItemErro
 for r in results:
     if r.error is not None: ...   # an errored item never grants
 ```
+
+A malformed item in the server's response (such as an unset permissionship) still fails the whole call with the client-detected malformed-response error.
 
 ## Deletes
 
@@ -193,8 +275,11 @@ authzed-py had no default deadline and no retries.
 
 - Every unary call (including bulk chunks and auto-fetched pages) has a
   30-second budget; per call `timeout=`, client-wide `default_timeout=`, or
-  `default_timeout=DefaultDeadline.DISABLED` for none. Streams have no default
-  lifetime.
+  `default_timeout=DefaultDeadline.DISABLED` for none. Finite paged reads
+  (relationship reads, lookups, exports, permission-set lookups) apply the
+  default to each page's wait on the server (to each wait for the next
+  message on an unpaged read), so a stalled server fails the read; time your
+  code spends between items never counts. Watch has no default lifetime.
 - Reads retry `UNAVAILABLE`/`ABORTED` up to three times with backoff, and
   stream establishment retries before the first item. If you have your own
   policy: `retry_policy=Retries.DISABLED` (or a `RetryPolicy(...)`) and
@@ -244,10 +329,40 @@ except grpc.RpcError as e:
     if code_of(e) == grpc.StatusCode.UNAVAILABLE: ...
 ```
 
-Local validation raises `InvalidArgumentError` before any RPC. `code_of`
+Local validation raises `LocalValidationError` before any RPC. It is both an
+`InvalidArgumentError` (code `INVALID_ARGUMENT`, a `grpc.RpcError`) and a
+`ValueError`, so input handling written as `except ValueError` keeps working:
+
+```python
+try:
+    rel = Relationship.from_triple(resource, relation, subject)   # e.g. "document", "viewer", "user:1"
+except ValueError:          # also matches `except InvalidArgumentError`
+    raise BadRequest()
+```
+
+An `INVALID_ARGUMENT` from the server stays a plain `InvalidArgumentError`
+(not a `ValueError`) with `server_message` set. `ObjectRef` applies SpiceDB's
+tuple rules (a lowercase type, optionally `prefix/type`, and a nonempty ID of
+`a-z A-Z 0-9 / _ | - = +` or `*`), so `ObjectRef("", "")` raises instead of
+reaching the server. `ObjectRef.parse("document:readme")` and
+`SubjectRef.parse("team:eng#member")` read the string forms. `code_of`
 also classifies raw `grpc.RpcError`, `asyncio.CancelledError` and
 `TimeoutError`. Tests construct errors with
 `SpiceDBError.from_code(grpc.StatusCode.FAILED_PRECONDITION, "...")`.
+
+Closing a stream while another thread or task waits on it raises
+`spicedb.errors.CancelledError` (code `CANCELLED`) in the waiter; cancelling
+an asyncio task still raises `asyncio.CancelledError`, and `code_of` reports
+both as `CANCELLED`.
+
+A response the client cannot interpret (a missing relationship, object, ID or
+revision, an unset check or lookup permissionship, an expand node with
+neither children nor subjects, a cursor that does not advance) raises
+`InternalError` (code `INTERNAL`, not retried by default), with a message
+beginning `spicedb: client detected malformed response from server:` and no
+`server_message`. authzed-py passed such responses through with empty values
+(an unset permissionship read as `PERMISSIONSHIP_UNSPECIFIED`); this
+client never skips them or fills them in.
 
 ## Metadata and call options
 
@@ -263,5 +378,15 @@ or persistence: `spicedb.protoconv`.
 
 Replace mocks of authzed-py stubs with `spicedb.testing.InMemoryClient` (or
 `AsyncInMemoryClient`): writes with preconditions and create conflicts,
-filtered reads and deletes, and registered check results, with the real
-client's method signatures.
+filtered reads and deletes, checks resolved from registered results, a
+resolver callback (`set_check_resolver(grant_all)` grants everything) or the
+stored relationships, and lookups over the objects it knows, with the real
+client's method signatures. A generated `TypedClient` wraps it:
+`TypedClient(InMemoryClient())`.
+
+The double does not evaluate your schema: a computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a check resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).

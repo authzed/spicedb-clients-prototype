@@ -1,13 +1,17 @@
 plugins {
     `java-library`
+    `maven-publish`
 }
 
+// Coordinates shared with spicedb-java (com.authzed.spicedb:spicedb-java), which
+// depends on this artifact at the same version. Change both together.
 group = "com.authzed.spicedb"
 version = "0.1.0"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
+    withSourcesJar()
 }
 
 repositories {
@@ -26,7 +30,7 @@ repositories {
 sourceSets {
     main {
         java {
-            srcDirs("src/main/java", "gen")
+            setSrcDirs(listOf("src/main/java", "gen"))
         }
     }
 }
@@ -34,9 +38,12 @@ sourceSets {
 // Lowest versions that work (root DESIGN.md, "Document the path off the legacy
 // libraries": library modules declare the lowest dependency versions they
 // actually need). protobuf-java must be at least the gencode version stamped in
-// gen/ ("Protobuf Java Version: 4.36.2"): the generated classes call
-// RuntimeVersion.validateProtobufGencodeVersion and refuse an older runtime.
-val protobufFloor = "4.36.2"
+// gen/ ("Protobuf Java Version: 4.33.2"): the generated classes call
+// RuntimeVersion.validateProtobufGencodeVersion and refuse an older runtime. The
+// gencode version is pinned in buf.gen.yaml (protoc v33.2) at the floor
+// proto-google-common-protos already needs and below the 4.34.2 Spring Boot 4.1
+// manages. spicedb-java's ProtobufRuntime.FLOOR repeats this number.
+val protobufFloor = "4.33.2"
 
 dependencies {
     // Single source of truth for the gRPC stack -- see DESIGN.md "Invariants". Every
@@ -82,6 +89,28 @@ dependencies {
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
+}
+
+// `gradle publishToMavenLocal` installs com.authzed.spicedb:spicedb-java-proto into
+// ~/.m2 for consumers building before the artifacts reach a public repository.
+// versionMapping writes the resolved version of every dependency into the POM, so
+// no <dependency> is versionless (the grpc-bom import stays as well).
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            artifactId = "spicedb-java-proto"
+            from(components["java"])
+            versionMapping {
+                usage("java-api") { fromResolutionOf("runtimeClasspath") }
+                usage("java-runtime") { fromResolutionResult() }
+            }
+            pom {
+                name.set("spicedb-java-proto")
+                description.set("Generated gRPC and protobuf bindings for the SpiceDB API (authzed.api.v1)")
+                url.set("https://github.com/authzed/spicedb-clients")
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

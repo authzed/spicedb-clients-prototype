@@ -16,12 +16,15 @@ from spicedb import (
     PermissionCheck,
     Relationship,
     CheckResult,
+    Permissionship,
     Filter,
     full,
 )
 from spicedb.sync import SpiceDBClient, Stream
 from spicedb.aio import SpiceDBClient as AioClient, AsyncStream
-from spicedb.testing import AsyncInMemoryClient, Call, FaultStage, InMemoryClient, SchemaRevision, cursor_after
+from spicedb.testing import (
+    AsyncInMemoryClient, Call, CheckResolver, FaultStage, InMemoryClient, SchemaRevision, cursor_after, grant_all,
+)
 from spicedb.protocols import AsyncClientProtocol, ClientProtocol
 from spicedb import Operation, UnavailableError
 
@@ -156,3 +159,31 @@ def full_surface_protocol_types(client: SpiceDBClient, aio: AioClient) -> None:
     fake.set_read_schema_revision("omitted")  # type: ignore[arg-type]
     resume: str = cursor_after(3)
     fake.read_relationships(Filter("document"), consistency=full(), cursor=resume)
+
+
+def double_check_resolution() -> None:
+    fake = InMemoryClient()
+    fake.set_check_resolver(grant_all)
+    fake.set_check_resolver(lambda c: c.subject.object.object_id == "admin" or None)
+    fake.set_check_resolver(None)
+
+    def registered(c: PermissionCheck) -> CheckResult:
+        return CheckResult(Permissionship.HAS_PERMISSION, (), ZedToken(""))
+
+    resolver: CheckResolver = registered
+    AsyncInMemoryClient().set_check_resolver(resolver)
+    fake.set_check_resolver("grant")  # type: ignore[arg-type]
+
+
+def parsers_prebuilt_updates_and_value_errors() -> None:
+    from spicedb import InvalidArgumentError, LocalValidationError, Update, UpdateOperation
+
+    obj: ObjectRef = ObjectRef.parse("document:readme")
+    subject: SubjectRef = SubjectRef.parse("team:eng#member")
+    rel = Relationship(obj, "viewer", subject)
+    txn: Transaction = Transaction().add(Update(UpdateOperation.TOUCH, rel)).extend([])
+    txn.add(rel)  # type: ignore[arg-type]
+    ObjectRef.parse(obj)  # type: ignore[arg-type]
+    err: ValueError = LocalValidationError("bad input")
+    invalid: InvalidArgumentError = LocalValidationError("bad input")
+    print(txn, err, invalid)

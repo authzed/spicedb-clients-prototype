@@ -211,7 +211,7 @@ RSpec.describe "SpiceDBProto::Client insecure host guard" do
   it "names the opt-in in the error message" do
     expect {
       SpiceDBProto::Client.new("evil.example.com:1234", "super-secret-token", insecure: true)
-    }.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
+    }.to raise_error(ArgumentError, /to allow it, pass both insecure: true and allow_insecure_remote_credentials: true; otherwise use TLS \(insecure: false\)/)
   end
 
   it "allows a loopback endpoint with no opt-in, and actually carries the token" do
@@ -251,8 +251,126 @@ RSpec.describe "SpiceDBProto::Client authority-shifting endpoint guard" do
 
       expect do
         SpiceDBProto::Client.new(endpoint, "super-secret-token", insecure: true)
-      end.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
+      end.to raise_error(SpiceDBProto::InvalidEndpointError, /invalid endpoint/)
     end
+  end
+end
+
+# Root DESIGN.md, "Accept the endpoint forms deployments use, or reject them at
+# construction". Every refusal here happens before a channel exists.
+RSpec.describe "SpiceDBProto::Client endpoint forms" do
+  def parse(endpoint, insecure:) = SpiceDBProto::Client.parse_endpoint(endpoint, insecure: insecure)
+
+  {
+    "127.0.0.1:50101" => ["127.0.0.1:50101", nil],
+    "http://127.0.0.1:50101" => ["127.0.0.1:50101", :http],
+    "HTTP://127.0.0.1:50101/" => ["127.0.0.1:50101", :http],
+    "http://[::1]:50051" => ["[::1]:50051", :http],
+    "[::1]:50051" => ["[::1]:50051", nil],
+    "unix:///var/run/spicedb.sock" => ["unix:///var/run/spicedb.sock", nil],
+    "dns:///localhost:50051" => ["dns:///localhost:50051", :dns],
+    "DNS:///127.0.0.1:50051" => ["dns:///127.0.0.1:50051", :dns],
+    "dns:///[::1]:50051" => ["dns:///[::1]:50051", :dns]
+  }.each do |endpoint, expected|
+    it "parses plaintext #{endpoint.inspect} to #{expected.inspect}" do
+      expect(parse(endpoint, insecure: true)).to eq(expected)
+    end
+  end
+
+  {
+    "spicedb.example.com:443" => ["spicedb.example.com:443", nil],
+    "spicedb.example.com" => ["spicedb.example.com:443", nil],
+    "https://example.com" => ["example.com:443", :https],
+    "https://example.com:8443" => ["example.com:8443", :https],
+    "https://[::1]" => ["[::1]:443", :https],
+    "::1" => ["[::1]:443", nil],
+    "dns:///spicedb.example.com" => ["dns:///spicedb.example.com:443", :dns],
+    "dns:///spicedb.example.com:8443" => ["dns:///spicedb.example.com:8443", :dns]
+  }.each do |endpoint, expected|
+    it "parses TLS #{endpoint.inspect} to #{expected.inspect}" do
+      expect(parse(endpoint, insecure: false)).to eq(expected)
+    end
+  end
+
+  ["localhost", "127.0.0.1", "[::1]", "::1", "http://localhost"].each do |endpoint|
+    it "rejects plaintext #{endpoint.inspect} without a port, naming host:port" do
+      expect(GRPC::Core::Channel).not_to receive(:new)
+      expect { SpiceDBProto::Client.new(endpoint, "t", insecure: true) }
+        .to raise_error(SpiceDBProto::InvalidEndpointError, /a plaintext endpoint needs an explicit port, e\.g\. (http:\/\/)?localhost:50051/)
+    end
+  end
+
+  {
+    "ipv4:127.0.0.1:50051" => /not a valid host and port/,
+    "http://127.0.0.1:50101/x" => /a path is not supported/,
+    "http://127.0.0.1:50101?a=b" => /a query is not supported/,
+    "http://127.0.0.1:50101#frag" => /a fragment is not supported/,
+    "http://u@127.0.0.1:50101" => /userinfo is not supported/,
+    "ftp://host:1" => /unsupported scheme "ftp"/,
+    "dns://8.8.8.8/host:1" => /a dns target must be dns:\/\/\/host:port/,
+    "dns:host:1" => /a dns target must be dns:\/\/\/host:port/,
+    "dns:///host:1/x" => /a path is not supported/,
+    "dns:///u@host:1" => /userinfo is not supported/,
+    "dns:///host:abc" => /port "abc" is not a number/,
+    "dns:///" => /no host/,
+    "xds:///host:1" => /unsupported scheme "xds"/,
+    "http://127.0.0.1:http" => /port "http" is not a number/,
+    "localhost:abc" => /port "abc" is not a number/,
+    "http://" => /no host/,
+    "http://:50051" => /no host/
+  }.each do |endpoint, reason|
+    it "rejects #{endpoint.inspect} naming the problem and the accepted forms" do
+      expect(GRPC::Core::Channel).not_to receive(:new)
+      expect { SpiceDBProto::Client.new(endpoint, "t", insecure: true) }
+        .to raise_error(SpiceDBProto::InvalidEndpointError,
+                        /invalid endpoint .*#{reason.source}.*expected host:port, http:\/\/host:port/)
+    end
+  end
+
+  it "reports a malformed remote URL as malformed, not as remote plaintext" do
+    expect { SpiceDBProto::Client.new("http://u@example.com:50051", "t", insecure: true) }
+      .to raise_error(SpiceDBProto::InvalidEndpointError, /userinfo/)
+  end
+
+  it "runs the loopback check on the parsed host" do
+    expect { SpiceDBProto::Client.validate_connection!("http://127.0.0.1:50101", insecure: true) }.not_to raise_error
+    expect { SpiceDBProto::Client.validate_connection!("http://example.com:50051", insecure: true) }
+      .to raise_error(SpiceDBProto::InsecureRemoteHostError, /"http:\/\/example\.com:50051".*allow_insecure_remote_credentials/)
+  end
+
+  it "rejects a plaintext dns target without a port" do
+    expect { SpiceDBProto::Client.validate_connection!("dns:///localhost", insecure: true) }
+      .to raise_error(SpiceDBProto::InvalidEndpointError, /needs an explicit port, e\.g\. dns:\/\/\/localhost:50051/)
+  end
+
+  it "runs the loopback check on a dns target's host" do
+    %w[dns:///localhost:50051 dns:///127.0.0.1:50051 dns:///[::1]:50051].each do |endpoint|
+      expect(SpiceDBProto::Client.validate_connection!(endpoint, insecure: true)).to eq(endpoint)
+    end
+    expect { SpiceDBProto::Client.validate_connection!("dns:///example.com:50051", insecure: true) }
+      .to raise_error(SpiceDBProto::InsecureRemoteHostError, /"dns:\/\/\/example\.com:50051"/)
+    expect(SpiceDBProto::Client.validate_connection!("dns:///example.com:50051", insecure: true,
+                                                     allow_insecure_remote_credentials: true))
+      .to eq("dns:///example.com:50051")
+  end
+
+  it "dials a dns target unchanged" do
+    allow_any_instance_of(SpiceDBProto::Client).to receive(:build_stubs)
+    expect(GRPC::Core::Channel).to receive(:new).with("dns:///example.com:443", {}, anything).and_call_original
+    SpiceDBProto::Client.new("dns:///example.com", "t").close
+  end
+
+  it "rejects a URL scheme that disagrees with the transport" do
+    expect { SpiceDBProto::Client.validate_connection!("https://example.com", insecure: true) }
+      .to raise_error(SpiceDBProto::InvalidEndpointError, /https:\/\/ selects TLS/)
+    expect { SpiceDBProto::Client.validate_connection!("http://127.0.0.1:50101", insecure: false) }
+      .to raise_error(SpiceDBProto::InvalidEndpointError, /http:\/\/ selects plaintext/)
+  end
+
+  it "dials the host:port a URL names" do
+    allow_any_instance_of(SpiceDBProto::Client).to receive(:build_stubs)
+    expect(GRPC::Core::Channel).to receive(:new).with("example.com:443", {}, anything).and_call_original
+    SpiceDBProto::Client.new("https://example.com", "t").close
   end
 end
 

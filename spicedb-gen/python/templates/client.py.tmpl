@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import {{if .Async}}AsyncIterable, {{end}}Callable, Iterable, Mapping, Sequence
+from collections.abc import {{if .Async}}AsyncGenerator{{else}}Generator{{end}}
 from typing import Any{{if .HasOverloads}}, overload{{end}}
 
 import grpc{{if .Async}}.aio{{end}}
@@ -56,6 +57,7 @@ from spicedb import (
 from spicedb.{{.Flavor}} import {{$stream}}, SpiceDBClient
 from spicedb.consistency import Consistency
 from spicedb.options import DEFAULT_RETRY_POLICY
+from spicedb.protocols import {{if .Async}}AsyncClientProtocol{{else}}ClientProtocol{{end}}
 from spicedb.raw import RawGrpc
 
 from .{{.Module}} import (
@@ -63,6 +65,19 @@ from .{{.Module}} import (
     {{.}},
 {{- end}}
 )
+
+{{if .Async}}
+
+async def _no_results(_stream: Any) -> AsyncGenerator[Any, None]:
+    """An empty result, for a lookup the schema proves has none."""
+    return
+    yield
+{{- else}}
+
+def _no_results(_stream: Any) -> Generator[Any, None, None]:
+    """An empty result, for a lookup the schema proves has none."""
+    yield from ()
+{{- end}}
 
 
 class TypedClient:
@@ -72,11 +87,14 @@ class TypedClient:
     create, delete, write_txn) take generated values. Every other native
     operation, including write and check_bulk, is forwarded unchanged with its
     native signature.
+
+    It wraps anything satisfying spicedb.protocols.{{if .Async}}AsyncClientProtocol{{else}}ClientProtocol{{end}}: the
+    real client, or the spicedb.testing {{if .Async}}AsyncInMemoryClient{{else}}InMemoryClient{{end}} double in tests.
     """
 
-    client: SpiceDBClient
+    client: {{if .Async}}AsyncClientProtocol{{else}}ClientProtocol{{end}}
 
-    def __init__(self, client: SpiceDBClient) -> None:
+    def __init__(self, client: {{if .Async}}AsyncClientProtocol{{else}}ClientProtocol{{end}}) -> None:
         self.client = client
 
     @classmethod
@@ -144,17 +162,23 @@ class TypedClient:
     async def __aenter__(self) -> TypedClient:
         return self
 
-    async def __aexit__(self, *exc: Any) -> bool:
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
-        return False
 {{- else}}
     def __enter__(self) -> TypedClient:
         return self
 
-    def __exit__(self, *exc: Any) -> bool:
+    def __exit__(self, *exc: object) -> None:
         self.close()
-        return False
 {{- end}}
+
+    {{$def}} ready(self, *, timeout: float | None = None) -> None:
+        """Wait until the connection is ready, as a startup readiness check.
+
+        Raises UnavailableError or DeadlineExceededError when the endpoint
+        is unreachable within timeout (default: the client's default deadline).
+        """
+        {{$await}}self.client.ready(timeout=timeout)
 
     {{$def}} close(self) -> None:
         {{$await}}self.client.close()
@@ -220,6 +244,64 @@ class TypedClient:
             consistency=c,
             context=context,
             tracing=tracing,
+            timeout=timeout,
+            call_options=call_options,
+        )
+
+    {{$def}} check_by_name(
+        self,
+        c: Consistency,
+        resource_type: str,
+        resource_id: str,
+        permission: str,
+        s: Subject,
+        *,
+        context: JSONObject | None = None,
+        tracing: Tracing = Tracing.DISABLED,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> CheckResult:
+        """Check a permission or relation with names received at runtime:
+        check_by_name(c, "document", "readme", "view", parse_object("user:alice")).
+
+        Validated before any RPC: NotInSchemaError for an unknown definition,
+        permission or relation, SubjectNotAllowedError for a subject the
+        schema does not admit, and LocalValidationError (a ValueError) for an
+        ID SpiceDB would reject.
+        """
+        target = _lookup_target(resource_type, resource_id, permission)
+        return {{$await}}self.client.check(
+            target.permission_check(s),
+            consistency=c,
+            context=context,
+            tracing=tracing,
+            timeout=timeout,
+            call_options=call_options,
+        )
+
+    {{$def}} check_bulk_by_name(
+        self,
+        c: Consistency,
+        checks: Iterable[tuple[str, str, str, Subject]],
+        *,
+        context: JSONObject | None = None,
+        tracing: Tracing = Tracing.DISABLED,
+        item_errors: BulkItemErrors = BulkItemErrors.RAISE,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> list[CheckResult]:
+        """Check (resource_type, resource_id, permission, subject) items named
+        at runtime in one bulk call; results are in input order.
+
+        Every item is validated as in check_by_name before any RPC.
+        """
+        requests = _named_checks(checks)
+        return {{$await}}self.client.check_bulk(
+            requests,
+            consistency=c,
+            context=context,
+            tracing=tracing,
+            item_errors=item_errors,
             timeout=timeout,
             call_options=call_options,
         )
@@ -300,7 +382,9 @@ class TypedClient:
         s: {{$c.SubjectUnion}},
         *,
         context: JSONObject | None = None,
-        permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
+        permissionship_filter: LookupPermissionshipFilter = (
+            LookupPermissionshipFilter.ALL
+        ),
         limit: int | None = None,
         page_size: int = 1000,
         debug: LookupDebug = LookupDebug.DISABLED,
@@ -317,7 +401,9 @@ class TypedClient:
         s: {{.LookupResourcesImpl.S}},
         *,
         context: JSONObject | None = None,
-        permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
+        permissionship_filter: LookupPermissionshipFilter = (
+            LookupPermissionshipFilter.ALL
+        ),
         limit: int | None = None,
         page_size: int = 1000,
         debug: LookupDebug = LookupDebug.DISABLED,
@@ -326,11 +412,61 @@ class TypedClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupResource]:
-        sub_type, sub_id, sub_rel = s._subject_ref()
         return self.client.lookup_resources(
             resource_type=p._resource_type,
             permission=p._permission,
-            subject=SubjectRef(ObjectRef(sub_type, sub_id), sub_rel or None),
+            subject=_subject(s),
+            consistency=c,
+            context=context,
+            permissionship_filter=permissionship_filter,
+            limit=limit,
+            page_size=page_size,
+            debug=debug,
+            cursor=cursor,
+            paging=paging,
+            timeout=timeout,
+            call_options=call_options,
+        )
+
+    def lookup_resources_by_name(
+        self,
+        c: Consistency,
+        resource_type: str,
+        permission: str,
+        s: Subject,
+        *,
+        context: JSONObject | None = None,
+        permissionship_filter: LookupPermissionshipFilter = (
+            LookupPermissionshipFilter.ALL
+        ),
+        limit: int | None = None,
+        page_size: int = 1000,
+        debug: LookupDebug = LookupDebug.DISABLED,
+        cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> {{$stream}}[LookupResource]:
+        """Look up resources by a definition and a permission or relation
+        named at runtime.
+
+        The names and the subject are validated against the schema before any
+        RPC: NotInSchemaError for an unknown definition, permission or
+        relation. A subject whose type and relation cannot reach it yields
+        nothing, without a call, as SpiceDB would answer; a subject of a
+        reachable type in a shape the schema does not admit (a wildcard)
+        raises SubjectNotAllowedError.
+        """
+        _require_subject(s)
+        target = _lookup_target(resource_type, "", permission)
+        if not _reaches(target, s._type, s._relation):
+            return {{$stream}}[LookupResource](_no_results)
+        if not isinstance(s, target._admits):
+            raise SubjectNotAllowedError(f"{target.ref} cannot be looked up for {s}")
+        return self.client.lookup_resources(
+            resource_type=resource_type,
+            permission=permission,
+            subject=_subject(s),
             consistency=c,
             context=context,
             permissionship_filter=permissionship_filter,
@@ -373,12 +509,62 @@ class TypedClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupSubject]:
+        _require_subject(t, allow_class=True)
         return self.client.lookup_subjects(
-            resource=ObjectRef(p._resource_type, p._resource_id),
+            resource=_object(p._resource_type, p._resource_id),
             permission=p._permission,
             subject_type=t._type,
             consistency=c,
             subject_relation=t._relation or None,
+            context=context,
+            page_size=page_size,
+            limit=limit,
+            wildcards=wildcards,
+            timeout=timeout,
+            call_options=call_options,
+        )
+
+    def lookup_subjects_by_name(
+        self,
+        c: Consistency,
+        resource_type: str,
+        resource_id: str,
+        permission: str,
+        subject_type: str,
+        subject_relation: str | None = None,
+        *,
+        context: JSONObject | None = None,
+        page_size: int | None = None,
+        limit: int | None = None,
+        wildcards: Wildcards = Wildcards.DEFAULT,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> {{$stream}}[LookupSubject]:
+        """Look up the subjects of a permission or relation, with every name
+        received at runtime: the counterpart of lookup_resources_by_name.
+
+        Validated against the schema before any RPC: NotInSchemaError for an
+        unknown definition, permission, relation or subject relation, and
+        LocalValidationError (a ValueError) for an ID SpiceDB would reject. A
+        subject type and relation that cannot reach the permission yields
+        nothing, without a call, as SpiceDB would answer.
+        """
+        target = _lookup_target(resource_type, resource_id, permission)
+        resource = _object(resource_type, resource_id)
+        definition_by_name(subject_type)
+        if subject_relation is not None:
+            _require_name(subject_relation, "subject relation")
+        relation = "" if subject_relation in (None, "...") else subject_relation
+        if relation:
+            _lookup_target(subject_type, "", relation)
+        if not _reaches(target, subject_type, relation or ""):
+            return {{$stream}}[LookupSubject](_no_results)
+        return self.client.lookup_subjects(
+            resource=resource,
+            permission=permission,
+            subject_type=subject_type,
+            consistency=c,
+            subject_relation=relation or None,
             context=context,
             page_size=page_size,
             limit=limit,

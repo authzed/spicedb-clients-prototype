@@ -397,3 +397,12 @@ func TestCursorAfterResumesLikeAStoreCursor(t *testing.T) {
 	}
 	require.Equal(t, []string{"d3", "d4"}, rest)
 }
+
+// Ready on the Store is an accepted no-op, so startup code that calls it runs
+// unchanged against the double.
+func TestStoreReadyIsNoOp(t *testing.T) {
+	s := clienttest.NewStore()
+	var iface client.Interface = s
+	require.NoError(t, iface.Ready(context.Background(), client.WithReadyTimeout(1)))
+	require.Empty(t, s.Calls())
+}

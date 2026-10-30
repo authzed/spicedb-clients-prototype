@@ -74,13 +74,24 @@ if err != nil {
     return err
 }
 defer c.Close()
-tc := permissions.NewTypedClient(c) // tc also has every native method
+// Constructors connect lazily: fail at startup on a wrong or unreachable endpoint.
+if err := c.Ready(ctx, client.WithReadyTimeout(10*time.Second)); err != nil {
+    return err
+}
+tc := permissions.NewTypedClient(c) // tc also has every native method; c may be any client.Interface
 ```
+
+Endpoints: `host:port`, `http://host:port` (plaintext), `https://host[:port]`,
+`dns:///host:port`, `unix:/path/to.sock` or `passthrough:///host:port`; any
+other form fails at construction with `client.ErrInvalidArgument`.
 
 `client.NewPlaintext` is for local development; a non-loopback plaintext target
 additionally needs `client.WithRemotePlaintextCredentials(client.RemotePlaintextAllowed)`.
 Use `client.NewFromConn(conn)` for an existing `grpc.ClientConnInterface` (in-memory,
 SpiceDB's test server); `Close` leaves that connection open.
+
+An empty or whitespace-only preshared key (usually an unset environment
+variable) fails at construction with `ErrInvalidArgument`.
 
 ## Check (fail closed)
 
@@ -93,7 +104,9 @@ if err != nil || !result.HasPermission() {
 ```
 
 - Need to observe a write? Store `written.Revision.String()` and check with
-  `consistency.AtLeast(consistency.NewZedToken(stored))`.
+  `consistency.AtLeast(consistency.NewZedToken(stored))`. A blank (empty or
+  whitespace-only) stored token fails with `ErrInvalidArgument`; use
+  `consistency.AtLeastOrFull` when the token may be absent.
 - Reporting what was denied: `perm.String()` is `organization:acme#view`.
 - Several at once:
 
@@ -104,6 +117,10 @@ results, err := permissions.CheckBulk(ctx, tc, consistency.MinLatency(),
 // results[i] matches input i; only results[i].HasPermission() grants.
 ```
 
+  `client.WithBulkItemErrors(client.ItemErrorsReturned)` puts per-item errors on
+  `results[i].Err` (never a grant) instead of failing the call; a malformed item
+  in the server's response still fails the whole call with `ErrInternal`.
+
 - Permission names chosen at runtime (e.g. per API method):
 
 ```go
@@ -111,6 +128,17 @@ perm, err := permissions.Organization(orgID).PermissionByName(name) // errors.Is
 ```
 
   At startup, verify every configured name is in `permissions.OrganizationPermissionNames()`.
+
+- Type and permission names both chosen at runtime (policy expressions, admin tools):
+
+```go
+ref, err := permissions.PermissionRefByName(resourceType, permission) // errors.Is(err, permissions.ErrNotInSchema)
+def, err := permissions.DefinitionByName(resourceType)                // def.Permission(id, permission)
+for res, err := range permissions.LookupResourcesByName(ctx, tc, cs, resourceType, permission, permissions.User(userID)) { ... }
+```
+
+  `permissions.SchemaText` is the schema the code was generated from (write it
+  at startup); `permissions.DefinitionNames()` lists every definition.
 
 ## List what a subject can access
 
@@ -161,6 +189,9 @@ for r, err := range tc.ReadRelationships(ctx, client.ReadRelationshipsRequest{
 
 Each item also carries `r.AfterResultCursor` and `r.ReadAt`. To resume, pass
 `client.WithReadRelationshipsCursor(cursor)` with the **same request and page size**.
+Each page request gets the client default deadline (30s) for waiting on the
+server; time your loop body spends on an item does not count. A stalled page fails
+with `client.ErrDeadlineExceeded`. Bound the whole read with the context.
 
 ## Schema-agnostic code (native tier)
 
@@ -197,6 +228,7 @@ switch {
 case errors.Is(err, client.ErrFailedPrecondition): // precondition failed
 case errors.Is(err, client.ErrOutOfRange):         // stale ZedToken: drop it, re-read fully consistent
 case errors.Is(err, client.ErrUnavailable):        // transient; reads were already retried
+case errors.Is(err, client.ErrInternal):           // malformed server response; not retried
 }
 ```
 
@@ -206,16 +238,32 @@ including raw status errors. Forward `(*client.Error).ServerMessage`, not
 
 ## Test
 
+The in-memory double does not evaluate your schema. A permission such as
+`view = reader + writer + parent->read` is granted on the double only by a
+stored relationship whose relation is named `view`, or by a check resolver
+you install; the double never derives it from `reader`, `writer` or `parent`.
+Use the double for code that consumes check and lookup results (model the
+permission with the resolver), and run SpiceDB itself (`spicedb serve-testing`
+or a container) for tests of the permission logic in the schema. Projects
+whose permissions are all computed (unions, arrows) get little from
+stored-relation grants on the double, so model them with the resolver or
+test against SpiceDB.
+
 ```go
-store := clienttest.NewStore(rel.MustFromTuple("organization:acme#admin@user:alice"))
-store.SetCheckResult(rel.MustNewObject("organization", "acme"), "view",
-    rel.MustNewSubject(rel.MustNewObject("user", "alice"), ""),
+store := clienttest.NewStore(rel.MustFromTuple("organization:acme#view@user:alice")) // relation named like the permission grants it
+store.SetCheckResult(rel.MustNewObject("organization", "acme"), "admin",
+    rel.MustNewSubject(rel.MustNewObject("user", "bob"), ""),
     client.CheckResult{Permissionship: client.PermissionshipHasPermission})
+store.SetCheckResolver(clienttest.GrantAll) // or a func(client.PermissionCheck) (client.CheckResult, bool)
+tc := permissions.NewTypedClient(store)     // typed helpers over the double
 ```
 
-Depend on a small interface of the `*client.Client` methods you use; both
-`*client.Client` and `*clienttest.Store` satisfy it for `Write`,
-`ReadRelationships`, `DeleteRelationships`, `Check` and `CheckBulk`. Build
+Checks resolve in order: `SetCheckResult`, then the resolver, then stored
+relationships whose relation is the permission's name (exact or `type:*`
+subject), else NoPermission. `LookupResources`/`LookupSubjects` return the
+objects in stored relationships that check resolution grants. Depend on
+`client.Interface` or a small interface of the methods you use; both
+`*client.Client` and `*clienttest.Store` satisfy it. Build
 expected errors with `client.NewError(client.CodeFailedPrecondition, "...")`.
 For integration tests, run `authzed/spicedb serve-testing` and assert both
 granted and denied cases.

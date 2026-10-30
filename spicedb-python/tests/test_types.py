@@ -1,4 +1,5 @@
 """Unit tests for spicedb.types — no SpiceDB instance needed."""
+from authzed.api.v1 import core_pb2 as _core_tok
 from spicedb import ZedToken
 
 from spicedb import PermissionCheck, Caveat, SubjectFilter, SubjectRelationFilter, PreconditionOperation
@@ -480,11 +481,11 @@ class TestPermissionshipFromProto:
 
 class TestPartialCaveatFromProto:
     def test_unset_field_is_none(self):
-        resp = permission_service_pb2.LookupResourcesResponse(resource_object_id="doc1")
+        resp = permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"), resource_object_id="doc1")
         assert _partial_caveat_from_proto(resp) is None
 
     def test_maps_missing_context(self):
-        resp = permission_service_pb2.LookupResourcesResponse(
+        resp = permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
             resource_object_id="doc1",
             partial_caveat_info=core_pb2.PartialCaveatInfo(
                 missing_required_context=["ip_address", "time_of_day"]

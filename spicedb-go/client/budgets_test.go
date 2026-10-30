@@ -100,11 +100,15 @@ func TestCheckIterHasNoDefaultDeadlineAndExplicitTimeoutStartsAtConsumption(t *t
 	c2 := checkClient(t, &checkServer{bulk: func(ctx context.Context, r *v1.CheckBulkPermissionsRequest) (*v1.CheckBulkPermissionsResponse, error) {
 		d, ok := ctx.Deadline()
 		require.True(t, ok)
-		require.Greater(t, time.Until(d), 20*time.Millisecond)
+		require.Greater(t, time.Until(d), 100*time.Millisecond)
 		return successfulBulk(r), nil
 	}})
-	seq := c2.CheckIter(context.Background(), slices.Values([]PermissionCheck{testRequest("a")}), WithCheckTimeout(80*time.Millisecond))
-	time.Sleep(100 * time.Millisecond)
+	// Warm the connection first, so the timeout left at the server reflects only when the
+	// clock started, not connection setup. The sleep outlasts the whole timeout: had it started
+	// at creation, nothing would be left.
+	warm(t, c2)
+	seq := c2.CheckIter(context.Background(), slices.Values([]PermissionCheck{testRequest("a")}), WithCheckTimeout(500*time.Millisecond))
+	time.Sleep(600 * time.Millisecond)
 	for _, e := range seq {
 		require.NoError(t, e)
 	}

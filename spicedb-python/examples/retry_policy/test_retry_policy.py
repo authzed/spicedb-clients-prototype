@@ -16,6 +16,7 @@ unnoticed.
 It stands up a stand-in SpiceDB because a real one cannot be asked to fail
 transiently on demand.
 """
+from authzed.api.v1 import core_pb2 as core_pb2_revision
 from spicedb import TransportSecurity
 
 from spicedb import ObjectRef, SubjectRef, PermissionCheck
@@ -48,7 +49,7 @@ class _CountingServer(permission_service_pb2_grpc.PermissionsServiceServicer):
         self.check_attempts += 1
         if self.check_attempts <= self._check_failures:
             await context.abort(self._check_code, "transient, from the stand-in")
-        return permission_service_pb2.CheckPermissionResponse(
+        return permission_service_pb2.CheckPermissionResponse(checked_at=core_pb2_revision.ZedToken(token="t"),
             permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
         )
 

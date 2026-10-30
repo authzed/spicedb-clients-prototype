@@ -9,11 +9,16 @@ plugins:
     out: src/gen
     opt:
       - target=ts
+      # Relative imports end in .js so plain Node's ESM loader resolves the
+      # compiled output (bundlers and tsx resolve either form). This plugin
+      # takes the extension with its dot; protoc-gen-es below takes it without.
+      - import_extension=.js
     include_imports: true
   - remote: buf.build/bufbuild/es:v2.11.0
     out: src/gen
     opt:
       - target=ts
+      - import_extension=js
     include_imports: true
 inputs:
   - module: buf.build/authzed/api

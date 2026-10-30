@@ -1,5 +1,6 @@
 package com.authzed.spicedb;
 
+import com.authzed.spicedb.errors.LocalValidationException;
 import java.time.Duration;
 import java.util.*;
 
@@ -21,34 +22,27 @@ public final class LookupOptions {
     this.transport = b.transport;
     this.retryPolicy = b.retryPolicy;
     this.paging = b.paging;
-    if (paging == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("paging must not be null");
-    if (transport == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
+    if (paging == null) throw new LocalValidationException("paging must not be null");
+    if (transport == null) throw new LocalValidationException("transport must not be null");
     this.permissionshipFilter = b.permissionshipFilter;
     if (permissionshipFilter == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException(
-          "permissionshipFilter must not be null");
+      throw new LocalValidationException("permissionshipFilter must not be null");
     this.subjectRelation = b.subjectRelation;
     if (subjectRelation != null) {
       JsonContext.required(subjectRelation, "subjectRelation");
       if (subjectRelation.equals("..."))
-        throw new com.authzed.spicedb.errors.InvalidArgumentException(
-            "direct subject relation is null");
+        throw new LocalValidationException("direct subject relation is null");
     }
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
+      throw new LocalValidationException("timeout must be positive");
     this.context = JsonContext.snapshot(b.context);
     this.debug = b.debug;
-    if (debug == null)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("debug must not be null");
+    if (debug == null) throw new LocalValidationException("debug must not be null");
     this.pageSize = b.pageSize;
-    if (pageSize <= 0)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("pageSize must be positive");
+    if (pageSize <= 0) throw new LocalValidationException("pageSize must be positive");
     this.limit = b.limit;
-    if (limit < 0)
-      throw new com.authzed.spicedb.errors.InvalidArgumentException("limit must not be negative");
+    if (limit < 0) throw new LocalValidationException("limit must not be negative");
   }
 
   public String subjectRelation() {

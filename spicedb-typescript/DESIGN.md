@@ -20,12 +20,17 @@ and its generated schema facade.
 - **Represent revisions with an immutable runtime `ZedToken` class.**
   - `new ZedToken(value)` retains an opaque string; `toString()` and `toJSON()`
     serialize it losslessly. `equals(other)` checks token value equality. The
-    representation is private and the instance frozen.
+    text is the readonly public field `token`, so structural comparisons
+    (`toEqual`, `isDeepStrictEqual`) tell tokens apart; the instance is frozen.
   - Every public revision input/result uses `ZedToken`, including checks, schema,
     watch, deletion, counters and materialize cursors. Authentication tokens and
     ordinary opaque pagination cursors remain strings.
-  - An empty wire revision remains an empty token value; token-based consistency
-    rejects empty values. Absent optional tokens remain `undefined`.
+  - An empty wire revision remains an empty token value. A caller-supplied
+    revision (`atLeast`/`snapshot`, a watch or permission-set start revision, a
+    permission-set revision) that is empty or whitespace-only throws
+    `InvalidArgumentError` before any RPC; `atLeastOrFull`/`atLeastOrMinLatency`
+    treat such a token like `undefined` and fall back. Absent optional tokens
+    remain `undefined`.
   - `Consistency` is immutable. `full()`, `minLatency()`, `atLeast(token)` and
     `snapshot(token)` are explicit strategies; optional-token helpers name their fallback.
 
@@ -55,13 +60,24 @@ and its generated schema facade.
 - **Make security and ownership explicit at construction.**
   - `new SpiceDBClient({ endpoint, token, transportSecurity?, remoteCredentials?,
     tls?, headers?, retryPolicy?, retries?, streamRetries?, defaultTimeoutMs?,
-    defaultDeadline? })` defaults to TLS.
+    defaultDeadline? })` defaults to TLS. The endpoint is `host:port`,
+    `http://host:port` or `https://host[:port]`; without `transportSecurity`
+    a URL's scheme selects it, and an explicit choice must agree.
   - `SpiceDBClient.fromTransport(transport, behaviorOptions?)` wraps a
     caller-owned Connect `Transport` (an in-memory `createRouterTransport`, an
     HTTP/2 transport the caller configured, a test server's). Connection options
     (`endpoint`, `token`, `tls`, `headers`, transport security) are rejected
     there because the transport carries them; behavior options apply. `close()`
     cancels the client's operations and never closes the supplied transport.
+  - `tls.caCert`, `tls.clientCert` and `tls.clientKey` are parsed at
+    construction; unparseable material, or a client key that does not match
+    the client certificate, throws `InvalidArgumentError` naming the inputs.
+  - Names and IDs from callers (object types and IDs, relations, permissions,
+    caveat names, filter fields, watch object types, schema and counter names,
+    cursors) are type-checked where they become wire messages (`requireString`,
+    `protoObject` in `types.ts`); a non-string throws `InvalidArgumentError`
+    naming the field before any RPC. The in-memory double applies the same
+    checks.
   - Remote plaintext is supported through the normal constructor and
     `createSpiceDBClient`: select `TransportSecurity.Plaintext` and explicitly
     set `RemoteCredentials.AllowPlaintext`. The loopback-only policy is the default.
@@ -105,9 +121,28 @@ and its generated schema facade.
 
 - **Share one deadline and cancellation signal across each operation.**
   - Unary calls default to a 30,000 ms total timeout, including retries,
-    backoff, chunks and pages. Streams/imports have no default lifetime limit.
+    backoff and chunks. Finite paged reads (`readRelationships`,
+    `lookupResources`, `lookupSubjects`, `exportRelationships`, permission-set
+    lookups) apply the same default to each page request, counting only time
+    spent waiting on the server (each export batch is a page); a call's
+    `timeoutMs` bounds the whole read and wins when earlier. Watches and
+    imports have no default lifetime limit. Every operation accepts
+    `CallOptions.timeoutMs`.
   - `AbortSignal` works during pending RPCs, backoff, producer waits and between
-    chunks. Preserve native abort identity and the caller's reason.
+    chunks. Local cancellation rejects with `OperationAbortError`, a
+    `CancelledError` (`Code.Canceled`) named `"AbortError"` whose `cause` is the
+    caller's reason, never a `DOMException`.
+  - A response the client cannot interpret (a missing relationship, resource,
+    subject or lookup ID, an unset oneof, an unset (wire-zero `UNSPECIFIED`) permissionship
+    on a check, bulk-check item, lookup-resources result or lookup-subjects
+    subject, a cursor that does not advance) fails with a `SpiceDBError` coded
+    `Internal` whose message starts `client detected malformed response from
+    server:` and which has no `serverMessage`; responses are never skipped or
+    filled with empty values. A permissionship value newer than the client is
+    not malformed: it maps to `"unspecified"` and never grants.
+  - `ready(options?)` makes one schema read so a wrong or unreachable endpoint
+    fails at startup (Unavailable, DeadlineExceeded, Unauthenticated); a
+    `NotFound` or `PermissionDenied` answer counts as ready.
   - `DEFAULT_RETRY_POLICY` retries idempotent reads on Unavailable/Aborted, at
     most three times, with full-jitter backoff starting at 100 ms. A client-wide
     `retryPolicy: { maxRetries, retryableCodes, initialBackoffMs, maxBackoffMs?,
@@ -152,7 +187,10 @@ and its generated schema facade.
     `ExportedRelationship` (plus its batch's `afterResultCursor`; exports carry no
     read-at), and `LookupResource` carries `afterResultCursor` and `lookedUpAt`.
     Resume by passing a cursor as the request's `cursor` with the same request and
-    page size. Returned data is immutable. `paging: Paging.SingleRequest` on
+    page size. An error thrown mid-read by `readRelationships`,
+    `lookupResources` or `exportRelationships` carries `resumeCursor`: the cursor
+    after the last delivered item (or fully delivered export batch), or the
+    request's cursor when nothing was delivered. Returned data is immutable. `paging: Paging.SingleRequest` on
     `readRelationships`/`lookupResources` sends exactly one request like the
     raw API: its limit is `limit` (or unbounded), `pageSize` is ignored, and no
     follow-up page is fetched.
@@ -197,6 +235,11 @@ and its generated schema facade.
     transport and remote-credential enums. Return native `ZedToken`/check results.
   - Collection writes and directly returned async iterators retain ownership and
     cancellation behavior. Generated caveat contexts use native JSON types.
+  - `TypedClient` takes `SpiceDBClientInterface`, so it wraps a real client or
+    `InMemorySpiceDB`. Generated `SchemaText`, `Definitions`/`DefinitionNames`,
+    `definitionByName`, `permissionRefByName` and
+    `TypedClient.lookupResourcesByName` serve code that receives type and
+    permission names at runtime, validated against the schema.
   - `TypedTransaction` exposes `updates`, `preconditions` and `error`;
     `withSubject` always constrains the subject relation and
     `withSubjectAnyRelation` does not. `--typescript.rename` keeps schemas
@@ -271,9 +314,30 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   (one transaction; duplicates fail), `exportRelationships` (filter and
   cursor), `readSchema`, `writeSchema`, `reflectSchema` (result registered with
   `setReflectSchemaResult`), `check`, `checkBulk` (including
-  `BulkItemErrors.Returned`) and `close` with the client's signatures, so
-  `Pick<SpiceDBClient, ...>` accepts both. Checks return results or errors
-  registered with `setCheckResult`; unregistered checks deny. Its errors have
+  `BulkItemErrors.Returned`), `lookupResources`, `lookupSubjects` and `close`
+  with the client's signatures, so `Pick<SpiceDBClient, ...>` accepts both.
+  A check resolves in the root design's order: the result or error registered
+  with `setCheckResult` for that exact check; then the `CheckResolver` set with
+  `setCheckResolver` (it receives the `CheckRequest` with the call's default
+  `CheckOptions.context` merged under the check's own keys, and returns a
+  permissionship or `undefined` to decline and fall through; it never fails a
+  call, which is the fault hook's job; `InMemorySpiceDB.grantAll` grants
+  everything); then the live stored
+  relationships, where one on the resource whose relation is the permission's
+  name and whose subject is the checked one (or, for a direct subject, its
+  type's wildcard) grants, conditionally when caveated; otherwise
+  `noPermission`. A subject relation of `...` is direct throughout. Lookups
+  enumerate the objects of the requested type appearing in live relationships
+  (as resource or subject), in order of first appearance (the identity order
+  reads yield), resolve each candidate through the same order (with the
+  lookup's consistency and context), and yield granted and conditional
+  results, conditional ones with `partialCaveat` naming no missing context
+  (caveats are not evaluated); a stored wildcard subject is returned as `*`.
+  They honor the permissionship filter, wildcard option (`*` is left out only
+  under `Wildcards.Exclude`), `limit` and `cursor` (the decimal count of
+  granted candidates, including those the filter drops, so a filtered
+  lookup's cursor resumes past skipped results). Expired relationships never
+  grant. Its errors have
   the real client's classes, codes and message shape (server failures carry
   Connect's `[code]` prefix and `serverMessage`; local validation does not),
   it rejects the same retry opt-ins, and it reports `setResponseMetadata`
@@ -287,17 +351,29 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   record one call. `SpiceDBClientInterface` lists the client's full public
   method set (a compile-time test in `full-client-double.test.ts` keeps it
   identical to `SpiceDBClient`'s), and both `SpiceDBClient` and
-  `InMemorySpiceDB` implement it. The double's remaining operations (lookups,
-  expand, schema introspection, `watch`, the experimental methods) are
+  `InMemorySpiceDB` implement it. The double's remaining operations (expand,
+  computable and dependent relations, `watch`, the experimental methods) are
   recorded, consult the fault hook, apply the client's option checks, and fail
   with `Code.Unimplemented` in the client's error shape (`[unimplemented]
   <operation> is not implemented by InMemorySpiceDB`; streams fail from
   iteration); `raw()` throws Unimplemented. An `ImportBatch` fault fires once
-  each batch is full (or the input ends) and carries it as `Fault.batch`.
+  each batch is full (or the input ends) and carries it as `Fault.batch`;
+  `Item` fires before each read, export and lookup item. An error injected
+  into (or raised from iterating) `readRelationships`, `exportRelationships`
+  or `lookupResources` carries `resumeCursor` as the real client's does: the
+  last delivered item's `afterResultCursor`, else the request's cursor, else
+  none. The double never answers with an `"unspecified"` permissionship:
+  `setCheckResult` rejects it and a resolver returning it fails the call with
+  `InvalidArgumentError`.
   `InMemorySpiceDB.cursorAfter(n)` builds the cursor the double puts on the
   n-th matching item (the decimal count `n`, stable for tests), and
   `setReadSchemaRevision(SchemaRevision.Omitted)` makes `readSchema` report an
-  empty revision, as some hosted deployments do.
+  empty revision, as some hosted deployments do. `diffSchema` diffs the stored
+  schema text (empty before any write) at name level with a light parser:
+  identical text has no diffs; definitions, relations and subject types,
+  permissions and expressions, caveats, parameters and expressions are
+  compared, ignoring comments and whitespace (no doc-comment diffs);
+  unparseable text fails with `InvalidArgument`. `ready()` does nothing.
 - **Exported option constraint.** Not applicable: `CallOptions` and its
   per-operation extensions are plain interfaces, not generic option
   constructors, so callers already write helpers over them (e.g.
@@ -324,11 +400,18 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
 - **Bulk item-error mode.** `checkBulk(requests, { itemErrors:
   BulkItemErrors.Returned })` returns every item; failures are on
   `CheckResult.error` (with `inputIndex`) with `"unspecified"` permissionship.
+  A malformed item in the server's response (such as an unset permissionship)
+  still fails the whole call with the client-detected malformed-response error.
 - **Default-deadline disable, retry policy, stream retries, import status and
   batch size, paging state, watch schema changes, all-or-nothing delete and
   delete-all progress.** See the sections above.
 - **MIGRATION.md and dependency floors.** `MIGRATION.md` covers
-  `@authzed/authzed-node`. Dependencies declare the lowest versions verified to
+  `@authzed/authzed-node`; it opens with a Requirements table (Node 20.19,
+  SpiceDB 1.30, the protobuf and Connect runtimes, `@grpc/grpc-js` no longer
+  needed) and has a legacy-to-new table of renamed request and response
+  members. `package.json` declares `engines.node` >=20.19.0. `README.md`
+  covers installation (including from tarballs before publication), a first
+  call and links. Dependencies declare the lowest versions verified to
   work (`@bufbuild/protobuf` ^2.11.0, matching the pinned protoc-gen-es;
   `@connectrpc/connect` ^2.0.0); `@types/node` is an optional peer (>=20.19.0).
   Build and test tools stay in devDependencies.

@@ -1,10 +1,12 @@
 using P = Authzed.Api.V1;
+using System.Text.Json.Serialization;
 namespace SpiceDB.Client;
 
 public sealed record SchemaFilter(string? DefinitionName = null, string? CaveatName = null, string? RelationName = null, string? PermissionName = null)
 {
     internal P.ReflectionSchemaFilter ToProto() => new() { OptionalDefinitionNameFilter = DefinitionName ?? "", OptionalCaveatNameFilter = CaveatName ?? "", OptionalRelationNameFilter = RelationName ?? "", OptionalPermissionNameFilter = PermissionName ?? "" };
 }
+[JsonConverter(typeof(JsonStringEnumConverter<SchemaSubjectKind>))]
 public enum SchemaSubjectKind { Unspecified, Terminal, Relation, PublicWildcard }
 public sealed record SchemaTypeReference(string SubjectDefinitionName, string? CaveatName, SchemaSubjectKind Kind, bool? Terminal, string? Relation, bool? PublicWildcard)
 {

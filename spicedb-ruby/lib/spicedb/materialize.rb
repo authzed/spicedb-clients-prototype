@@ -16,7 +16,7 @@ module SpiceDB
       retry_policy = operation_retry_policy(:experimental_count_relationships_by_filter, retry_policy)
       budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       request = Authzed::Api::Materialize::V0::ExperimentalCountRelationshipsByFilterRequest.new(relationship_filter: filter_to_proto(filter))
-      response = rpc(@proto_client.materialize_relationships, :experimental_count_relationships_by_filter, request, budget)
+      response = rpc(proto_client.materialize_relationships, :experimental_count_relationships_by_filter, request, budget)
       CountResult.new(relationship_count: response.relationship_count, revision: ZedToken.from_proto(response.read_at), still_calculating: false)
     end
 
@@ -36,7 +36,7 @@ module SpiceDB
                                                                                optional_at_revision: token_to_proto(at_revision),
                                                                                optional_starting_after_cursor: cursor &&
         Authzed::Api::Materialize::V0::Cursor.new(**cursor.to_h, token: token_to_proto(cursor.token)))
-      budget = stream_budget(timeout, call_options, retry_policy: retry_policy)
+      budget = paged_budget(timeout, call_options, retry_policy: retry_policy)
       response_stream(:permission_sets, :lookup_permission_sets, request, budget, mapper: lambda { |response|
         wire = response.cursor
         PermissionSetLookup.new(change: permission_set_change(response.change), cursor: wire && PermissionSetCursor.new(
@@ -50,7 +50,7 @@ module SpiceDB
       retry_policy = operation_retry_policy(:experimental_download_permission_sets, retry_policy)
       budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       request = Authzed::Api::Materialize::V0::DownloadPermissionSetsRequest.new(optional_at_revision: token_to_proto(at_revision))
-      response = rpc(@proto_client.permission_sets, :download_permission_sets, request, budget)
+      response = rpc(proto_client.permission_sets, :download_permission_sets, request, budget)
       DownloadPermissionSetsResult.new(files: response.files.map { |file| DownloadFile.new(name: file.name, url: file.url) },
                                        timestamp: response.timestamp && Time.at(response.timestamp.seconds,
                                                                                 response.timestamp.nanos, :nsec),

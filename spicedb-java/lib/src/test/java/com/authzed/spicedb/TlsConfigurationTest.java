@@ -87,4 +87,161 @@ class TlsConfigurationTest {
         com.authzed.spicedb.errors.InvalidArgumentException.class,
         () -> ClientOptions.builder().clientCertificate(cert).build());
   }
+
+  /**
+   * Material that does not parse fails at construction with a local validation error naming the
+   * input, never as an unexplained handshake failure on the first call. See root DESIGN.md, "Reject
+   * unusable credentials and trust material at construction".
+   */
+  @Test
+  void unparseableTlsMaterialIsRejectedAtConstructionNamingTheInput() throws Exception {
+    var cert = directory.resolve("certificate.pem");
+    var key = directory.resolve("key.pem");
+    var process =
+        new ProcessBuilder(
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "1",
+                "-keyout",
+                key.toString(),
+                "-out",
+                cert.toString(),
+                "-subj",
+                "/CN=localhost")
+            .redirectErrorStream(true)
+            .start();
+    process.getInputStream().readAllBytes();
+    assertEquals(0, process.waitFor());
+    var garbage = directory.resolve("garbage.pem");
+    java.nio.file.Files.writeString(garbage, "not a certificate");
+    var corrupt = directory.resolve("corrupt.pem");
+    java.nio.file.Files.writeString(
+        corrupt, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n");
+
+    record Case(ClientOptions options, String message) {}
+    var cases =
+        java.util.List.of(
+            new Case(
+                ClientOptions.builder().caCertificate(garbage).build(),
+                "caCertificate " + garbage + " is not a PEM-encoded X.509 certificate"),
+            new Case(
+                ClientOptions.builder().caCertificate(corrupt).build(),
+                "caCertificate " + corrupt + " is not a PEM-encoded X.509 certificate"),
+            new Case(
+                ClientOptions.builder().caCertificate(directory.resolve("missing.pem")).build(),
+                "caCertificate " + directory.resolve("missing.pem") + " cannot be read"),
+            new Case(
+                ClientOptions.builder().clientCertificate(garbage).clientKey(key).build(),
+                "clientCertificate " + garbage + " is not a PEM-encoded X.509 certificate"),
+            new Case(
+                ClientOptions.builder().clientCertificate(cert).clientKey(garbage).build(),
+                "clientKey " + garbage + " is not a PEM-encoded private key"));
+    for (var c : cases) {
+      var e =
+          assertThrows(
+              com.authzed.spicedb.errors.LocalValidationException.class,
+              () -> SpiceDBClient.createSystemTls("localhost:50116", "test", c.options()));
+      assertTrue(e.getMessage().contains(c.message()), e.getMessage());
+    }
+    // Parseable material still builds (construction does not connect).
+    SpiceDBClient.createSystemTls(
+            "localhost:50116",
+            "test",
+            ClientOptions.builder()
+                .caCertificate(cert)
+                .clientCertificate(cert)
+                .clientKey(key)
+                .build())
+        .close();
+  }
+
+  /**
+   * An empty or whitespace-only key is a local validation error at construction, never a bare
+   * "Bearer" header the server rejects on the first call.
+   */
+  @Test
+  void blankPresharedKeyIsRejectedAtConstruction() {
+    for (var key : java.util.List.of("", " ", "\t\n")) {
+      for (org.junit.jupiter.api.function.Executable build :
+          java.util.List.<org.junit.jupiter.api.function.Executable>of(
+              () -> SpiceDBClient.createPlaintext("localhost:50116", key),
+              () -> SpiceDBClient.createSystemTls("localhost:50116", key),
+              () -> SpiceDBClient.create("localhost:50116", key, SpiceDBClient.withInsecure()))) {
+        var e = assertThrows(com.authzed.spicedb.errors.LocalValidationException.class, build);
+        assertTrue(e.getMessage().contains("presharedKey must not be empty or whitespace"));
+      }
+    }
+  }
+
+  /** Writes a fresh self-signed certificate and its PKCS#8 key under {@code name}. */
+  private Path[] selfSigned(String name, String... keyArgs) throws Exception {
+    var cert = directory.resolve(name + "-certificate.pem");
+    var key = directory.resolve(name + "-key.pem");
+    var command = new java.util.ArrayList<>(java.util.List.of("openssl", "req", "-x509"));
+    command.addAll(java.util.List.of(keyArgs));
+    command.addAll(
+        java.util.List.of(
+            "-nodes",
+            "-days",
+            "1",
+            "-keyout",
+            key.toString(),
+            "-out",
+            cert.toString(),
+            "-subj",
+            "/CN=localhost"));
+    var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+    var output =
+        new String(
+            process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    assertEquals(0, process.waitFor(), output);
+    return new Path[] {cert, key};
+  }
+
+  /**
+   * A client key from a different key pair than its certificate fails at construction with a local
+   * validation error naming both inputs, never as a handshake failure on the first call. See root
+   * DESIGN.md, "Reject unusable credentials and trust material at construction".
+   */
+  @Test
+  void clientKeyNotMatchingItsCertificateIsRejectedAtConstruction() throws Exception {
+    var rsaA = selfSigned("rsa-a", "-newkey", "rsa:2048");
+    var rsaB = selfSigned("rsa-b", "-newkey", "rsa:2048");
+    var ec = new String[] {"-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"};
+    var ecB = selfSigned("ec-b", ec);
+    var ecOther = selfSigned("ec-other", ec);
+    record Pair(Path cert, Path key) {}
+    var mismatched =
+        java.util.List.of(
+            new Pair(rsaA[0], rsaB[1]), new Pair(ecB[0], ecOther[1]), new Pair(ecB[0], rsaA[1]));
+    for (var p : mismatched) {
+      var e =
+          assertThrows(
+              com.authzed.spicedb.errors.LocalValidationException.class,
+              () ->
+                  SpiceDBClient.createSystemTls(
+                      "localhost:50116",
+                      "test",
+                      ClientOptions.builder()
+                          .clientCertificate(p.cert())
+                          .clientKey(p.key())
+                          .build()));
+      assertTrue(
+          e.getMessage()
+              .contains("clientKey " + p.key() + " does not match clientCertificate " + p.cert()),
+          e.getMessage());
+    }
+    // Matching pairs still build (construction does not connect).
+    for (var p : java.util.List.of(new Pair(rsaA[0], rsaA[1]), new Pair(ecB[0], ecB[1])))
+      SpiceDBClient.createSystemTls(
+              "localhost:50116",
+              "test",
+              ClientOptions.builder().clientCertificate(p.cert()).clientKey(p.key()).build())
+          .close();
+  }
 }

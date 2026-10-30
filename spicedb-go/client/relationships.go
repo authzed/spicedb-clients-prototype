@@ -121,14 +121,17 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 		pageSize := o.pageRequestLimit()
 		for {
 			req := &v1.ReadRelationshipsRequest{Consistency: cs, RelationshipFilter: f, OptionalLimit: pageSize, OptionalCursor: cur}
-			pageCtx, pageCancel := context.WithCancel(ctx)
+			// The page's clock pauses while the caller holds an item.
+			pageCtx, clock, pageCancel := c.serverClock(ctx, true)
 			seq := receive(pageCtx, c.retrySettings(o), "read relationships", !exposed, func(ctx context.Context) (receiver[*v1.ReadRelationshipsResponse], error) {
 				return c.psc.ReadRelationships(ctx, req, o.callOptions...)
 			})
 			count := uint32(0)
 			previous := cur.GetToken()
 			for resp, e := range seq {
+				clock.hold()
 				if e != nil {
+					e = clock.err(pageCtx, "read relationships", e)
 					pageCancel()
 					yield(ReadRelationship{}, e)
 					return
@@ -136,7 +139,7 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 				count++
 				total++
 				cur = resp.GetAfterResultCursor()
-				r, e := nativeRelationship(resp.GetRelationship())
+				r, e := nativeRelationship("read relationships", resp.GetRelationship())
 				if e != nil {
 					pageCancel()
 					yield(ReadRelationship{}, e)
@@ -148,6 +151,7 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 					pageCancel()
 					return
 				}
+				clock.wait()
 				if o.limit > 0 && total >= o.limit {
 					pageCancel()
 					return
@@ -158,7 +162,7 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 				return
 			}
 			if cur.GetToken() == "" || cur.GetToken() == previous {
-				yield(ReadRelationship{}, &Error{Code: CodeInternal, Message: "spicedb: read page did not advance cursor"})
+				yield(ReadRelationship{}, malformed("read relationships", "page did not advance cursor"))
 				return
 			}
 		}
@@ -210,7 +214,7 @@ func (c *Client) deletePage(ctx context.Context, f *v1.RelationshipFilter, limit
 	}
 	result := deleteResult(resp)
 	if resp.GetDeletionProgress() != v1.DeleteRelationshipsResponse_DELETION_PROGRESS_COMPLETE && resp.GetDeletionProgress() != v1.DeleteRelationshipsResponse_DELETION_PROGRESS_PARTIAL {
-		return result, true, &Error{Code: CodeInternal, Message: "spicedb: unknown delete progress; refusing another mutation"}
+		return result, true, malformed("delete relationships", "unknown delete progress; refusing another mutation")
 	}
 	return result, true, nil
 }

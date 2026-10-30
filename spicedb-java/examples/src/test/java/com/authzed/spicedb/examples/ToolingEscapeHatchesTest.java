@@ -156,6 +156,13 @@ class ToolingEscapeHatchesTest extends SpiceDBIntegrationTest {
     // With no limit, the server default applies and everything is deleted at once.
     assertThat(client.deleteRelationships(TOOLING, allOrNothing).deletedCount()).isEqualTo(5);
 
+    // The one-argument form is the raw filter-only DeleteRelationships request: the same
+    // all-or-nothing delete with the server's default limit.
+    writeDocs(3);
+    var filterOnly = client.deleteRelationships(TOOLING);
+    assertThat(filterOnly.deletedCount()).isEqualTo(3);
+    assertThat(filterOnly.completed()).isTrue();
+
     writeDocs(5);
     var progress = new ArrayList<SpiceDBClient.DeleteResult>();
     var result =
@@ -164,6 +171,23 @@ class ToolingEscapeHatchesTest extends SpiceDBIntegrationTest {
     assertThat(result.deletedCount()).isEqualTo(5);
     assertThat(progress).hasSizeGreaterThanOrEqualTo(3);
     assertThat(progress.get(progress.size() - 1).deletedCount()).isEqualTo(5);
+  }
+
+  @Test
+  void keepalive_alongside_client_options() {
+    // Channel settings ClientOptions does not cover (keepalive here) go in a channel-builder
+    // customizer, on the same constructor that takes ClientOptions.
+    try (var tuned =
+        SpiceDBClient.createPlaintext(
+            ENDPOINT,
+            TOKEN,
+            ClientOptions.builder().defaultTimeout(Duration.ofSeconds(10)).build(),
+            b ->
+                b.keepAliveTime(60, java.util.concurrent.TimeUnit.SECONDS)
+                    .keepAliveTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                    .keepAliveWithoutCalls(true))) {
+      assertThat(tuned.readSchema().schema()).contains("tooling_doc");
+    }
   }
 
   @Test

@@ -6,6 +6,7 @@ a real in-process gRPC server; paging and retry run against recording stubs.
 """
 
 from __future__ import annotations
+from authzed.api.v1 import core_pb2 as _core_tok
 
 import asyncio
 import inspect
@@ -57,7 +58,7 @@ from spicedb import (
     full,
 )
 from spicedb.aio import SpiceDBClient as AioClient
-from spicedb.errors import to_spicedb_error
+from spicedb.errors import InternalError, to_spicedb_error
 from spicedb.sync import SpiceDBClient as SyncClient
 
 
@@ -104,9 +105,12 @@ def test_from_code_matches_server_errors_for_every_code(code):
 
 def test_server_message_is_verbatim_and_unmapped_codes_are_preserved():
     error = to_spicedb_error(_rpc_error(grpc.StatusCode.INTERNAL, "  exact server text "))
-    assert type(error) is SpiceDBError
+    assert type(error) is InternalError
     assert error.code() is grpc.StatusCode.INTERNAL
     assert error.server_message == "  exact server text "
+    unmapped = to_spicedb_error(_rpc_error(grpc.StatusCode.DATA_LOSS, "lost"))
+    assert type(unmapped) is SpiceDBError
+    assert unmapped.code() is grpc.StatusCode.DATA_LOSS
 
 
 def test_code_of_classifies_raw_and_local_errors():
@@ -133,7 +137,7 @@ def test_except_grpc_rpc_error_catches_native_errors():
     client = _sync()
     client._permissions.WriteRelationships = Mock(side_effect=_rpc_error(grpc.StatusCode.NOT_FOUND))
     with pytest.raises(grpc.RpcError) as caught:
-        client.write(Transaction().touch(Relationship.from_tuple("d:1#r@u:1")))
+        client.write(Transaction().touch(Relationship.from_tuple("doc:1#reader@user:1")))
     assert caught.value.code() is grpc.StatusCode.NOT_FOUND
 
 
@@ -362,7 +366,7 @@ async def test_lookup_limit_never_shrinks_the_page(client_type):
         requests.append((request.optional_limit, request.optional_cursor.token))
         start = int(request.optional_cursor.token or "0")
         return _Call([
-            psp.LookupResourcesResponse(
+            psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 resource_object_id=str(i),
                 permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
                 after_result_cursor=core_pb2.Cursor(token=str(i + 1)),
@@ -408,7 +412,7 @@ def test_retry_policy_codes_callback_and_mutations():
     client._schema.ReadSchema = Mock(side_effect=[
         _rpc_error(grpc.StatusCode.RESOURCE_EXHAUSTED),
         _rpc_error(grpc.StatusCode.RESOURCE_EXHAUSTED),
-        ssp.ReadSchemaResponse(schema_text="s"),
+        ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t"), schema_text="s"),
     ])
     assert client.read_schema().schema == "s"
     assert [(a.attempt, a.error.code()) for a in seen] == [(1, grpc.StatusCode.RESOURCE_EXHAUSTED)] * 1 + [(2, grpc.StatusCode.RESOURCE_EXHAUSTED)]
@@ -434,7 +438,7 @@ def test_retries_disabled_and_stream_retries_disabled():
     with pytest.raises(SpiceDBError):
         list(client.read_relationships(Filter("document"), consistency=full()))
     assert client._permissions.ReadRelationships.call_count == 1
-    client._schema.ReadSchema = Mock(side_effect=[_rpc_error(), ssp.ReadSchemaResponse()])
+    client._schema.ReadSchema = Mock(side_effect=[_rpc_error(), ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t"))])
     client.read_schema()  # unary retry unaffected
     assert client._schema.ReadSchema.call_count == 2
 
@@ -487,17 +491,17 @@ async def test_per_call_retry_policy(client_type):
             await run(refused())
     assert client._permissions.WriteRelationships.call_count == 0
     # Opting out (no retries) is always allowed.
-    client._permissions = Mock(DeleteRelationships=stub(psp.DeleteRelationshipsResponse(deletion_progress=1)))
+    client._permissions = Mock(DeleteRelationships=stub(psp.DeleteRelationshipsResponse(deleted_at=_core_tok.ZedToken(token="t"), deletion_progress=1)))
     await run(client.delete_relationships(
         Filter("document"), limit=1, call_options=CallOptions(retry_policy=Retries.DISABLED)))
 
     # Schema writes are idempotent and may opt in.
-    client._schema = Mock(WriteSchema=stub(_rpc_error(), ssp.WriteSchemaResponse()))
+    client._schema = Mock(WriteSchema=stub(_rpc_error(), ssp.WriteSchemaResponse(written_at=_core_tok.ZedToken(token="t"))))
     await run(client.write_schema("definition user {}", call_options=_RETRY_ONCE))
     assert client._schema.WriteSchema.call_count == 2
 
     # A read can be exempted from the client's retries for one call.
-    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse()))
+    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t"))))
     with pytest.raises(SpiceDBError):
         await run(client.read_schema(call_options=CallOptions(retry_policy=Retries.DISABLED)))
     assert client._schema.ReadSchema.call_count == 1
@@ -598,14 +602,14 @@ async def test_operation_retry_policies(client_type):
     # the client-wide policy.
     client = build(retry_policy=RetryPolicy(initial_backoff=0),
                    operation_retry_policies={Operation.READ_SCHEMA: Retries.DISABLED})
-    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse()),
+    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t"))),
                           ReflectSchema=stub(_rpc_error(), ssp.ReflectSchemaResponse()))
     with pytest.raises(SpiceDBError):
         await run(client.read_schema())
     assert client._schema.ReadSchema.call_count == 1
     await run(client.reflect_schema(consistency=full()))
     assert client._schema.ReflectSchema.call_count == 2
-    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse()))
+    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t"))))
     await run(client.read_schema(call_options=_RETRY_ONCE))
     assert client._schema.ReadSchema.call_count == 2
 
@@ -625,7 +629,7 @@ async def test_operation_retry_policies(client_type):
     with pytest.raises(SpiceDBError):  # a per-call opt-out wins
         await run(client.write(_touch(), call_options=CallOptions(retry_policy=Retries.DISABLED)))
     assert client._permissions.WriteRelationships.call_count == 1
-    client._schema = Mock(WriteSchema=stub(_rpc_error(), ssp.WriteSchemaResponse()))
+    client._schema = Mock(WriteSchema=stub(_rpc_error(), ssp.WriteSchemaResponse(written_at=_core_tok.ZedToken(token="t"))))
     await run(client.write_schema("definition user {}"))
     assert client._schema.WriteSchema.call_count == 2
 
@@ -704,7 +708,7 @@ async def test_single_request_paging(client_type):
     def read(request, **kwargs):
         reads.append(request)
         return _Call([
-            psp.ReadRelationshipsResponse(
+            psp.ReadRelationshipsResponse(read_at=_core_tok.ZedToken(token="t"),
                 relationship=Relationship.from_tuple(f"document:{i}#viewer@user:u")._to_proto(),
                 after_result_cursor=core_pb2.Cursor(token=str(i + 1)),
             )
@@ -723,7 +727,7 @@ async def test_single_request_paging(client_type):
     def lookup(request, **kwargs):
         lookups.append(request)
         return _Call([
-            psp.LookupResourcesResponse(
+            psp.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
                 resource_object_id=str(i), permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
                 after_result_cursor=core_pb2.Cursor(token=f"c{i}"),
             )
@@ -752,7 +756,7 @@ def test_wrapped_item_and_progress_errors_report_the_server_message_once():
     check = PermissionCheck(ObjectRef("document", "a"), "view", SubjectRef(ObjectRef("user", "u")))
     request = psp.CheckBulkPermissionsRequestItem(
         resource=check.resource._to_proto(), permission="view", subject=check.subject._to_proto())
-    client._permissions.CheckBulkPermissions = Mock(return_value=psp.CheckBulkPermissionsResponse(
+    client._permissions.CheckBulkPermissions = Mock(return_value=psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"),
         pairs=[psp.CheckBulkPermissionsPair(request=request, error=status)]))
     with pytest.raises(FailedPreconditionError) as caught:
         client.check_bulk([check], consistency=full())
@@ -760,7 +764,7 @@ def test_wrapped_item_and_progress_errors_report_the_server_message_once():
     assert caught.value.input_index == 0
 
     client._permissions.DeleteRelationships = Mock(side_effect=[
-        psp.DeleteRelationshipsResponse(relationships_deleted_count=1, deletion_progress=2,
+        psp.DeleteRelationshipsResponse(deleted_at=_core_tok.ZedToken(token="t"), relationships_deleted_count=1, deletion_progress=2,
                                         after_result_cursor=core_pb2.Cursor(token="c")),
         _rpc_error(grpc.StatusCode.UNAVAILABLE, "gone"),
     ])
@@ -778,7 +782,7 @@ def test_default_timeout_has_no_magic_disable_value(bad):
 
 def test_default_deadline_disabled_sends_no_deadline():
     client = _sync(default_timeout=DefaultDeadline.DISABLED)
-    client._schema.ReadSchema = Mock(return_value=ssp.ReadSchemaResponse())
+    client._schema.ReadSchema = Mock(return_value=ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t")))
     client.read_schema()
     assert client._schema.ReadSchema.call_args.kwargs["timeout"] is None
     client.read_schema(timeout=5)
@@ -798,7 +802,7 @@ def test_bulk_item_errors_returned_never_grant():
         psp.CheckBulkPermissionsRequestItem(resource=c.resource._to_proto(), permission="view", subject=c.subject._to_proto())
         for c in checks
     ])
-    response = psp.CheckBulkPermissionsResponse(pairs=[
+    response = psp.CheckBulkPermissionsResponse(checked_at=_core_tok.ZedToken(token="t"), pairs=[
         psp.CheckBulkPermissionsPair(request=request.items[0], item=psp.CheckBulkPermissionsResponseItem(
             permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION)),
         psp.CheckBulkPermissionsPair(request=request.items[1], error=status_pb2.Status(code=5, message="missing")),
@@ -817,7 +821,7 @@ def test_bulk_item_errors_returned_never_grant():
 
 def test_delete_partial_modes():
     client = _sync()
-    client._permissions.DeleteRelationships = Mock(return_value=psp.DeleteRelationshipsResponse(
+    client._permissions.DeleteRelationships = Mock(return_value=psp.DeleteRelationshipsResponse(deleted_at=_core_tok.ZedToken(token="t"),
         deletion_progress=psp.DeleteRelationshipsResponse.DELETION_PROGRESS_COMPLETE))
     with pytest.raises(InvalidArgumentError):
         client.delete_relationships(Filter("document"))
@@ -899,7 +903,7 @@ class _Server:
         self.authorization.extend(v for k, v in context.invocation_metadata() if k == "authorization")
         context.send_initial_metadata((("x-server-version", "v1.99.0"),))
         context.set_trailing_metadata((("x-trailer", "t"),))
-        return ssp.ReadSchemaResponse(schema_text="definition user {}")
+        return ssp.ReadSchemaResponse(read_at=_core_tok.ZedToken(token="t"), schema_text="definition user {}")
 
     def import_bulk(self, request_iterator, context):
         for _ in request_iterator:

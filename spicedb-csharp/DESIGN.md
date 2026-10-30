@@ -11,14 +11,18 @@
 
 - **Keep revision tokens opaque and distinct from credentials and cursors.**
   - `ZedToken` is a readonly value constructed from a string. `Value` and
-    `ToString()` preserve its complete contents without normalization.
+    `ToString()` preserve its complete contents without normalization, and
+    `System.Text.Json` reads and writes it as that string, never as `{"Value":...}`.
   - Every public revision input and result uses `ZedToken`, including checks,
     writes, deletes, schema, lookups, counters, watch, and materialize operations.
     Optional positions use `ZedToken?`; credentials and opaque resume cursors
     remain strings. `PermissionSetCursor` is a separate native value.
   - Reads require `Consistency.Full()`, `MinLatency()`, `AtLeast(token)`, or
-    `Snapshot(token)`. Strict token strategies reject empty/default tokens;
+    `Snapshot(token)`. Strict token strategies reject empty, whitespace-only and default tokens;
     `AtLeastOrFull` and `AtLeastOrMinLatency` provide explicitly named fallbacks.
+  - Optional revision inputs (watch start revisions, materialize at-revisions) take
+    `ZedToken?`: null means absent, and a present empty or whitespace-only token throws
+    `InvalidArgumentException` before any RPC.
 
 - **Make behavioral choices discoverable with named enums.**
   - `CheckOptions.Tracing` uses `CheckTracing.Disabled` (default) or `Enabled`.
@@ -36,6 +40,11 @@
 
 - **Separate persisted tuples from permission questions.**
   - `ObjectRef`, `SubjectRef.Direct`, and `SubjectRef.Named` describe identity.
+    An `ObjectRef` converts implicitly to its direct `SubjectRef`, so a direct subject is
+    one step from an object. The subject relation `...` means direct everywhere:
+    `new SubjectRef(obj, "...")` and `SubjectRef.Named(obj, "...")` build the direct
+    subject and `SubjectRelationFilter.Named("...")` returns `SubjectRelationFilter.Direct`,
+    as tuple and proto parsing already do; an empty relation stays invalid.
     `Relationship` contains stored caveat context and optional expiration.
     `PermissionCheck` contains permission, explicit consistency, and evaluation context.
   - `CheckAsync`, `CheckBulkAsync`, `CheckAnyAsync`, and `CheckAllAsync` accept
@@ -77,6 +86,19 @@
     budget; per-operation `Timeout` and the caller's token still apply. Zero or
     negative durations stay invalid rather than meaning "disabled".
     Streams/imports have no default timeout but accept an explicit total timeout.
+    Finite paged reads (reads, lookups, permission-set lookup, exports) apply the client
+    default to each page request, from opening it to its last item; a per-call `Timeout`
+    still bounds the whole read and wins when earlier. Watches keep no default. The
+    deadline never counts the caller's processing: it is a watchdog on waiting for the next
+    message, stopped while the caller holds an item (items still stream as they arrive), and
+    only the total budget goes on the wire as the call deadline. Unpaged streams
+    (LookupSubjects, `Paging.SingleRequest`) give each wait for a message the whole default.
+  - A response the client cannot interpret (a missing relationship, resource, subject,
+    object or id, an incomplete tree, a non-advancing cursor) fails with an
+    `Internal`-status `SpiceDBException`, never skipped and never filled with empty values.
+    Client-detected faults never report `Unknown`. Local validation, `FromTuple` included,
+    stays `InvalidArgumentException`, which cannot also be an `ArgumentException` or
+    `FormatException` (single inheritance), so the native shape wins and MIGRATION.md says so.
   - Caller cancellation preserves its native token; remote cancellation and
     deadline expiry retain separate typed categories and original diagnostics.
   - By default, idempotent reads retry Unavailable/Aborted up to three times with
@@ -158,6 +180,15 @@
     caller transport configuration can supersede endpoint security assumptions.
   - `RawProto()` exposes authenticated services on the existing connection and
     bypasses native mapping/retry/deadlines. Deprecated RPCs remain raw-only.
+  - Endpoints also accept gRPC targets the transport supports: `dns:///host:port` (DNS
+    resolver, round-robin balancing, loopback check on the host) and plaintext
+    `unix:/path`, `unix:///path` or `unix:relative/path` (dialed through a socket
+    `ConnectCallback`, never as a host named `unix`). Other schemes fail at construction.
+  - Channels connect lazily. `ConnectAsync(ConnectOptions?, CancellationToken)` is the
+    startup readiness check: a wait-for-ready schema read (NotFound counts as ready) within
+    `ConnectOptions.Timeout` or the client default, failing with
+    `DeadlineExceededException` naming the endpoint, `UnavailableException` or
+    `UnauthenticatedException`. It is on `ISpiceDBClient`; the in-memory double no-ops.
 
 - **Verify observable contracts and keep examples executable.**
   - Unit and real local gRPC transport tests cover enum mapping/validation,
@@ -168,7 +199,7 @@
 
 - **LookupResources can filter for unconditional grants on the client.**
   - The default `All` mode returns every response, including conditional and unknown permissionship values. Before mapping results to accessible IDs, require unconditional permission explicitly or opt into `new LookupOptions { PermissionshipFilter = LookupPermissionshipFilter.HasPermissionOnly }`.
-  - The filter yields only exact HAS_PERMISSION responses; conditional, unspecified, and unknown values are skipped. Limits count yielded matches, and skipped responses still advance pagination and cursors.
+  - The filter yields only exact HAS_PERMISSION responses; conditional and unknown values are skipped. An unset permissionship is a malformed response and fails the lookup with `Internal` whatever the filter. Limits count yielded matches, and skipped responses still advance pagination and cursors.
   - Filtering does not deduplicate results or change server caveat evaluation. LookupSubjects rejects the nondefault filter.
 
 - **Relationship writes return a native WriteResult.**
@@ -221,7 +252,9 @@
   - `CheckOptions.ItemErrors = BulkItemErrors.Returned` makes bulk checks return every
     item; a failed item's `CheckResult.Error` holds its typed exception (with `InputIndex`),
     its permissionship is `Unspecified`, and `HasPermission` is false. `Fail` (default)
-    throws for the first failing item.
+    throws for the first failing item. A malformed item in the server's response (such
+    as an unset permissionship) still fails the whole call with the client-detected
+    malformed-response error.
 
 - **Interoperate with gRPC status inspection in both directions.**
   - `SpiceDBException.StatusCode` is the matching `Grpc.Core.StatusCode` for every error:
@@ -230,8 +263,16 @@
     type's code. `Status`, `Trailers` and `ToRpcException()` return the server's own status
     and trailers (so `GetRpcStatus()` and `ErrorInfo` details survive) or ones built from
     the code. The server's `RpcException` stays the `InnerException`.
-  - `ServerMessage` holds the server's status message verbatim (null for local errors);
+  - `ServerMessage` holds the server's status message verbatim and is never null: for
+    local errors (validation, deadlines, caller-built errors) it is the error's `Message`.
     `Message` is the display message.
+  - `SpiceDBException` does not derive from `Grpc.Core.RpcException`, although a legacy
+    `catch (RpcException)` then stops matching. `RpcException` has no inner-exception
+    constructor, so a subclass could not keep the server's `RpcException` as
+    `InnerException` (where status, trailers and `ErrorInfo` are preserved), and the
+    client's own `catch (RpcException)` mapping would re-catch native errors. MIGRATION.md
+    gives the handler mapping (`StatusCode`, `Status`, `Trailers`, `ToRpcException()`,
+    `CodeOf`).
   - There are no wrapper exception types: a bulk item's error is the item's own typed
     exception (with `InputIndex`), and deletion progress is attached to the failure itself
     (`DeleteProgress`). `Status`, `ToRpcException()` and `Message` therefore report the
@@ -249,8 +290,14 @@
   - `ObjectRef`, `SubjectRef`, `Relationship`, `RelationshipUpdate` (`TOUCH(...)`),
     `Filter` (zed-like, `*` for unset), `SubjectRelationFilter` (`*`, `...`, name),
     `Precondition` and `Transaction` override `ToString`. Their public properties are the
-    structured log and `System.Text.Json` form; enums serialize as names and
-    `SubjectRelationFilter` exposes `Kind`/`Name`, so nothing serializes as `{}`.
+    structured log and `System.Text.Json` form; every public enum carries
+    `JsonStringEnumConverter` and serializes as its name (`"Permissionship":"HasPermission"`),
+    `ZedToken` serializes as its string, and `SubjectRelationFilter` exposes `Kind`/`Name`,
+    so nothing serializes as a number, a wrapper object or `{}`. A test asserts the
+    converter on every exported enum.
+  - Identifiers use `Id`: `LookupResource.ResourceId` and `ResolvedSubject.SubjectId`, like
+    `ObjectRef.ObjectId` and `Relationship.ResourceId`. The earlier `ResourceID` and
+    `SubjectID` remain as `[Obsolete]`, JSON-ignored aliases.
   - `Relationship` has short accessors (`ResourceType`, `ResourceId`, `SubjectType`,
     `SubjectId`, `SubjectRelation`, ignored by JSON) and copy helpers `WithResource`,
     `WithRelation`, `WithSubject` that keep caveat and expiration.
@@ -270,18 +317,41 @@
     because C# cannot apply a caller-defined interface to a sealed class after the fact. It
     applies preconditions, CREATE conflicts, one-transaction imports and filters through
     `Filter.Matches`, honors cursors, limits and `TransportOptions.ResponseMetadata` sinks
-    (`SetResponseMetadata`), and returns registered check results or errors
-    (`SetCheckResult`, `SetCheckError`) and a registered reflection
+    (`SetResponseMetadata`), and returns a registered reflection
     (`SetReflectSchemaResult`, empty without one, as SpiceDB reflects an empty schema).
     Its errors have the real client's types, codes and messages for the same failure:
     server failures carry SpiceDB's message (verified against a live server) and
-    `ErrorInfo` reason, and local validation is an `InvalidArgumentException` with no
-    server message; it rejects per-call mutation retries as the client does.
+    `ErrorInfo` reason, and local validation is an `InvalidArgumentException` whose server
+    message is its message; it rejects per-call mutation retries as the client does.
+  - The double resolves a check in the root design's fixed order: a result or error
+    registered for exactly that question (`SetCheckResult`, `SetCheckError`); then the
+    check resolver (`SetCheckResolver(Func<PermissionCheck, CheckResult?>)`), which
+    receives the check with the call's `Context` merged in (the check's keys win), answers
+    with a `CheckResult` (its `CheckedAt` replaced by the double's revision; return
+    `ConditionalPermission` with missing context to emulate an unmet caveat) or declines
+    with null, and never fails (failures come from the fault hooks and `SetCheckError`);
+    `InMemorySpiceDBClient.GrantAll` is the grant-all resolver and `GrantAllChecks()`
+    installs it; then the stored relationships, where an unexpired relationship on the
+    resource whose relation is the permission's name and whose subject matches exactly, or
+    as a wildcard (`type:*`) over a direct subject of that type, grants it, conditionally
+    when caveated (caveats are not evaluated; an uncaveated match wins); anything else is
+    `NoPermission`. It does not evaluate a schema.
+  - `LookupResourcesAsync` and `LookupSubjectsAsync` enumerate the objects of the requested
+    type that appear in the stored relationships (as resource or subject, in order of first
+    appearance; resource lookups skip `*`, subject lookups report a stored wildcard as `*`)
+    and yield those check resolution grants, conditional results as conditional with the
+    resolved missing context in `PartialCaveat`. Resource lookups honor
+    `PermissionshipFilter`, `Limit` (counting yielded results) and `ResumeCursor`: item n's
+    `AfterResultCursor` is `CursorAfter(n)`, where n counts granted results including ones
+    the filter drops. Subject lookups take `SubjectRelation` (direct when null or `...`),
+    honor `Limit`, have no cursor (as the real client's have none) and reject the options
+    the real client rejects. Both run the `Item` fault stage before each result; a
+    registered check error for a candidate fails the lookup.
     It records every call (`Calls`, `CallsOf(SpiceDBOperation)`) as a `RecordedCall` with
     the operation, a per-operation index, the arguments and the options object as passed,
     and accepts fault injection (`SetFaultHook(Func<Fault, Exception?>)`) before any call,
     before each import batch (batch index, by the call's `BatchSize`), before an import
-    commits and before each read or export item (item index); `FailNext(operation, error)`
+    commits and before each read, export or lookup item (item index); `FailNext(operation, error)`
     fails exactly one call, and `InMemorySpiceDBClient.ServerError(code, message, reason)`
     builds the real client's exception for a server failure. A failed write or import
     applies nothing.
@@ -291,8 +361,9 @@
     parameters or defaults. `SpiceDBClient` and `InMemorySpiceDBClient` both implement it.
     In the double, `CheckAnyAsync`/`CheckAllAsync` reduce a bulk check (recorded as
     `CheckBulk`) and `DisposeAsync` does nothing; `RawProto()` throws
-    `InvalidOperationException` as a client without a raw transport does. Every other
-    operation (lookups, watch, schema introspection and diff, expansion, experimental
+    `InvalidOperationException` as a client without a raw transport does. Code written
+    against `ISpiceDBClient` (a typed wrapper included) therefore runs over the double.
+    Every other operation (watch, schema introspection and diff, expansion, experimental
     operations) is recorded, consults the fault hook, validates its options, and fails with
     a `SpiceDBException` of code `Unimplemented` whose message and server message are
     "`<operation>` is not implemented by InMemorySpiceDBClient"; streams fail on the first
@@ -316,6 +387,14 @@
     tooling options, errors, the in-memory double). The `SpiceDBClient` doc comment and
     `examples/README.md` point to it. Every snippet is compiled against the current API
     (extracted into a throwaway project) whenever the guide or the APIs it shows change.
+  - `SpiceDB.Client`, `SpiceDB.Proto` and the `Authzed.Net` bridge target `net8.0`,
+    `net9.0` and `net10.0` (every supported .NET release), so a net8.0 or net9.0 host can
+    reference them, and build with `TreatWarningsAsErrors`, so no compiler warning reaches
+    a consumer's build. Test, example and tooling projects stay on `net10.0`.
+  - `README.md` covers installation (including consuming the unpublished packages from a
+    project reference or a local feed), a first call, and links to this document,
+    MIGRATION.md and the AI integration guide. MIGRATION.md opens with a Requirements
+    section and has a legacy-to-new table of renamed response members.
   - `SpiceDB.Client` and `SpiceDB.Proto` declare exact lowest working versions
     (`Grpc.Net.Client`/`Grpc.Core.Api`/`Grpc.StatusProto` 2.80.0, `Google.Protobuf`
     3.34.1, `Google.Api.CommonProtos` 2.17.0, matching `Authzed.Net` 1.6.0) instead of

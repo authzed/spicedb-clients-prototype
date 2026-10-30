@@ -88,6 +88,17 @@ func TypeScriptIntegrationTest() error {
 	if err := runInDir("testdata/typescript", "pnpm", "run", "typecheck"); err != nil {
 		return fmt.Errorf("type-check failed: %w", err)
 	}
+	if err := sh.RunV("./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "typescript",
+		"--typescript.names-only",
+		"--out", "testdata/typescript-names/names.gen.ts",
+	); err != nil {
+		return fmt.Errorf("code generation with --typescript.names-only failed: %w", err)
+	}
+	if err := verifyTypeScriptNamesOnly(); err != nil {
+		return err
+	}
 
 	endpoint := os.Getenv("SPICEDB_ENDPOINT")
 	if endpoint == "" {
@@ -130,7 +141,45 @@ func TypeScriptTypeErrors() error {
 	if err := verifyTypeScriptTypeErrors("testdata/typescript/type_errors.ts"); err != nil {
 		return err
 	}
-	return runInDir("testdata/typescript", "pnpm", "run", "typecheck")
+	if err := runInDir("testdata/typescript", "pnpm", "run", "typecheck"); err != nil {
+		return err
+	}
+	return verifyTypeScriptNamesOnly()
+}
+
+// verifyTypeScriptNamesOnly type-checks the --typescript.names-only fixture
+// (testdata/typescript-names) in a temporary directory with no node_modules
+// above it, so an import of @spicedb/* (or any package) cannot resolve: the
+// names-only output must type-check with no client dependency. It uses the
+// fixture project's tsc.
+func verifyTypeScriptNamesOnly() error {
+	fmt.Println("==> Type-checking the names-only output with no packages installed...")
+	tsc, err := filepath.Abs("testdata/typescript/node_modules/.bin/tsc")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "spicedb-gen-names-only-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	entries, err := os.ReadDir("testdata/typescript-names")
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join("testdata/typescript-names", e.Name()))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(tmp, e.Name()), b, 0o644); err != nil {
+			return err
+		}
+	}
+	if err := runInDir(tmp, tsc, "-p", "."); err != nil {
+		return fmt.Errorf("names-only TypeScript does not type-check without the client: %w", err)
+	}
+	return nil
 }
 
 // verifyTypeScriptTypeErrors checks that every @ts-expect-error in file
@@ -184,7 +233,8 @@ func GoIntegrationTest() error {
 	); err != nil {
 		return fmt.Errorf("code generation failed: %w", err)
 	}
-	defer os.Remove("testdata/go/permissions.gen.go")
+	// permissions.gen.go is tracked (other targets and the fixture-is-current
+	// test read it), so regeneration leaves it in place rather than deleting it.
 
 	// 3. Verify generated code compiles
 	fmt.Println("==> Verifying generated code compiles...")
@@ -198,26 +248,48 @@ func GoIntegrationTest() error {
 		return err
 	}
 	fmt.Println("    (every marked line fails to compile)")
-
-	// 5. Start SpiceDB via docker-compose
-	fmt.Println("==> Starting SpiceDB...")
-	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
-		return fmt.Errorf("docker compose up failed: %w", err)
+	if err := sh.RunV(
+		"./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "go",
+		"--go.package=apinames",
+		"--go.names-only",
+		"--out", "testdata/go-names/names.gen.go",
+	); err != nil {
+		return fmt.Errorf("code generation with --go.names-only failed: %w", err)
 	}
-	defer func() {
-		fmt.Println("==> Stopping SpiceDB...")
-		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
-	}()
-
-	// Wait for SpiceDB to be ready
-	fmt.Println("==> Waiting for SpiceDB to be ready...")
-	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+	if err := verifyGoNamesOnly(); err != nil {
 		return err
 	}
 
-	// 6. Run go test
+	// 5. Start SpiceDB via docker-compose, unless SPICEDB_ENDPOINT names one.
+	endpoint := os.Getenv("SPICEDB_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:50051"
+		fmt.Println("==> Starting SpiceDB...")
+		if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+			return fmt.Errorf("docker compose up failed: %w", err)
+		}
+		defer func() {
+			fmt.Println("==> Stopping SpiceDB...")
+			_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+		}()
+	}
+
+	// Wait for SpiceDB to be ready
+	fmt.Println("==> Waiting for SpiceDB to be ready at " + endpoint + "...")
+	if err := waitForReady(endpoint, 30*time.Second); err != nil {
+		return err
+	}
+
+	// 6. Run go test (the tests read SPICEDB_ENDPOINT).
 	fmt.Println("==> Running Go integration tests...")
-	if err := runInDir("testdata/go", "go", "test", "-v", "."); err != nil {
+	goTest := exec.Command("go", "test", "-v", ".")
+	goTest.Dir = "testdata/go"
+	goTest.Env = append(os.Environ(), "SPICEDB_ENDPOINT="+endpoint)
+	goTest.Stdout = os.Stdout
+	goTest.Stderr = os.Stderr
+	if err := goTest.Run(); err != nil {
 		return fmt.Errorf("go test failed: %w", err)
 	}
 
@@ -235,11 +307,12 @@ func JavaIntegrationTest() error {
 		return err
 	}
 	defer os.Remove(javaGenerated)
+	defer os.Remove(javaNamesOnlyGenerated)
 
 	// 3. Verify generated code and tests compile, and that the generated file is
 	// already google-java-format clean (spotlessCheck never rewrites it).
 	fmt.Println("==> Compiling generated code and tests, checking google-java-format...")
-	if err := runInDir("testdata/java", "./gradlew", "compileTestJava", "spotlessCheck"); err != nil {
+	if err := runInDir("testdata/java", "./gradlew", "compileTestJava", "compileNamesOnly", "spotlessCheck"); err != nil {
 		return fmt.Errorf("compilation or formatting check failed: %w", err)
 	}
 
@@ -286,7 +359,12 @@ func JavaIntegrationTest() error {
 
 const javaGenerated = "testdata/java/src/main/java/com/authzed/spicedb/gen/test/Permissions.java"
 
-// generateJava builds the CLI and generates Permissions.java from sample.zed.
+// javaNamesOnlyGenerated is the --java.names-only output, which the
+// compileNamesOnly task compiles with an empty classpath.
+const javaNamesOnlyGenerated = "testdata/java/names_only/com/authzed/spicedb/gen/names/PermissionNames.java"
+
+// generateJava builds the CLI and generates Permissions.java from sample.zed,
+// plus the names-only PermissionNames.java.
 func generateJava() error {
 	fmt.Println("==> Building spicedb-gen...")
 	if err := Build(); err != nil {
@@ -302,6 +380,16 @@ func generateJava() error {
 	); err != nil {
 		return fmt.Errorf("code generation failed: %w", err)
 	}
+	if err := sh.RunV(
+		"./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "java",
+		"--java.package=com.authzed.spicedb.gen.names",
+		"--java.names-only",
+		"--out", javaNamesOnlyGenerated,
+	); err != nil {
+		return fmt.Errorf("code generation with --java.names-only failed: %w", err)
+	}
 	return nil
 }
 
@@ -312,8 +400,13 @@ func JavaTypeErrors() error {
 		return err
 	}
 	defer os.Remove(javaGenerated)
+	defer os.Remove(javaNamesOnlyGenerated)
 	if err := runInDir("testdata/java", "./gradlew", "spotlessCheck"); err != nil {
 		return fmt.Errorf("generated Java is not google-java-format clean: %w", err)
+	}
+	// The names-only output compiles with an empty classpath: no spicedb-java.
+	if err := runInDir("testdata/java", "./gradlew", "compileNamesOnly", "--rerun-tasks"); err != nil {
+		return fmt.Errorf("names-only Java does not compile without spicedb-java: %w", err)
 	}
 	return verifyJavaTypeErrors("testdata/java", "type_errors/com/authzed/spicedb/gen/test/TypeErrors.java")
 }
@@ -375,7 +468,7 @@ func verifyJavaTypeErrors(dir, file string) error {
 var pythonGenerated = []string{"permissions.py", "sync.py", "aio.py"}
 
 // PythonIntegrationTest builds the CLI, generates Python code from the sample
-// schema, checks ruff formatting and lint, type-checks it with pyright
+// schema, checks ruff formatting and lint, type-checks it with pyright and mypy
 // (positive, and per-line negative), then runs pytest against SpiceDB.
 //
 // When SPICEDB_ENDPOINT is set, pytest runs against that server and no
@@ -416,11 +509,18 @@ func PythonIntegrationTest() error {
 		return fmt.Errorf("pyright failed on project: %w", err)
 	}
 
+	if err := PythonMypy(); err != nil {
+		return err
+	}
+
 	fmt.Println("==> Verifying type errors are caught at type-check time...")
 	if err := verifyPythonTypeErrors("testdata/python", "type_errors.py"); err != nil {
 		return err
 	}
 	fmt.Println("    (every marked line fails to type-check)")
+	if err := verifyPythonNamesOnly(); err != nil {
+		return err
+	}
 
 	endpoint := os.Getenv("SPICEDB_ENDPOINT")
 	if endpoint == "" {
@@ -453,8 +553,25 @@ func PythonIntegrationTest() error {
 	return nil
 }
 
+// PythonMypy type-checks the generated package with mypy, both with its
+// defaults and with --strict, so applications that run mypy on their source
+// tree (generated code included) see no errors from it. pyright runs
+// separately; both checkers must stay clean.
+func PythonMypy() error {
+	fmt.Println("==> Type-checking generated code with mypy (default and --strict)...")
+	if err := runInDir("testdata/python", "uv", "run", "mypy", "-p", "testdata"); err != nil {
+		return fmt.Errorf("mypy failed on the generated package: %w", err)
+	}
+	if err := runInDir("testdata/python", "uv", "run", "mypy", "--strict", "-p", "testdata"); err != nil {
+		return fmt.Errorf("mypy --strict failed on the generated package: %w", err)
+	}
+	return nil
+}
+
 // PythonFormatCheck requires the generated Python fixture files to be
-// `ruff format` clean and to pass the repository's ruff lint selection.
+// `ruff format` clean and to pass the repository's ruff lint selection plus
+// the unused-argument rules (ARG) and line length (E501, at ruff format's 88
+// columns), so projects that enable either lint the generated code clean.
 // Generated files are gitignored, so they are passed explicitly.
 func PythonFormatCheck() error {
 	fmt.Println("==> Checking generated Python with ruff format and ruff check...")
@@ -462,7 +579,7 @@ func PythonFormatCheck() error {
 	if err := runInDir("testdata/python", "uv", args...); err != nil {
 		return fmt.Errorf("generated Python is not ruff-format clean: %w", err)
 	}
-	args = append([]string{"run", "ruff", "check", "--isolated", "--select", "E4,E7,E9,F"}, pythonGeneratedPaths()...)
+	args = append([]string{"run", "ruff", "check", "--isolated", "--line-length", "88", "--select", "E4,E7,E9,F,ARG,E501"}, pythonGeneratedPaths()...)
 	if err := runInDir("testdata/python", "uv", args...); err != nil {
 		return fmt.Errorf("generated Python fails ruff check: %w", err)
 	}
@@ -480,7 +597,26 @@ func pythonGeneratedPaths() []string {
 // PythonTypeErrors verifies the Python negative type fixtures against
 // already-generated code in testdata/python/testdata, without SpiceDB.
 func PythonTypeErrors() error {
-	return verifyPythonTypeErrors("testdata/python", "type_errors.py")
+	if err := verifyPythonTypeErrors("testdata/python", "type_errors.py"); err != nil {
+		return err
+	}
+	return verifyPythonNamesOnly()
+}
+
+// verifyPythonNamesOnly runs the --python.names-only fixture
+// (testdata/python-names) with `python3 -I -S`, so no site-packages are
+// importable: it passes only while names.py imports the standard library
+// alone. It then type-checks names.py with mypy --strict. A unit test keeps
+// names.py current with the generator.
+func verifyPythonNamesOnly() error {
+	fmt.Println("==> Running the names-only output with no site-packages...")
+	if err := sh.RunV("python3", "-I", "-S", "testdata/python-names/check_names.py"); err != nil {
+		return fmt.Errorf("names-only Python output does not load without the client: %w", err)
+	}
+	if err := runInDir("testdata/python", "uv", "run", "mypy", "--strict", "../python-names/names.py"); err != nil {
+		return fmt.Errorf("mypy --strict failed on the names-only output: %w", err)
+	}
+	return nil
 }
 
 // verifyPythonTypeErrors runs pyright over file with JSON output and requires
@@ -580,7 +716,60 @@ func runInDir(dir, name string, args ...string) error {
 // GoTypeErrors verifies the Go negative type fixtures against the checked-in
 // generated code, without starting SpiceDB.
 func GoTypeErrors() error {
-	return verifyGoTypeErrors("testdata/go", "type_errors_test.go")
+	if err := verifyGoTypeErrors("testdata/go", "type_errors_test.go"); err != nil {
+		return err
+	}
+	if err := verifyGoNamesOnly(); err != nil {
+		return err
+	}
+	return verifyGoStrict()
+}
+
+// staticcheckVersion pins the staticcheck release used on generated Go.
+const staticcheckVersion = "honnef.co/go/tools/cmd/staticcheck@v0.7.0"
+
+// verifyGoStrict holds the generated Go (full and names-only) to the strictest
+// standard checks: go vet, then staticcheck with every check enabled
+// (including the style checks). Generated code must pass both unmodified.
+func verifyGoStrict() error {
+	fmt.Println("==> Vetting and linting the generated Go (go vet, staticcheck -checks all)...")
+	for _, dir := range []string{"testdata/go", "testdata/go-names"} {
+		env := []string{}
+		if dir == "testdata/go-names" {
+			env = []string{"GOWORK=off", "GOFLAGS=-mod=readonly"}
+		}
+		for _, args := range [][]string{
+			{"vet", "./..."},
+			{"run", staticcheckVersion, "-checks", "all", "./..."},
+		} {
+			cmd := exec.Command("go", args...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), env...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("generated Go in %s fails go %s: %w", dir, args[0], err)
+			}
+		}
+	}
+	return nil
+}
+
+// verifyGoNamesOnly builds and tests the --go.names-only fixture
+// (testdata/go-names), a module whose go.mod requires nothing: it builds only
+// while the names-only output imports the standard library alone.
+func verifyGoNamesOnly() error {
+	fmt.Println("==> Testing the names-only output in a module with no requirements...")
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = "testdata/go-names"
+	// No -mod=mod: a non-standard import must fail, not be added to go.mod.
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=readonly")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("names-only Go output does not build without the client: %w", err)
+	}
+	return nil
 }
 
 // verifyGoTypeErrors compiles dir's tests with the typeerror tag, reporting

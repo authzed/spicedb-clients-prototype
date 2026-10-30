@@ -7,6 +7,78 @@ exceptions over the same RPCs. This guide lists every behavior a migrating team
 will observe, with before/after code. Snippets assume
 `import com.authzed.spicedb.*;`.
 
+## Requirements
+
+| | Floor | Notes |
+|---|---|---|
+| Java | 17 | |
+| protobuf-java | 4.33.2 | The version the protocol classes were generated with; they refuse an older runtime. Spring Boot 4.1 manages 4.34.2, so a Spring Boot host needs no override. authzed-java 1.6.0 needed 4.33.5. |
+| gRPC (`io.grpc:*`) | 1.80.0 | The version the service stubs were generated with. Tested from 1.80.0 to 1.84.0; one version for every `io.grpc` artifact. The client declares 1.84.0 (through `grpc-bom`); Spring Boot 4.1 resolves 1.80.0, which works with no override. authzed-java 1.6.0 needed 1.78.0. |
+| proto-google-common-protos | 2.65.0 | |
+| SpiceDB | 1.30 | Older-server behavior is reachable only through `TransportOptions` (see "Transport-level data"). |
+
+Coordinates: `com.authzed.spicedb:spicedb-java` (the client) and
+`com.authzed.spicedb:spicedb-java-proto` (protocol classes, pulled in by the
+client), at the same version. Until they are published, install both with
+`gradle publishToMavenLocal` (see [README.md](README.md#installation-before-publication)).
+The client's POM versions every dependency, so it is the only line a Maven or
+Gradle build needs.
+
+**Spring Boot and other dependency managers.** A BOM that pins protobuf-java
+wins over the version the client asks for. If it pins one below 4.33.2, nothing
+fails at build time, so the client checks at construction: the first
+`SpiceDBClient` factory call throws `IllegalStateException` naming the version
+found and the property to raise, `<protobuf-java.version>` in Maven or Spring
+Boot. In Gradle, require `com.google.protobuf:protobuf-java:4.33.2` or later.
+The same applies to gRPC: a grpc-java older than 1.80.0 makes the first
+factory call throw `IllegalStateException` naming the version found and
+what to raise: `<grpc.version>` in Maven, `<grpc-java.version>` in Spring Boot
+(the property its dependency management uses), or an imported
+`io.grpc:grpc-bom`. If the gRPC version cannot be
+read from the class path, for example in a repackaged jar, that check is skipped.
+
+## Legacy-to-new member map
+
+Requests become method arguments and options; responses become records. The
+members a migration touches most:
+
+| authzed-java (`com.authzed.api.v1`) | spicedb-java |
+|---|---|
+| `ZedToken.getToken()` | `ZedToken.value()` |
+| `CheckPermissionResponse.getPermissionship() == PERMISSIONSHIP_HAS_PERMISSION` | `CheckResult.hasPermission()` (or `permissionship() == Permissionship.HAS_PERMISSION`) |
+| `CheckPermissionResponse.getCheckedAt()` | `CheckResult.checkedAt()` |
+| `CheckPermissionResponse.getPartialCaveatInfo().getMissingRequiredContextList()` | `CheckResult.missingContext()` |
+| `CheckPermissionRequest.setContext(Struct)` | `PermissionCheck.withContext(Map)` or `CheckOptions.builder().context(Map)` |
+| `WriteRelationshipsResponse.getWrittenAt()` | `WriteResult.revision()` |
+| `DeleteRelationshipsResponse.getDeletedAt()` | `DeleteResult.revision()` |
+| `DeleteRelationshipsResponse.getDeletionProgress()` | `DeleteResult.completed()` |
+| `DeleteRelationshipsRequest` with only a filter | `deleteRelationships(filter)` |
+| `DeleteRelationshipsRequest.setOptionalLimit(n).setOptionalAllowPartialDeletions(true)` | `deleteRelationships(filter, n)` |
+| `ReadRelationshipsResponse.getRelationship()` | `ReadRelationship.relationship()` |
+| `ReadRelationshipsResponse.getReadAt()` | `ReadRelationship.readAt()` |
+| `ReadRelationshipsResponse.getAfterResultCursor().getToken()` | `ReadRelationship.afterResultCursor()` |
+| `Relationship.getResource().getObjectType()` / `getObjectId()` | `Relationship.resourceType()` / `resourceId()` |
+| `Relationship.getRelation()` | `Relationship.relation()` |
+| `Relationship.getSubject().getObject().getObjectType()` / `getObjectId()` | `Relationship.subjectType()` / `subjectId()` |
+| `Relationship.getSubject().getOptionalRelation()` (`""` for direct) | `Relationship.subjectRelation()` (`null` for direct) |
+| `Relationship.getOptionalCaveat().getCaveatName()` / `getContext()` | `Relationship.caveatName()` / `caveatContext()` |
+| `Relationship.getOptionalExpiresAt()` | `Relationship.expiration()` (`Instant`) |
+| `RelationshipFilter.setResourceType(t).setOptionalResourceId(id)` | `Filter.of(t).withResourceId(id)` |
+| `RelationshipFilter...setOptionalRelation(r)` | `Filter...withRelation(r)` |
+| `SubjectFilter.setSubjectType(t).setOptionalSubjectId(id)` | `Filter...withSubjectType(t).withSubjectId(id)` |
+| `SubjectFilter.setOptionalRelation(RelationFilter...)` | `Filter...withSubjectRelation(SubjectRelationFilter.direct()/named(r))` |
+| `LookupResourcesResponse.getResourceObjectId()` | `LookupResult.LookupResource.resourceId()` |
+| `LookupResourcesResponse.getPermissionship()` | `LookupResource.permissionship()` |
+| `LookupResourcesResponse.getLookedUpAt()` | `LookupResource.lookedUpAt()` |
+| `LookupResourcesResponse.getAfterResultCursor().getToken()` | `LookupResource.afterResultCursor()` |
+| `LookupSubjectsResponse.getSubject().getSubjectObjectId()` | `LookupResult.LookupSubject.subject().subjectId()` |
+| `LookupSubjectsResponse.getExcludedSubjectsList()` | `LookupSubject.excludedSubjects()` |
+| `ReadSchemaResponse.getSchemaText()` | `SchemaResult.schema()` |
+| `ReadSchemaResponse.getReadAt()` | `SchemaResult.revision()` |
+| `WriteSchemaResponse.getWrittenAt()` | the `ZedToken` `writeSchema` returns |
+| `StatusRuntimeException.getStatus().getCode()` | `SpiceDBException.code()` (also `Status.fromThrowable(e)`) |
+| `StatusRuntimeException.getStatus().getDescription()` | `SpiceDBException.serverMessage()` |
+
 ## Running both during the migration
 
 Both libraries define `com.authzed.api.v1.*`. Never put the published
@@ -52,12 +124,34 @@ SpiceDBClient client = SpiceDBClient.createSystemTls("spicedb.example.com:443", 
 ```
 
 - The preshared key is a constructor argument, not call credentials.
+- The endpoint is `host:port` (as `forTarget` took), `http://host:port`
+  (plaintext constructor only; the port is required) or `https://host[:port]`
+  (TLS constructor only; the port defaults to 443), `dns:///host:port` (gRPC's
+  DNS target, for client-side load balancing; the loopback check runs on the
+  host) or `unix:/path`. A bare host without a port dials 443 over TLS;
+  `createPlaintext("localhost", ...)` fails, so write `localhost:50051`.
+  `unix:` needs Netty's native epoll transport (Linux); elsewhere, such as
+  macOS, it fails at construction instead of building a client whose calls
+  fail. Other target schemes and any path, query, fragment or userinfo fail at
+  construction with `InvalidArgumentException` naming the accepted forms.
+- The channel connects lazily, as a legacy `ManagedChannel` did. To fail at
+  startup when the endpoint is wrong or down, call
+  `client.awaitReady(Duration.ofSeconds(10))`: it throws
+  `UnavailableException` (could not connect) or `DeadlineExceededException`
+  (still connecting), both naming the endpoint.
 - `createPlaintext` sends the key in cleartext only to loopback by default. A
   remote plaintext host needs an explicit opt-in:
   `SpiceDBClient.createPlaintext(endpoint, token,
   ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build())`.
+  A Docker Compose service name such as `spicedb:50051` is such a host: use
+  `SpiceDBClient.createPlaintext("spicedb:50051", token, ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build())`.
 - TLS uses the JVM trust store; custom CA and client certificate/key PEM paths
   go in `ClientOptions`.
+- Keepalive and other channel settings (what a legacy `ManagedChannelBuilder`
+  configured) go in a customizer passed beside `ClientOptions`, on either
+  constructor:
+  `SpiceDBClient.createSystemTls(endpoint, token, options, b -> b.keepAliveTime(60, TimeUnit.SECONDS).keepAliveTimeout(10, TimeUnit.SECONDS).keepAliveWithoutCalls(true))`.
+  It runs after the TLS or plaintext decision and must not change it.
 - Keep an existing channel (in-process, custom transport) with
   `SpiceDBClient.fromChannel(channel)`. It sends no key itself, so attach
   credentials to the channel (for example `ClientInterceptors.intercept(channel,
@@ -65,6 +159,12 @@ SpiceDBClient client = SpiceDBClient.createSystemTls("spicedb.example.com:443", 
   leaves the channel open.
 - `client.rawChannel()` is the authenticated channel for any stub the native API
   does not cover; it is not yours to close.
+
+An empty or whitespace-only preshared key (usually an unset environment
+variable) throws `LocalValidationException` at construction, and so does a
+`caCertificate`, `clientCertificate` or `clientKey` file that cannot be read or
+parsed, or a `clientKey` that is not the private key of `clientCertificate`;
+the message names the option and path.
 
 ## Checks
 
@@ -96,10 +196,15 @@ boolean allowed = result.hasPermission(); // only an unconditional grant is true
 
 - Consistency is required on every read; there is no implicit default.
   Revisions are `ZedToken` values: `Consistency.atLeast(written.revision())`.
+  `atLeast` and `snapshot` reject an empty or whitespace-only token with
+  `LocalValidationException`; `atLeastOrFull`/`atLeastOrMinLatency` treat one
+  as absent. Watch and materialize start/at revisions take `null` to omit them;
+  an empty or whitespace-only one throws `LocalValidationException`.
 - `check` uses the singular `CheckPermission` RPC. `checkBulk(List<PermissionCheck>)`
   uses `CheckBulkPermissions` in chunks of 1,000, returns results in input order,
   and by default throws the first item's error (`BulkItemErrors.RETURNED` returns
-  every item instead).
+  every item instead; a malformed item in the server's response, such as an
+  unset permissionship, still fails the whole call).
 - With a schema in your repository, prefer the generated typed client
   (`spicedb-gen --lang java`), which makes wrong names and subject types compile
   errors.
@@ -137,10 +242,26 @@ try (var rels = client.readRelationships(Consistency.full(), Filter.of("document
 - Accessor paths shorten: `rel.getSubject().getObject().getObjectId()` becomes
   `rel.subjectId()` (also `resourceType()`, `resourceId()`, `subjectType()`,
   `subjectRelation()`); the nested `resource()`/`subject()` records remain.
-- `deleteRelationships(filter, limit)` is one bounded request;
+- A raw `DeleteRelationships` request carrying only a filter becomes
+  `deleteRelationships(filter)`: the same single all-or-nothing request with the
+  server's default limit (more matches than the limit fail with
+  `INVALID_ARGUMENT` and delete nothing). It is shorthand for
+  `deleteRelationships(filter, DeleteOptions.builder().partialDeletion(PartialDeletion.DISALLOWED).build())`,
+  which also takes preconditions and a timeout.
+
+  ```java
+  // Before
+  permissions.deleteRelationships(
+      DeleteRelationshipsRequest.newBuilder().setRelationshipFilter(filter).build());
+
+  // After
+  client.deleteRelationships(Filter.of("document").withResourceId("readme"));
+  ```
+
+- `deleteRelationships(filter, limit)` is one bounded request that may delete
+  part of the matches (`optional_allow_partial_deletions`);
   `deleteAllRelationshipsNonAtomic(filter)` loops to completion and reports
-  progress. Server-side all-or-nothing deletes use
-  `DeleteOptions.builder().partialDeletion(PartialDeletion.DISALLOWED)`.
+  progress.
 - Filters distinguish any, direct and named subject relations
   (`SubjectRelationFilter.any/direct/named`) instead of an optional proto field.
 
@@ -151,8 +272,15 @@ authzed-java stubs have no deadline and no retries. spicedb-java:
 - gives unary calls a 30 second budget (covering retries, chunks and pages).
   Override per call with `.timeout(...)` on the operation's options, change the
   default with `ClientOptions.builder().defaultTimeout(...)`, or remove it with
-  `.defaultDeadline(DefaultDeadline.DISABLED)`. Streams and imports have no
+  `.defaultDeadline(DefaultDeadline.DISABLED)`. Watches and imports have no
   default lifetime.
+- applies that default to each page of a finite paged read (relationship
+  reads, lookups, exports), so a server that stalls mid-read fails the read
+  with `DeadlineExceededException` instead of hanging it. A legacy blocking
+  iterator over a stalled stream waited forever. Only waiting on the server
+  counts, never the time your code spends on items. An operation `timeout` still
+  bounds the whole read and wins when earlier; `DefaultDeadline.DISABLED`
+  removes the per-page budget too.
 - retries idempotent reads on `UNAVAILABLE`/`ABORTED` up to three times with
   jittered backoff, and retries opening a stream before any item is exposed.
   Writes, deletes, imports and counter registration are never retried. Tune with
@@ -217,6 +345,30 @@ try {
   and metadata are `getReason()` and `getReasonMetadata()`.
 - Local cancellation (thread interrupt, closed stream or client) raises
   `java.util.concurrent.CancellationException` with a `CANCELLED` status cause.
+- A response the client cannot interpret (a relationship, resource, subject or
+  object missing; a check, bulk-check item, looked-up resource or subject with an
+  unset permissionship; a cursor that does not advance) fails with
+  `INTERNAL`, which is not retried by default. It is never skipped or filled
+  with empty values. Only the unset permissionship is malformed: a value newer
+  than the client maps to `UNSPECIFIED`, which never grants, without failing
+  the call. The message begins `client detected malformed response
+  from server:`, so it is not mistaken for a status the server sent.
+- Local validation (`Relationship.fromTuple`, `ObjectRef`, option builders,
+  endpoint parsing) throws `LocalValidationException`, a subclass of
+  `InvalidArgumentException`, not `IllegalArgumentException`. Java has single class inheritance and `catch`
+  needs a class, so one exception cannot be both a `SpiceDBException` (with
+  `code()`, the status accessors and `catch (SpiceDBException e)`) and an
+  `IllegalArgumentException`. Code that wrapped legacy parsing in
+  `catch (IllegalArgumentException e)` should catch
+  `LocalValidationException` (local validation only) or
+  `InvalidArgumentException` (local or server), for example
+  `catch (IllegalArgumentException | LocalValidationException e)`. Both report
+  `INVALID_ARGUMENT`; the server's rejection is a plain
+  `InvalidArgumentException`, never a `LocalValidationException`. A null
+  pre-shared key, a null `ClientOption` and a null consistency on
+  `readRelationships` or `lookupResources` are local validation too, no longer
+  a `NullPointerException` or a `Bearer null` header.
+  `serverMessage()` is never `null`: for a local error it is the message.
 
 ## Transport-level data
 
@@ -236,11 +388,8 @@ gRPC `CallOptions`. Tools that print or persist protocol-shaped data convert wit
 
 ## Dependencies
 
-spicedb-java needs Java 17, protobuf-java 4.36.2 or later (the version its
-generated code was produced with) and gRPC 1.84.0 (a single BOM version for every
-`io.grpc` artifact). authzed-java 1.6.0 required protobuf-java 4.33.5 and gRPC
-1.78.0, so adopting spicedb-java raises both. Build tooling (Spotless, mage) is
-not part of the published dependencies.
+See [Requirements](#requirements). Build tooling (Spotless, mage) is not part of
+the published dependencies.
 
 ## Testing
 
@@ -252,4 +401,16 @@ like the client's. Build expected errors with `ErrorMapper.newError(Status.Code.
 (or `InMemorySpiceDB.serverError`). Instead of a strict mock, assert on the
 recorded `calls()`/`callsOf(op)` (arguments and options), and replace stubbed
 failures with `failNext(op, error)` or a `setFaultHook` that fails at a call,
-an import batch, the import commit, or a read/export item.
+an import batch, the import commit, or a read, export or lookup item.
+
+The double answers checks without a schema, in this order: a result registered
+with `setCheckResult`/`setCheckError`; then a resolver
+(`setCheckResolver(check -> ...)`, returning a `CheckResult` or `null` to
+decline; `setCheckResolver(InMemorySpiceDB.grantAll())` grants everything, which
+suits tests over IDs generated at run time); then a stored relationship whose
+relation is the permission's name and whose subject matches (or is a `type:*`
+wildcard); otherwise no permission. `lookupResources` and `lookupSubjects` run
+the same resolution over every object of the requested type that its stored
+relationships mention. Permissions computed through arrows or other relations
+need the resolver or registered results; for full schema evaluation, test
+against `spicedb serve-testing`.

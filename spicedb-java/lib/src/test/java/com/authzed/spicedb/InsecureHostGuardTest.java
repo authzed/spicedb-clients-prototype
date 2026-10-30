@@ -271,8 +271,9 @@ class InsecureHostGuardTest {
                       server.channelBuilder(),
                       SpiceDBClient.withInsecure()));
 
+      // Malformed (userinfo) endpoints fail as malformed, before the remote-plaintext policy.
       assertTrue(ex.getMessage().contains(endpoint), ex.getMessage());
-      assertTrue(ex.getMessage().contains("allowInsecureRemoteCredentials"), ex.getMessage());
+      assertTrue(ex.getMessage().contains("userinfo"), ex.getMessage());
 
       assertNull(
           server.capturedAuth.poll(200, TimeUnit.MILLISECONDS),
@@ -288,7 +289,17 @@ class InsecureHostGuardTest {
         assertThrows(
             InvalidArgumentException.class,
             () -> SpiceDBClient.createPlaintext(endpoint, "super-secret-token"));
-    assertTrue(ex.getMessage().contains("allowInsecureRemoteCredentials"), ex.getMessage());
+    assertTrue(ex.getMessage().contains("userinfo"), ex.getMessage());
+    // The opt-in does not unlock a malformed endpoint either.
+    assertThrows(
+        InvalidArgumentException.class,
+        () ->
+            SpiceDBClient.createPlaintext(
+                endpoint,
+                "super-secret-token",
+                ClientOptions.builder()
+                    .remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW)
+                    .build()));
   }
 
   /**

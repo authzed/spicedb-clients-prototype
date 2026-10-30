@@ -50,11 +50,13 @@ public class SpiceDBException : Exception
     public StatusCode StatusCode { get; }
 
     /// <summary>
-    /// The server's status message exactly as sent. Null for errors raised locally by this
-    /// client. Forward this, not <see cref="Exception.Message"/>, when relaying a server error
-    /// to another party. <see cref="Create"/> sets it so test doubles look like the server.
+    /// The server's status message exactly as sent. Never null: for errors raised locally by
+    /// this client (or constructed by caller code) it is the error's
+    /// <see cref="Exception.Message"/>, so callers can always relay it without a fallback.
+    /// Forward this, not <see cref="Exception.Message"/>, when relaying a server error to
+    /// another party. <see cref="Create"/> sets it so test doubles look like the server.
     /// </summary>
-    public string? ServerMessage { get; internal set; }
+    public string ServerMessage { get; internal set; }
 
     public SpiceDBException() : this(null, null) { }
     public SpiceDBException(string message) : this(message, null) { }
@@ -66,6 +68,7 @@ public class SpiceDBException : Exception
     protected SpiceDBException(StatusCode statusCode, string? message, Exception? innerException) : base(message, innerException)
     {
         StatusCode = statusCode;
+        ServerMessage = Message;
         var info = ErrorInfoOf(innerException);
         Reason = info?.Reason ?? string.Empty;
         ReasonDomain = info?.Domain ?? string.Empty;
@@ -77,11 +80,11 @@ public class SpiceDBException : Exception
     /// <summary>
     /// This error as a gRPC <see cref="Grpc.Core.Status"/>. A server error returns the
     /// server's own status; any other error returns a status built from
-    /// <see cref="StatusCode"/> and <see cref="ServerMessage"/> (or the message).
+    /// <see cref="StatusCode"/> and <see cref="ServerMessage"/>.
     /// </summary>
     public Grpc.Core.Status Status => InnerException is RpcException rpc && rpc.StatusCode == StatusCode
         ? rpc.Status
-        : new Grpc.Core.Status(StatusCode, ServerMessage ?? Message);
+        : new Grpc.Core.Status(StatusCode, ServerMessage);
 
     /// <summary>
     /// The response trailers of the server error, including <c>grpc-status-details-bin</c>, or
@@ -110,6 +113,12 @@ public class SpiceDBException : Exception
     /// as <see cref="Exception.InnerException"/>.
     /// </summary>
     public static SpiceDBException FromRpcException(RpcException exception) => ErrorMapper.ToSpiceDBException(exception);
+
+    /// <summary>
+    /// A client-detected fault, such as a response the client cannot interpret: always
+    /// <see cref="StatusCode.Internal"/>, never <see cref="StatusCode.Unknown"/>.
+    /// </summary>
+    internal static SpiceDBException InternalError(string message) => new(StatusCode.Internal, message, null);
 
     /// <summary>
     /// Classifies any exception as a gRPC status code: a <see cref="SpiceDBException"/> reports
@@ -276,11 +285,30 @@ internal static class ErrorMapper
     /// <c>google.rpc.ErrorInfo</c> detail. See root DESIGN.md, "RULE: Error mapping must not lose
     /// the server's detail".</para>
     /// </summary>
-    public static SpiceDBException ToSpiceDBException(RpcException rpcException)
+    public static SpiceDBException ToSpiceDBException(RpcException rpcException) => ToSpiceDBException(rpcException, null);
+
+    /// <summary>
+    /// As <see cref="ToSpiceDBException(RpcException)"/>, and when the transport failed
+    /// locally (it attached a <see cref="Status.DebugException"/>, as for a refused
+    /// connection or a failed DNS lookup) the message also names
+    /// <paramref name="endpoint"/> and that root cause. Grpc.Net.Client otherwise reports
+    /// both as "Error connecting to subchannel." <see cref="SpiceDBException.ServerMessage"/>
+    /// keeps the status detail unchanged.
+    /// </summary>
+    public static SpiceDBException ToSpiceDBException(RpcException rpcException, string? endpoint)
     {
         ArgumentNullException.ThrowIfNull(rpcException);
 
         var message = rpcException.Status.Detail ?? rpcException.Message;
+        if (rpcException.Status.DebugException is { } debug)
+        {
+            var root = debug;
+            while (root.InnerException is { } inner) root = inner;
+            var parts = new List<string>();
+            if (!string.IsNullOrEmpty(endpoint)) parts.Add($"endpoint \"{endpoint}\"");
+            if (!message.Contains(root.Message, StringComparison.Ordinal)) parts.Add($"{root.GetType().Name}: {root.Message}");
+            if (parts.Count > 0) message = $"{message} ({string.Join("; ", parts)})";
+        }
         SpiceDBException mapped = rpcException.StatusCode switch
         {
             StatusCode.PermissionDenied => new PermissionDeniedException(message, rpcException),
@@ -297,7 +325,7 @@ internal static class ErrorMapper
             StatusCode.OutOfRange => new OutOfRangeException(message, rpcException),
             _ => new SpiceDBException(message, rpcException),
         };
-        mapped.ServerMessage = rpcException.Status.Detail;
+        mapped.ServerMessage = rpcException.Status.Detail ?? "";
         return mapped;
     }
 

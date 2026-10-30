@@ -81,7 +81,7 @@ func (c *Client) Updates(ctx context.Context, request UpdatesRequest, opts ...Up
 			}
 			event := WatchEvent{ChangesThrough: consistency.NewZedToken(resp.GetChangesThrough().GetToken()), IsCheckpoint: resp.GetIsCheckpoint(), SchemaUpdated: resp.GetSchemaUpdated()}
 			for _, p := range resp.GetUpdates() {
-				u, e := nativeUpdate(p)
+				u, e := nativeUpdate("watch", p)
 				if e != nil {
 					yield(WatchEvent{}, e)
 					return

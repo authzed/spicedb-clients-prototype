@@ -2,6 +2,168 @@
 
 ## Unreleased
 
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check response: permissionship is unset` (it said "check response has unspecified permissionship"; bulk items and lookups likewise), and the docs and comments match. `"unspecified"` names only the safe value a permissionship newer than this client maps to, which never fails the call.
+- **Behavior change:** a missing (`undefined` or `null`) request, transaction, bulk-check element, import element, reflect-schema filter or watch filter throws `InvalidArgumentError` naming what is missing, before any RPC, in both `SpiceDBClient` and `InMemorySpiceDB`. `check(undefined)`, `write(undefined)` and `readRelationships(undefined)` used to throw a raw `TypeError`, and `checkBulk([undefined])` a `SpiceDBError` wrapping one. A watch, permission-set watch or permission-set download without a request still uses the default request.
+- **Behavior change:** an empty or whitespace-only `token` throws `InvalidArgumentError` at construction, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- **Behavior change:** `tls.caCert`, `tls.clientCert` and `tls.clientKey` are parsed at construction (`X509Certificate` and `createPrivateKey` from `node:crypto`). Material that does not parse throws `InvalidArgumentError` naming the option; before, `node:tls` accepted a non-PEM `caCert` silently and the first call failed its handshake.
+- **Behavior change:** a `tls.clientKey` that does not match `tls.clientCert` throws `InvalidArgumentError` at construction naming both options (checked with `X509Certificate.checkPrivateKey`), instead of failing the first call's handshake.
+- **Behavior change:** names and IDs are type-checked before any RPC. A non-string object type or ID, subject relation, permission, relation, caveat name, relationship-filter field, lookup subject type or relation, watch object type, schema or counter name, or cursor throws `InvalidArgumentError` naming the field across checks, bulk checks, lookups, expand, writes, deletes, reads, imports, watch, schema and counter calls; before, `objectId: 42` reached the server. `relationship()` and `relationshipFromTuple()` reject non-string arguments the same way, and `InMemorySpiceDB` applies the same checks to checks and lookups.
+- **Behavior change:** a whitespace-only caller-supplied revision is rejected like an empty one: `atLeast`/`snapshot`, `consistencyFromProto`, and the start/at revisions of `watch`, `experimentalWatchPermissionSets`, `experimentalLookupPermissionSets` and `experimentalDownloadPermissionSets` throw `InvalidArgumentError` for an empty or whitespace-only token before any RPC (watch and permission-set revisions previously sent an empty one). `atLeastOrFull`/`atLeastOrMinLatency` fall back to `full()`/`minLatency()` for such a token, as for `undefined`, instead of throwing.
+- Docs: with bulk item errors returned (`BulkItemErrors.Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide, AI guide and the API docs on `BulkItemErrors`, `CheckOptions.itemErrors` and `CheckResult.error` now say so.
+
+### Client-detected malformed responses and the double's resume cursor
+
+- **Behavior change:** a check, bulk-check item, lookup-resources result or
+  lookup-subjects subject whose permissionship is unset on the wire now
+  fails with a `SpiceDBError` coded `Code.Internal` (the item's `inputIndex`
+  set for a bulk check, even with `BulkItemErrors.Returned`) instead of being
+  returned as `"unspecified"`. A permissionship value newer than the client
+  still maps to `"unspecified"` and never grants.
+- **Behavior change:** every malformed-response error's message now starts
+  `client detected malformed response from server:`, so it is not mistaken
+  for a status SpiceDB sent. Code is still `Code.Internal`; `serverMessage` is
+  still absent.
+- `InMemorySpiceDB`: an error from iterating `readRelationships`,
+  `exportRelationships` or `lookupResources` (a fault hook's injected error,
+  or an invalid cursor) carries `resumeCursor` exactly as the real client's
+  does, so resume logic can be tested on the double.
+- **Behavior change:** `InMemorySpiceDB` never answers with an
+  `"unspecified"` permissionship: `setCheckResult(..., "unspecified")` throws
+  `InvalidArgumentError`, and a check resolver returning `"unspecified"` fails
+  the check or lookup with `InvalidArgumentError`.
+- The AI integration guide notes that projects whose permissions are all
+  computed get little from stored-relation grants on the double.
+
+### Paged reads, malformed responses, cancellation and readiness
+
+- **Behavior change:** finite paged reads (`readRelationships`,
+  `lookupResources`, `lookupSubjects`, `exportRelationships` and
+  `experimentalLookupPermissionSets`) apply the client default deadline
+  (`defaultTimeoutMs`, 30 s) to each page request, from opening it to its last
+  item (each export batch gets its own budget). Only time spent waiting on the
+  server counts, not the caller's loop body. A server that stalls mid-read now
+  fails the read with `DeadlineExceededError` instead of hanging it. A call's
+  `timeoutMs` still bounds the whole read and wins when earlier; `watch`,
+  permission-set watches and imports keep no default;
+  `DefaultDeadline.Disabled` turns the per-page default off.
+- An error thrown part-way through `readRelationships`, `lookupResources` or
+  `exportRelationships` carries `resumeCursor`: the cursor after the last
+  delivered item (for an export, after the last fully delivered batch), or the
+  request's own `cursor` when nothing was delivered. Pass it as the request's
+  `cursor` to continue, even with retries off.
+- **Behavior change:** a response the client cannot interpret fails with a
+  `SpiceDBError` coded `Code.Internal` (never retried by default) instead of
+  being skipped, filled with empty values, or reported as `Code.Unknown`: a
+  read response without a relationship (previously skipped, which could end a
+  paged read early), a relationship without its resource, relation or subject
+  (previously filled with `""`), a lookup result without its ID, a watch
+  update without its relationship, an expand response without its tree, a
+  counter response with neither a count nor a still-calculating marker
+  (previously reported as still calculating), a malformed bulk-check pair, and
+  a cursor that does not advance.
+- **Behavior change:** local cancellation (the caller's `signal`, an iterator's
+  `return()`, `close()`) rejects with `OperationAbortError`, now a
+  `CancelledError` (`Code.Canceled`, `cause` the signal's reason, `name` still
+  `"AbortError"`) instead of a `DOMException`, whose legacy numeric `code` (20)
+  read like a status code. The double's aborts match.
+- **Behavior change:** `ZedToken` keeps its text in the readonly public field
+  `token` (previously a private field), so `expect(a).toEqual(b)` and
+  `util.isDeepStrictEqual` tell different tokens apart. `toString()`,
+  `toJSON()` and `equals()` are unchanged.
+- `SchemaDiff.kind` is typed as the new `SchemaDiffKind` union of the diff
+  kinds (plus `"unknown"`) instead of `string`.
+- `InMemorySpiceDB.diffSchema` works in memory instead of failing with
+  `Code.Unimplemented`: identical schema text has no diffs; otherwise it
+  reports name-level diffs of definitions, relations and their subject types,
+  permissions and their expressions, caveats and their parameters and
+  expressions, ignoring comments and whitespace. It reports no doc-comment
+  changes and does not compile the schema.
+- `SpiceDBClient.ready(options?)` (also on `SpiceDBClientInterface`) makes one
+  cheap call so a wrong or unreachable endpoint fails at startup: it rejects
+  with `UnavailableError`, `DeadlineExceededError`, or `UnauthenticatedError`
+  for rejected credentials, and resolves once the server answers.
+  `InMemorySpiceDB.ready()` does nothing.
+- Docs: MIGRATION no longer says a custom `deadlineInterceptor(ms)` is
+  equivalent to `defaultTimeoutMs: ms`, lists `"unspecified"` among
+  `DeleteResult.progress` values, and covers `resumeCursor`, `ready()` and
+  `dns:///`/`unix:` targets (rejected at construction).
+
+### Endpoint forms
+
+- Endpoints may be `http://host:port` or `https://host[:port]` as well as
+  `host:port`. Without `transportSecurity` the scheme selects plaintext or
+  TLS; with it, a disagreeing scheme is refused. `https://` without a port
+  uses 443; a plaintext endpoint, bare or `http://`, requires one: a
+  port-less plaintext `localhost`, `127.0.0.1` or `::1` used to dial port 80
+  and now fails at construction ("a plaintext endpoint needs an explicit port,
+  e.g. localhost:50051"). A port-less TLS host still uses 443. The loopback check runs on the parsed
+  host, so `http://127.0.0.1:50051` is loopback. Paths, queries, fragments,
+  userinfo, non-numeric or out-of-range ports and other schemes now fail at
+  construction with an `InvalidArgumentError` naming the problem and the
+  accepted forms, checked before the remote-plaintext policy (an endpoint with
+  userinfo used to be reported as a remote-plaintext refusal; an
+  `https://` URL used to build a client that dialed a host named `https`).
+  `@spicedb/proto` exports `InvalidEndpointError` and `endpointScheme`.
+- The remote-plaintext refusal (for example a Docker Compose service such as
+  `spicedb:50051`) names both options needed to allow it, as the caller writes
+  them: `transportSecurity: TransportSecurity.Plaintext` and
+  `remoteCredentials: RemoteCredentials.AllowPlaintext`. The README shows the
+  Compose setup.
+
+### Plain Node loading
+
+- The packages load under plain Node ESM: generated proto modules use `.js`
+  relative imports.
+
+### Test double check resolution and lookups
+
+- `InMemorySpiceDB` resolves a check in a fixed order: the result registered
+  with `setCheckResult`; then a `CheckResolver` installed with
+  `setCheckResolver` (a callback receiving the `CheckRequest`, with the call's
+  default `CheckOptions.context` merged under the check's own keys, and
+  returning a permissionship or `undefined` to decline; it never fails a call:
+  use the fault hook for that), with
+  `InMemorySpiceDB.grantAll` granting everything; then the stored
+  relationships (one on the resource whose relation is the permission's name,
+  with the checked subject or its type's wildcard, grants; caveated ones grant
+  conditionally); otherwise no permission. Previously an unregistered check
+  always denied; now a stored `document:d1#view@user:alice` grants
+  `document:d1#view` to `user:alice`.
+- `InMemorySpiceDB.lookupResources` and `lookupSubjects` work in memory instead
+  of failing with `Code.Unimplemented`: they enumerate the objects of the
+  requested type found in stored relationships and yield those the check
+  resolution grants, in order of first appearance (conditional results
+  reported as conditional, with `partialCaveat`; a stored wildcard subject as
+  `*`), honoring
+  the permissionship filter, wildcard option, `limit` and `cursor`
+  (`InMemorySpiceDB.cursorAfter(n)`). They are recorded and consult the fault
+  hook at `FaultStage.Call` and before each item (`FaultStage.Item`).
+- A subject relation of `...` is a direct subject in the double's checks and
+  registrations.
+
+### Generated typed client (`spicedb-gen --lang typescript`)
+
+- `TypedClient` takes (and exposes as `client`) a `SpiceDBClientInterface`
+  rather than a `SpiceDBClient`, so it wraps `InMemorySpiceDB` in tests.
+- For code that receives type and permission names at runtime: `SchemaText`
+  (the schema the module was generated from), `Definitions`,
+  `DefinitionNames`, `DefinitionName`, `AnyResourceRef`,
+  `definitionByName(name)` (names, `ref(id)`, `permissionRef(permission)`),
+  `permissionRefByName(definition, permission)` and
+  `TypedClient.lookupResourcesByName(c, definition, permission, subject,
+  options?)`. Unknown names throw `NotInSchemaError` before any call. A schema
+  definition whose generated names collide with these now fails generation
+  (use `--typescript.rename`).
+
+### Documentation
+
+- `README.md`: installation (including from tarballs before publication), a
+  first call, and links.
+- `MIGRATION.md` opens with a Requirements table (Node 20.19, SpiceDB 1.30,
+  runtime dependency floors; `@grpc/grpc-js` is not needed) and lists renamed
+  request and response members. `package.json` declares `engines.node`
+  `>=20.19.0`.
+
 ### Full-client test double
 
 - `SpiceDBClientInterface` lists `SpiceDBClient`'s full public method set; the

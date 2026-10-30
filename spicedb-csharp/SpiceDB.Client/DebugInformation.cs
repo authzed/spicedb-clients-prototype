@@ -1,6 +1,9 @@
+using System.Text.Json.Serialization;
 namespace SpiceDB.Client;
 
+[JsonConverter(typeof(JsonStringEnumConverter<TracePermissionType>))]
 public enum TracePermissionType { Unspecified, Relation, Permission }
+[JsonConverter(typeof(JsonStringEnumConverter<CaveatEvaluationResult>))]
 public enum CaveatEvaluationResult { Unspecified, Unevaluated, False, True, MissingSomeContext }
 public sealed record DebugInformation(string SchemaUsed, CheckDebugTrace? Check)
 {

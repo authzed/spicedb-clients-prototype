@@ -3,16 +3,137 @@
 > ⚠️ **PROTOTYPE — Not for production use.**
 > These clients are in early development. APIs, types, and behaviors may change or break at any time, and bugs are expected. Do not rely on anything in this repo for production workloads. If you experiment with a client, pin to a specific commit and budget time for breakage.
 
-Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, Java, Ruby, and Rust — plus [`spicedb-gen`](spicedb-gen/), a type-safe code generator that produces compile-time-checked wrappers from a `.zed` schema.
+Monorepo of idiomatic [SpiceDB](https://authzed.com/spicedb) client libraries for
+Go, Python, TypeScript, C#, Java, Ruby, and Rust — plus [`spicedb-gen`](spicedb-gen/),
+a code generator that turns a `.zed` schema into type-safe wrappers, so typos in
+resource types, relations, permissions, and subject types fail at compile time.
+
+| Language | Client | Typed wrappers via `spicedb-gen` | Install & docs |
+| --- | --- | :---: | --- |
+| Go | [`spicedb-go/`](spicedb-go/) | ✅ | [README](spicedb-go/README.md#installation) · [examples](spicedb-go/examples/) |
+| TypeScript | [`spicedb-typescript/`](spicedb-typescript/) | ✅ | [README](spicedb-typescript/README.md#installation) · [examples](spicedb-typescript/examples/) |
+| Python | [`spicedb-python/`](spicedb-python/) | ✅ | [README](spicedb-python/README.md#install) · [examples](spicedb-python/examples/) |
+| Java | [`spicedb-java/`](spicedb-java/) | ✅ | [README](spicedb-java/README.md#installation-before-publication) · [examples](spicedb-java/examples/) |
+| C# | [`spicedb-csharp/`](spicedb-csharp/) | — | [README](spicedb-csharp/README.md#installation) · [examples](spicedb-csharp/examples/) |
+| Ruby | [`spicedb-ruby/`](spicedb-ruby/) | — | [README](spicedb-ruby/README.md#installation) · [examples](spicedb-ruby/examples/) |
+| Rust | [`spicedb-rust/`](spicedb-rust/) | — | [README](spicedb-rust/README.md#installation) · [examples](spicedb-rust/examples/) |
+
+None of the packages are published to a registry yet. Each language's README
+explains how to depend on it from a checkout or a commit.
 
 > 🤖 **AI coding agents:** before integrating a client, read
 > [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md). It covers which tier to use
 > (typed, idiomatic or raw), plus consistency, fail-closed checks, writes and
 > testing. It links each language's concrete guide.
 
-## Getting Started
+## Quick start: run an example
 
-Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go**, **TypeScript**, **Java**, **Python**) use the **typed client** examples — invalid permission checks, wrong subject types, and typos in resource names become compile-time errors. The remaining languages (**C#**, **Ruby**, **Rust**) use the **idiomatic client** directly.
+The fastest way to see a client work is to run one of its examples against a
+local SpiceDB. You need [Docker](https://docker.com) and the language's toolchain
+(see [Development](#development)).
+
+```bash
+git clone https://github.com/authzed/spicedb-clients-prototype.git spicedb-clients
+cd spicedb-clients/spicedb-go        # or any other spicedb-<lang> directory
+
+# Start SpiceDB on localhost:50051, using the preshared key the examples expect
+docker compose -f docker-compose.test.yml up -d
+```
+
+Then run the `check_permission` example from that client's directory. Each
+example writes its own schema and relationships, so nothing else needs setting up.
+
+<details>
+<summary><b>Go</b></summary>
+
+```bash
+go run ./examples/check_permission
+```
+
+</details>
+
+<details>
+<summary><b>TypeScript</b></summary>
+
+```bash
+pnpm install
+pnpm --filter "@spicedb/client..." build   # builds @spicedb/proto, then the client
+npx tsx examples/check_permission/index.ts
+```
+
+</details>
+
+<details>
+<summary><b>Python</b></summary>
+
+```bash
+uv run pytest examples/check_permission -v
+```
+
+</details>
+
+<details>
+<summary><b>Java</b></summary>
+
+```bash
+gradle :examples:test --tests '*CheckPermissionTest'   # no wrapper; use the gradle on your PATH
+```
+
+</details>
+
+<details>
+<summary><b>C#</b></summary>
+
+```bash
+dotnet test examples/CheckPermission/CheckPermission.csproj
+```
+
+</details>
+
+<details>
+<summary><b>Ruby</b></summary>
+
+```bash
+bundle install
+bundle exec rspec examples/check_permission   # run from spicedb-ruby/, not examples/
+```
+
+</details>
+
+<details>
+<summary><b>Rust</b></summary>
+
+```bash
+cargo run --example check_permission
+```
+
+</details>
+
+When you're done, stop the server with `docker compose -f docker-compose.test.yml down`.
+
+<details>
+<summary>Port 50051 already in use?</summary>
+
+Point both the compose file and the example at another port:
+
+```bash
+export SPICEDB_TEST_PORT=50071 SPICEDB_ENDPOINT=localhost:50071
+docker compose -f docker-compose.test.yml up -d
+go run ./examples/check_permission
+```
+
+Every example reads `SPICEDB_ENDPOINT` and `SPICEDB_TOKEN`, so you can also run
+it against any other SpiceDB. Each client's `examples/README.md` covers the details.
+
+</details>
+
+## Using a client
+
+Languages where `spicedb-gen` supports typed wrappers (**Go**, **TypeScript**,
+**Java**, **Python**) are shown below through the **typed client**: invalid
+permission checks, wrong subject types, and typos in resource names become
+compile-time errors. The remaining languages (**C#**, **Ruby**, **Rust**) use the
+**idiomatic client** directly.
 
 > **A check never returns a bare boolean.** Every client's check surface returns a
 > `CheckResult` carrying a three-valued `permissionship`, the caveat context the
@@ -21,14 +142,20 @@ Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go*
 > `has_permission`, `has_permission?`, `hasPermission()`), never the result object
 > itself. See [DESIGN.md](DESIGN.md#domain-types-and-checks).
 
-For typed examples, first generate the wrapper from your schema. The generator
-is its own Go module, so build or install it from its directory (`go build
-./spicedb-gen/cmd/spicedb-gen` from the repository root fails):
+### Generating typed wrappers
+
+The generator is its own Go module, so build or install it from its directory
+(`go build ./spicedb-gen/cmd/spicedb-gen` from the repository root fails):
 
 ```bash
 cd spicedb-gen && go build -o spicedb-gen ./cmd/spicedb-gen   # or: go install ./cmd/spicedb-gen
 ./spicedb-gen --schema schema.zed --lang <go|typescript|java|python> --out <output-path>
 ```
+
+`./spicedb-gen --help` lists every language's options.
+
+<details>
+<summary>Names-only output for shared API packages</summary>
 
 For a shared API package that needs the schema's names but must not depend on
 the client library, `--go.names-only`, `--typescript.names-only`,
@@ -40,11 +167,11 @@ beyond the standard library:
 ./spicedb-gen --schema schema.zed --lang go --go.package=apinames --go.names-only --out api/names.gen.go
 ```
 
-`./spicedb-gen --help` lists every language's options.
+</details>
 
-Tracing is optional and disabled by default; the examples enable it to make
-`CheckResult` debug information available. The snippets assume the schema below
-has already been written to the server:
+### Examples by language
+
+The snippets assume this schema has already been written to the server:
 
 ```
 definition user {}
@@ -59,7 +186,11 @@ definition document {
 }
 ```
 
-### Go (typed)
+Tracing is optional and disabled by default; the snippets enable it to make
+`CheckResult` debug information available.
+
+<details>
+<summary><b>Go</b> (typed)</summary>
 
 ```go
 import (
@@ -99,7 +230,10 @@ for sub, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("read
 // Document("readme").Editor(Team("eng")) // ERROR: editor only allows user
 ```
 
-### TypeScript (typed)
+</details>
+
+<details>
+<summary><b>TypeScript</b> (typed)</summary>
 
 ```typescript
 import { full, atLeast, Tracing, TransportSecurity, LookupPermissionshipFilter, WatchContent } from "@spicedb/client";
@@ -131,7 +265,10 @@ for await (const sub of tc.lookupSubjects(full(), Document("readme").view, User)
 tc.close();
 ```
 
-### Java (typed)
+</details>
+
+<details>
+<summary><b>Java</b> (typed)</summary>
 
 ```java
 import com.authzed.spicedb.CheckOptions;
@@ -168,7 +305,10 @@ try (var resources = tc.lookupResources(full(), Document_View, User("alice"),
 tc.close();
 ```
 
-### Python (typed)
+</details>
+
+<details>
+<summary><b>Python</b> (typed)</summary>
 
 ```python
 from spicedb import full, at_least, Tracing, TransportSecurity, LookupPermissionshipFilter, Permissionship
@@ -204,6 +344,82 @@ finally:
     await tc.close()
 ```
 
+</details>
+
+<details>
+<summary><b>C#</b> (idiomatic)</summary>
+
+```csharp
+using SpiceDB.Client;
+using static SpiceDB.Client.Consistency;
+
+await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+
+var resource = new ObjectRef("document", "readme");
+var subject = new SubjectRef(new ObjectRef("user", "alice"));
+var txn = new Transaction();
+txn.Touch(new Relationship(resource, "viewer", subject));
+WriteResult written = await client.WriteAsync(txn);
+
+CheckResult result = await client.CheckAsync(
+    PermissionCheck.CreateBuilder()
+        .WithResource(resource).WithPermission("view").WithSubject(subject)
+        .WithConsistency(AtLeast(written.Revision)).Build(),
+    new CheckOptions { Tracing = CheckTracing.Enabled });
+if (result.HasPermission) { ... }
+```
+
+</details>
+
+<details>
+<summary><b>Ruby</b> (idiomatic)</summary>
+
+```ruby
+require "spicedb"
+
+SpiceDB::Client.new_plaintext("localhost:50051", "somerandomkeyhere") do |client|
+  resource = SpiceDB::ObjectRef.new(object_type: "document", object_id: "readme")
+  subject = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: "user", object_id: "alice"))
+  txn = SpiceDB::Transaction.new
+  txn.touch(SpiceDB::Relationship.new(resource: resource, relation: "viewer", subject: subject))
+  written = client.write(txn)
+
+  result = client.check(
+    SpiceDB::PermissionCheck.new(resource: resource, permission: "view", subject: subject),
+    consistency: SpiceDB::Consistency.at_least(written.revision), tracing: SpiceDB::Tracing::ENABLED
+  )
+  puts result.has_permission?
+end
+```
+
+</details>
+
+<details>
+<summary><b>Rust</b> (idiomatic)</summary>
+
+```rust
+use spicedb::{SpiceDBClient, consistency, ObjectRef, SubjectRef, Relationship,
+    Transaction, WriteRequest, PermissionCheck, CheckOptions, TracingMode, RemoteCredentialsPolicy};
+
+let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere", RemoteCredentialsPolicy::LoopbackOnly).await?;
+let resource = ObjectRef::new("document", "readme")?;
+let subject = SubjectRef::new(ObjectRef::new("user", "alice")?, None)?;
+let mut txn = Transaction::new();
+txn.touch(&Relationship::new(resource.clone(), "viewer", subject.clone())?);
+let written = client.write(WriteRequest::new(txn)).await?;
+
+let result = client.check(
+    PermissionCheck::new(resource, "view", subject, consistency::at_least(written.revision))
+        .with_options(CheckOptions::new().with_tracing(TracingMode::Enabled))
+).await?;
+if result.has_permission() { ... }
+```
+
+</details>
+
+<details>
+<summary>Beyond checks: the rest of the API through a typed client</summary>
+
 The four generated facades expose the native client's capabilities directly.
 Schema-aware checks and relationship helpers retain their type guarantees;
 other operations accept the native request/options/result types. For example:
@@ -224,69 +440,7 @@ Generated `delete` helpers delete explicit typed relationships in a transaction
 and return `WriteResult`; they are separate from filter-based non-atomic deletion.
 Native client access remains available for interoperability.
 
-### C# (idiomatic)
-
-```csharp
-using SpiceDB.Client;
-using static SpiceDB.Client.Consistency;
-
-await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
-
-var resource = new ObjectRef("document", "readme");
-var subject = new SubjectRef(new ObjectRef("user", "alice"));
-var txn = new Transaction();
-txn.Touch(new Relationship(resource, "viewer", subject));
-WriteResult written = await client.WriteAsync(txn);
-
-CheckResult result = await client.CheckAsync(
-    PermissionCheck.CreateBuilder()
-        .WithResource(resource).WithPermission("view").WithSubject(subject)
-        .WithConsistency(AtLeast(written.Revision)).Build(),
-    new CheckOptions { Tracing = CheckTracing.Enabled });
-if (result.HasPermission) { ... }
-
-```
-
-### Ruby (idiomatic)
-
-```ruby
-require "spicedb"
-
-SpiceDB::Client.new_plaintext("localhost:50051", "somerandomkeyhere") do |client|
-  resource = SpiceDB::ObjectRef.new(object_type: "document", object_id: "readme")
-  subject = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: "user", object_id: "alice"))
-  txn = SpiceDB::Transaction.new
-  txn.touch(SpiceDB::Relationship.new(resource: resource, relation: "viewer", subject: subject))
-  written = client.write(txn)
-
-  result = client.check(
-    SpiceDB::PermissionCheck.new(resource: resource, permission: "view", subject: subject),
-    consistency: SpiceDB::Consistency.at_least(written.revision), tracing: SpiceDB::Tracing::ENABLED
-  )
-  puts result.has_permission?
-end
-```
-
-### Rust (idiomatic)
-
-```rust
-use spicedb::{SpiceDBClient, consistency, ObjectRef, SubjectRef, Relationship,
-    Transaction, WriteRequest, PermissionCheck, CheckOptions, TracingMode, RemoteCredentialsPolicy};
-
-let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere", RemoteCredentialsPolicy::LoopbackOnly).await?;
-let resource = ObjectRef::new("document", "readme")?;
-let subject = SubjectRef::new(ObjectRef::new("user", "alice")?, None)?;
-let mut txn = Transaction::new();
-txn.touch(&Relationship::new(resource.clone(), "viewer", subject.clone())?);
-let written = client.write(WriteRequest::new(txn)).await?;
-
-let result = client.check(
-    PermissionCheck::new(resource, "view", subject, consistency::at_least(written.revision))
-        .with_options(CheckOptions::new().with_tracing(TracingMode::Enabled))
-).await?;
-if result.has_permission() { ... }
-
-```
+</details>
 
 Resource lookup examples select `HasPermissionOnly` (using each language's spelling)
 to exclude conditional and unknown results before presenting accessible IDs. The
@@ -294,21 +448,9 @@ client-side filter defaults to `All` when omitted; callers retaining all results
 must inspect permissionship before treating a result as a grant. Limits count
 results yielded after filtering, and pagination continues through skipped results.
 
-## Testing without a server
+## Behavior shared by every client
 
-Every client ships an in-memory test double that implements the client's full
-interface: it records calls, accepts fault injection, resolves checks from
-registered results, a resolver callback or stored relationships, and serves
-lookups. Each language's README and AI integration guide show its use.
-
-The doubles do not evaluate your schema. A computed permission such as
-`view = reader + writer + parent->read` is granted only by a stored
-relationship named `view` or by a resolver you install. Projects whose
-permissions are all computed get little from stored-relationship grants;
-model them with the resolver, or test the permission logic against SpiceDB
-itself (`spicedb serve-testing` or a container).
-
-## Tokens and connection policies
+### Revision tokens
 
 Every relationship write returns a native `WriteResult` containing its revision
 (`Revision` in Go/C#, `revision()` in Java, `revision` elsewhere). Generated
@@ -318,9 +460,57 @@ Every client uses a dedicated `ZedToken` value for revisions. Convert stored str
 explicitly and use the token's string conversion when persisting it. Authentication
 credentials and pagination cursors remain distinct from revision tokens.
 
+### Retries
+
+Clients retry only when replaying a request is safe:
+
+- **Reads retry by default** on `UNAVAILABLE` or `ABORTED`, up to three retries,
+  with full-jitter exponential backoff starting at 100 ms. `RESOURCE_EXHAUSTED`
+  is not retried unless you opt in.
+- **Mutations never retry on their own.** A lost response to a committed write
+  would otherwise come back as a confident wrong answer, such as an
+  `ALREADY_EXISTS` for a create that succeeded. You can opt a single call in
+  only where replay is idempotent: a relationship write made only of touches
+  with no preconditions, or a schema write. Creates, deletes, preconditioned
+  writes, imports and counter registration refuse the opt-in before sending
+  anything.
+- **Streams retry only while opening**, before any item reaches you. A
+  partially consumed stream is never restarted, and the client-wide policy
+  never reopens a watch, since a reopened watch with no start revision would
+  silently skip changes. Only a per-call or per-operation policy for watch
+  opts in.
+- **Retries share the call's deadline** (30 seconds by default for unary calls)
+  and its cancellation, so backoff never extends how long a call can take.
+
+A retry policy can be set client-wide, per operation, or per call (the most
+specific wins). It controls max attempts, retryable read codes, backoff, and an
+on-retry callback. A named mode turns retries off entirely for callers that
+apply their own policy. See [DESIGN.md](DESIGN.md#deadlines-cancellation-and-retry)
+for the full rules.
+
+<details>
+<summary>Retry examples in each language</summary>
+
+| Language | Example |
+| --- | --- |
+| Go | [`examples/retry_policy`](spicedb-go/examples/retry_policy/) |
+| TypeScript | [`examples/retry_policy`](spicedb-typescript/examples/retry_policy/) |
+| Python | [`examples/retry_policy`](spicedb-python/examples/retry_policy/) |
+| Java | [`RetryPolicyTest.java`](spicedb-java/examples/src/test/java/com/authzed/spicedb/examples/RetryPolicyTest.java) |
+| C# | [`examples/RetryPolicy`](spicedb-csharp/examples/RetryPolicy/) |
+| Ruby | [`examples/retry_policy`](spicedb-ruby/examples/retry_policy/) |
+| Rust | [`examples/retry_policy.rs`](spicedb-rust/examples/retry_policy.rs) |
+
+</details>
+
+### Plaintext connections
+
 All clients support authenticated plaintext connections to remote hostnames and IPs
 through their normal APIs. Plaintext transport alone permits loopback connections;
-remote plaintext additionally requires the named opt-in below.
+remote plaintext additionally requires a named opt-in.
+
+<details>
+<summary>The remote-plaintext opt-in in each language</summary>
 
 | Language | Explicit remote-plaintext opt-in |
 | --- | --- |
@@ -332,7 +522,22 @@ remote plaintext additionally requires the named opt-in below.
 | Ruby | `remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT` |
 | Rust | `RemoteCredentialsPolicy::AllowInsecureRemote` in `new_plaintext` or the client builder |
 
-## Structure
+</details>
+
+### Bounded and non-atomic deletion
+
+`deleteRelationships` requires a positive limit and performs one bounded request.
+`deleteAllRelationshipsNonAtomic` (using each language's naming conventions)
+continues in batches, forwarding each non-empty deletion cursor to the next request.
+Each batch is atomic, but completed batches remain committed
+if a later batch fails or cancellation occurs. Both return `DeleteResult` with a
+native revision token, deleted count, completion state and optional cursor.
+
+Failure progress reports acknowledged work; a lost response can leave the final
+batch's outcome uncertain. C# exposes `exception.GetDeleteProgress()` for both
+SpiceDB errors and native cancellation exceptions.
+
+## Repository structure
 
 ```
 proto-clients/               # buf-generated proto clients (internal)
@@ -361,31 +566,57 @@ spicedb-gen/                 # Type-safe client code generator
 
 ## Development
 
-Requires: [Mage](https://magefile.org), [Go 1.24+](https://go.dev), [Python 3.11+](https://python.org) with [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org) with [pnpm](https://pnpm.io), [.NET 8+](https://dotnet.microsoft.com), [Java 17+](https://openjdk.org) with [Gradle](https://gradle.org), [Ruby 3.2+](https://ruby-lang.org) with [Bundler](https://bundler.io), [Rust](https://rustup.rs), [Docker](https://docker.com)
+Read [DESIGN.md](DESIGN.md) first: it sets the idiomatic vision and compatibility
+rules every client follows. Each client directory has its own `DESIGN.md` too.
 
-### Mage targets
+You only need the toolchain for the clients you work on, plus [Mage](https://magefile.org)
+and [Docker](https://docker.com) for every one of them.
+
+| Client | Toolchain |
+| --- | --- |
+| Go, `spicedb-gen`, and the root Magefile | [Go 1.24+](https://go.dev) |
+| Python | [Python 3.11+](https://python.org) with [uv](https://docs.astral.sh/uv/) |
+| TypeScript | [Node.js](https://nodejs.org) with [pnpm](https://pnpm.io) |
+| C# | [.NET 8+](https://dotnet.microsoft.com) |
+| Java | [Java 17+](https://openjdk.org) with [Gradle](https://gradle.org) (no wrapper is checked in) |
+| Ruby | [Ruby 3.2+](https://ruby-lang.org) with [Bundler](https://bundler.io) |
+| Rust | [Rust](https://rustup.rs) |
+
+### Common tasks
 
 ```bash
-# Full update pipeline: generate, API compat check, test, lint, commit
-mage update
-mage updateAllowBreak      # Like update, but skip API compat checks
+# Per-client (run from the client's directory)
+cd spicedb-go && mage test              # unit tests
+cd spicedb-go && mage lint              # linters
+cd spicedb-go && mage integrationTest   # examples against SpiceDB in Docker
 
-# Individual steps
-mage gen:all              # Regenerate proto + idiomatic clients
+# Whole repo (run from the root)
 mage test                 # Run all unit tests
 mage lint:all             # Run all linters
+mage gen:all              # Regenerate proto + idiomatic clients
 
-# Per-client
-cd spicedb-go && mage test
-cd spicedb-go && mage lint
-cd spicedb-go && mage integrationTest   # Requires Docker
+# Full update pipeline: generate, API compat check, test, lint, commit
+mage update
+mage updateAllowBreak     # Like update, but skip API compat checks
 
 # spicedb-gen
 cd spicedb-gen && mage test             # Go unit tests
 cd spicedb-gen && mage integrationTest  # Generate + typecheck + vitest vs SpiceDB
 ```
 
-### Regenerating against a specific API revision
+### Integration tests
+
+Each idiomatic client (and `spicedb-gen`) has a `mage integrationTest` target that:
+1. Starts SpiceDB via Docker Compose
+2. Runs examples against the live instance
+3. Tears down SpiceDB
+
+Integration tests must not be run in parallel across clients (all bind to port
+50051 by default). To use another port, set `SPICEDB_ENDPOINT`, for example
+`SPICEDB_ENDPOINT=localhost:50071 mage integrationTest`.
+
+<details>
+<summary>Regenerating against a specific API revision</summary>
 
 `mage gen:all`, `mage gen:proto`, and `mage gen:protoLang <lang>` honor `BUFTAG`,
 which pins generation to an exact `buf.build/authzed/api` revision — an
@@ -418,27 +649,10 @@ while comparing output. It is decided in one place, `Model` in
 `internal/clauderun/clauderun.go`, and every Claude invocation in this repository
 goes through it.
 
-### Integration Tests
+</details>
 
-Each idiomatic client has a `mage integrationTest` target that:
-1. Starts SpiceDB via Docker Compose
-2. Runs examples against the live instance
-3. Tears down SpiceDB
-
-```bash
-cd spicedb-go && mage integrationTest
-cd spicedb-python && mage integrationTest
-cd spicedb-typescript && mage integrationTest
-cd spicedb-csharp && mage integrationTest
-cd spicedb-java && mage integrationTest
-cd spicedb-ruby && mage integrationTest
-cd spicedb-rust && mage integrationTest
-cd spicedb-gen && mage integrationTest
-```
-
-Integration tests must not be run in parallel across clients (all bind to port 50051).
-
-### API Compatibility Tools (optional — needed for `mage update`)
+<details>
+<summary>API compatibility tools (optional — needed for <code>mage update</code>)</summary>
 
 | Language   | Tool                          | Install                                                          |
 |------------|-------------------------------|------------------------------------------------------------------|
@@ -452,7 +666,10 @@ Integration tests must not be run in parallel across clients (all bind to port 5
 These tools are used by `mage update` to detect breaking API changes before tests run.
 Use `mage updateAllowBreak` to skip compatibility checks when breaking changes are intentional.
 
-### Linting
+</details>
+
+<details>
+<summary>Linters by language</summary>
 
 | Language   | Tool              | Command                          |
 |------------|-------------------|----------------------------------|
@@ -464,15 +681,4 @@ Use `mage updateAllowBreak` to skip compatibility checks when breaking changes a
 | Ruby       | rubocop           | `bundle exec rubocop`            |
 | Rust       | clippy + rustfmt  | `cargo clippy && cargo fmt --check` |
 
-## Bounded and non-atomic deletion
-
-`deleteRelationships` requires a positive limit and performs one bounded request.
-`deleteAllRelationshipsNonAtomic` (using each language's naming conventions)
-continues in batches, forwarding each non-empty deletion cursor to the next request.
-Each batch is atomic, but completed batches remain committed
-if a later batch fails or cancellation occurs. Both return `DeleteResult` with a
-native revision token, deleted count, completion state and optional cursor.
-
-Failure progress reports acknowledged work; a lost response can leave the final
-batch's outcome uncertain. C# exposes `exception.GetDeleteProgress()` for both
-SpiceDB errors and native cancellation exceptions.
+</details>

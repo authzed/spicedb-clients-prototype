@@ -198,7 +198,8 @@ boolean allowed = result.hasPermission(); // only an unconditional grant is true
   Revisions are `ZedToken` values: `Consistency.atLeast(written.revision())`.
   `atLeast` and `snapshot` reject an empty or whitespace-only token with
   `LocalValidationException`; `atLeastOrFull`/`atLeastOrMinLatency` treat one
-  as absent.
+  as absent. Watch and materialize start/at revisions take `null` to omit them;
+  an empty or whitespace-only one throws `LocalValidationException`.
 - `check` uses the singular `CheckPermission` RPC. `checkBulk(List<PermissionCheck>)`
   uses `CheckBulkPermissions` in chunks of 1,000, returns results in input order,
   and by default throws the first item's error (`BulkItemErrors.RETURNED` returns

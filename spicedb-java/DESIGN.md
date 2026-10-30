@@ -10,7 +10,7 @@
   - `ObjectRef` identifies an object. `SubjectRef.direct` and `SubjectRef.named` distinguish direct subjects from usersets; empty names and `"..."` are invalid public userset names.
   - `Relationship` stores tuple identity, caveat context, and expiration. `PermissionCheck` stores permission, required consistency, and optional evaluation context.
   - `ZedToken(String)` is an opaque native revision value. `value()` and `toString()` preserve its exact string contents; null is invalid. All revision inputs and results, including schema, watch, deletion, counters, and materialize, use it. Authentication keys and opaque pagination cursors remain separate strings.
-  - `Consistency.full`, `minLatency`, `atLeast`, and `snapshot` require an explicit decision. Strict token strategies reject empty and whitespace-only tokens with `LocalValidationException`; `atLeastOrFull` and `atLeastOrMinLatency` name the fallback for absent, empty or whitespace-only tokens.
+  - `Consistency.full`, `minLatency`, `atLeast`, and `snapshot` require an explicit decision. Strict token strategies reject empty and whitespace-only tokens with `LocalValidationException`; `atLeastOrFull` and `atLeastOrMinLatency` name the fallback for absent, empty or whitespace-only tokens. Watch and materialize start/at revisions are optional (`null` omits them); an empty or whitespace-only one throws `LocalValidationException` before any request.
 
 - **Make behavior discoverable through enums.**
   - `CheckOptions.tracing` accepts `CheckTracing.DISABLED` (default) or `ENABLED`; singular and every bulk chunk forward tracing.

@@ -1525,7 +1525,8 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
-   * Watches relationship changes; a null {@code startRevision} starts at head. The client-wide
+   * Watches relationship changes; a null {@code startRevision} starts at head, and an empty or
+   * whitespace-only one throws {@link LocalValidationException} before any request. The client-wide
    * retry policy and stream-retry setting never reopen a watch: a failure before the first event
    * (UNAVAILABLE included) is thrown, since a reopened watch without a start revision would begin
    * at a later revision and skip the changes between. Only {@link WatchOptions.Builder#retryPolicy}
@@ -1540,6 +1541,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   public Stream<WatchEvent> updates(
       List<String> objectTypes, ZedToken startRevision, WatchOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
+    requireOptionalRevision("startRevision", startRevision);
     if (objectTypes != null && !objectTypes.isEmpty() && !options.relationshipFilters().isEmpty())
       throw new LocalValidationException(
           "objectTypes and relationshipFilters are mutually exclusive");
@@ -1737,8 +1739,9 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
-   * Experimental closeable permission-set watch; null starts at head. Like {@link #updates(List,
-   * ZedToken)}, it is reopened before its first event only under a per-call or {@link
+   * Experimental closeable permission-set watch; null starts at head (an empty or whitespace-only
+   * token throws {@link LocalValidationException}). Like {@link #updates(List, ZedToken)}, it is
+   * reopened before its first event only under a per-call or {@link
    * ClientOperation#WATCH_PERMISSION_SETS} retry policy, never the client-wide one.
    */
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
@@ -1749,6 +1752,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
       ZedToken startRevision, CallOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
+    requireOptionalRevision("startRevision", startRevision);
     var b = com.authzed.api.materialize.v0.WatchPermissionSetsRequest.newBuilder();
     if (startRevision != null)
       b.setOptionalStartingAfter(
@@ -1776,6 +1780,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(
       ZedToken atRevision, PermissionSetOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
+    requireOptionalRevision("atRevision", atRevision);
     var b =
         com.authzed.api.materialize.v0.LookupPermissionSetsRequest.newBuilder()
             .setLimit(options.limit());
@@ -1822,6 +1827,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
       ZedToken atRevision, CallOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
+    requireOptionalRevision("atRevision", atRevision);
     var deadline = deadlineFor(options.timeout());
     var b = com.authzed.api.materialize.v0.DownloadPermissionSetsRequest.newBuilder();
     if (atRevision != null)
@@ -2032,6 +2038,16 @@ public final class SpiceDBClient implements SpiceDBApi {
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER),
         "Bearer " + presharedKey);
     return metadata;
+  }
+
+  /**
+   * An optional caller-supplied revision is null (omitted) or a usable token: an empty or
+   * whitespace-only one is a local validation error before any request, never sent to the server.
+   */
+  private static void requireOptionalRevision(String input, ZedToken revision) {
+    if (revision != null && revision.value().isBlank())
+      throw new LocalValidationException(
+          input + " must not be empty or whitespace-only; pass null to omit it");
   }
 
   /**

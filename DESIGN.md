@@ -133,7 +133,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     own chunk's revision; chunks do not imply a shared snapshot.
   - By default the first per-item failure fails the call. A named mode instead
     returns every item's result, with per-item errors carried on the result
-    alongside the other items' decisions. An errored item never grants.
+    alongside the other items' decisions. An errored item never grants. A
+    malformed item in the server's response (such as an unset permissionship)
+    still fails the whole call, since it is not a per-item error.
 
 - **Preserve caller data and represent immutability honestly.**
   - Merge call-level check context with per-item overrides by key; the item wins.

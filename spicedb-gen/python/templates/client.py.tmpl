@@ -382,7 +382,9 @@ class TypedClient:
         s: {{$c.SubjectUnion}},
         *,
         context: JSONObject | None = None,
-        permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
+        permissionship_filter: LookupPermissionshipFilter = (
+            LookupPermissionshipFilter.ALL
+        ),
         limit: int | None = None,
         page_size: int = 1000,
         debug: LookupDebug = LookupDebug.DISABLED,
@@ -399,7 +401,9 @@ class TypedClient:
         s: {{.LookupResourcesImpl.S}},
         *,
         context: JSONObject | None = None,
-        permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
+        permissionship_filter: LookupPermissionshipFilter = (
+            LookupPermissionshipFilter.ALL
+        ),
         limit: int | None = None,
         page_size: int = 1000,
         debug: LookupDebug = LookupDebug.DISABLED,
@@ -432,7 +436,9 @@ class TypedClient:
         s: Subject,
         *,
         context: JSONObject | None = None,
-        permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
+        permissionship_filter: LookupPermissionshipFilter = (
+            LookupPermissionshipFilter.ALL
+        ),
         limit: int | None = None,
         page_size: int = 1000,
         debug: LookupDebug = LookupDebug.DISABLED,

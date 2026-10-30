@@ -513,8 +513,26 @@ def test_writer_names_the_subjects_it_admits() -> None:
     assert isinstance(key_err, LocalValidationError)
     assert "TeamMember, User" in str(key_err)
     bad: Any = ["document"]
-    with pytest.raises(LocalValidationError, match="must be a str, got list"):
+    with pytest.raises(LocalValidationError, match=r"expected str, got list \[.document.\]"):
         definition_by_name(bad)
+
+
+def test_non_str_errors_use_the_native_wording() -> None:
+    # The native client words a non-str name or ID "<what>: expected str, got
+    # <type> <value>"; the generated checks that run first say it the same way.
+    num: Any = 42
+    with pytest.raises(LocalValidationError, match=r": expected str, got int 42$"):
+        Relationship.from_triple(num, "viewer", "user:alice")
+    with pytest.raises(
+        LocalValidationError, match=r"^document object id: expected str, got int 42$"
+    ):
+        Document(num).viewer(User("alice")).to_relationship()
+    with pytest.raises(
+        LocalValidationError, match=r"^permission name: expected str, got int 42$"
+    ):
+        Document("readme").permission_by_name(num)
+    with pytest.raises(LocalValidationError, match=r"^resource: expected str, got int 42$"):
+        relationship_from_triple(num, "viewer", "user:alice")
 
 
 def test_well_typed_values_still_pass_the_type_checks() -> None:

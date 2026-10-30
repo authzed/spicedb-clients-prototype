@@ -13,14 +13,14 @@ from typing import Final
 {{range $def := .Definitions}}
 
 class {{$def.RelationsClass}}:
-    """Relation names on {{$def.Name}}."""
+{{doc 4 (print "Relation names on " $def.Name ".")}}
 {{range $r := $def.Relations}}
 {{assign 4 (printf "%s: Final" $r.ConstName) (quote $r.Name)}}
 {{- end}}
 
 
 class {{$def.PermissionsClass}}:
-    """Permission names on {{$def.Name}}."""
+{{doc 4 (print "Permission names on " $def.Name ".")}}
 {{range $p := $def.Permissions}}
 {{assign 4 (printf "%s: Final" $p.ConstName) (quote $p.Name)}}
 {{- end}}

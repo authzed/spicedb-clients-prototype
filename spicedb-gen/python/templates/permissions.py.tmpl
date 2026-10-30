@@ -62,7 +62,9 @@ def _require_name(value: object, what: str) -> str:
     if value is None:
         raise LocalValidationError(f"{what} is required")
     if not isinstance(value, str):
-        raise LocalValidationError(f"{what} must be a str, got {type(value).__name__}")
+        raise LocalValidationError(
+            f"{what}: expected str, got {type(value).__name__} {value!r}"
+        )
     return value
 
 
@@ -70,7 +72,7 @@ def _object(object_type: str, object_id: str) -> ObjectRef:
     oid: object = object_id
     if oid is not None and not isinstance(oid, str):
         raise LocalValidationError(
-            f"{object_type}: object id must be a str, got {type(oid).__name__}"
+            f"{object_type} object id: expected str, got {type(oid).__name__} {oid!r}"
         )
     if not object_id:
         raise LocalValidationError(f"{object_type}: object id is required")
@@ -457,7 +459,7 @@ class {{$cav.ClassName}}:
         d: dict[str, Any] = {}
 {{- range $p := $cav.Params}}
         if self.{{$p.FieldName}} is not None:
-            d["{{$p.RawName}}"] = self.{{$p.FieldName}}
+{{assign 12 (printf "d[%s]" (quote $p.RawName)) (print "self." $p.FieldName)}}
 {{- end}}
         return d
 {{end}}
@@ -467,7 +469,7 @@ class {{$cav.ClassName}}:
 
 @dataclass(frozen=True)
 class {{$def.ClassName}}:
-    """An object of definition {{$def.Name}}: a resource and a subject."""
+{{doc 4 (print "An object of definition " $def.Name ": a resource and a subject.")}}
 
     id: str
     _type: ClassVar[str] = {{$name}}
@@ -492,11 +494,11 @@ class {{$def.ClassName}}:
 
     @classmethod
     def type_filter(cls) -> Filter:
-        """Matches every {{$def.Name}} relationship."""
+{{doc 8 (print "Matches every " $def.Name " relationship.")}}
         return Filter({{$name}})
 
     def filter(self) -> Filter:
-        """Matches every relationship on this {{$def.Name}}."""
+{{doc 8 (print "Matches every relationship on this " $def.Name ".")}}
 {{bracket 8 "return _resource_filter" (list $name "self.id" "None") ""}}
 {{- range $sr := $def.SubRefs}}
 
@@ -519,17 +521,17 @@ class {{$def.ClassName}}:
 {{- if $r.HasKeySubject}}
 
 {{bracket 4 (printf "def %s" $r.KeyName) (list "self" (printf "subject: %s" $r.KeyUnion)) " -> RelationshipKey:"}}
-        """Identifies the {{$r.Name}} relationship by identity, for deletes."""
+{{doc 8 (print "Identifies the " $r.Name " relationship by identity, for deletes.")}}
 {{bracket 8 "return _relationship_key" (list $name "self.id" (quote $r.Name) "subject" $r.KeyUnion) ""}}
 {{- end}}
 
     @property
 {{bracket 4 (printf "def %s" $r.CheckName) (list "self") (printf " -> %s:" $r.CheckClass)}}
-        """Checks the {{$r.Name}} relation directly."""
+{{doc 8 (print "Checks the " $r.Name " relation directly.")}}
 {{bracket 8 (printf "return %s" $r.CheckClass) (list $name "self.id" (quote $r.Name)) ""}}
 
 {{bracket 4 (printf "def %s" $r.FilterName) (list "self") " -> Filter:"}}
-        """Matches every {{$r.Name}} relationship on this {{$def.Name}}."""
+{{doc 8 (print "Matches every " $r.Name " relationship on this " $def.Name ".")}}
 {{bracket 8 "return _resource_filter" (list $name "self.id" (quote $r.Name)) ""}}
 {{- end}}
 
@@ -540,7 +542,7 @@ class {{$def.ClassName}}:
         if name == {{quote $p.Name}}:
             return self.{{$p.PropName}}
 {{- end}}
-{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no permission {name!r}\"" $def.Name)) ""}}
+{{raiseMsg 8 "NotInSchemaError" $def.Name " has no permission {name!r}"}}
 
     def relation_by_name(self, name: str) -> Permission:
         """A check of the named relation. Raises NotInSchemaError for an
@@ -550,7 +552,7 @@ class {{$def.ClassName}}:
         if name == {{quote $r.Name}}:
             return self.{{$r.CheckName}}
 {{- end}}
-{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no relation {name!r}\"" $def.Name)) ""}}
+{{raiseMsg 8 "NotInSchemaError" $def.Name " has no relation {name!r}"}}
 
     def relationship_by_name(
         self, relation: str, subject: Subject
@@ -566,9 +568,9 @@ class {{$def.ClassName}}:
 {{bracket 12 "if isinstance" (list "subject" $r.SubjectUnion) ":"}}
                 return self.{{$r.WriterName}}(subject)
 {{- end}}
-{{bracket 12 "raise SubjectNotAllowedError" (list (printf "f\"%s#%s does not admit {subject}\"" $def.Name $r.Name)) ""}}
+{{raiseMsg 12 "SubjectNotAllowedError" (print $def.Name "#" $r.Name) " does not admit {subject}"}}
 {{- end}}
-{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no relation {relation!r}\"" $def.Name)) ""}}
+{{raiseMsg 8 "NotInSchemaError" $def.Name " has no relation {relation!r}"}}
 {{end}}
 
 # --- Subject refs: usersets, wildcards, and caveat or expiration variants ---
@@ -576,7 +578,7 @@ class {{$def.ClassName}}:
 
 @dataclass(frozen=True)
 class {{$srt.ClassName}}:
-    """The subject {{$srt.Describe}}."""
+{{doc 4 (print "The subject " $srt.Describe ".")}}
 {{if not $srt.Wildcard}}
     id: str
 {{- end}}
@@ -590,7 +592,7 @@ class {{$srt.ClassName}}:
     _relation: ClassVar[str] = {{quote $srt.SubRelation}}
 
     def _subject_ref(self) -> tuple[str, str, str]:
-        return {{quote $srt.DefinitionName}}, {{if $srt.Wildcard}}"*"{{else}}self.id{{end}}, {{quote $srt.SubRelation}}
+{{returnTuple 8 (list (quote $srt.DefinitionName) (or (and $srt.Wildcard "\"*\"") "self.id") (quote $srt.SubRelation))}}
 
     def _caveat_info(self) -> tuple[str, dict[str, Any]] | None:
 {{- if $srt.HasCaveat}}
@@ -628,7 +630,7 @@ class {{$srt.ClassName}}:
 
 @dataclass(frozen=True)
 {{bracket 0 (printf "class %s" $c.ClassName) (list "Permission") ":"}}
-    """{{$c.Describe}} on one resource."""
+{{doc 4 (print $c.Describe " on one resource.")}}
 
 {{assign 4 "_admits: ClassVar[Any]" (or $c.SubjectUnion "None")}}
 {{- if $c.RefClassName}}
@@ -640,7 +642,7 @@ class {{$srt.ClassName}}:
 
 @dataclass(frozen=True)
 {{bracket 0 (printf "class %s" $c.RefClassName) (list "PermissionRef") ":"}}
-    """{{$c.Describe}} on any resource, for lookup_resources."""
+{{doc 4 (print $c.Describe " on any resource, for lookup_resources.")}}
 
 {{assign 4 "_admits: ClassVar[Any]" (or $c.SubjectUnion "None")}}
 {{- end}}
@@ -665,7 +667,7 @@ SchemaObject: TypeAlias = Any
 
 {{if .Definitions}}_DEFINITIONS: Final[dict[str, DefinitionClass]] = {
 {{- range $def := .Definitions}}
-    "{{$def.Name}}": {{$def.ClassName}},
+{{entry $def.Name $def.ClassName}}
 {{- end}}
 }
 {{else}}_DEFINITIONS: Final[dict[str, DefinitionClass]] = {}
@@ -733,7 +735,7 @@ def parse_object(text: str) -> SchemaObject:
 
 {{if .SubjectSets}}_SUBJECT_SETS: Final[dict[str, type[SubjectSet]]] = {
 {{- range $ss := .SubjectSets}}
-    "{{$ss.Key}}": {{$ss.ClassName}},
+{{entry $ss.Key $ss.ClassName}}
 {{- end}}
 }
 {{else}}_SUBJECT_SETS: Final[dict[str, type[SubjectSet]]] = {}
@@ -760,7 +762,7 @@ def subject_set_by_name(definition: str, object_id: str, relation: str) -> Subje
 
 {{if .Wildcards}}_WILDCARDS: Final[dict[str, SchemaSubject]] = {
 {{- range $w := .Wildcards}}
-    "{{$w.Key}}": {{$w.ClassName}}(),
+{{entry $w.Key (print $w.ClassName "()")}}
 {{- end}}
 }
 {{else}}_WILDCARDS: Final[dict[str, SchemaSubject]] = {}
@@ -883,8 +885,7 @@ def relationship_from_triple(
         ("relation", relation),
         ("subject", subject),
     ):
-        if not isinstance(value, str):
-            raise LocalValidationError(f"{name} is required")
+        _require_name(value, name)
     r = Relationship.from_triple(
         resource, relation, subject, caveat=caveat, expiration=expiration
     )

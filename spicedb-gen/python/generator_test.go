@@ -399,13 +399,95 @@ definition holder {
 			cmd.Stdout, cmd.Stderr = &out, &out
 			assert.NoError(t, cmd.Run(), "%s is not ruff-format clean:\n%s", name, out.String())
 
-			cmd = exec.Command(ruff, "check", "--isolated", "--select", "E4,E7,E9,F", "--stdin-filename", name, "-")
+			cmd = exec.Command(ruff, "check", "--isolated", "--line-length", "88", "--select", "E4,E7,E9,F,E501", "--stdin-filename", name, "-")
 			cmd.Stdin = strings.NewReader(content)
 			out.Reset()
 			cmd.Stdout, cmd.Stderr = &out, &out
 			assert.NoError(t, cmd.Run(), "%s fails ruff check:\n%s", name, out.String())
 		}
 	}
+}
+
+// TestLineLengthWithExtremeNames requires E501 to pass at 88 columns for a
+// schema whose names are long enough that some lines cannot be wrapped (a
+// class name alone overflows its indent): those carry a targeted noqa, and
+// everything else wraps.
+func TestLineLengthWithExtremeNames(t *testing.T) {
+	ruff, err := exec.LookPath("ruff")
+	if err != nil {
+		t.Skip("ruff not installed")
+	}
+	s := parse(t, `
+use expiration
+caveat regional_network_policy_for_service_accounts(allowed_network_range_for_service_accounts string, maximum_allowed_request_count_for_window int) {
+	allowed_network_range_for_service_accounts == "" && maximum_allowed_request_count_for_window > 0
+}
+definition service_account_identity_with_long_name {}
+definition organization_workspace_project_with_long_name {
+	relation delegated_administrator_with_long_name: service_account_identity_with_long_name | service_account_identity_with_long_name with regional_network_policy_for_service_accounts | service_account_identity_with_long_name:* | service_account_identity_with_long_name with expiration | organization_workspace_project_with_long_name#delegated_administrator_with_long_name
+	permission administer_billing_settings_with_long_name = delegated_administrator_with_long_name
+}
+definition holder_of_grants_with_a_long_name {
+	relation grant_with_a_rather_long_relation_name: organization_workspace_project_with_long_name#administer_billing_settings_with_long_name with expiration | service_account_identity_with_long_name
+	permission view_with_a_rather_long_permission_name = grant_with_a_rather_long_relation_name
+}`)
+	for _, opts := range []map[string]string{nil, {"names-only": "true"}} {
+		for name, content := range generate(t, s, opts) {
+			cmd := exec.Command(ruff, "check", "--isolated", "--line-length", "88", "--select", "E501,E4,E7,E9,F", "--stdin-filename", name, "-")
+			cmd.Stdin = strings.NewReader(content)
+			out, err := cmd.CombinedOutput()
+			assert.NoError(t, err, "%s fails ruff check:\n%s", name, out)
+		}
+	}
+}
+
+func TestLineLengthHelpers(t *testing.T) {
+	long := strings.Repeat("word ", 30)
+	d := doc(4, long)
+	for _, l := range strings.Split(d, "\n") {
+		assert.LessOrEqual(t, len(l), lineLength, l)
+		assert.True(t, strings.HasPrefix(l, "    "), l)
+	}
+	assert.True(t, strings.HasPrefix(d, `    """word`))
+	assert.True(t, strings.HasSuffix(d, `word"""`))
+	assert.Equal(t, `    """Short."""`, doc(4, "Short."))
+
+	chunks := textChunks("\trelation viewer: " + strings.Repeat("user_with_name | ", 10) + "user\n")
+	assert.Greater(t, len(chunks), 1)
+	for i, c := range chunks {
+		assert.LessOrEqual(t, len("    "+pyStr(c)), lineLength, c)
+		assert.False(t, strings.HasSuffix(c, " "), "chunk %d ends in a space", i)
+	}
+
+	assert.Equal(t, `        raise E(f"x has no relation {name!r}")`, raiseMsg(8, "E", "x", " has no relation {name!r}"))
+	name := strings.Repeat("n", 60)
+	assert.Equal(t, "        raise E(\n            \""+name+"#"+name+"\"\n            f\" does not admit {subject}\"\n        )",
+		raiseMsg(8, "E", name+"#"+name, " does not admit {subject}"))
+
+	assert.Equal(t, `        return "a", self.id, ""`, returnTuple(8, list(`"a"`, "self.id", `""`)))
+	assert.Equal(t, "        return (\n            \""+name+"\",\n            self.id,\n            \"\",\n        )",
+		returnTuple(8, list(`"`+name+`"`, "self.id", `""`)))
+
+	assert.Equal(t, `    "a": A,`, entry("a", "A"))
+	assert.Equal(t, "    \""+name+"\": (\n        "+name+"\n    ),", entry(name, name))
+
+	over := strings.Repeat("x", 90)
+	marked := markOverlong([]string{
+		"    a = " + over,  // overlong: marked
+		"    " + over,      // a single word: E501 skips it
+		`    """Doc`,       // a docstring holding an overlong line...
+		"    two " + over,  //
+		`    """`,          // ...is marked where it closes
+		`    """Short."""`, // one-line docstring: untouched
+	})
+	assert.Equal(t, []string{
+		"    a = " + over + noqaLong,
+		"    " + over,
+		`    """Doc`,
+		"    two " + over,
+		`    """` + noqaLong,
+		`    """Short."""`,
+	}, marked)
 }
 
 func TestFormattingHelpers(t *testing.T) {

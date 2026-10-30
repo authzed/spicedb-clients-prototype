@@ -501,7 +501,11 @@ and options forwarding rather than just generated text fragments.
   caveat calling an undeclared CEL function) and type-checks it with pyright.
   `--python.module` names the types module (default
   `permissions`); `sync.py`/`aio.py` import it relatively. Output is
-  `ruff format` clean at the default line length without running ruff.
+  `ruff format` clean at the default line length without running ruff, and
+  passes ruff's E501 at 88 columns: signatures, docstrings, messages and the
+  embedded schema text wrap, and only a line no layout can shorten (a
+  schema-derived identifier that alone overflows its indent) carries a
+  targeted `# noqa: E501`.
 - `check`, `lookup_resources` and `lookup_subjects` get one `@overload` per
   admitted permission/relation when there are at least two; a lone overload
   becomes the implementation's signature, since Python rejects a single

@@ -19,9 +19,9 @@
     and example projects; this package depends on runtime libraries only.
   -->
   <ItemGroup>
-    <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
-    <PackageReference Include="Google.Protobuf" Version="3.34.1" />
-    <PackageReference Include="Grpc.Core.Api" Version="2.80.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.85.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
+    <PackageReference Include="Grpc.Core.Api" Version="2.85.0" />
     <!-- google.rpc.Status/ErrorInfo and Status.GetDetail<T>(). Referenced
          explicitly rather than relied on transitively, because Errors.cs reads
          SpiceDB's ErrorInfo detail directly. -->
@@ -30,7 +30,7 @@
          ToRpcException(). gRPC's own implementation of the
          grpc-status-details-bin trailer, used instead of reading and writing
          that trailer by hand. -->
-    <PackageReference Include="Grpc.StatusProto" Version="2.80.0" />
+    <PackageReference Include="Grpc.StatusProto" Version="2.85.0" />
   </ItemGroup>
 
   <!-- Reference the proto-generated client project -->

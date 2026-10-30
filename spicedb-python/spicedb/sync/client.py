@@ -51,7 +51,7 @@ from authzed.api.materialize.v0 import (
     watchpermissionsets_pb2_grpc,
 )
 from spicedb import _mapping, _requests, _wire
-from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
+from spicedb._auth import bearer_metadata, require_insecure_transport_allowed, require_token_usable
 from spicedb._endpoint import parse_endpoint
 from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._budget import Budget
@@ -152,6 +152,7 @@ class SpiceDBClient(ClientConfig):
             insecure=insecure,
             allow_insecure_remote_credentials=allow_insecure_remote_credentials,
         )
+        require_token_usable(token)
         require_tls_material_usable(
             insecure=insecure,
             ca_cert=ca_cert,

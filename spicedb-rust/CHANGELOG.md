@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Behavior change:** an empty or whitespace-only token fails at construction with `SpiceDBError::InvalidArgument` (`new_plaintext`, `new_system_tls`, `builder(...).build()`, and `from_channel(...).token(...).build()`), before any dial, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- Docs: with bulk item errors returned (`BulkItemErrors::Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
 - A malformed response the client detects now says so: `Display` reads
   `client detected malformed response from server: missing relationship`
   instead of `grpc status 13: malformed response: missing relationship`, which

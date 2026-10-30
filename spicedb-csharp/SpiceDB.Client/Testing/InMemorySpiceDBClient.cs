@@ -155,7 +155,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     /// </summary>
     public void SetCheckResult(ObjectRef resource, string permission, SubjectRef subject, Permissionship permissionship)
     {
-        Specified(permissionship, nameof(SetCheckResult));
+        Specified(permissionship, $"{nameof(SetCheckResult)} was given");
         lock (_lock) _checks[Key(resource, permission, subject)] = (new CheckResult(permissionship, [], Token()), null);
     }
 
@@ -709,7 +709,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
         if (_checks.TryGetValue(Key(request.Resource, request.Permission, request.Subject), out var registered)) return registered;
         if (_resolver?.Invoke(request) is { } answer)
         {
-            Specified(answer.Permissionship, "The check resolver");
+            Specified(answer.Permissionship, "The check resolver returned");
             return (new CheckResult(answer.Permissionship, answer.MissingContext, Token(), answer.DebugTrace, answer.Expiration), null);
         }
         return (new CheckResult(Stored(request), [], Token()), null);
@@ -722,7 +722,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     private static void Specified(Permissionship permissionship, string source)
     {
         if (permissionship is Permissionship.HasPermission or Permissionship.NoPermission or Permissionship.ConditionalPermission) return;
-        throw new InvalidArgumentException($"{source} returned permissionship {permissionship}; answer HasPermission, NoPermission or ConditionalPermission (a resolver may return null to decline, and SetCheckError injects a failure).");
+        throw new InvalidArgumentException($"{source} permissionship {permissionship}; use HasPermission, NoPermission or ConditionalPermission (a resolver may return null to decline, and SetCheckError injects a failure).");
     }
 
     /// <summary>The check with the call's context merged into its own; the check's keys win.</summary>

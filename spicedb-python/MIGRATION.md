@@ -107,6 +107,11 @@ client = SpiceDBClient.from_channel(channel)   # channel keeps its own credentia
   sharing one built at import time. Genuinely synchronous code uses
   `spicedb.sync.SpiceDBClient`, which any thread may share.
 
+An empty or whitespace-only `token` (usually an unset environment variable)
+raises `LocalValidationError` at construction, and so do `ca_cert`,
+`client_cert` or `client_key` bytes that do not parse as PEM; the message names
+the argument.
+
 ## Requests and results are native values
 
 You no longer build protobuf messages. Consistency is a required argument.
@@ -207,6 +212,8 @@ results = client.check_bulk(checks, consistency=full(), item_errors=BulkItemErro
 for r in results:
     if r.error is not None: ...   # an errored item never grants
 ```
+
+A malformed item in the server's response (such as an unset permissionship) still fails the whole call with the client-detected malformed-response error.
 
 ## Deletes
 

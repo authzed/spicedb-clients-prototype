@@ -68,6 +68,10 @@ SpiceDB fails at startup with `SpiceDBError::Transport`. For an existing tonic `
 `SpiceDBClient::from_channel(channel).token(token).build()?`; the channel stays
 yours, and dropping the client never closes it.
 
+An empty or whitespace-only token (usually an unset environment variable) fails
+at construction with `SpiceDBError::InvalidArgument`, including
+`from_channel(...).token(...)`.
+
 ## Check (fail closed)
 
 ```rust

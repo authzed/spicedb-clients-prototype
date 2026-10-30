@@ -14,6 +14,10 @@
 
 ## Unreleased
 
+- **Behavior change:** an empty or whitespace-only `token` raises `LocalValidationError` at construction (both flavors), instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- **Behavior change:** `ca_cert`, `client_cert` and `client_key` are parsed at construction. Material that does not parse (not PEM, or a corrupt body) raises `LocalValidationError` naming the argument, instead of failing the first call as an unexplained transport error. Certificates are parsed with the standard library's OpenSSL; the key's PEM structure and DER envelope are checked, and grpc parses the key itself when the channel opens.
+- Docs: with bulk item errors returned (`BulkItemErrors.RETURN`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
+
 ### Client-detected errors say so
 
 - A malformed response's `InternalError` now reads `spicedb: client detected

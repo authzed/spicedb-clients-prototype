@@ -15,7 +15,7 @@
 - **Make check results safe and diagnostic data complete.**
   - Only unconditional `HasPermission` grants. Conditional, denied and unknown states remain distinguishable. Results preserve missing context, native revision and singular expiration.
   - Singular and bulk tracing default to `TracingDisabled`; `WithCheckTracing(TracingEnabled)` enables complete native recursive traces. Lookup debug uses its own `WithLookupResourcesDebug(DebugEnabled)` option.
-  - Bulk requests use chunks of at most 1,000, validate common consistency and ordered echoed requests, and retain absolute failure indices and per-chunk revisions. `WithBulkItemErrors(ItemErrorsReturned)` returns per-item errors on `CheckResult.Err` (never a grant) instead of failing the call. Context merges by key with item values winning; invalid JSON fails with field information.
+  - Bulk requests use chunks of at most 1,000, validate common consistency and ordered echoed requests, and retain absolute failure indices and per-chunk revisions. `WithBulkItemErrors(ItemErrorsReturned)` returns per-item errors on `CheckResult.Err` (never a grant) instead of failing the call; a malformed item in the server's response (such as an unset permissionship) still fails the whole call with the client-detected malformed-response error. Context merges by key with item values winning; invalid JSON fails with field information.
 
 - **Apply one operation budget and deterministic cancellation.**
   - Unary defaults are 30 seconds (`WithDefaultDeadline(DefaultDeadlineDisabled)` removes the default; the caller's context still applies); explicit positive timeouts cover attempts, backoff, chunks and pages. Caller deadlines win. Finite paged reads (relationship reads, resource and subject lookups, exports, permission-set lookups) apply the default to the time each page request spends waiting on the server, from opening it to its last item; the clock pauses while the caller holds an item, so slow per-item work never fails a healthy read. `LookupSubjects` has no pages and bounds each wait for the next message. The caller's total deadline still bounds the whole read. Watches and imports have no default lifetime deadline.
@@ -52,7 +52,7 @@
   - Retry behavior is client-wide: `RetryPolicy` (default three retries of Unavailable/Aborted, 100ms full-jitter), `WithRetries(RetriesDisabled)`, `WithStreamRetries(StreamRetriesDisabled)`. Mutations never retry. `WithDefaultDeadline(DefaultDeadlineDisabled)` removes the default budget.
   - Paged reads yield `ReadRelationship`/`ExportedRelationship` (embedding `rel.Relationship`) and `LookupResource` with cursors; every page repeats the caller's consistency and page size, because SpiceDB hashes both into the cursor.
   - `client/protoconv` exports conversions; relationship-level conversion lives in `internal/conv`, shared with the client.
-  - Imports report the server's final status on an aborted stream. Bulk checks can return per-item errors (`ItemErrorsReturned`). Watch can request schema changes. Deletes can be all-or-nothing and delete-all reports per-batch progress.
+  - Imports report the server's final status on an aborted stream. Bulk checks can return per-item errors (`ItemErrorsReturned`); a malformed item still fails the call. Watch can request schema changes. Deletes can be all-or-nothing and delete-all reports per-batch progress.
   - `rel.FromTuple`/`String` implement SpiceDB's full tuple syntax; `spicedb-gen/tuplecompat` checks them against SpiceDB's parser.
 
 - **Make native values observable and testable.**

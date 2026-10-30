@@ -27,7 +27,7 @@ as follows (requests now take keyword arguments on the client method):
 | `authzed` (protobuf) | `spicedb` |
 |---|---|
 | `client.permissions_service.check_permission(CheckPermissionRequest)` | `client.check(PermissionCheck, consistency:)` |
-| `check_bulk_permissions(...)` `.pairs[i].item` / `.error` | `client.check_bulk(checks, consistency:)[i]` / `[i].error` (with `item_errors: BulkItemErrors::RETURNED`) |
+| `check_bulk_permissions(...)` `.pairs[i].item` / `.error` | `client.check_bulk(checks, consistency:)[i]` / `[i].error` (with `item_errors: BulkItemErrors::RETURNED`; a malformed item still fails the call) |
 | `resp.permissionship == :PERMISSIONSHIP_HAS_PERMISSION` | `result.has_permission?` (or `result.permissionship == :has_permission`) |
 | `resp.partial_caveat_info.missing_required_context` | `result.missing_context` |
 | `resp.checked_at.token` | `result.checked_at.to_s` |
@@ -142,6 +142,11 @@ construction (README.md, "Endpoints"). If you build
 your own `GRPC::Core::Channel` (custom channel arguments), wrap it with
 `SpiceDB::Client.from_channel(channel, interceptors: [...])`; `close` leaves it
 open. `authzed`'s `options:` channel arguments move there.
+
+An empty or whitespace-only token (usually an unset environment variable) raises
+`LocalValidationError` at construction, and so does `ca_cert:`, `client_cert:`
+or `client_key:` material that does not parse as PEM; the message names the
+argument.
 
 ## Deadlines and retries
 

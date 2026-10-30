@@ -92,6 +92,7 @@ module SpiceDB
                   ca_cert: ca_cert, client_cert: client_cert, client_key: client_key }
       # Every construction refusal runs now; the channel opens on first use.
       SpiceDBProto::Client.validate_connection!(endpoint, **options)
+      validate_tls_material(ca_cert: ca_cert, client_cert: client_cert, client_key: client_key)
       @connect = -> { SpiceDBProto::Client.new(endpoint, token, **options) }
     rescue SpiceDBProto::InsecureRemoteHostError
       raise LocalValidationError, remote_plaintext_refusal(endpoint)
@@ -513,10 +514,48 @@ module SpiceDB
     def validate_credentials(token, **material)
       raise LocalValidationError, "spicedb: token must be a String, got #{Values.received(token)}" unless token.is_a?(String)
 
+      # A blank token (usually an unset environment variable) would otherwise
+      # be sent as a bare "Bearer" header the server rejects on the first call.
+      # See root DESIGN.md, "Reject unusable credentials and trust material at
+      # construction".
+      if token.strip.empty?
+        raise LocalValidationError,
+              'spicedb: token must not be empty or whitespace (check that the variable holding it is set)'
+      end
+
       material.each do |name, value|
         next if value.nil? || value.is_a?(String)
 
         raise LocalValidationError, "spicedb: #{name} must be a PEM String or nil, got #{Values.received(value)}"
+      end
+    end
+
+    PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/m
+    private_constant :PEM_CERTIFICATE
+
+    # Parses each supplied TLS input with OpenSSL, naming the first that does
+    # not parse. Without this, gRPC's C-core accepts a non-PEM ca_cert and the
+    # first call fails with an unrelated "empty address list" and a C-core
+    # trace. Runs after the transport refusals, so theirs keep precedence.
+    def validate_tls_material(ca_cert:, client_cert:, client_key:)
+      require 'openssl'
+      { ca_cert: ca_cert, client_cert: client_cert }.each do |name, pem|
+        next if pem.nil?
+
+        blocks = pem.scan(PEM_CERTIFICATE)
+        raise OpenSSL::X509::CertificateError, 'no PEM CERTIFICATE block' if blocks.empty?
+
+        blocks.each { |block| OpenSSL::X509::Certificate.new(block) }
+      rescue OpenSSL::X509::CertificateError, ArgumentError => e
+        raise LocalValidationError, "spicedb: #{name} is not a PEM-encoded X.509 certificate (#{e.message})"
+      end
+      return if client_key.nil?
+
+      begin
+        # An empty passphrase so an encrypted key fails rather than prompting.
+        OpenSSL::PKey.read(client_key, '')
+      rescue OpenSSL::PKey::PKeyError, ArgumentError => e
+        raise LocalValidationError, "spicedb: client_key is not a PEM-encoded private key (#{e.message})"
       end
     end
 

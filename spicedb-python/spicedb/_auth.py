@@ -35,6 +35,25 @@ def _is_ascii_port(port: str) -> bool:
     return port.isascii() and port.isdigit()
 
 
+def require_token_usable(token: object) -> None:
+    """Refuse an empty or whitespace-only token at construction.
+
+    A blank environment variable is the usual cause; sending it would produce
+    a bare ``Bearer`` header the server rejects on the first call. See root
+    DESIGN.md, "Reject unusable credentials and trust material at
+    construction".
+
+    :raises spicedb.errors.LocalValidationError: when the token is blank.
+    """
+    from spicedb.errors import LocalValidationError
+
+    if not isinstance(token, str) or not token.strip():
+        raise LocalValidationError(
+            "spicedb: token must be a nonempty string, not empty or whitespace "
+            "(check that the variable holding it is set)"
+        )
+
+
 def bearer_metadata(token: str) -> list[tuple[str, str]]:
     """Build the gRPC metadata carrying the bearer token."""
     return [("authorization", f"Bearer {token}")]

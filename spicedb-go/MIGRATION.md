@@ -72,6 +72,9 @@ if err := c.Ready(ctx, client.WithReadyTimeout(10*time.Second)); err != nil {
 `grpcutil.WithBearerToken` from your dial options, because the key is already
 attached.
 
+An empty or whitespace-only preshared key (usually an unset environment
+variable) fails at construction with `ErrInvalidArgument`.
+
 ## Existing connections
 
 If you already hold a connection (an in-memory or buffered-listener connection,

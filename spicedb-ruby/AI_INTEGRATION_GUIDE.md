@@ -52,6 +52,11 @@ See [README.md, "Concurrency and forking"](README.md#concurrency-and-forking).
 Names may be Symbols (`permission: :view`) and object IDs Integers
 (`object_id: record.id`); they are converted with `to_s`.
 
+An empty or whitespace-only token (usually an unset environment variable) raises
+`LocalValidationError` at construction, and so does `ca_cert:`, `client_cert:`
+or `client_key:` material that does not parse as PEM; the message names the
+argument.
+
 ## Check (fail closed)
 
 ```ruby
@@ -80,7 +85,9 @@ granted = client.check_bulk(checks, consistency: SpiceDB::Consistency.min_latenc
 ```
 
   With `item_errors: SpiceDB::BulkItemErrors::RETURNED`, a failed item carries
-  `result.error` instead of failing the call; it never grants.
+  `result.error` instead of failing the call; it never grants. A malformed item
+  in the server's response (such as an unset permissionship) still fails the
+  whole call.
 - Permission names chosen at runtime are plain strings here. There is no
   generated name list, so verify them at startup with
   `client.reflect_schema(consistency: SpiceDB::Consistency.full)`.

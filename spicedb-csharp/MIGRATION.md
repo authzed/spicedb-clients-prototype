@@ -78,6 +78,17 @@ await using var client = SpiceDBClient.CreateSystemTls("spicedb.example.com:443"
   `CreateFromChannel(channel, token)`, or `CreateFromCallInvoker(invoker)` when the invoker
   already carries credentials. The client never disposes either.
 
+An empty or whitespace-only preshared key (usually an unset environment
+variable) throws `InvalidArgumentException` at construction.
+
+`SpiceDB.Client.CallOptions` and `Grpc.Core.CallOptions` share a name, so a file that imports
+both namespaces (for example one with a custom `CallInvoker` passed to
+`CreateFromCallInvoker`) fails with CS0104. Alias this library's type there:
+
+```csharp
+using SpiceDBCallOptions = SpiceDB.Client.CallOptions;
+```
+
 ## Requests and consistency
 
 ```csharp
@@ -104,7 +115,8 @@ var allowed = result.HasPermission; // only an unconditional grant
   unset, pass `Consistency.MinLatency()`, which is what SpiceDB applies when it is absent.
 - Singular checks call `CheckPermission`. Bulk checks (`CheckBulkAsync`) split into chunks
   of 1,000, validate every echoed item, and throw for the first failed item unless
-  `CheckOptions.ItemErrors = BulkItemErrors.Returned`.
+  `CheckOptions.ItemErrors = BulkItemErrors.Returned`. A malformed item in the server's
+  response (such as an unset permissionship) still fails the whole call.
 - `ZedToken` is a native value: `new ZedToken(text)`, `.Value` to persist it.
 - A direct subject is one step from an object: `ObjectRef` converts implicitly to
   `SubjectRef`, or call `SubjectRef.Direct(obj)`. A subject relation of `...` (as tuples,

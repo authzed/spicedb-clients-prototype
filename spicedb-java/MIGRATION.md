@@ -160,6 +160,11 @@ SpiceDBClient client = SpiceDBClient.createSystemTls("spicedb.example.com:443", 
 - `client.rawChannel()` is the authenticated channel for any stub the native API
   does not cover; it is not yours to close.
 
+An empty or whitespace-only preshared key (usually an unset environment
+variable) throws `LocalValidationException` at construction, and so does a
+`caCertificate`, `clientCertificate` or `clientKey` file that cannot be read or
+parsed; the message names the option and path.
+
 ## Checks
 
 ```java
@@ -193,7 +198,8 @@ boolean allowed = result.hasPermission(); // only an unconditional grant is true
 - `check` uses the singular `CheckPermission` RPC. `checkBulk(List<PermissionCheck>)`
   uses `CheckBulkPermissions` in chunks of 1,000, returns results in input order,
   and by default throws the first item's error (`BulkItemErrors.RETURNED` returns
-  every item instead).
+  every item instead; a malformed item in the server's response, such as an
+  unset permissionship, still fails the whole call).
 - With a schema in your repository, prefer the generated typed client
   (`spicedb-gen --lang java`), which makes wrong names and subject types compile
   errors.

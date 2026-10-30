@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Behavior change:** an empty or whitespace-only `token` throws `InvalidArgumentError` at construction, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- **Behavior change:** `tls.caCert`, `tls.clientCert` and `tls.clientKey` are parsed at construction (`X509Certificate` and `createPrivateKey` from `node:crypto`). Material that does not parse throws `InvalidArgumentError` naming the option; before, `node:tls` accepted a non-PEM `caCert` silently and the first call failed its handshake.
+- Docs: with bulk item errors returned (`BulkItemErrors.Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
+
 ### Client-detected malformed responses and the double's resume cursor
 
 - **Behavior change:** a check, bulk-check item, lookup-resources result or

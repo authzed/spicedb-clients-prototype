@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Behavior change:** an empty or whitespace-only preshared key fails at construction (`NewPlaintext`, `NewSystemTLS`, `NewWithOpts`) with `ErrInvalidArgument`, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- Docs: with bulk item errors returned (`ItemErrorsReturned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
 - A response the client cannot interpret now says so: its `ErrInternal`
   message reads `spicedb: <operation>: client detected malformed response from
   server: <detail>`, so it is not mistaken for a status the server sent. Bulk

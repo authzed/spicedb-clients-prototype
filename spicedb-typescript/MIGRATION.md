@@ -99,6 +99,11 @@ applies to `watch` or imports. Set `defaultTimeoutMs: ms` for the per-request
 part, and pass `timeoutMs` on a call that needs a total bound, such as a
 long-lived stream that relied on the old cut-off.
 
+An empty or whitespace-only `token` (usually an unset environment variable)
+throws `InvalidArgumentError` at construction, and so do `tls.caCert`,
+`tls.clientCert` or `tls.clientKey` values that do not parse; the message names
+the option.
+
 ## Checks
 
 Before:
@@ -128,7 +133,8 @@ Bulk checks take an array and return results in input order:
 `client.checkBulk(requests, options)`. Every request must use the same
 consistency. A per-item error fails the call by default (with the item's
 `inputIndex`); `{ itemErrors: BulkItemErrors.Returned }` returns it on
-`CheckResult.error` instead.
+`CheckResult.error` instead. A malformed item in the server's response (such
+as an unset permissionship) still fails the whole call.
 
 ## Writes
 

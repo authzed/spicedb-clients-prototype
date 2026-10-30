@@ -119,6 +119,10 @@ let client = SpiceDBClient::builder(std::env::var("SPICEDB_URL")?, token)
 `SpiceDBClient` is `Clone + Send + Sync` and cheap to clone. Build it once at
 startup and share it; don't reconnect per request.
 
+An empty or whitespace-only token (usually an unset environment variable) fails
+at construction with `SpiceDBError::InvalidArgument`, including
+`from_channel(...).token(...)`.
+
 ## Requests and responses
 
 Request structs with `Option` fields and `i32` enums become native values

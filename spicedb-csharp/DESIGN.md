@@ -249,7 +249,9 @@
   - `CheckOptions.ItemErrors = BulkItemErrors.Returned` makes bulk checks return every
     item; a failed item's `CheckResult.Error` holds its typed exception (with `InputIndex`),
     its permissionship is `Unspecified`, and `HasPermission` is false. `Fail` (default)
-    throws for the first failing item.
+    throws for the first failing item. A malformed item in the server's response (such
+    as an unset permissionship) still fails the whole call with the client-detected
+    malformed-response error.
 
 - **Interoperate with gRPC status inspection in both directions.**
   - `SpiceDBException.StatusCode` is the matching `Grpc.Core.StatusCode` for every error:

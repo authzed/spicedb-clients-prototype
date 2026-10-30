@@ -1,4 +1,5 @@
 import { serverToken, tokenString } from "./token.js";
+import { requireParseableTls, requireUsableToken } from "./credentials.js";
 import { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, Paging, mode } from "./modes.js";
 import { Code, type Transport } from "@connectrpc/connect";
 import { SpiceDBProtoClient as ProtoClient } from "@spicedb/proto";
@@ -178,6 +179,17 @@ export class SpiceDBClient implements SpiceDBClientInterface {
             if (error instanceof InsecureRemoteHostError)
                 throw new InvalidArgumentError(remotePlaintextRefusal(options.endpoint, "the default", "transportSecurity: TransportSecurity.Plaintext", "remoteCredentials: RemoteCredentials.AllowPlaintext"), { cause: error });
             throw new InvalidArgumentError(error instanceof Error ? error.message.replace(/allowInsecureRemoteCredentials/g, "remoteCredentials").replace(/insecure: true/g, "transportSecurity: TransportSecurity.Plaintext") : String(error), { cause: error });
+        }
+        // After the endpoint, remote-plaintext and pairing checks above, so
+        // their messages keep precedence. Nothing has connected yet: the
+        // session manager dials on the first call.
+        try {
+            requireUsableToken(options.token);
+            requireParseableTls(options.tls);
+        }
+        catch (error) {
+            this.proto.close();
+            throw error;
         }
     }
     /**

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	proto "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto"
@@ -154,6 +155,13 @@ func NewSystemTLS(endpoint, presharedKey string, opts ...Option) (*Client, error
 // Construction does not connect. Call Ready at startup to fail on a wrong or
 // unreachable endpoint before the first real call.
 func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error) {
+	// An empty or whitespace-only key (usually a blank environment variable)
+	// would otherwise be sent as a bare "Bearer" header the server rejects on
+	// the first call. See root DESIGN.md, "Reject unusable credentials and
+	// trust material at construction".
+	if strings.TrimSpace(presharedKey) == "" {
+		return nil, fmt.Errorf("spicedb: failed to create client: preshared key must not be empty or whitespace: %w", ErrInvalidArgument)
+	}
 	o, err := buildOptions(opts)
 	if err != nil {
 		return nil, err

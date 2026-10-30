@@ -58,7 +58,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     public static SpiceDBClient CreateSystemTls(string endpoint, string presharedKey, ClientOptions? options = null) => Create(endpoint, presharedKey, options, false);
     private static SpiceDBClient Create(string endpoint, string key, ClientOptions? options, bool insecure)
     {
-        Native.Required(endpoint, nameof(endpoint)); Native.Required(key, "presharedKey");
+        Native.Required(endpoint, nameof(endpoint)); Native.Credential(key, "presharedKey");
         ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
         (options?.RetryPolicy ?? RetryPolicy.Default).Validated(); options?.ValidateOperationRetryPolicies();
         try { return new(new SpiceDBProtoClient(endpoint, key, insecure, options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow), options) { _endpoint = endpoint }; }
@@ -77,7 +77,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     public static SpiceDBClient CreateFromChannel(GrpcChannel channel, string presharedKey, ClientOptions? options = null)
     {
         if (channel is null) throw new InvalidArgumentException("Channel is required.");
-        Native.Required(presharedKey, nameof(presharedKey));
+        Native.Credential(presharedKey, nameof(presharedKey));
         ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
         (options?.RetryPolicy ?? RetryPolicy.Default).Validated(); options?.ValidateOperationRetryPolicies();
         // Target omits the scheme. Inspect the transport's parsed address and fail

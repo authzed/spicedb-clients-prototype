@@ -90,6 +90,9 @@ additionally needs `client.WithRemotePlaintextCredentials(client.RemotePlaintext
 Use `client.NewFromConn(conn)` for an existing `grpc.ClientConnInterface` (in-memory,
 SpiceDB's test server); `Close` leaves that connection open.
 
+An empty or whitespace-only preshared key (usually an unset environment
+variable) fails at construction with `ErrInvalidArgument`.
+
 ## Check (fail closed)
 
 ```go

@@ -296,8 +296,9 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	data.SchemaText = jsString(s.Source)
 
 	tmpl, err := template.New("typed_client.ts.tmpl").Funcs(template.FuncMap{
-		"quoteList": quoteList,
-		"a":         withArticle,
+		"quoteList":   quoteList,
+		"a":           withArticle,
+		"makerParams": makerParams,
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
@@ -378,6 +379,24 @@ func quoteList(items []string) string {
 		q[i] = fmt.Sprintf("%q", s)
 	}
 	return strings.Join(q, ", ")
+}
+
+// makerParams is the parameter list of a subject ref variant's maker: the ID
+// (a wildcard's is always "*"), then the caveat context and the expiration
+// where the variant has them. Each parameter is used, so the output passes
+// noUnusedParameters.
+func makerParams(rt RefTypeData) string {
+	var params []string
+	if !rt.Wildcard {
+		params = append(params, "id: string")
+	}
+	if rt.Caveat != "" {
+		params = append(params, "ctx: JSONObject")
+	}
+	if rt.Expiration {
+		params = append(params, "at: Date")
+	}
+	return strings.Join(params, ", ")
 }
 
 // subjectBase identifies a subject position independent of caveat and

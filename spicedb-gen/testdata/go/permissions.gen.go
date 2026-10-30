@@ -761,7 +761,7 @@ func (d UserRef) RelationByName(name string) (Permission, error) {
 // RelationshipByName builds a relationship on the named relation of this
 // user. It fails with ErrNotInSchema for an unknown relation and
 // ErrSubjectNotAllowed for a subject the relation does not admit.
-func (d UserRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
+func (d UserRef) RelationshipByName(relation string, _ Subject) (TypedRelationship, error) {
 	return TypedRelationship{}, fmt.Errorf("%w: user has no relation %q", ErrNotInSchema, relation)
 }
 

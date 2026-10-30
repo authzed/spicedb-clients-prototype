@@ -162,6 +162,16 @@ func TestByNameIdentifiersAreReserved(t *testing.T) {
 	require.ErrorContains(t, err, "DefinitionName", "every ref has DefinitionName, so a permission cannot take it")
 }
 
+// A definition with no writable relation never reads RelationshipByName's
+// subject, so it is named _ and unused-parameter lint passes; one with a
+// writable relation keeps the name.
+func TestRelationshipByNameNamesOnlyAUsedSubject(t *testing.T) {
+	out, err := generate(t, "definition user {}\ndefinition doc {\n\trelation viewer: user\n}", nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "func (d UserRef) RelationshipByName(relation string, _ Subject) (TypedRelationship, error) {")
+	assert.Contains(t, out, "func (d DocRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {")
+}
+
 func TestRuntimeNameTables(t *testing.T) {
 	zed := `definition user {}
 definition group {

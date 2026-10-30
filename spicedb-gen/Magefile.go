@@ -569,7 +569,8 @@ func PythonMypy() error {
 }
 
 // PythonFormatCheck requires the generated Python fixture files to be
-// `ruff format` clean and to pass the repository's ruff lint selection.
+// `ruff format` clean and to pass the repository's ruff lint selection plus
+// the unused-argument rules (ARG).
 // Generated files are gitignored, so they are passed explicitly.
 func PythonFormatCheck() error {
 	fmt.Println("==> Checking generated Python with ruff format and ruff check...")
@@ -577,7 +578,7 @@ func PythonFormatCheck() error {
 	if err := runInDir("testdata/python", "uv", args...); err != nil {
 		return fmt.Errorf("generated Python is not ruff-format clean: %w", err)
 	}
-	args = append([]string{"run", "ruff", "check", "--isolated", "--select", "E4,E7,E9,F"}, pythonGeneratedPaths()...)
+	args = append([]string{"run", "ruff", "check", "--isolated", "--select", "E4,E7,E9,F,ARG"}, pythonGeneratedPaths()...)
 	if err := runInDir("testdata/python", "uv", args...); err != nil {
 		return fmt.Errorf("generated Python fails ruff check: %w", err)
 	}

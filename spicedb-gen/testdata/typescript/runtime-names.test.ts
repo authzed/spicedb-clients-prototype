@@ -7,6 +7,7 @@ import { InMemorySpiceDB, InvalidArgumentError, LookupPermissionshipFilter, full
 import {
     TypedClient, Document, User, Team, Organization, Invitation, UserWildcard, NotInSchemaError, SubjectNotAllowedError, PermissionRef, SchemaText,
     Definitions, DefinitionNames, definitionByName, permissionRefByName, subjectSetByName, checksFor, objectByName, parseObject, parseSubject, relationshipFromTriple,
+    TypedTransaction, withSubject, DocumentFilter, TeamMemberType,
     type DefinitionName, type AnyResourceRef, type AnySubject,
 } from "./permissions";
 
@@ -255,5 +256,96 @@ describe("null and undefined from untyped callers", () => {
             await expect((async () => call())(), `call ${i}`).rejects.toThrow(InvalidArgumentError);
         }
         expect(db.calls).toHaveLength(0);
+    });
+});
+
+describe("wrong-typed values from untyped callers", () => {
+    // What a JavaScript caller, or a value cast past the types, can pass:
+    // undefined or null inside an array or object, and a name or ID of the
+    // wrong type. Each is a local validation error before any call, never a
+    // TypeError and never a coerced value sent to the server.
+    const db = new InMemorySpiceDB([]);
+    const tc = new TypedClient(db);
+    const num = 123 as unknown as string;
+    const list = ["document"] as unknown as string;
+    const none = undefined as never;
+    const drain = async (it: AsyncIterable<unknown>) => {
+        for await (const _ of it);
+    };
+    const named = { definition: "document", id: "readme", permission: "view", subject: User("alice") };
+    const calls: [string, () => unknown][] = [
+        ["checkBulkByName with an undefined item", () => tc.checkBulkByName(full(), [none])],
+        ["checkBulkByName with a null item", () => tc.checkBulkByName(full(), [null as never])],
+        ["checkBulkByName with a non-array", () => tc.checkBulkByName(full(), none)],
+        ["checkBulkByName with an undefined subject", () => tc.checkBulkByName(full(), [{ ...named, subject: none }])],
+        ["checkBulkByName with a numeric ID", () => tc.checkBulkByName(full(), [{ ...named, id: num }])],
+        ["checkBulkByName with an array name", () => tc.checkBulkByName(full(), [{ ...named, permission: list }])],
+        ["checkBulkTyped with an undefined item", () => tc.checkBulkTyped(full(), [none])],
+        ["checkBulkTyped with an undefined permission", () => tc.checkBulkTyped(full(), [{ permission: none, subject: User("alice") }])],
+        ["checkBulkTyped with a non-array", () => tc.checkBulkTyped(full(), none)],
+        ["checksFor with an undefined permission", () => checksFor(User("alice"), Document("readme").view, none)],
+        ["check with an undefined permission", () => tc.check(full(), none, User("alice"))],
+        ["check with a number subject", () => tc.check(full(), Document("readme").view, 5 as never)],
+        ["check with a numeric resource ID", () => tc.check(full(), Document(num).view, User("alice"))],
+        ["check with a numeric subject ID", () => tc.check(full(), Document("readme").view, User(num))],
+        ["checkByName with a numeric ID", () => tc.checkByName(full(), "document", num, "view", User("alice"))],
+        ["checkByName with an array definition", () => tc.checkByName(full(), list, "readme", "view", User("alice"))],
+        ["checkByName with a string subject", () => tc.checkByName(full(), "document", "readme", "view", "user:alice" as never)],
+        ["touch with an undefined item", () => tc.touch([Document("readme").viewer(User("alice")), none])],
+        ["touch with a non-array", () => tc.touch(none)],
+        ["delete with a null item", () => tc.delete([null as never])],
+        ["writeTransaction with a null precondition", () => tc.writeTransaction(new TypedTransaction().mustMatch(null as never))],
+        ["writer with a numeric resource ID", () => Document(num).viewer(User("alice")).relationship()],
+        ["writer with a number subject", () => Document("readme").viewer(5 as never).relationship()],
+        ["withExpiration with no date", () => Invitation("i").inviter(User("alice").withExpiration(none))],
+        ["withIpRange with no context", () => User("alice").withIpRange(none)],
+        ["lookupResources with an undefined permission", () => drain(tc.lookupResources(full(), none, User("alice")))],
+        ["lookupResources with a numeric subject ID", () => drain(tc.lookupResources(full(), Document.view, User(num)))],
+        ["lookupResourcesByName with a numeric permission", () => drain(tc.lookupResourcesByName(full(), "document", num, User("alice")))],
+        ["lookupSubjects with an undefined permission", () => drain(tc.lookupSubjects(full(), none, User))],
+        ["lookupSubjects with a string subject type", () => drain(tc.lookupSubjects(full(), Document("readme").view, "user" as never))],
+        ["lookupSubjectsByName with a numeric ID", () => drain(tc.lookupSubjectsByName(full(), "document", num, "view", "user"))],
+        ["lookupSubjectsByName with a numeric subject relation", () => drain(tc.lookupSubjectsByName(full(), "document", "readme", "view", "team", num))],
+        ["readRelationships with an undefined filter", () => drain(tc.readRelationships(full(), none))],
+        ["withSubject with a number subject", () => withSubject(DocumentFilter(), 5 as never)],
+        ["withSubject with an undefined filter", () => withSubject(none, User("alice"))],
+        ["definitionByName with a number", () => definitionByName(num)],
+        ["definitionByName with an array", () => definitionByName(list)],
+        ["permissionRefByName with an array", () => permissionRefByName("document", list)],
+        ["objectByName with a numeric ID", () => objectByName("document", num)],
+        ["subjectSetByName with a numeric ID", () => subjectSetByName("team", num, "member")],
+        ["parseObject with a number", () => parseObject(num)],
+        ["parseSubject with an array", () => parseSubject(list)],
+        ["permissionByName with a number", () => Document("readme").permissionByName(num)],
+        ["relationshipByName with a number subject", () => Document("readme").relationshipByName("viewer", 5 as never)],
+        ["relationshipFromTriple with a numeric relation", () => relationshipFromTriple("document:readme", num, "user:alice")],
+        ["relationshipFromTriple with a null caveat", () => relationshipFromTriple("document:readme", "viewer", "user:alice", { caveat: null as never })],
+        ["relationshipFromTriple with a string expiration", () => relationshipFromTriple("invitation:i", "inviter", "user:alice", { expiration: "tomorrow" as never })],
+    ];
+    for (const [name, call] of calls) {
+        it(`${name} is an InvalidArgumentError`, async () => {
+            const result = (async () => call())();
+            await expect(result).rejects.toThrow(InvalidArgumentError);
+            await expect(result).rejects.not.toThrow(NotInSchemaError);
+            expect(db.calls).toHaveLength(0);
+        });
+    }
+
+    it("still accepts well-typed values", async () => {
+        // The double answers checks from stored relationships, not the schema.
+        const ok = new InMemorySpiceDB([relationship("document:readme", "view", "user:alice")]);
+        const typed = new TypedClient(ok);
+        const results = await typed.checkBulkByName(full(), [named]);
+        expect(results.map((r) => r.hasPermission())).toEqual([true]);
+        expect((await typed.checkBulkTyped(full(), checksFor(User("alice"), Document("readme").view)))[0]!.hasPermission()).toBe(true);
+        await typed.touch([Document("readme").viewer(User("bob"))]);
+        const at = new Date(Date.now() + 60_000);
+        expect(Invitation("i").inviter(User("alice").withExpiration(at)).relationship().expiration).toEqual(at);
+        expect(User("alice").withIpRange({ allowedCidr: "10.0.0.0/8" })._caveatContext).toEqual({ allowed_cidr: "10.0.0.0/8" });
+        expect(UserWildcard().toString()).toBe("user:*");
+        expect(Organization("o").canAdminSubject().withExpiration(at)._expiration).toEqual(at);
+        expect(withSubject(DocumentFilter(), TeamMemberType).subject).toMatchObject({ subjectType: "team" });
+        expect(relationshipFromTriple("invitation:i", "inviter", "user:alice", { expiration: at }).relationship().expiration).toEqual(at);
+        expect(typed.lookupSubjectsByName(full(), "document", "readme", "view", "user", null as never)).toBeDefined();
     });
 });

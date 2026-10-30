@@ -20,7 +20,7 @@ func TestFixturesTypeCheckStrictly(t *testing.T) {
 			CompilerOptions map[string]any `json:"compilerOptions"`
 		}
 		require.NoError(t, json.Unmarshal(raw, &cfg), path)
-		for _, opt := range []string{"strict", "noImplicitAny", "exactOptionalPropertyTypes", "noUncheckedIndexedAccess"} {
+		for _, opt := range []string{"strict", "noImplicitAny", "exactOptionalPropertyTypes", "noUncheckedIndexedAccess", "noUnusedLocals", "noUnusedParameters"} {
 			require.Equal(t, true, cfg.CompilerOptions[opt], "%s must enable %s", path, opt)
 		}
 	}

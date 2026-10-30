@@ -39,6 +39,7 @@ from testdata.permissions import (
     NotInSchemaError,
     Organization,
     Invitation,
+    IpRangeContext,
     OrganizationCanAdmin,
     PermissionRef,
     SchemaObject,
@@ -442,3 +443,98 @@ def test_none_is_local_validation_never_an_attribute_error() -> None:
     for call in calls:
         with pytest.raises(LocalValidationError):
             call()
+
+
+def test_wrong_typed_values_are_local_validation_errors() -> None:
+    """A name or ID of the wrong type (unhashable or not a str) and a value
+    that is not a generated subject, as an untyped caller passes them, raise
+    LocalValidationError before any call: never TypeError, AttributeError or
+    a coerced value sent to the server."""
+    double = InMemoryClient()
+    client = TypedClient(double)
+    bad: Any = ["document"]
+    num: Any = 123
+    calls: list[Callable[[], object]] = [
+        lambda: definition_by_name(bad),
+        lambda: permission_ref_by_name(bad, "view"),
+        lambda: permission_ref_by_name("document", bad),
+        lambda: object_by_name(bad, "readme"),
+        lambda: object_by_name("document", num),
+        lambda: object_by_name("document", bad),
+        lambda: subject_set_by_name("team", "eng", bad),
+        lambda: subject_set_by_name("team", num, "member"),
+        lambda: parse_object(bad),
+        lambda: parse_subject(num),
+        lambda: Document("readme").permission_by_name(bad),
+        lambda: Document("readme").relation_by_name(bad),
+        lambda: Document("readme").relationship_by_name(bad, User("alice")),
+        lambda: Document("readme").relationship_by_name("viewer", num),
+        lambda: Document("readme").viewer(num).to_relationship(),
+        lambda: Document("readme").viewer(bad).to_relationship(),
+        lambda: Document("readme").viewer(Team("eng")).to_relationship(),  # type: ignore[arg-type]
+        lambda: Document("readme").viewer_key(num).to_relationship(),
+        lambda: Document(num).viewer(User("alice")).to_relationship(),
+        lambda: Document("readme").viewer(User(num)).to_relationship(),
+        lambda: with_subject(Document.type_filter(), num),
+        lambda: client.check(full(), Document("readme").view, num),
+        lambda: client.check(full(), Document(num).view, User("alice")),
+        lambda: client.check_by_name(full(), bad, "readme", "view", User("alice")),
+        lambda: client.check_by_name(full(), "document", num, "view", User("alice")),
+        lambda: client.check_by_name(full(), "document", "readme", bad, User("alice")),
+        lambda: client.check_by_name(full(), "document", "readme", "view", num),
+        lambda: client.check_bulk_by_name(full(), [num]),
+        lambda: client.check_bulk_by_name(full(), [("document", "readme", "view")]),  # type: ignore[list-item]
+        lambda: client.check_bulk_by_name(full(), [(bad, "readme", "view", User("alice"))]),
+        lambda: client.check_bulk_by_name(full(), [("document", num, "view", User("alice"))]),
+        lambda: list(client.lookup_resources(full(), DOCUMENT_VIEW, User(num))),
+        lambda: list(client.lookup_resources_by_name(full(), bad, "view", User("alice"))),
+        lambda: list(client.lookup_resources_by_name(full(), "document", bad, User("alice"))),
+        lambda: list(client.lookup_resources_by_name(full(), "document", "view", num)),
+        lambda: list(client.lookup_subjects(full(), Document(num).view, User)),
+        lambda: list(client.lookup_subjects(full(), Document("readme").view, num)),
+        lambda: list(client.lookup_subjects_by_name(full(), bad, "readme", "view", "user")),
+        lambda: list(client.lookup_subjects_by_name(full(), "document", num, "view", "user")),
+        lambda: list(client.lookup_subjects_by_name(full(), "document", "readme", "view", bad)),
+        lambda: list(client.lookup_subjects_by_name(full(), "document", "readme", "view", "team", bad)),
+    ]
+    for i, call in enumerate(calls):
+        with pytest.raises(LocalValidationError):
+            call()
+        assert double.calls() == [], f"call {i} reached the client"
+
+
+def test_writer_names_the_subjects_it_admits() -> None:
+    num: Any = 123
+    err = Document("readme").viewer(num).error
+    assert isinstance(err, LocalValidationError)
+    assert "TeamMember, User, UserIpRange, UserTimeWindow" in str(err)
+    assert "got int" in str(err)
+    key_err = Document("readme").viewer_key(num).error
+    assert isinstance(key_err, LocalValidationError)
+    assert "TeamMember, User" in str(key_err)
+    bad: Any = ["document"]
+    with pytest.raises(LocalValidationError, match="must be a str, got list"):
+        definition_by_name(bad)
+
+
+def test_well_typed_values_still_pass_the_type_checks() -> None:
+    double = InMemoryClient()
+    client = TypedClient(double)
+    assert Document("readme").viewer(User("alice")).error is None
+    assert Document("readme").viewer(TeamMember("eng")).error is None
+    assert Document("readme").viewer_key(User("alice")).error is None
+    assert Invitation("i").grant(OrganizationCanAdmin("o")).error is None
+    # Caveated and expiring variants are generated subjects too.
+    caveated = User("alice").with_ip_range(IpRangeContext(allowed_cidr="10.0.0.0/8"))
+    assert Document("readme").viewer(caveated).error is None
+    expiring = User("alice").with_expiration(datetime(2030, 1, 1, tzinfo=timezone.utc))
+    assert Invitation("i").inviter(expiring).error is None
+    client.check(full(), Document("readme").view, caveated)
+    assert with_subject(Document.type_filter(), User).subject is not None
+    assert with_subject(Document.type_filter(), TeamMember).subject is not None
+    as_list: Any = ["document", "readme", "view", User("alice")]
+    client.check_bulk_by_name(full(), [("document", "readme", "view", User("alice")), as_list])
+    list(client.lookup_subjects(full(), Document("readme").view, User))
+    list(client.lookup_subjects_by_name(full(), "document", "readme", "view", "team", "member"))
+    list(client.lookup_resources(full(), DOCUMENT_VIEW, User("alice")))
+    assert len(double.calls()) == 5

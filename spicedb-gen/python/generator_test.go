@@ -455,6 +455,23 @@ func TestEscapeKeyword(t *testing.T) {
 	assert.Equal(t, "viewer", escapeKeyword("viewer"))
 }
 
+// Writers pass the subject union they admit, so a value that is not one of
+// those subjects is a LocalValidationError naming them, never an
+// AttributeError; by-name lookups type-check names before a dict lookup.
+func TestWritersAndLookupsTypeCheckTheirArguments(t *testing.T) {
+	perms := generate(t, testSchema(t), nil)["permissions.py"]
+	assert.Contains(t, perms, `return _relationship("team", self.id, "member", subject, TeamMemberSubject)`)
+	assert.Contains(t, perms, `"document", self.id, "viewer", subject, DocumentViewerSubject`)
+	assert.Contains(t, perms, `"document", self.id, "viewer", subject, DocumentViewerKeySubject`)
+	assert.NotRegexp(t, `self\.id, "\w+", subject\)`, perms, "every writer passes the subjects it admits")
+	assert.Contains(t, perms, `cls = _DEFINITIONS.get(_require_name(name, "definition name"))`)
+	assert.Contains(t, perms, `_require_name(name, "permission name")`)
+	assert.Contains(t, perms, "if oid is not None and not isinstance(oid, str):")
+	sync := generate(t, testSchema(t), nil)["sync.py"]
+	assert.Contains(t, sync, "requests = _named_checks(checks)")
+	assert.NotContains(t, sync, "ObjectRef(sub_type, sub_id)", "lookups build subjects through _subject, which checks the ID")
+}
+
 func TestCelTypeToPyType(t *testing.T) {
 	for input, expected := range map[string]string{
 		"string": "str", "int": "int", "uint": "int", "double": "float",

@@ -460,6 +460,49 @@ Every client uses a dedicated `ZedToken` value for revisions. Convert stored str
 explicitly and use the token's string conversion when persisting it. Authentication
 credentials and pagination cursors remain distinct from revision tokens.
 
+### Retries
+
+Clients retry only when replaying a request is safe:
+
+- **Reads retry by default** on `UNAVAILABLE` or `ABORTED`, up to three retries,
+  with full-jitter exponential backoff starting at 100 ms. `RESOURCE_EXHAUSTED`
+  is not retried unless you opt in.
+- **Mutations never retry on their own.** A lost response to a committed write
+  would otherwise come back as a confident wrong answer, such as an
+  `ALREADY_EXISTS` for a create that succeeded. You can opt a single call in
+  only where replay is idempotent: a relationship write made only of touches
+  with no preconditions, or a schema write. Creates, deletes, preconditioned
+  writes, imports and counter registration refuse the opt-in before sending
+  anything.
+- **Streams retry only while opening**, before any item reaches you. A
+  partially consumed stream is never restarted, and the client-wide policy
+  never reopens a watch, since a reopened watch with no start revision would
+  silently skip changes. Only a per-call or per-operation policy for watch
+  opts in.
+- **Retries share the call's deadline** (30 seconds by default for unary calls)
+  and its cancellation, so backoff never extends how long a call can take.
+
+A retry policy can be set client-wide, per operation, or per call (the most
+specific wins). It controls max attempts, retryable read codes, backoff, and an
+on-retry callback. A named mode turns retries off entirely for callers that
+apply their own policy. See [DESIGN.md](DESIGN.md#deadlines-cancellation-and-retry)
+for the full rules.
+
+<details>
+<summary>Retry examples in each language</summary>
+
+| Language | Example |
+| --- | --- |
+| Go | [`examples/retry_policy`](spicedb-go/examples/retry_policy/) |
+| TypeScript | [`examples/retry_policy`](spicedb-typescript/examples/retry_policy/) |
+| Python | [`examples/retry_policy`](spicedb-python/examples/retry_policy/) |
+| Java | [`RetryPolicyTest.java`](spicedb-java/examples/src/test/java/com/authzed/spicedb/examples/RetryPolicyTest.java) |
+| C# | [`examples/RetryPolicy`](spicedb-csharp/examples/RetryPolicy/) |
+| Ruby | [`examples/retry_policy`](spicedb-ruby/examples/retry_policy/) |
+| Rust | [`examples/retry_policy.rs`](spicedb-rust/examples/retry_policy.rs) |
+
+</details>
+
 ### Plaintext connections
 
 All clients support authenticated plaintext connections to remote hostnames and IPs

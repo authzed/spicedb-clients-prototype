@@ -41,8 +41,8 @@ func TestMinimalSchemaHasNoEmptyConstructs(t *testing.T) {
 		return
 	}
 	// The output passes mypy --strict, pyright and ruff's unused-import and
-	// syntax checks, and its unused-argument check (ARG), against the real
-	// native client.
+	// syntax checks, unused-argument check (ARG) and line-length check
+	// (E501), against the real native client.
 	if _, err := exec.LookPath("uv"); err != nil {
 		t.Skip("uv not installed")
 	}
@@ -57,7 +57,7 @@ func TestMinimalSchemaHasNoEmptyConstructs(t *testing.T) {
 	for _, args := range [][]string{
 		{"run", "mypy", "--strict", "-p", pkg},
 		{"run", "pyright", pkg},
-		{"run", "ruff", "check", "--isolated", "--select", "E4,E7,E9,F,ARG", pkg},
+		{"run", "ruff", "check", "--isolated", "--line-length", "88", "--select", "E4,E7,E9,F,ARG,E501", pkg},
 	} {
 		cmd := exec.Command("uv", args...)
 		cmd.Dir = "../testdata/python"

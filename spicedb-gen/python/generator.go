@@ -357,19 +357,23 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	}
 
 	tmpl, err := template.New("permissions.py.tmpl").Funcs(template.FuncMap{
-		"alias":      formatAlias,
-		"bracket":    bracket,
-		"tuple":      tuple,
-		"nameTuple":  nameTuple,
-		"assign":     assign,
-		"assignCall": assignCall,
-		"list":       list,
-		"quote":      quote,
-		"textConst":  textConst,
-		"typeArgs":   typeArgs,
-		"defClasses": defClasses,
-		"defNames":   defNames,
-		"setNames":   setNames,
+		"alias":       formatAlias,
+		"bracket":     bracket,
+		"tuple":       tuple,
+		"nameTuple":   nameTuple,
+		"assign":      assign,
+		"assignCall":  assignCall,
+		"list":        list,
+		"quote":       quote,
+		"textConst":   textConst,
+		"doc":         doc,
+		"raiseMsg":    raiseMsg,
+		"returnTuple": returnTuple,
+		"entry":       entry,
+		"typeArgs":    typeArgs,
+		"defClasses":  defClasses,
+		"defNames":    defNames,
+		"setNames":    setNames,
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
@@ -411,8 +415,106 @@ func tidy(b []byte) []byte {
 	for i, l := range lines {
 		lines[i] = strings.TrimRight(l, " \t")
 	}
-	out := blankRuns.ReplaceAllString(strings.Join(lines, "\n"), "\n\n\n")
+	out := blankRuns.ReplaceAllString(strings.Join(markOverlong(lines), "\n"), "\n\n\n")
 	return []byte(strings.TrimRight(out, "\n") + "\n")
+}
+
+// noqaLong is the pragma for a line no layout brings within lineLength.
+const noqaLong = "  # noqa: E501"
+
+// markOverlong appends noqaLong to each line over lineLength that ruff's
+// E501 would report, so projects that enable it lint the generated code
+// clean. The helpers above wrap everything that can be wrapped; what is left
+// is a schema-derived identifier or string too long to fit at its indent,
+// which no layout can break. E501 skips a line of a single word, so those are
+// left alone. An overlong line inside a triple-quoted string marks the line
+// that closes the string, where ruff reads the pragma.
+func markOverlong(lines []string) []string {
+	inString, pending := false, false
+	for i, l := range lines {
+		long := utf8.RuneCountInString(l) > lineLength && len(strings.Fields(l)) > 1
+		toggles := strings.Count(l, `"""`)%2 == 1
+		switch {
+		case inString && toggles:
+			if long || pending {
+				lines[i] += noqaLong
+			}
+			inString, pending = false, false
+		case inString:
+			pending = pending || long
+		case toggles:
+			inString, pending = true, long
+		case long && !strings.HasSuffix(l, noqaLong):
+			lines[i] += noqaLong
+		}
+	}
+	return lines
+}
+
+// doc renders a docstring at indent, wrapped at word boundaries to
+// lineLength. ruff format leaves a docstring's line breaks as written.
+func doc(indent int, text string) string {
+	ind := strings.Repeat(" ", indent)
+	words := strings.Fields(text)
+	words[0] = `"""` + words[0]
+	words[len(words)-1] += `"""`
+	var b strings.Builder
+	line := ind
+	for _, w := range words {
+		switch {
+		case line == ind:
+			line += w
+		case utf8.RuneCountInString(line)+1+utf8.RuneCountInString(w) <= lineLength:
+			line += " " + w
+		default:
+			b.WriteString(line + "\n")
+			line = ind + w
+		}
+	}
+	b.WriteString(line)
+	return b.String()
+}
+
+// raiseMsg renders `raise <exc>(f"<head><tail>")` at indent, where head is
+// schema text (no braces) and tail is f-string text. When neither layout of
+// one literal fits, the message splits into two implicitly concatenated
+// literals, the schema text alone on the first, which ruff format keeps.
+func raiseMsg(indent int, exc, head, tail string) string {
+	msg := "f" + pyStr(head+tail)
+	ind := strings.Repeat(" ", indent)
+	inner := ind + "    " + msg
+	if one := ind + "raise " + exc + "(" + msg + ")"; utf8.RuneCountInString(one) <= lineLength ||
+		utf8.RuneCountInString(inner) <= lineLength {
+		return bracket(indent, "raise "+exc, list(msg), "")
+	}
+	return ind + "raise " + exc + "(\n" + ind + "    " + pyStr(head) + "\n" +
+		ind + "    f" + pyStr(tail) + "\n" + ind + ")"
+}
+
+// entry renders one `"<key>": <value>,` line of a module-level dict literal,
+// parenthesizing a value that does not fit beside its key, as ruff format
+// keeps it.
+func entry(key, value string) string {
+	if one := "    " + quote(key) + ": " + value + ","; utf8.RuneCountInString(one) <= lineLength {
+		return one
+	}
+	return "    " + quote(key) + ": (\n        " + value + "\n    ),"
+}
+
+// returnTuple renders `return a, b, c` at indent; ruff format splits a
+// tuple that does not fit one element per line, with a trailing comma.
+func returnTuple(indent int, items []string) string {
+	ind := strings.Repeat(" ", indent)
+	if one := ind + "return " + strings.Join(items, ", "); utf8.RuneCountInString(one) <= lineLength {
+		return one
+	}
+	var b strings.Builder
+	b.WriteString(ind + "return (\n")
+	for _, item := range items {
+		b.WriteString(ind + "    " + item + ",\n")
+	}
+	b.WriteString(ind + ")")
+	return b.String()
 }
 
 // lineLength is ruff format's default line length.
@@ -582,10 +684,45 @@ func textConst(lhs, text string) string {
 	var b strings.Builder
 	b.WriteString(lhs + " = (\n")
 	for _, p := range parts {
-		b.WriteString("    " + pyStr(p) + "\n")
+		for _, c := range textChunks(p) {
+			b.WriteString("    " + pyStr(c) + "\n")
+		}
 	}
 	b.WriteString(")")
 	return b.String()
+}
+
+// textChunks splits one line of text into pieces whose literals each fit at
+// indent 4, breaking before a space so no literal ends in whitespace. A word
+// too long to fit stays whole, and markOverlong marks its line.
+func textChunks(line string) []string {
+	fits := func(s string) bool { return utf8.RuneCountInString("    "+pyStr(s)) <= lineLength }
+	if fits(line) {
+		return []string{line}
+	}
+	var chunks []string
+	cur := ""
+	rest := line
+	for rest != "" {
+		// The next piece is any leading spaces plus one word.
+		i := 0
+		for i < len(rest) && rest[i] == ' ' {
+			i++
+		}
+		if j := strings.IndexByte(rest[i:], ' '); j >= 0 {
+			i += j
+		} else {
+			i = len(rest)
+		}
+		piece := rest[:i]
+		rest = rest[i:]
+		if cur != "" && !fits(cur+piece) {
+			chunks = append(chunks, cur)
+			cur = ""
+		}
+		cur += piece
+	}
+	return append(chunks, cur)
 }
 
 // subjectRule is the admission key of one allowed subject shape, matching

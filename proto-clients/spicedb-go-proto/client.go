@@ -35,8 +35,13 @@ var ErrInsecureRemoteHost = errors.New("spicedb: insecure connection to a non-lo
 var ErrInvalidEndpoint = errors.New("spicedb: invalid endpoint")
 
 // endpointForms names the accepted endpoint forms in every
-// ErrInvalidEndpoint message.
-const endpointForms = "expected host:port (e.g. localhost:50051), http://host:port (plaintext), https://host[:port] (TLS), dns:///host:port, unix:/path/to.sock or passthrough:///host:port"
+// ErrInvalidEndpoint message. Its one example is left out when the reason
+// already gives one (a bare plaintext host's missing port), so a message
+// never repeats it.
+const (
+	endpointFormsList = "http://host:port (plaintext), https://host[:port] (TLS), dns:///host:port, unix:/path/to.sock or passthrough:///host:port"
+	endpointForms     = "expected host:port (e.g. localhost:50051), " + endpointFormsList
+)
 
 // targetSchemes are the gRPC resolver schemes NewClient dials. Each is a
 // resolver grpc-go registers itself, and each is exercised by a real call
@@ -58,6 +63,14 @@ func resolverTarget(endpoint string) (scheme string, accepted bool) {
 
 func invalidEndpoint(endpoint, reason string) error {
 	return fmt.Errorf("%w %q: %s; %s", ErrInvalidEndpoint, endpoint, reason, endpointForms)
+}
+
+// missingPlaintextPort reports a bare plaintext host without a port. Its
+// reason carries the example (the caller's own host with SpiceDB's usual
+// port), so the forms that follow list host:port without repeating one.
+func missingPlaintextPort(endpoint string) error {
+	example := net.JoinHostPort(strings.TrimSuffix(strings.TrimPrefix(endpoint, "["), "]"), "50051")
+	return fmt.Errorf("%w %q: a plaintext endpoint needs an explicit port, e.g. %s; expected host:port, %s", ErrInvalidEndpoint, endpoint, example, endpointFormsList)
 }
 
 // resolveEndpoint returns the gRPC target NewClient dials for endpoint, or
@@ -119,7 +132,7 @@ func resolveEndpoint(endpoint string, insecure bool) (string, error) {
 	// A bare host follows the URL port rule: plaintext needs an explicit
 	// port, TLS defaults to 443 (grpc-go's DNS resolver appends it).
 	if !hasPort && insecure {
-		return "", invalidEndpoint(endpoint, "a plaintext endpoint needs an explicit port, e.g. localhost:50051")
+		return "", missingPlaintextPort(endpoint)
 	}
 	return endpoint, nil
 }

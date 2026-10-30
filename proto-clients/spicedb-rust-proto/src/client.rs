@@ -73,10 +73,10 @@ pub enum ConnectMode {
 
 #[cfg(unix)]
 const ENDPOINT_FORMS: &str =
-    "expected host:port, http://host:port (plaintext, for example http://host:50051), https://host[:port] (TLS, port 443 by default) or unix:/path/to/socket (plaintext)";
+    "expected host:port, http://host:port (plaintext), https://host[:port] (TLS, port 443 by default) or unix:/path/to/socket (plaintext)";
 #[cfg(not(unix))]
 const ENDPOINT_FORMS: &str =
-    "expected host:port, http://host:port (plaintext, for example http://host:50051) or https://host[:port] (TLS, port 443 by default)";
+    "expected host:port, http://host:port (plaintext) or https://host[:port] (TLS, port 443 by default)";
 
 /// gRPC name-resolver schemes this transport does not implement. tonic dials
 /// one address per channel and has no resolver registry, so a `dns:///` target
@@ -231,8 +231,7 @@ fn validate_form<'a>(
         None if scheme == Some(EndpointScheme::Http) => {
             return Err(invalid_endpoint(
                 endpoint,
-                "an http:// URL needs an explicit port, as in http://host:50051 \
-                 (without one it would dial port 80)",
+                "an http:// URL needs an explicit port, as in http://host:50051 (without one it would dial port 80)",
             ))
         }
         None if insecure => {

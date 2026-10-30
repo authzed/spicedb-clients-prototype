@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A plaintext bare host without a port (`NewPlaintext("localhost", ...)`) fails with one example, built from the host: `a plaintext endpoint needs an explicit port, e.g. localhost:50051; expected host:port, http://host:port (plaintext), ...`. The message used to repeat the example (`...e.g. localhost:50051; expected host:port (e.g. localhost:50051), ...`), and an IP host was shown `localhost` as its example.
 - The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check: permissionship is unset` (it said "is unspecified"), and the docs and comments match. `PermissionshipUnspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** an empty or whitespace-only preshared key fails at construction (`NewPlaintext`, `NewSystemTLS`, `NewWithOpts`) with `ErrInvalidArgument`, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - **Behavior change:** a whitespace-only revision token is rejected like an empty one: `AtLeast`/`Snapshot` strategies and the permission-set revision and watch-start options fail locally with `ErrInvalidArgument`, `AtLeastOrFull`/`AtLeastOrMinLatency` treat it as absent, and `WithUpdatesStart` rejects it (the zero token still starts at the current revision). New `ZedToken.IsBlank` reports either form.

@@ -23,6 +23,11 @@ Reading a file is the caller's one-liner: `pathlib.Path("ca.pem").read_bytes()`.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
+import ssl
+
 import grpc
 
 
@@ -110,3 +115,59 @@ def require_tls_material_usable(
             f"spicedb: {present} was supplied without {missing}: mutual TLS needs both "
             f"halves of the client identity, and neither is usable alone"
         )
+
+    # Material that does not parse fails here, naming the input, rather than
+    # as an unexplained transport failure on the first call. See root
+    # DESIGN.md, "Reject unusable credentials and trust material at
+    # construction".
+    if ca_cert is not None:
+        _require_certificates("ca_cert", ca_cert)
+    if client_cert is not None:
+        _require_certificates("client_cert", client_cert)
+    if client_key is not None:
+        _require_private_key("client_key", client_key)
+
+
+_PEM_KEY = re.compile(
+    rb"-----BEGIN ((?:RSA |EC |ENCRYPTED )?PRIVATE KEY)-----\s*(.+?)\s*-----END \1-----",
+    re.DOTALL,
+)
+
+
+def _require_certificates(name: str, material: bytes) -> None:
+    """Parse ``material`` as PEM X.509 certificates with the stdlib's OpenSSL."""
+    from spicedb.errors import LocalValidationError
+
+    try:
+        text = bytes(material).decode("ascii")
+        if "-----BEGIN CERTIFICATE-----" not in text:
+            raise ValueError("no PEM CERTIFICATE block")
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=text)
+    except (TypeError, ValueError, ssl.SSLError) as e:
+        raise LocalValidationError(
+            f"spicedb: {name} is not a PEM-encoded X.509 certificate ({e}); pass the "
+            f"certificate's PEM bytes, e.g. pathlib.Path('ca.pem').read_bytes()"
+        ) from None
+
+
+def _require_private_key(name: str, material: bytes) -> None:
+    """Check ``material`` is a PEM private key whose body is base64 DER.
+
+    The standard library cannot load a key from memory, so this checks the
+    PEM structure and the DER envelope (an ASN.1 SEQUENCE); grpc then parses
+    the key itself when the channel is built.
+    """
+    from spicedb.errors import LocalValidationError
+
+    try:
+        match = _PEM_KEY.search(bytes(material))
+        if match is None:
+            raise ValueError("no PEM PRIVATE KEY block")
+        der = base64.b64decode(b"".join(match.group(2).split()), validate=True)
+        if not der or der[0] != 0x30:
+            raise ValueError("PEM body is not a DER-encoded key")
+    except (TypeError, ValueError, binascii.Error) as e:
+        raise LocalValidationError(
+            f"spicedb: {name} is not a PEM-encoded private key ({e}); pass the key's "
+            f"PEM bytes, e.g. pathlib.Path('client.key').read_bytes()"
+        ) from None

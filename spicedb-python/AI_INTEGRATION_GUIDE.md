@@ -102,6 +102,11 @@ async with AsyncTypedClient.connect("spicedb.example.com:443", os.environ["SPICE
             ids.append(res.resource_id)
 ```
 
+An empty or whitespace-only `token` (usually an unset environment variable)
+raises `LocalValidationError` at construction, and so do `ca_cert`,
+`client_cert` or `client_key` bytes that do not parse as PEM; the message names
+the argument.
+
 ## Check (fail closed)
 
 ```python

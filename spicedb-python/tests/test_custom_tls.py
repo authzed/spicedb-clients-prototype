@@ -442,3 +442,57 @@ def _check(value):
     if isinstance(value, PermissionCheck):
         return value
     return PermissionCheck(value.resource, value.relation, value.subject)
+
+
+@pytest.mark.parametrize("module", _FLAVORS)
+@pytest.mark.parametrize(
+    ("field", "bad", "says"),
+    [
+        ("ca_cert", b"not a certificate", "ca_cert is not a PEM-encoded X.509 certificate"),
+        (
+            "ca_cert",
+            b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+            "ca_cert is not a PEM-encoded X.509 certificate",
+        ),
+        ("client_cert", b"garbage", "client_cert is not a PEM-encoded X.509 certificate"),
+        ("client_key", b"garbage", "client_key is not a PEM-encoded private key"),
+        (
+            "client_key",
+            b"-----BEGIN PRIVATE KEY-----\n!!!!\n-----END PRIVATE KEY-----\n",
+            "client_key is not a PEM-encoded private key",
+        ),
+    ],
+    ids=["ca_not_pem", "ca_bad_body", "client_cert_not_pem", "client_key_not_pem", "client_key_bad_body"],
+)
+def test_unparseable_tls_material_is_refused_at_construction_naming_the_input(
+    module, certs, field, bad, says, monkeypatch
+):
+    """Material that does not parse fails in the constructor with a local
+    validation error naming the input, never on the first call as a bare
+    transport failure. No channel is built."""
+    from spicedb.errors import LocalValidationError
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a channel must not be created for refused material")
+
+    for name in ("insecure_channel", "secure_channel"):
+        monkeypatch.setattr(grpc, name, explode)
+        monkeypatch.setattr(grpc.aio, name, explode)
+    material = {"ca_cert": certs.ca}
+    if field != "ca_cert":
+        material.update(client_cert=certs.client_cert, client_key=certs.client_key)
+    material[field] = bad
+    with pytest.raises(LocalValidationError, match=says):
+        _client_class(module)("localhost:50116", token=TOKEN, **material)
+
+
+@pytest.mark.parametrize("module", _FLAVORS)
+def test_parseable_tls_material_is_accepted_at_construction(module, certs):
+    """The parse check accepts real PEM material (no connection is made)."""
+    _client_class(module)(
+        "localhost:50116",
+        token=TOKEN,
+        ca_cert=certs.ca,
+        client_cert=certs.client_cert,
+        client_key=certs.client_key,
+    )

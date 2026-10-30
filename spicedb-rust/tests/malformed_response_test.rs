@@ -150,10 +150,7 @@ async fn check_fails_on_an_unset_permissionship() {
         .await
         .expect_err("an unset permissionship is not an answer");
     assert_internal(&err);
-    assert!(
-        err.to_string().contains("permissionship is unset"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("permissionship is unset"), "{err}");
 }
 
 #[tokio::test]

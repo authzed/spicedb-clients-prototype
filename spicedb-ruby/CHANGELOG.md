@@ -10,6 +10,7 @@
 
 ## Unreleased
 
+- `Consistency::Strategy` prints as itself (`full`, `min_latency`, `at_least(<token>)`, `snapshot(<token>)`; `inspect` is `#<SpiceDB::Consistency at_least(<token>)>`) and has `as_json`/`to_json` (`{"strategy":"at_least","token":"<token>"}`; no token for `full` and `min_latency`), like the other native values. It printed the `Data` inspect form with the token as an object id.
 - The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check: permissionship is unset` (it said "is unspecified"), and the docs and comments match. `:unspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Fix:** a `client_key:` from a different key pair than `client_cert:` raises `LocalValidationError` at construction (`client_key does not match client_cert`), instead of failing the first call's TLS handshake. The key is checked against the first certificate in `client_cert:`; any further ones are its chain.
 - **Behavior change:** `ZedToken.new` raises `LocalValidationError` for an empty or whitespace-only string, as a blank token does at construction (before: it built a token that every consistency strategy sent as is). A token in a server response is kept as sent, and any other content, surrounding whitespace included, is still preserved.

@@ -2,6 +2,7 @@
 package consistency
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -58,4 +59,52 @@ func (s Strategy) Validate() error {
 		return fmt.Errorf("explicit consistency and a non-blank revision token required")
 	}
 	return nil
+}
+
+// MarshalText serializes the token as its exact string, so encoding/json
+// writes a ZedToken as a JSON string rather than an empty object.
+func (t ZedToken) MarshalText() ([]byte, error) { return []byte(t.value), nil }
+
+// UnmarshalText restores a token from its exact string.
+func (t *ZedToken) UnmarshalText(text []byte) error {
+	t.value = string(text)
+	return nil
+}
+
+// String names the strategy: "Full", "MinLatency", "AtLeast(<token>)",
+// "Snapshot(<token>)", or "Invalid" for the zero Strategy.
+func (s Strategy) String() string {
+	switch s.kind {
+	case FullyConsistent:
+		return "Full"
+	case MinimizeLatency:
+		return "MinLatency"
+	case AtLeastAsFresh:
+		return "AtLeast(" + s.token.value + ")"
+	case ExactSnapshot:
+		return "Snapshot(" + s.token.value + ")"
+	default:
+		return "Invalid"
+	}
+}
+
+// strategyNames are the "strategy" values of Strategy's JSON form.
+var strategyNames = map[Kind]string{FullyConsistent: "full", MinimizeLatency: "minLatency", AtLeastAsFresh: "atLeast", ExactSnapshot: "snapshot"}
+
+// MarshalJSON writes {"strategy":"atLeast","token":"<token>"}; the token is
+// present only for AtLeast and Snapshot, and the zero Strategy writes
+// {"strategy":"invalid"}. A Strategy never serializes as {}.
+func (s Strategy) MarshalJSON() ([]byte, error) {
+	name, ok := strategyNames[s.kind]
+	if !ok {
+		name = "invalid"
+	}
+	out := struct {
+		Strategy string    `json:"strategy"`
+		Token    *ZedToken `json:"token,omitempty"`
+	}{Strategy: name}
+	if s.kind == AtLeastAsFresh || s.kind == ExactSnapshot {
+		out.Token = &s.token
+	}
+	return json.Marshal(out)
 }

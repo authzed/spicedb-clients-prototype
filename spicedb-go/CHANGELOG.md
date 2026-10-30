@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `consistency.Strategy` has a readable string form (`Full`, `MinLatency`, `AtLeast(<token>)`, `Snapshot(<token>)`) and a JSON form (`{"strategy":"atLeast","token":"<token>"}`; no token for `full` and `minLatency`). It used to print as `{3 {<token>}}` and serialize as `{}`. `consistency.ZedToken` now serializes as its exact string (`MarshalText` and `UnmarshalText`) instead of `{}`, so results carrying a revision serialize it too.
 - A plaintext bare host without a port (`NewPlaintext("localhost", ...)`) fails with one example, built from the host: `a plaintext endpoint needs an explicit port, e.g. localhost:50051; expected host:port, http://host:port (plaintext), ...`. The message used to repeat the example (`...e.g. localhost:50051; expected host:port (e.g. localhost:50051), ...`), and an IP host was shown `localhost` as its example.
 - The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check: permissionship is unset` (it said "is unspecified"), and the docs and comments match. `PermissionshipUnspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** an empty or whitespace-only preshared key fails at construction (`NewPlaintext`, `NewSystemTLS`, `NewWithOpts`) with `ErrInvalidArgument`, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.

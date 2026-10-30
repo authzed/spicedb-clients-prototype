@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `Consistency.toJson()` gives the structured diagnostic form the other native values have: `{"strategy":"atLeast","token":"<token>"}`, with no token for `full` and `minLatency`. `toString()` already named the strategy.
 - The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check response: permissionship is unset` (it said "check response has no permissionship"; lookups likewise), and the docs and comments match. `Permissionship.UNSPECIFIED` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** an empty or whitespace-only preshared key throws `LocalValidationException` at construction (`createPlaintext`, `createSystemTls`, `create`), before any channel is built, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - **Behavior change:** `caCertificate`, `clientCertificate` and `clientKey` are each read and parsed at construction, and a file that cannot be read or does not parse throws `LocalValidationException` naming the option and path (before: one `invalid TLS configuration` message for all three).

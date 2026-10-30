@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `Consistency` is observable: `ToString()` returns `Full`, `MinLatency`, `AtLeast(<token>)` or `Snapshot(<token>)` (it printed `Consistency { }`), and `System.Text.Json` writes `{"strategy":"atLeast","token":"<token>"}` (no token for `full` and `minLatency`) and reads that form back (it wrote `{}` for every strategy). `AtLeastOrFull` and `AtLeastOrMinLatency` show as the strategy they chose.
 - The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `check: client detected malformed response from server: permissionship is unset` (it said "is unspecified"; a bulk item says `bulk response permissionship is unset`), and the docs and comments match. `Permissionship.Unspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** a whitespace-only preshared key throws `InvalidArgumentException` at construction (`CreatePlaintext`, `CreateSystemTls`, `CreateFromChannel`), as an empty one already did, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - `InMemorySpiceDBClient` rejects `Permissionship.Unspecified` with `SetCheckResult was given permissionship Unspecified` (before: `SetCheckResult returned ...`, though it registers a value); a resolver's answer still reads `The check resolver returned ...`.

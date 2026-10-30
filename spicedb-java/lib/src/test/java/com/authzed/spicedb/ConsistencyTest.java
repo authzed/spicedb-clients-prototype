@@ -118,4 +118,24 @@ class ConsistencyTest {
     assertTrue(Consistency.atLeastOrFull(token).toProto().getFullyConsistent());
     assertTrue(Consistency.atLeastOrMinLatency(token).toProto().getMinimizeLatency());
   }
+
+  /** A strategy names itself and its token in its string and structured JSON forms. */
+  @Test
+  void stringAndJsonFormsNameTheStrategy() {
+    var token = new ZedToken("GhUKEzE2");
+    assertEquals("full", Consistency.full().toString());
+    assertEquals("{\"strategy\":\"full\"}", Consistency.full().toJson());
+    assertEquals("minLatency", Consistency.minLatency().toString());
+    assertEquals("{\"strategy\":\"minLatency\"}", Consistency.minLatency().toJson());
+    assertEquals("atLeast(GhUKEzE2)", Consistency.atLeast(token).toString());
+    assertEquals(
+        "{\"strategy\":\"atLeast\",\"token\":\"GhUKEzE2\"}", Consistency.atLeast(token).toJson());
+    assertEquals("snapshot(GhUKEzE2)", Consistency.snapshot(token).toString());
+    assertEquals(
+        "{\"strategy\":\"snapshot\",\"token\":\"GhUKEzE2\"}", Consistency.snapshot(token).toJson());
+    assertEquals(
+        "{\"strategy\":\"atLeast\",\"token\":\"GhUKEzE2\"}",
+        Consistency.atLeastOrFull(token).toJson());
+    assertEquals("{\"strategy\":\"minLatency\"}", Consistency.atLeastOrMinLatency(null).toJson());
+  }
 }

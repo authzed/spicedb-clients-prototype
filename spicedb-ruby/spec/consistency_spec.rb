@@ -109,4 +109,27 @@ RSpec.describe SpiceDB::Consistency do
       expect(a).not_to eq(b)
     end
   end
+
+  # Root DESIGN.md, "Make native values observable and testable without the
+  # server": a strategy prints and serializes as itself and its token.
+  describe 'string and JSON forms' do
+    token = SpiceDB::ZedToken.new('GhUKEzE2')
+    {
+      -> { described_class.full } => ['full', { 'strategy' => 'full' }],
+      -> { described_class.min_latency } => ['min_latency', { 'strategy' => 'min_latency' }],
+      -> { described_class.at_least(token) } => ['at_least(GhUKEzE2)', { 'strategy' => 'at_least', 'token' => 'GhUKEzE2' }],
+      -> { described_class.snapshot(token) } => ['snapshot(GhUKEzE2)', { 'strategy' => 'snapshot', 'token' => 'GhUKEzE2' }],
+      -> { described_class.at_least_or_full(token) } => ['at_least(GhUKEzE2)', { 'strategy' => 'at_least', 'token' => 'GhUKEzE2' }],
+      -> { described_class.at_least_or_min_latency(nil) } => ['min_latency', { 'strategy' => 'min_latency' }]
+    }.each do |build, (text, json)|
+      it "shows #{text}" do
+        cs = build.call
+        expect(cs.to_s).to eq(text)
+        expect(format('%s', cs)).to eq(text)
+        expect(cs.inspect).to eq("#<SpiceDB::Consistency #{text}>")
+        expect(cs.as_json).to eq(json)
+        expect(JSON.parse(cs.to_json)).to eq(json)
+      end
+    end
+  end
 end

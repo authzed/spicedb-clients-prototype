@@ -21,3 +21,16 @@ func TestStrategiesAndOpaqueTokens(t *testing.T) {
 		require.Error(t, s.Validate())
 	}
 }
+
+func TestWhitespaceTokenIsBlank(t *testing.T) {
+	for _, raw := range []string{"", " ", "\t\n "} {
+		token := consistency.NewZedToken(raw)
+		require.True(t, token.IsBlank(), "%q", raw)
+		require.Error(t, consistency.AtLeast(token).Validate(), "%q", raw)
+		require.Error(t, consistency.Snapshot(token).Validate(), "%q", raw)
+		require.Equal(t, consistency.FullyConsistent, consistency.AtLeastOrFull(token).Kind(), "%q", raw)
+		require.Equal(t, consistency.MinimizeLatency, consistency.AtLeastOrMinLatency(token).Kind(), "%q", raw)
+	}
+	require.False(t, consistency.NewZedToken(" opaque ").IsBlank(), "a token is otherwise kept verbatim")
+	require.Equal(t, " opaque ", consistency.NewZedToken(" opaque ").String())
+}

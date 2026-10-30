@@ -124,6 +124,12 @@ metrics) changes. Use `CheckBulk` for several checks.
 Only an unconditional grant satisfies `HasPermission()`. A conditional result
 is not a grant: `result.Permissionship` and `result.MissingContext` say why.
 
+`CheckBulk` fails the whole call on the first per-item error by default.
+`WithBulkItemErrors(client.ItemErrorsReturned)` instead returns every item,
+with a failed item's error on `result.Err` (it never grants). A malformed item
+in the server's response, such as an unset permissionship, is not a per-item
+error and still fails the whole call with `ErrInternal`.
+
 ```go
 // authzed-go
 resp, err := c.CheckPermission(ctx, &v1.CheckPermissionRequest{
@@ -249,7 +255,10 @@ For output that must stay protocol-shaped (JSON for scripts, backup files), use
 ZedTokens are `consistency.ZedToken` values. Store `token.String()` and
 restore it with `consistency.NewZedToken(s)`. Pass them back with
 `consistency.AtLeast(token)` or `consistency.Snapshot(token)`. Writes return
-`client.WriteResult`, whose token is in `.Revision`.
+`client.WriteResult`, whose token is in `.Revision`. An empty or
+whitespace-only token passed to `AtLeast` or `Snapshot` fails locally with
+`ErrInvalidArgument`; `AtLeastOrFull` and `AtLeastOrMinLatency` treat it as
+absent.
 
 ## Testing
 

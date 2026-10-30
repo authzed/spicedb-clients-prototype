@@ -24,7 +24,8 @@ type CheckResult struct {
 	// Err is set only by bulk checks in ItemErrorsReturned mode, for an item
 	// the server (or local validation) could not check. It is a
 	// *BulkCheckError carrying the item's input index. Such a result has
-	// PermissionshipUnspecified and never grants.
+	// PermissionshipUnspecified and never grants. A malformed item in the
+	// server's response is not reported here: it fails the whole call.
 	Err error
 }
 

@@ -104,7 +104,9 @@ if err != nil || !result.HasPermission() {
 ```
 
 - Need to observe a write? Store `written.Revision.String()` and check with
-  `consistency.AtLeast(consistency.NewZedToken(stored))`.
+  `consistency.AtLeast(consistency.NewZedToken(stored))`. A blank (empty or
+  whitespace-only) stored token fails with `ErrInvalidArgument`; use
+  `consistency.AtLeastOrFull` when the token may be absent.
 - Reporting what was denied: `perm.String()` is `organization:acme#view`.
 - Several at once:
 
@@ -114,6 +116,10 @@ results, err := permissions.CheckBulk(ctx, tc, consistency.MinLatency(),
         permissions.Organization("a").View(), permissions.Organization("b").View()))
 // results[i] matches input i; only results[i].HasPermission() grants.
 ```
+
+  `client.WithBulkItemErrors(client.ItemErrorsReturned)` puts per-item errors on
+  `results[i].Err` (never a grant) instead of failing the call; a malformed item
+  in the server's response still fails the whole call with `ErrInternal`.
 
 - Permission names chosen at runtime (e.g. per API method):
 

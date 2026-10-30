@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Behavior change:** a missing (`undefined` or `null`) request, transaction, bulk-check element, import element, reflect-schema filter or watch filter throws `InvalidArgumentError` naming what is missing, before any RPC, in both `SpiceDBClient` and `InMemorySpiceDB`. `check(undefined)`, `write(undefined)` and `readRelationships(undefined)` used to throw a raw `TypeError`, and `checkBulk([undefined])` a `SpiceDBError` wrapping one. A watch, permission-set watch or permission-set download without a request still uses the default request.
 - **Behavior change:** an empty or whitespace-only `token` throws `InvalidArgumentError` at construction, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - **Behavior change:** `tls.caCert`, `tls.clientCert` and `tls.clientKey` are parsed at construction (`X509Certificate` and `createPrivateKey` from `node:crypto`). Material that does not parse throws `InvalidArgumentError` naming the option; before, `node:tls` accepted a non-PEM `caCert` silently and the first call failed its handshake.
 - **Behavior change:** a `tls.clientKey` that does not match `tls.clientCert` throws `InvalidArgumentError` at construction naming both options (checked with `X509Certificate.checkPrivateKey`), instead of failing the first call's handshake.

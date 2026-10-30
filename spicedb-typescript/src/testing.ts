@@ -9,7 +9,7 @@ import { diffSchemas } from "./schemadiff.js";
 import type { SpiceDBClientInterface, SpiceDBProtoClient } from "./client.js";
 import {
     CheckResult, Transaction, filterMatches, immutableSnapshot, jsonSnapshot, nativeRelationshipFields, objectRefToString, positiveLimit, preconditionToString, relationshipToFilter,
-    relationshipToString, subjectRefToString, toProtoRelationship, toProtoRelationshipFilter, protoObject, protoSubject, requireString, optionalString,
+    relationshipToString, subjectRefToString, toProtoRelationship, toProtoRelationshipFilter, protoObject, protoSubject, requireString, optionalString, requireObject, requireObjectArray, requireIterable,
     type CallOptions, type CheckOptions, type CheckRequest, type DeleteAllOptions, type DeleteOptions, type DeleteResult, type ExportedRelationship,
     type ExportRelationshipsRequest, type ImportOptions, type ObjectRef, type Permissionship, type Precondition, type ReadRelationship,
     type ReadRelationshipsRequest, type ReflectSchemaRequest, type ReflectSchemaResult, type Relationship, type RelationshipFilter, type SchemaResult,
@@ -342,6 +342,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     /** Yields matching relationships in identity order, honoring `cursor` and `limit`; each carries its `afterResultCursor`. */
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship> {
         const call = this.#record("readRelationships", request, options);
+        requireObject(request, "readRelationships request");
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
             return failedStream(withResumeCursor(fault, request.cursor));
@@ -357,6 +358,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     /** Yields every relationship (or those matching `filter`) after `cursor`; each carries its `afterResultCursor`. */
     exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship> {
         const call = this.#record("exportRelationships", request, options);
+        requireObject(request, "exportRelationships request");
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
             return failedStream(withResumeCursor(fault, request.cursor));
@@ -373,6 +375,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     /** Adds every relationship in one transaction, as SpiceDB does: if any already exists (or repeats), nothing is added (`AlreadyExistsError`). */
     async importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint> {
         const call = this.#start("importRelationships", relationships, options);
+        requireIterable(relationships, "importRelationships relationships");
         mutationRetry(options?.retryPolicy, undefined, false, "importRelationships");
         const batchSize = positiveLimit(options?.batchSize ?? 1000, "batchSize");
         this.#begin(options);
@@ -427,6 +430,8 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
 
     async #delete(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult> {
         toProtoRelationshipFilter(filter);
+        if (!options)
+            throw new InvalidArgumentError("deleteRelationships options.limit is required");
         const partial = mode(options?.partial, DeletePartial, DeletePartial.Allowed, "partial");
         const limit = partial === DeletePartial.Disallowed && options.limit === undefined ? undefined : positiveLimit(options.limit as number, "limit");
         this.#begin(options);
@@ -457,6 +462,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     /** Stores the schema text; it is not compiled or validated. */
     async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> {
         this.#start("writeSchema", schema, options);
+        requireString(schema, "schema");
         mutationRetry(options?.retryPolicy, undefined, true, "writeSchema");
         this.#begin(options);
         this.#schema = schema;
@@ -466,6 +472,9 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     /** The result registered with {@link InMemorySpiceDB.setReflectSchemaResult}, or `NotFoundError` without one. */
     async reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult> {
         this.#start("reflectSchema", request, options);
+        requireObject(request, "reflectSchema request");
+        if (request.filters != null)
+            requireObjectArray(request.filters, "reflectSchema filters", index => `filters[${index}]`);
         requireConsistency(request.consistency);
         this.#begin(options);
         if (this.#reflection === undefined)
@@ -475,6 +484,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
 
     async check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult> {
         this.#start("check", request, options);
+        requireObject(request, "check request");
         requireCheckShape(request, "");
         this.#begin(options);
         return this.#check(request, options?.context);
@@ -482,6 +492,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
 
     async checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]> {
         this.#start("checkBulk", requests, options);
+        requireObjectArray(requests, "checkBulk requests", index => `check item ${index}: request`);
         requests.forEach((request, index) => requireCheckShape(request, `check item ${index}: `));
         this.#begin(options);
         const results: CheckResult[] = [];
@@ -517,6 +528,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
      */
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource> {
         const call = this.#record("lookupResources", request, options);
+        requireObject(request, "lookupResources request");
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
             return failedStream(withResumeCursor(fault, request.cursor));
@@ -553,6 +565,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
      */
     lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject> {
         const call = this.#record("lookupSubjects", request, options);
+        requireObject(request, "lookupSubjects request");
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
             return failedStream(fault);
@@ -598,6 +611,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
      */
     async diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult> {
         this.#start("diffSchema", request, options);
+        requireObject(request, "diffSchema request");
         requireConsistency(request.consistency);
         this.#begin(options);
         const existing = this.#schema ?? "";
@@ -650,6 +664,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
      */
     #unimplemented<K extends InMemoryOperation>(operation: K, request: InMemoryCallArguments[K]["request"], options: InMemoryCallArguments[K]["options"], idempotent = true): never {
         this.#start(operation, request, options);
+        requireUnimplementedRequest(operation, request);
         if (!idempotent)
             mutationRetry(options?.retryPolicy, undefined, false, operation);
         this.#begin(options);
@@ -658,6 +673,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
     /** The streaming form of `#unimplemented`: the failure surfaces from iteration. */
     #unimplementedStream<K extends InMemoryOperation, T>(operation: K, request: InMemoryCallArguments[K]["request"], options: InMemoryCallArguments[K]["options"]): AsyncIterableIterator<T> {
         const call = this.#record(operation, request, options);
+        requireUnimplementedRequest(operation, request);
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
             return failedStream(fault);
@@ -893,6 +909,45 @@ function partialCaveat(permissionship: Permissionship): { partialCaveat?: { miss
 /** A subject relation, with `...` and the empty string (direct subjects) as `undefined`. */
 function directRelation(relation: string | undefined): string | undefined {
     return relation === undefined || relation === "" || relation === "..." ? undefined : relation;
+}
+/**
+ * The real client's presence checks for an operation the double does not
+ * implement: a required request object (or name and filter) is checked
+ * before the call fails with Unimplemented, so a missing one is
+ * `InvalidArgumentError` here too. Optional requests (watches, downloads)
+ * may be absent.
+ */
+function requireUnimplementedRequest(operation: InMemoryOperation, request: unknown): void {
+    switch (operation) {
+        case "expandPermissionTree":
+        case "computablePermissions":
+        case "dependentRelations":
+        case "experimentalLookupPermissionSets":
+        case "experimentalRoaringLookupResources":
+            requireObject(request, `${operation} request`);
+            return;
+        case "experimentalCountRelationships":
+        case "experimentalUnregisterRelationshipCounter":
+            requireString(request, "name");
+            return;
+        case "experimentalRegisterRelationshipCounter": {
+            const { name, filter } = request as { name: unknown; filter: RelationshipFilter };
+            requireString(name, "name");
+            toProtoRelationshipFilter(filter);
+            return;
+        }
+        case "experimentalCountRelationshipsByFilter":
+            toProtoRelationshipFilter(request as RelationshipFilter);
+            return;
+        case "watch": {
+            const watch = request as WatchRequest | undefined | null;
+            [...(watch?.objectTypes ?? [])].forEach((objectType, index) => requireString(objectType, `objectTypes[${index}]`));
+            watch?.relationshipFilters?.forEach(f => toProtoRelationshipFilter(f));
+            return;
+        }
+        default:
+            return;
+    }
 }
 function requireConsistency(value: Consistency): void {
     if (!(value instanceof Consistency))

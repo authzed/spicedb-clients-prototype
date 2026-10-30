@@ -92,6 +92,11 @@ For an existing `io.grpc.Channel` (in-process, SpiceDB's test server), use
 supplied channel down. `new TypedClient(api)` wraps any `SpiceDBApi`, including
 `InMemorySpiceDB` for unit tests.
 
+An empty or whitespace-only preshared key (usually an unset environment
+variable) throws `LocalValidationException` at construction, and so does a
+`caCertificate`, `clientCertificate` or `clientKey` file that cannot be read or
+parsed; the message names the option and path.
+
 ## Check (fail closed)
 
 ```java

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Behavior change:** an empty or whitespace-only preshared key throws `LocalValidationException` at construction (`createPlaintext`, `createSystemTls`, `create`), before any channel is built, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- **Behavior change:** `caCertificate`, `clientCertificate` and `clientKey` are each read and parsed at construction, and a file that cannot be read or does not parse throws `LocalValidationException` naming the option and path (before: one `invalid TLS configuration` message for all three).
+- Docs: with bulk item errors returned (`BulkItemErrors.RETURNED`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
+
 ### Client-detected errors, unspecified permissionship and validation
 
 - A malformed response's `INTERNAL` message now reads `client detected

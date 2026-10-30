@@ -186,9 +186,10 @@ public final class SpiceDBClient implements SpiceDBApi {
     var parsed = Endpoint.parse(endpoint).forTransport(true, "createSystemTls", "createPlaintext");
     requireInsecureTransportAllowed(
         parsed, true, options.remotePlaintextCredentials() == RemotePlaintextCredentials.ALLOW);
+    var metadata = bearerMetadata(presharedKey);
     var builder = channelBuilder(parsed).usePlaintext();
     channelCustomizer.accept(builder);
-    return ownedClient(parsed, builder.build(), bearerMetadata(presharedKey), options);
+    return ownedClient(parsed, builder.build(), metadata, options);
   }
 
   public static SpiceDBClient createSystemTls(String endpoint, String presharedKey) {
@@ -232,18 +233,37 @@ public final class SpiceDBClient implements SpiceDBApi {
     if (channelCustomizer == null)
       throw new LocalValidationException("channelCustomizer must not be null");
     var parsed = Endpoint.parse(endpoint).forTransport(false, "createSystemTls", "createPlaintext");
+    var metadata = bearerMetadata(presharedKey);
     var builder = nettyBuilder(parsed);
-    try {
-      var tls = io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts.forClient();
-      if (options.caCertificate() != null) tls.trustManager(options.caCertificate().toFile());
-      if (options.clientCertificate() != null)
+    // Each input is parsed on its own so a failure names it, rather than surfacing as an
+    // unexplained handshake failure on the first call. See root DESIGN.md, "Reject unusable
+    // credentials and trust material at construction".
+    var tls = io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts.forClient();
+    if (options.caCertificate() != null) {
+      var ca = requireCertificates("caCertificate", options.caCertificate());
+      tls.trustManager(ca);
+    }
+    if (options.clientCertificate() != null) {
+      requireCertificates("clientCertificate", options.clientCertificate());
+      try {
         tls.keyManager(options.clientCertificate().toFile(), options.clientKey().toFile());
+      } catch (IllegalArgumentException e) {
+        throw new LocalValidationException(
+            "clientKey "
+                + options.clientKey()
+                + " is not a PEM-encoded private key for clientCertificate ("
+                + e.getMessage()
+                + ")",
+            e);
+      }
+    }
+    try {
       builder.sslContext(tls.build());
     } catch (java.io.IOException | IllegalArgumentException e) {
-      throw new LocalValidationException("invalid TLS configuration", e);
+      throw new LocalValidationException("invalid TLS configuration: " + e.getMessage(), e);
     }
     channelCustomizer.accept(builder);
-    return ownedClient(parsed, builder.build(), bearerMetadata(presharedKey), options);
+    return ownedClient(parsed, builder.build(), metadata, options);
   }
 
   /**
@@ -341,6 +361,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                 "create(...) without withInsecure()",
                 "create(..., withInsecure())");
     requireInsecureTransportAllowed(parsed, insecureRequested, allowInsecureRemoteCredentials);
+    var metadata = bearerMetadata(presharedKey);
 
     var builder = testChannelBuilder != null ? testChannelBuilder : channelBuilder(parsed);
     for (ClientOption option : options) {
@@ -349,7 +370,7 @@ public final class SpiceDBClient implements SpiceDBApi {
     return ownedClient(
         parsed,
         builder.build(),
-        bearerMetadata(presharedKey),
+        metadata,
         ClientOptions.builder().defaultTimeout(defaultTimeout).build());
   }
 
@@ -1999,11 +2020,50 @@ public final class SpiceDBClient implements SpiceDBApi {
 
   private static Metadata bearerMetadata(String presharedKey) {
     if (presharedKey == null) throw new LocalValidationException("presharedKey must not be null");
+    // A blank key (usually an unset environment variable) would otherwise be sent as a bare
+    // "Bearer" header the server rejects on the first call.
+    if (presharedKey.isBlank())
+      throw new LocalValidationException(
+          "presharedKey must not be empty or whitespace (check that the variable holding it is"
+              + " set)");
     Metadata metadata = new Metadata();
     metadata.put(
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER),
         "Bearer " + presharedKey);
     return metadata;
+  }
+
+  /**
+   * Reads and parses {@code path} as PEM X.509 certificates, throwing {@link
+   * LocalValidationException} naming {@code input} when it cannot be read or holds none.
+   */
+  private static java.security.cert.X509Certificate[] requireCertificates(
+      String input, java.nio.file.Path path) {
+    byte[] bytes;
+    try {
+      bytes = java.nio.file.Files.readAllBytes(path);
+    } catch (java.io.IOException e) {
+      throw new LocalValidationException(input + " " + path + " cannot be read: " + e, e);
+    }
+    String text = new String(bytes, java.nio.charset.StandardCharsets.US_ASCII);
+    if (!text.contains("-----BEGIN CERTIFICATE-----"))
+      throw new LocalValidationException(
+          input
+              + " "
+              + path
+              + " is not a PEM-encoded X.509 certificate (no PEM CERTIFICATE block)");
+    try {
+      var certificates =
+          java.security.cert.CertificateFactory.getInstance("X.509")
+              .generateCertificates(new java.io.ByteArrayInputStream(bytes));
+      if (certificates.isEmpty())
+        throw new java.security.cert.CertificateException("no certificates found");
+      return certificates.toArray(new java.security.cert.X509Certificate[0]);
+    } catch (java.security.cert.CertificateException e) {
+      throw new LocalValidationException(
+          input + " " + path + " is not a PEM-encoded X.509 certificate (" + e.getMessage() + ")",
+          e);
+    }
   }
 
   @FunctionalInterface

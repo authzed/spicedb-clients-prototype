@@ -52,10 +52,16 @@ variable) throws `InvalidArgumentException` at construction.
 
 `SpiceDB.Client.CallOptions` and `Grpc.Core.CallOptions` share a name, so a file that imports
 both namespaces (for example one with a custom `CallInvoker` passed to
-`CreateFromCallInvoker`) fails with CS0104. Alias this library's type there:
+`CreateFromCallInvoker`) fails with CS0104 wherever it writes `CallOptions`. Aliasing only
+this library's type does not help, because both namespace imports stay in scope. Alias the
+bare name to the type you mean there (a using-alias takes precedence over namespace
+imports), and give the other type its own alias if the file needs it too:
 
 ```csharp
-using SpiceDBCallOptions = SpiceDB.Client.CallOptions;
+using Grpc.Core;
+using SpiceDB.Client;
+using CallOptions = Grpc.Core.CallOptions;             // CallInvoker overrides
+using SpiceDBCallOptions = SpiceDB.Client.CallOptions; // per-call options for this client
 ```
 
 ## Check (fail closed)
@@ -73,7 +79,8 @@ catch (SpiceDBException) { throw new ForbiddenException(); } // errors deny too
 ```
 
 - Need to observe a write? Store `written.Revision.Value` and check with
-  `Consistency.AtLeast(new ZedToken(stored))`.
+  `Consistency.AtLeast(new ZedToken(stored))`. An empty or whitespace-only stored token
+  throws `InvalidArgumentException`; `Consistency.AtLeastOrFull(...)` falls back instead.
 - Reporting what was denied: `$"{resource}#{permission}"` prints `organization:acme#view`
   (`ObjectRef.ToString()` is `type:id`).
 - Several at once (results stay in input order; only `HasPermission` grants):

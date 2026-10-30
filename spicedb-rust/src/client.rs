@@ -253,6 +253,7 @@ impl SpiceDBClientBuilder {
     /// names the endpoint and the cause (refused, DNS, TLS).
     pub async fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
         self.exec.validate()?;
+        require_usable_token(&self.token)?;
         let plaintext = match self.transport {
             TransportChoice::Plaintext => true,
             TransportChoice::SystemTls => false,
@@ -277,6 +278,20 @@ impl SpiceDBClientBuilder {
         .map_err(|e| proto_client_error(e, Some(&self.endpoint)))?;
         self.exec.into_client(proto)
     }
+}
+
+/// Refuses an empty or whitespace-only token (usually an unset environment
+/// variable), which would otherwise be sent as a bare `Bearer` header the
+/// server rejects on the first call. See root DESIGN.md, "Reject unusable
+/// credentials and trust material at construction".
+fn require_usable_token(token: &str) -> Result<(), SpiceDBError> {
+    if token.trim().is_empty() {
+        return Err(invalid(
+            "token",
+            "must not be empty or whitespace (check that the variable holding it is set)",
+        ));
+    }
+    Ok(())
 }
 
 /// `endpoint` names what was being dialed in a transport failure's message
@@ -346,6 +361,9 @@ impl SpiceDBChannelBuilder {
 
     /// Builds the client. Nothing is dialed: the channel is used as supplied.
     pub fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
+        if let Some(token) = &self.token {
+            require_usable_token(token)?;
+        }
         let proto = SpiceDBProtoClient::from_channel(self.channel, self.token.as_deref())
             .map_err(|e| proto_client_error(e, None))?;
         self.exec.into_client(proto)

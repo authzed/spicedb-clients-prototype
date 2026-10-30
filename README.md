@@ -450,20 +450,6 @@ results yielded after filtering, and pagination continues through skipped result
 
 ## Behavior shared by every client
 
-### Testing without a server
-
-Every client ships an in-memory test double that implements the client's full
-interface: it records calls, accepts fault injection, resolves checks from
-registered results, a resolver callback or stored relationships, and serves
-lookups. Each language's README and AI integration guide show its use.
-
-The doubles do not evaluate your schema. A computed permission such as
-`view = reader + writer + parent->read` is granted only by a stored
-relationship named `view` or by a resolver you install. Projects whose
-permissions are all computed get little from stored-relationship grants;
-model them with the resolver, or test the permission logic against SpiceDB
-itself (`spicedb serve-testing` or a container).
-
 ### Revision tokens
 
 Every relationship write returns a native `WriteResult` containing its revision

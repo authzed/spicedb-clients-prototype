@@ -61,7 +61,15 @@ def _object(object_type: str, object_id: str) -> ObjectRef:
     return ObjectRef(object_type, object_id)
 
 
+def _require_subject(subject: Subject | type[Subject]) -> None:
+    """Rejects a missing subject (None from an untyped caller) as local
+    validation, before an attribute lookup on it."""
+    if subject is None:
+        raise LocalValidationError("subject is required")
+
+
 def _subject(subject: Subject) -> SubjectRef:
+    _require_subject(subject)
     sub_type, sub_id, sub_rel = subject._subject_ref()
     return SubjectRef(_object(sub_type, sub_id), sub_rel or None)
 
@@ -172,6 +180,7 @@ def with_subject(f: Filter, subject: Subject | type[Subject]) -> Filter:
     team:eng#member. Use with_subject_any_relation to leave the subject
     relation unconstrained.
     """
+    _require_subject(subject)
     if isinstance(subject, type):
         sub_type, sub_id, sub_rel = subject._type, None, subject._relation
     else:
@@ -190,6 +199,7 @@ def with_subject(f: Filter, subject: Subject | type[Subject]) -> Filter:
 def with_subject_any_relation(f: Filter, subject: Subject | type[Subject]) -> Filter:
     """Narrow f to subject's type and ID (unless subject is a class), matching
     any subject relation, direct or userset."""
+    _require_subject(subject)
     if isinstance(subject, type):
         sub_type, sub_id = subject._type, None
     else:
@@ -273,6 +283,7 @@ def _relationship(
     resource_type: str, resource_id: str, relation: str, subject: Subject
 ) -> TypedRelationship:
     try:
+        _require_subject(subject)
         caveat = subject._caveat_info()
         r = Relationship(
             resource=_object(resource_type, resource_id),
@@ -796,6 +807,13 @@ def relationship_from_triple(
     NotInSchemaError for an unknown definition or relation, and
     SubjectNotAllowedError for a subject the relation does not admit.
     """
+    for name, value in (
+        ("resource", resource),
+        ("relation", relation),
+        ("subject", subject),
+    ):
+        if not isinstance(value, str):
+            raise LocalValidationError(f"{name} is required")
     r = Relationship.from_triple(
         resource, relation, subject, caveat=caveat, expiration=expiration
     )

@@ -85,6 +85,46 @@ class RuntimeEntryPointsTest {
     }
   }
 
+  /** A null name, ID or subject is a local-validation error, never a NullPointerException. */
+  @Test
+  void nullsAreLocalValidation() {
+    var db = new InMemorySpiceDB();
+    try (var typed = new TypedClient(db)) {
+      var c = Consistency.full();
+      List<org.junit.jupiter.api.function.Executable> calls =
+          List.of(
+              () -> definitionByName(null),
+              () -> objectByName(null, "x"),
+              () -> objectByName("document", null),
+              () -> parseObject(null),
+              () -> parseSubject(null),
+              () -> subjectSetByName(null, "eng", "member"),
+              () -> subjectSetByName("team", null, "member"),
+              () -> subjectSetByName("team", "eng", null),
+              () -> permissionRefByName("document", null),
+              () -> relationshipFromTriple(null, "viewer", "user:alice"),
+              () -> relationshipFromTriple("document:readme", null, "user:alice"),
+              () -> relationshipFromTriple("document:readme", "viewer", null),
+              () -> Document(null).viewer(User("alice")).toRelationship(),
+              () -> typed.check(c, Document(null).view(), User("alice")),
+              () -> Document("readme").view().forSubject(null),
+              () -> withSubject(Document("readme").filter(), null),
+              () -> typed.check(c, Document("readme").view(), null),
+              () -> typed.checkByName(c, null, "readme", "view", User("alice")),
+              () -> typed.checkByName(c, "document", null, "view", User("alice")),
+              () -> typed.checkByName(c, "document", "readme", null, User("alice")),
+              () -> typed.checkByName(c, "document", "readme", "view", null),
+              () -> drain(typed.lookupResourcesByName(c, "document", "view", null)),
+              () -> drain(typed.lookupSubjectsByName(c, "document", null, "view", "user")),
+              () -> drain(typed.lookupSubjectsByName(c, "document", "readme", "view", null)),
+              () -> new TypedClient(null));
+      for (var i = 0; i < calls.size(); i++) {
+        assertThrows(LocalValidationException.class, calls.get(i), "call " + i);
+      }
+    }
+    assertTrue(db.calls().isEmpty());
+  }
+
   @Test
   void schemaErrorsAreLocalValidation() {
     var db = new InMemorySpiceDB();

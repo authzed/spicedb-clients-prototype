@@ -411,6 +411,7 @@ class TypedClient:
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupResource]:
+        _require_subject(s)
         sub_type, sub_id, sub_rel = s._subject_ref()
         return self.client.lookup_resources(
             resource_type=p._resource_type,
@@ -455,6 +456,7 @@ class TypedClient:
         reachable type in a shape the schema does not admit (a wildcard)
         raises SubjectNotAllowedError.
         """
+        _require_subject(s)
         target = _lookup_target(resource_type, "", permission)
         if not _reaches(target, s._type, s._relation):
             return {{$stream}}[LookupResource](_no_results)

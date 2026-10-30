@@ -160,7 +160,7 @@ class RuntimeNamesTest {
         assertEquals(0, none.count());
       }
       assertThrows(
-          NullPointerException.class,
+          com.authzed.spicedb.errors.LocalValidationException.class,
           () -> typed.lookupResourcesByName(Consistency.full(), "document", "view", null));
     }
     assertTrue(db.callsOf(ClientOperation.LOOKUP_RESOURCES).isEmpty());

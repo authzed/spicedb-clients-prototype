@@ -76,7 +76,23 @@ export type SubjectType =
     | ((id: string) => { readonly _type: string })
     | { readonly _type: string; readonly _relation: string };
 
+/**
+ * Rejects a missing string (null or undefined from an untyped caller) as a
+ * local validation error, before it reaches a string method.
+ */
+function requireText(value: string, what: string): string {
+    if (typeof value !== "string") throw new InvalidArgumentError(`${what} is required`);
+    return value;
+}
+
+/** Rejects a missing subject (null or undefined from an untyped caller) as a local validation error. */
+function requireSubject<S extends AnySubject>(subject: S): S {
+    if (subject === null || subject === undefined) throw new InvalidArgumentError("subject is required");
+    return subject;
+}
+
 function subjectRef(subject: AnySubject): SubjectRef {
+    requireSubject(subject);
     return {
         object: { objectType: subject._type, objectId: subject._id },
         ...(subject._relation === undefined ? {} : { relation: subject._relation }),
@@ -123,6 +139,7 @@ export class Permission<T extends string = string, P extends string = string> {
     /** The native check request for `subject`; a caveated subject's context becomes the check's context. */
     checkRequest(subject: AnySubject, consistency: Consistency, context?: JSONObject): CheckRequest {
         if (!this._id) throw new InvalidArgumentError(`${this._type}: resource ID must be nonempty`);
+        requireSubject(subject);
         const merged = subject._caveatContext === undefined ? context : { ...context, ...subject._caveatContext };
         return {
             resource: { objectType: this._type, objectId: this._id },
@@ -261,6 +278,7 @@ function nativeRelationship(
     identityOnly: boolean,
 ): Relationship {
     if (!id) throw new InvalidArgumentError(`${type}#${relation}: resource ID must be nonempty`);
+    requireSubject(subject);
     if (!subject._id) throw new InvalidArgumentError(`${type}#${relation}: subject ID must be nonempty`);
     const caveat =
         identityOnly || subject._caveat === undefined
@@ -321,6 +339,7 @@ function resourceFilter(type: string, id: string, relation?: string): Relationsh
  * `withSubjectAnyRelation` to leave the subject relation unconstrained.
  */
 export function withSubject(filter: RelationshipFilter, subject: AnySubject | SubjectType): RelationshipFilter {
+    if (subject === null || subject === undefined) throw new InvalidArgumentError("subject is required");
     if (typeof subject === "function")
         return {
             ...filter,
@@ -355,6 +374,7 @@ export function withSubjectAnyRelation(
     filter: RelationshipFilter,
     subject: AnySubject | SubjectType,
 ): RelationshipFilter {
+    if (subject === null || subject === undefined) throw new InvalidArgumentError("subject is required");
     if (typeof subject === "function") return { ...filter, subject: { subjectType: subject("")._type } };
     if (!("_ref" in subject)) return { ...filter, subject: { subjectType: subject._type } };
     return { ...filter, subject: { subjectType: subject._type, subjectId: subject._id } };
@@ -367,6 +387,7 @@ function permissionByName<T extends string, P extends string>(
     name: string,
     what: string,
 ): Permission<T, P> {
+    requireText(name, what);
     if (!(known as readonly string[]).includes(name))
         throw new NotInSchemaError(`${type} has no ${what} named "${name}"`);
     return new Permission(type, id, name as P);
@@ -379,8 +400,11 @@ function relationshipByName(
     relation: string,
     subject: AnySubject,
 ): TypedRelationship {
-    const refs = Object.prototype.hasOwnProperty.call(allowed, relation) ? allowed[relation] : undefined;
+    const refs = Object.prototype.hasOwnProperty.call(allowed, requireText(relation, "relation"))
+        ? allowed[relation]
+        : undefined;
     if (refs === undefined) throw new NotInSchemaError(`${type} has no relation named "${relation}"`);
+    requireSubject(subject);
     if (!refs.includes(subject._ref))
         throw new SubjectNotAllowedError(
             `${type}#${relation} does not admit ${subject._ref} (${subjectString(subject)})`,
@@ -1160,6 +1184,7 @@ function definitionInfo<T extends DefinitionName>(
         permissionNames,
         ref: (id: string) => ref(id),
         permissionRef: (permission: string) => {
+            requireText(permission, "permission");
             if (!permissionNames.includes(permission))
                 throw new NotInSchemaError(`${name} has no permission named "${permission}"`);
             return new PermissionRef(name, permission);
@@ -1177,7 +1202,9 @@ const definitionInfos: Readonly<Record<string, DefinitionInfo>> = Object.freeze(
 
 /** The definition named `name`; throws NotInSchemaError for names not in the schema. */
 export function definitionByName(name: string): DefinitionInfo {
-    const info = Object.prototype.hasOwnProperty.call(definitionInfos, name) ? definitionInfos[name] : undefined;
+    const info = Object.prototype.hasOwnProperty.call(definitionInfos, requireText(name, "definition name"))
+        ? definitionInfos[name]
+        : undefined;
     if (info === undefined) throw new NotInSchemaError(`schema has no definition named "${name}"`);
     return info;
 }
@@ -1203,6 +1230,7 @@ const subjectSetMakers: Readonly<Record<string, (id: string) => AnySubjectSet>> 
  */
 export function subjectSetByName(definition: string, id: string, relation: string): AnySubjectSet {
     const info = definitionByName(definition);
+    requireText(relation, "relation");
     const key = `${definition}#${relation}`;
     const make = Object.prototype.hasOwnProperty.call(subjectSetMakers, key) ? subjectSetMakers[key] : undefined;
     if (make !== undefined) {
@@ -1219,7 +1247,7 @@ function requireId(type: string, id: string): void {
 }
 
 function objectText(text: string, what: string): { readonly type: string; readonly id: string } {
-    const i = text.indexOf(":");
+    const i = requireText(text, what).indexOf(":");
     if (i < 1 || i === text.length - 1) throw new InvalidArgumentError(`invalid ${what} (want type:id): ${text}`);
     return { type: text.slice(0, i), id: text.slice(i + 1) };
 }
@@ -1256,7 +1284,7 @@ export function parseObject(text: string): AnyResourceRef {
  * a subject, or a wildcard the schema never allows.
  */
 export function parseSubject(text: string): AnyResourceRef | AnySubjectSet | UserWildcardRef {
-    const hash = text.indexOf("#");
+    const hash = requireText(text, "subject").indexOf("#");
     const relation = hash < 0 ? undefined : text.slice(hash + 1);
     if (relation === "") throw new InvalidArgumentError(`invalid subject (empty relation): ${text}`);
     const { type, id } = objectText(hash < 0 ? text : text.slice(0, hash), "subject");
@@ -1317,7 +1345,7 @@ export function relationshipFromTriple(
     options?: TripleOptions,
 ): TypedRelationship {
     const r = objectText(resource, "resource");
-    const hash = subject.indexOf("#");
+    const hash = requireText(subject, "subject").indexOf("#");
     const rawRelation = hash < 0 ? undefined : subject.slice(hash + 1);
     if (rawRelation === "") throw new InvalidArgumentError(`invalid subject (empty relation): ${subject}`);
     const subjectRelation = rawRelation === "..." ? undefined : rawRelation;
@@ -1394,6 +1422,7 @@ function subjectPosition(subject: AnySubject): string {
 /** Validates a definition and one of its relation or permission names. */
 function resolveByName(definition: string, name: string): void {
     const info = definitionByName(definition);
+    requireText(name, "permission or relation name");
     if (!info.relationNames.includes(name) && !info.permissionNames.includes(name))
         throw new NotInSchemaError(`${definition} has no permission or relation named "${name}"`);
 }
@@ -1407,7 +1436,7 @@ async function* noResults<T>(): AsyncGenerator<T, void, undefined> {}
  */
 function reachable(definition: string, name: string, s: AnySubject): boolean {
     resolveByName(definition, name);
-    definitionByName(s._type);
+    definitionByName(requireSubject(s)._type);
     if (!reaches(definition, name, subjectPosition(s))) return false;
     if (s._id === "*")
         throw new SubjectNotAllowedError(
@@ -1756,7 +1785,7 @@ export class TypedClient {
                 ...(relation === undefined ? {} : { subjectRelation: relation }),
                 subjectType: type,
                 permission,
-                resource: { objectType: definition, objectId: id },
+                resource: { objectType: definition, objectId: requireText(id, "id") },
                 consistency: c,
             },
             options,

@@ -547,24 +547,28 @@ func {{$def.PascalName}}PermissionNames() []string {
 // PermissionByName returns the named permission on this {{$def.Name}}, or an
 // error wrapping ErrNotInSchema.
 func (d {{$def.PascalName}}Ref) PermissionByName(name string) (Permission, error) {
+{{- if $def.Permissions}}
 	switch name {
 {{- range $perm := $def.Permissions}}
 	case "{{$perm.Name}}":
 		return d.{{$perm.PascalName}}(), nil
 {{- end}}
 	}
+{{- end}}
 	return Permission{}, fmt.Errorf("%w: {{$def.Name}} has no permission %q", ErrNotInSchema, name)
 }
 
 // RelationByName returns a checkable Permission for the named relation on
 // this {{$def.Name}}, or an error wrapping ErrNotInSchema.
 func (d {{$def.PascalName}}Ref) RelationByName(name string) (Permission, error) {
+{{- if $def.Relations}}
 	switch name {
 {{- range $r := $def.Relations}}
 	case "{{$r.Name}}":
 		return d.{{$r.CheckMethod}}(), nil
 {{- end}}
 	}
+{{- end}}
 	return Permission{}, fmt.Errorf("%w: {{$def.Name}} has no relation %q", ErrNotInSchema, name)
 }
 
@@ -572,6 +576,8 @@ func (d {{$def.PascalName}}Ref) RelationByName(name string) (Permission, error) 
 // {{$def.Name}}. It fails with ErrNotInSchema for an unknown relation and
 // ErrSubjectNotAllowed for a subject the relation does not admit.
 func (d {{$def.PascalName}}Ref) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
+{{- $writable := false}}{{range $r := $def.Relations}}{{if $r.HasSubjects}}{{$writable = true}}{{end}}{{end}}
+{{- if $writable}}
 	switch relation {
 {{- range $r := $def.Relations}}
 {{- if $r.HasSubjects}}
@@ -585,6 +591,7 @@ func (d {{$def.PascalName}}Ref) RelationshipByName(relation string, subject Subj
 {{- end}}
 {{- end}}
 	}
+{{- end}}
 	return TypedRelationship{}, fmt.Errorf("%w: {{$def.Name}} has no relation %q", ErrNotInSchema, relation)
 }
 {{range $sr := $def.SubRefMethods}}
@@ -766,6 +773,7 @@ func SubjectSetByName(definition, id, relation string) (Subject, error) {
 	if err != nil {
 		return nil, err
 	}
+{{- if .SubjectSets}}
 	switch definition + "#" + relation {
 {{- range .SubjectSets}}
 	case "{{.Position}}":
@@ -775,6 +783,7 @@ func SubjectSetByName(definition, id, relation string) (Subject, error) {
 		return {{.RefType}}{id: id}, nil
 {{- end}}
 	}
+{{- end}}
 	if !d.has(relation) {
 		return nil, fmt.Errorf("%w: %s has no relation or permission %q", ErrNotInSchema, definition, relation)
 	}
@@ -834,12 +843,15 @@ func ParseSubject(text string) (Subject, error) {
 	if _, err := DefinitionByName(definition); err != nil {
 		return nil, err
 	}
+{{- $wildcards := false}}{{range .Definitions}}{{if .WildcardType}}{{$wildcards = true}}{{end}}{{end}}
+{{- if $wildcards}}
 	switch definition {
 {{- range .Definitions}}{{if .WildcardType}}
 	case "{{.Name}}":
 		return {{.PascalName}}Wildcard(), nil
 {{- end}}{{end}}
 	}
+{{- end}}
 	return nil, fmt.Errorf("%w: %s:* is not a subject anywhere in the schema", ErrNotInSchema, definition)
 }
 

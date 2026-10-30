@@ -9,6 +9,7 @@ client it uses in tests wraps the in-memory double.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Callable
 
 import pytest
 from datetime import datetime, timezone
@@ -56,6 +57,7 @@ from testdata.permissions import (
     permission_ref_by_name,
     relationship_from_triple,
     subject_set_by_name,
+    with_subject,
 )
 from testdata.sync import TypedClient
 
@@ -409,3 +411,34 @@ async def test_async_typed_client_ready_forwards_to_the_double():
     await client.ready(timeout=1.0)
     with pytest.raises(InvalidArgumentError, match="timeout"):
         await client.ready(timeout=0)
+
+
+def test_none_is_local_validation_never_an_attribute_error() -> None:
+    """None for a name, ID or subject, as an untyped caller passes it, raises
+    LocalValidationError, the error the native client raises for it."""
+    client = TypedClient(InMemoryClient())
+    none: Any = None
+    calls: list[Callable[[], object]] = [
+        lambda: definition_by_name(none),
+        lambda: permission_ref_by_name("document", none),
+        lambda: object_by_name("document", none),
+        lambda: parse_object(none),
+        lambda: parse_subject(none),
+        lambda: subject_set_by_name("team", "eng", none),
+        lambda: relationship_from_triple(none, "viewer", "user:alice"),
+        lambda: relationship_from_triple("document:readme", none, "user:alice"),
+        lambda: relationship_from_triple("document:readme", "viewer", none),
+        lambda: with_subject(Document.type_filter(), none),
+        lambda: Document("readme").viewer(none).to_relationship(),
+        lambda: client.check(full(), Document("readme").view, none),
+        lambda: client.check_by_name(full(), none, "readme", "view", User("alice")),
+        lambda: client.check_by_name(full(), "document", none, "view", User("alice")),
+        lambda: client.check_by_name(full(), "document", "readme", none, User("alice")),
+        lambda: client.check_by_name(full(), "document", "readme", "view", none),
+        lambda: list(client.lookup_resources(full(), DOCUMENT_VIEW, none)),
+        lambda: list(client.lookup_resources_by_name(full(), "document", "view", none)),
+        lambda: list(client.lookup_subjects_by_name(full(), "document", none, "view", "user")),
+    ]
+    for call in calls:
+        with pytest.raises(LocalValidationError):
+            call()

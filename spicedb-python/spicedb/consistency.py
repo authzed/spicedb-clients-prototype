@@ -38,6 +38,19 @@ class Consistency:
         elif self.token is not None:
             raise LocalValidationError("consistency: this mode does not accept a token")
 
+    def __str__(self) -> str:
+        """``full()``, ``min_latency()``, ``at_least(<token>)`` or ``snapshot(<token>)``."""
+        name = self.strategy.name.lower()
+        return f"{name}({'' if self.token is None else _token_string(self.token)})"
+
+    def to_dict(self) -> dict[str, str]:
+        """A JSON-compatible form: ``{"strategy": "at_least", "token": "<token>"}``,
+        with no ``token`` for ``full`` and ``min_latency``."""
+        value = {"strategy": self.strategy.name.lower()}
+        if self.token is not None:
+            value["token"] = _token_string(self.token)
+        return value
+
     def _to_proto(self) -> permission_service_pb2.Consistency:
         if self.strategy in (ConsistencyMode.FULL, ConsistencyMode.MIN_LATENCY):
             return permission_service_pb2.Consistency(**{self.strategy.value: True})

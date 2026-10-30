@@ -277,7 +277,7 @@ impl SpiceDBError {
     }
 
     /// `true` when this client detected the failure in a response it could
-    /// not interpret (a missing required field, an unspecified permissionship,
+    /// not interpret (a missing required field, an unset permissionship,
     /// a cursor that does not advance), rather than the server returning an
     /// error status. Such errors have code `Internal`, no
     /// [`status`](Self::status), and `Display` as

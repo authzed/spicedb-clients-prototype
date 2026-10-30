@@ -66,12 +66,12 @@ module SpiceDB
 
     # SpiceDB always sets a check's, a looked-up resource's and a looked-up
     # subject's permissionship,
-    # so UNSPECIFIED there is a malformed response, never an :unspecified
+    # so an unset one there is a malformed response, never an :unspecified
     # result a caller could mistake for a definite answer.
     def required_permissionship!(value, what)
       return unless [:PERMISSIONSHIP_UNSPECIFIED, :LOOKUP_PERMISSIONSHIP_UNSPECIFIED, 0, nil].include?(value)
 
-      raise malformed_response("#{what}: permissionship is unspecified")
+      raise malformed_response("#{what}: permissionship is unset")
     end
 
     def partial_caveat_from_proto(v)

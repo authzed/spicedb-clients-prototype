@@ -118,9 +118,9 @@ RSpec.describe 'malformed responses' do
     expect_internal(/\Aspicedb: client detected malformed response from server: relationship is missing\z/, calls) { run.call }
   end
 
-  # Root DESIGN.md: an unspecified enum the server always sets, such as a
+  # Root DESIGN.md: an unset enum the server always sets, such as a
   # check's permissionship, is a malformed response, never :unspecified.
-  describe 'an unspecified permissionship' do
+  describe 'an unset permissionship' do
     let(:check) { SpiceDB::PermissionCheck.new(resource: readme, permission: 'view', subject: alice) }
 
     def serve_unary(method, &respond)
@@ -136,7 +136,7 @@ RSpec.describe 'malformed responses' do
 
     it 'fails a check with INTERNAL' do
       calls = serve_unary(:check_permission) { Authzed::Api::V1::CheckPermissionResponse.new(permissionship: :PERMISSIONSHIP_UNSPECIFIED) }
-      expect_internal(/client detected malformed response from server: check: permissionship is unspecified/, calls) do
+      expect_internal(/client detected malformed response from server: check: permissionship is unset/, calls) do
         client.check(check, consistency: SpiceDB::Consistency.full)
       end
     end
@@ -151,7 +151,7 @@ RSpec.describe 'malformed responses' do
             )
           end)
         end
-        expect_internal(/client detected malformed response from server: check item 1: permissionship is unspecified/, calls) do
+        expect_internal(/client detected malformed response from server: check item 1: permissionship is unset/, calls) do
           client.check_bulk([check, check], consistency: SpiceDB::Consistency.full, item_errors: mode)
         end
       end
@@ -164,7 +164,7 @@ RSpec.describe 'malformed responses' do
                       Authzed::Api::V1::LookupResourcesResponse.new(resource_object_id: 'b', after_result_cursor: cursor)
                     ])
       seen = []
-      expect_internal(/client detected malformed response from server: lookup_resources: permissionship is unspecified/, calls) do
+      expect_internal(/client detected malformed response from server: lookup_resources: permissionship is unset/, calls) do
         client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice,
                                 consistency: SpiceDB::Consistency.full).each { |item| seen << item }
       end
@@ -207,13 +207,13 @@ RSpec.describe 'malformed responses' do
     end
   end
 
-  describe 'an unspecified lookup_subjects permissionship' do
+  describe 'an unset lookup_subjects permissionship' do
     def subject(permissionship = nil) = Authzed::Api::V1::ResolvedSubject.new(subject_object_id: 'bob', permissionship: permissionship)
 
     def run(responses)
       calls = serve(:lookup_subjects, responses)
       seen = []
-      expect_internal(/client detected malformed response from server: lookup_subjects: permissionship is unspecified/, calls) do
+      expect_internal(/client detected malformed response from server: lookup_subjects: permissionship is unset/, calls) do
         client.lookup_subjects(resource: readme, permission: 'view', subject_type: 'user', consistency: SpiceDB::Consistency.full)
               .each { |item| seen << item }
       end

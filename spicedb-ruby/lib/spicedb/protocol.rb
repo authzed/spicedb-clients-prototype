@@ -50,7 +50,7 @@ module SpiceDB
     end
 
     # A response this client cannot interpret (a missing required field, an
-    # unspecified permissionship, a cursor that does not advance, an echo that
+    # unset permissionship, a cursor that does not advance, an echo that
     # does not match): INTERNAL, which no default retry policy retries. Never
     # skip such a response or fill its missing fields with empty values. The
     # message says the client detected it, so it is not mistaken for a status

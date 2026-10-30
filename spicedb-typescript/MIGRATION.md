@@ -274,7 +274,7 @@ reproduce exactly what SpiceDB said. `toConnectError(err)` returns a
 A response the client cannot interpret is a `SpiceDBError` coded
 `Code.Internal` whose message starts `client detected malformed response from
 server:` and which has no `serverMessage`. That includes a check, bulk-check
-item or lookup result whose permissionship is unspecified: `authzed-node`
+item or lookup result whose permissionship is unset: `authzed-node`
 returned it as `PERMISSIONSHIP_UNSPECIFIED`, which a `=== HAS_PERMISSION`
 test read as a denial.
 

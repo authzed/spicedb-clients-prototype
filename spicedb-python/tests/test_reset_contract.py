@@ -742,9 +742,11 @@ async def test_async_import_deadline_cancels_blocked_producer(import_server):
             closed.set()
 
     async with AsyncClient(import_server, token="x", transport_security=TransportSecurity.PLAINTEXT) as client:
+        # Connect first, so the watchdog below never has to cover connection setup.
+        await client.ready(timeout=30)
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(
-                client.import_relationships(source(), timeout=0.03), 0.5
+                client.import_relationships(source(), timeout=0.03), 5
             )
     assert closed.is_set()
 
@@ -870,10 +872,11 @@ async def test_async_import_remote_rejection_cancels_blocked_producer():
 
     try:
         async with AsyncClient(f"127.0.0.1:{port}", token="x", transport_security=TransportSecurity.PLAINTEXT) as client:
+            await client.ready(timeout=30)  # the watchdog below never covers connection setup
             with pytest.raises(
                 PermissionDeniedError, match="upload rejected"
             ) as caught:
-                await asyncio.wait_for(client.import_relationships(source()), timeout=2)
+                await asyncio.wait_for(client.import_relationships(source()), timeout=10)
             assert isinstance(caught.value.__cause__, grpc.aio.AioRpcError)
             assert caught.value.__cause__.code() is grpc.StatusCode.PERMISSION_DENIED
             assert closed.is_set()

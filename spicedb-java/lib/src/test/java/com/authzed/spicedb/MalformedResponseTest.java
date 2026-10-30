@@ -45,10 +45,14 @@ class MalformedResponseTest {
   private static final SubjectRef JIMMY = SubjectRef.direct(new ObjectRef("user", "jimmy"));
 
   private static void assertInternal(Executable call) {
+    assertInternal(call, "");
+  }
+
+  private static void assertInternal(Executable call, String detail) {
     var thrown = assertThrows(RuntimeException.class, call);
     assertEquals(Status.Code.INTERNAL, ErrorMapper.codeOf(thrown), "got: " + thrown);
     assertTrue(
-        thrown.getMessage().contains("client detected malformed response from server"),
+        thrown.getMessage().contains("client detected malformed response from server: " + detail),
         thrown.getMessage());
   }
 
@@ -230,11 +234,12 @@ class MalformedResponseTest {
   }
 
   /**
-   * The server always sets a check's or looked-up resource's permissionship, so an unspecified one
-   * is a malformed response the client detects, never an UNSPECIFIED result the caller must handle.
+   * The server always sets a check's or looked-up resource's permissionship, so an unset one is a
+   * malformed response the client detects, never an UNSPECIFIED result the caller must handle. The
+   * message calls it unset: UNSPECIFIED is the safe value a newer permissionship maps to.
    */
   @Test
-  void unspecifiedPermissionshipFailsAsInternal() throws Exception {
+  void unsetPermissionshipFailsAsInternal() throws Exception {
     var service =
         new PermissionsServiceGrpc.PermissionsServiceImplBase() {
           @Override
@@ -278,8 +283,11 @@ class MalformedResponseTest {
     try (var servers = TestServers.start(service)) {
       var rel = Relationship.of(new ObjectRef("document", "a"), "view", JIMMY);
       var check = TestRequests.check(rel, "view", Consistency.full());
-      assertInternal(() -> servers.client().check(check));
-      assertInternal(() -> servers.client().checkBulk(List.of(check)));
+      assertInternal(
+          () -> servers.client().check(check), "check response: permissionship is unset");
+      assertInternal(
+          () -> servers.client().checkBulk(List.of(check)),
+          "check item 0: permissionship is unset");
       // A malformed item is not a per-item error: returned item errors still fail the call.
       assertInternal(
           () ->
@@ -293,7 +301,8 @@ class MalformedResponseTest {
               servers
                   .client()
                   .lookupResources(Consistency.full(), "document", "view", JIMMY)
-                  .toList());
+                  .toList(),
+          "looked-up resource: permissionship is unset");
       // The HAS_PERMISSION-only filter does not hide it as "not granted".
       assertInternal(
           () ->
@@ -314,7 +323,8 @@ class MalformedResponseTest {
                   .client()
                   .lookupSubjects(
                       Consistency.full(), new ObjectRef("document", "a"), "view", "user")
-                  .toList());
+                  .toList(),
+          "looked-up subject: permissionship is unset");
     }
     assertInternal(
         () ->

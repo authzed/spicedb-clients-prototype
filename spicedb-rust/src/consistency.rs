@@ -3,6 +3,16 @@ use crate::types::ZedToken;
 /// A consistency requirement for SpiceDB read operations.
 ///
 /// Use the free functions in this module to construct a `Strategy`.
+///
+/// `Display` names it: `full`, `min_latency`, `at_least(<token>)` or
+/// `snapshot(<token>)`. With the `serde` feature it serializes as
+/// `{"strategy":"at_least","token":"<token>"}`, with no token for `full`
+/// and `min_latency`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "strategy", content = "token", rename_all = "snake_case")
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Strategy {
@@ -16,6 +26,17 @@ pub enum Strategy {
     AtLeast(ZedToken),
     /// Read at the exact given revision (ZedToken).
     Snapshot(ZedToken),
+}
+
+impl std::fmt::Display for Strategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Strategy::Full => f.write_str("full"),
+            Strategy::MinLatency => f.write_str("min_latency"),
+            Strategy::AtLeast(token) => write!(f, "at_least({token})"),
+            Strategy::Snapshot(token) => write!(f, "snapshot({token})"),
+        }
+    }
 }
 
 /// Returns a strategy that requires full consistency. This is the least

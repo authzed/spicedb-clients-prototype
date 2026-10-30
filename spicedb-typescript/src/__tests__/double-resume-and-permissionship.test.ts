@@ -1,5 +1,5 @@
 // The double's injected stream faults carry `resumeCursor` as the real
-// client's errors do, an unspecified permissionship is a client-detected
+// client's errors do, an unset permissionship is a client-detected
 // malformed response (root DESIGN.md: "A response the client cannot
 // interpret ... fails with INTERNAL ... The error says the client detected
 // it"), and the double never produces one.
@@ -86,7 +86,7 @@ describe("InMemorySpiceDB faults on resumable reads carry resumeCursor", () => {
     });
 });
 
-describe("an unspecified permissionship is a client-detected malformed response", () => {
+describe("an unset permissionship is a client-detected malformed response", () => {
     const clientFor = (routes: Parameters<typeof createRouterTransport>[0]) => SpiceDBClient.fromTransport(createRouterTransport(routes), { retries: Retries.Disabled });
     const expectMalformed = (error: unknown, detail: RegExp) => {
         expect(error).toBeInstanceOf(SpiceDBError);
@@ -99,7 +99,7 @@ describe("an unspecified permissionship is a client-detected malformed response"
         const client = clientFor(router => router.service(PermissionsService, {
             async checkPermission() { return create(CheckPermissionResponseSchema, { permissionship: CheckPermissionResponse_Permissionship.UNSPECIFIED }); },
         }));
-        expectMalformed(await client.check(checkReq).catch((e: unknown) => e), /check response has unspecified permissionship/);
+        expectMalformed(await client.check(checkReq).catch((e: unknown) => e), /check response: permissionship is unset/);
         client.close();
     });
     it("fails a bulk-check item, naming its index, even when item errors are returned", async () => {
@@ -111,7 +111,7 @@ describe("an unspecified permissionship is a client-detected malformed response"
         }));
         for (const itemErrors of [BulkItemErrors.Fail, BulkItemErrors.Returned]) {
             const error = await client.checkBulk([checkReq, checkReq], { itemErrors }).catch((e: unknown) => e);
-            expectMalformed(error, /check item 1 has unspecified permissionship/);
+            expectMalformed(error, /check item 1: permissionship is unset/);
             expect((error as SpiceDBError).inputIndex).toBe(1);
         }
         client.close();
@@ -125,7 +125,7 @@ describe("an unspecified permissionship is a client-detected malformed response"
         }));
         const seen: string[] = [];
         const error = await (async () => { for await (const r of client.lookupResources({ ...lookupReq, permissionshipFilter })) seen.push(r.resourceId); })().catch((e: unknown) => e);
-        expectMalformed(error, /lookup resources result b has unspecified permissionship/);
+        expectMalformed(error, /lookup resources result b: permissionship is unset/);
         expect(seen).toEqual(["a"]);
         expect((error as SpiceDBError).resumeCursor).toBe("1");
         client.close();
@@ -135,7 +135,7 @@ describe("an unspecified permissionship is a client-detected malformed response"
             async *lookupSubjects() { yield create(LookupSubjectsResponseSchema, { subject: create(ResolvedSubjectSchema, { subjectObjectId: "bob" }) }); },
         }));
         const error = await (async () => { for await (const _ of client.lookupSubjects({ resource: { objectType: "document", objectId: "a" }, permission: "view", subjectType: "user", consistency: full() })) void _; })().catch((e: unknown) => e);
-        expectMalformed(error, /lookup subjects result bob has unspecified permissionship/);
+        expectMalformed(error, /lookup subjects result bob: permissionship is unset/);
         client.close();
     });
     it("other malformed responses also say the client detected them", async () => {
@@ -148,7 +148,7 @@ describe("an unspecified permissionship is a client-detected malformed response"
     });
 });
 
-describe("InMemorySpiceDB never produces an unspecified permissionship", () => {
+describe("InMemorySpiceDB never produces an unset permissionship", () => {
     it("rejects registering one", () => {
         const db = new InMemorySpiceDB();
         expect(() => db.setCheckResult(checkReq, "unspecified")).toThrow(InvalidArgumentError);

@@ -10,7 +10,9 @@ require 'grpc'
 # the client's timeout fired -- it did not just get lucky with scheduling.
 # Also short enough that RpcServer#stop's forced worker-thread teardown
 # (bounded by pool_keep_alive) stays fast.
-STALL_SECONDS = 1.5
+# Far beyond every short deadline here, so a deadline firing (rather than the
+# stall ending) is unmistakable even when a busy machine delays the client.
+STALL_SECONDS = 3.0
 
 # Wall-clock budget for a single watchdog-wrapped call -- see
 # run_with_watchdog below.
@@ -107,6 +109,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
     server, port = start_server
     begin
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.2)
+      client.connect!(timeout: 30) # untimed: the short deadline covers the call, not connection setup
       start = Time.now
       expect do
         run_with_watchdog { client.check_bulk([rel].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full) }
@@ -130,6 +133,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.2)
       txn = SpiceDB::Transaction.new
       txn.touch(rel)
+      client.connect!(timeout: 30) # untimed: the short deadline covers the call, not connection setup
       start = Time.now
       expect do
         run_with_watchdog { client.write(txn) }
@@ -150,6 +154,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
       # Client default is larger than the server's stall -- if the per-call
       # override did not take effect, this call would not fail quickly.
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: STALL_SECONDS * 10)
+      client.connect!(timeout: 30) # untimed: the short deadline covers the call, not connection setup
       start = Time.now
       expect do
         run_with_watchdog do
@@ -174,6 +179,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
     begin
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.1)
       filter = SpiceDB::Filter.new(resource_type: 'document')
+      client.connect!(timeout: 30) # untimed: the short deadline covers the call, not connection setup
       start = Time.now
       expect do
         run_with_watchdog { client.read_relationships(filter, consistency: SpiceDB::Consistency.full).to_a }
@@ -192,6 +198,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.1,
                                                                                default_deadline: SpiceDB::DefaultDeadline::DISABLED)
       filter = SpiceDB::Filter.new(resource_type: 'document')
+      client.connect!(timeout: 30) # untimed: the short deadline covers the call, not connection setup
       start = Time.now
       got = run_with_watchdog { client.read_relationships(filter, consistency: SpiceDB::Consistency.full).to_a }
       elapsed = Time.now - start
@@ -214,6 +221,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
     server, port = start_server
     begin
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.1)
+      client.connect!(timeout: 30) # untimed: the short deadline covers the call, not connection setup
       start = Time.now
       loaded = run_with_watchdog { client.import_relationships([rel]) }
       elapsed = Time.now - start
@@ -233,6 +241,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
     server, port = start_server
     begin
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken')
+      client.connect!(timeout: 30) # untimed: the short deadline covers the call, not connection setup
       start = Time.now
       expect do
         run_with_watchdog { client.import_relationships([rel], timeout: 0.2) }

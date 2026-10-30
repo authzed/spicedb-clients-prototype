@@ -59,7 +59,7 @@ RSpec.describe 'SpiceDB::Client check results' do
 
   # T1 — has_permission? is false for conditional, true only for
   # HAS_PERMISSION, parametrized over the enum values a server answers with.
-  # UNSPECIFIED is never an answer: it fails as a malformed response (see
+  # An unset permissionship is never an answer: it fails as a malformed response (see
   # malformed_responses_spec.rb).
   describe '#has_permission?' do
     {

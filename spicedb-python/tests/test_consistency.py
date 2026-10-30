@@ -80,6 +80,28 @@ def test_snapshot():
     assert proto.at_exact_snapshot.token == "sometoken123"
 
 
+def test_consistency_has_readable_string_and_dict_forms():
+    """A strategy names itself and its token, and has a JSON-compatible form
+    (root DESIGN.md, "Make native values observable and testable without the
+    server")."""
+    import json
+
+    token = ZedToken("GhUKEzE2")
+    cases = [
+        (full(), "full()", {"strategy": "full"}),
+        (min_latency(), "min_latency()", {"strategy": "min_latency"}),
+        (at_least(token), "at_least(GhUKEzE2)", {"strategy": "at_least", "token": "GhUKEzE2"}),
+        (snapshot(token), "snapshot(GhUKEzE2)", {"strategy": "snapshot", "token": "GhUKEzE2"}),
+        (at_least_or_full(token), "at_least(GhUKEzE2)", {"strategy": "at_least", "token": "GhUKEzE2"}),
+        (at_least_or_min_latency(None), "min_latency()", {"strategy": "min_latency"}),
+    ]
+    for consistency, text, as_dict in cases:
+        assert str(consistency) == text
+        assert f"{consistency}" == text
+        assert consistency.to_dict() == as_dict
+        assert json.loads(json.dumps(consistency.to_dict())) == as_dict
+
+
 def test_consistency_is_exported_from_package_root():
     """`Consistency` must be importable from `spicedb` directly (alongside
     the constructor functions) so callers can use it in type annotations,

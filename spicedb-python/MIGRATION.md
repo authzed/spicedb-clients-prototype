@@ -356,12 +356,12 @@ an asyncio task still raises `asyncio.CancelledError`, and `code_of` reports
 both as `CANCELLED`.
 
 A response the client cannot interpret (a missing relationship, object, ID or
-revision, an unspecified check or lookup permissionship, an expand node with
+revision, an unset check or lookup permissionship, an expand node with
 neither children nor subjects, a cursor that does not advance) raises
 `InternalError` (code `INTERNAL`, not retried by default), with a message
 beginning `spicedb: client detected malformed response from server:` and no
 `server_message`. authzed-py passed such responses through with empty values
-(an unspecified permissionship read as `PERMISSIONSHIP_UNSPECIFIED`); this
+(an unset permissionship read as `PERMISSIONSHIP_UNSPECIFIED`); this
 client never skips them or fills them in.
 
 ## Metadata and call options

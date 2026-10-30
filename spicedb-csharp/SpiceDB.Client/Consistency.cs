@@ -38,8 +38,42 @@ internal static class RevisionInput
         : t.Value;
 }
 
+/// <summary>
+/// A read consistency strategy. <see cref="ToString"/> names it (<c>Full</c>, <c>MinLatency</c>,
+/// <c>AtLeast(&lt;token&gt;)</c>, <c>Snapshot(&lt;token&gt;)</c>), and <c>System.Text.Json</c>
+/// writes it as <c>{"strategy":"atLeast","token":"&lt;token&gt;"}</c> (no token for
+/// <c>full</c> and <c>minLatency</c>) and reads that form back. The <c>AtLeastOr*</c> helpers
+/// return the strategy they chose, so it shows as that strategy.
+/// </summary>
+[JsonConverter(typeof(ConsistencyJsonConverter))]
 public sealed record Consistency
 {
+    private static readonly string[] StrategyNames = ["full", "minLatency", "atLeast", "snapshot"];
+
+    /// <summary><c>Full</c>, <c>MinLatency</c>, <c>AtLeast(&lt;token&gt;)</c> or <c>Snapshot(&lt;token&gt;)</c>.</summary>
+    public override string ToString() => _kind switch
+    {
+        0 => "Full",
+        1 => "MinLatency",
+        2 => $"AtLeast({_token.Value})",
+        _ => $"Snapshot({_token.Value})",
+    };
+
+    /// <summary>The JSON <c>strategy</c> name.</summary>
+    internal string StrategyName => StrategyNames[_kind];
+
+    /// <summary>The revision of an at-least or snapshot strategy; null otherwise.</summary>
+    internal ZedToken? JsonToken => _kind >= 2 ? _token : null;
+
+    internal static Consistency FromJson(string? strategy, ZedToken? token) => (strategy, token) switch
+    {
+        ("full", null) => Full(),
+        ("minLatency", null) => MinLatency(),
+        ("atLeast", { } t) => AtLeast(t),
+        ("snapshot", { } t) => Snapshot(t),
+        _ => throw new JsonException($"A Consistency is {{\"strategy\":\"full\"|\"minLatency\"}} or {{\"strategy\":\"atLeast\"|\"snapshot\",\"token\":\"...\"}}; got strategy {(strategy is null ? "null" : $"\"{strategy}\"")}{(token is null ? " without" : " with")} a token."),
+    };
+
     private readonly int _kind;
     private readonly ZedToken _token;
     private Consistency(int kind, ZedToken token = default) { _kind = kind; _token = token; }
@@ -60,4 +94,51 @@ public sealed record Consistency
         2 => new() { AtLeastAsFresh = new() { Token = _token.Value } },
         _ => new() { AtExactSnapshot = new() { Token = _token.Value } },
     };
+}
+
+/// <summary>Serializes a <see cref="Consistency"/> as <c>{"strategy":...,"token":...}</c>.</summary>
+internal sealed class ConsistencyJsonConverter : JsonConverter<Consistency>
+{
+    public override Consistency Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType != JsonTokenType.StartObject)
+            throw new JsonException("A Consistency is a JSON object.");
+        string? strategy = null;
+        ZedToken? token = null;
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            var name = reader.GetString();
+            reader.Read();
+            switch (name)
+            {
+                case "strategy" when reader.TokenType == JsonTokenType.String:
+                    strategy = reader.GetString();
+                    break;
+                case "token" when reader.TokenType == JsonTokenType.String:
+                    token = new ZedToken(reader.GetString()!);
+                    break;
+                case "token" when reader.TokenType == JsonTokenType.Null:
+                    break;
+                default:
+                    throw new JsonException($"Unexpected Consistency property \"{name}\".");
+            }
+        }
+        try
+        {
+            return Consistency.FromJson(strategy, token);
+        }
+        catch (InvalidArgumentException e)
+        {
+            throw new JsonException(e.Message, e);
+        }
+    }
+
+    public override void Write(Utf8JsonWriter writer, Consistency value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("strategy", value.StrategyName);
+        if (value.JsonToken is { } token)
+            writer.WriteString("token", token.Value);
+        writer.WriteEndObject();
+    }
 }

@@ -411,7 +411,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
                     continue;
                 }
                 if (pair.Item is null) { var malformed = Response.Malformed($"check item {results.Count}", "bulk response is missing its result"); malformed.InputIndex = results.Count; throw malformed; }
-                if (pair.Item.Permissionship == CheckPermissionResponse.Types.Permissionship.Unspecified) { var malformed = Response.Malformed($"check item {results.Count}", "bulk response permissionship is unspecified"); malformed.InputIndex = results.Count; throw malformed; }
+                if (pair.Item.Permissionship == CheckPermissionResponse.Types.Permissionship.Unspecified) { var malformed = Response.Malformed($"check item {results.Count}", "bulk response permissionship is unset"); malformed.InputIndex = results.Count; throw malformed; }
                 results.Add(ToCheckResult(pair.Item, response.CheckedAt?.Token ?? ""));
             }
         }

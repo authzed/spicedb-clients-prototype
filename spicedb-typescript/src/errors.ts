@@ -416,7 +416,7 @@ export function toSpiceDBErrorFromStatus(status: {
 
 /**
  * The error for a response the client cannot interpret: a missing required
- * field, an unspecified permissionship, a cursor that does not advance, a
+ * field, an unset permissionship, a cursor that does not advance, a
  * malformed bulk pair. It is coded `Internal`, which no retry policy treats as
  * retryable by default, and its message says the client detected it, so it is
  * not mistaken for a status the server sent.

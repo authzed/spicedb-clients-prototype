@@ -23,19 +23,19 @@ internal static class Response
     internal const string ClientDetected = "client detected malformed response from server";
 
     /// <summary>
-    /// A check permissionship the server always sets: <c>PERMISSIONSHIP_UNSPECIFIED</c> is
+    /// A check permissionship the server always sets: an unset (zero, <c>PERMISSIONSHIP_UNSPECIFIED</c>) one is
     /// malformed, never <see cref="Client.Permissionship.Unspecified"/>. An unrecognised newer
     /// value still maps to the safe <see cref="Client.Permissionship.Unspecified"/>.
     /// </summary>
     internal static Permissionship CheckPermissionship(V1.CheckPermissionResponse.Types.Permissionship value, string operation) =>
         value == V1.CheckPermissionResponse.Types.Permissionship.Unspecified
-            ? throw Malformed(operation, "permissionship is unspecified")
+            ? throw Malformed(operation, "permissionship is unset")
             : SpiceDBClient.ToCheckPermissionship(value);
 
     /// <summary>A lookup permissionship the server always sets; see <see cref="CheckPermissionship"/>.</summary>
     internal static Permissionship LookupPermissionship(V1.LookupPermissionship value, string operation) =>
         value == V1.LookupPermissionship.Unspecified
-            ? throw Malformed(operation, "permissionship is unspecified")
+            ? throw Malformed(operation, "permissionship is unset")
             : SpiceDBClient.ToPermissionship(value);
 
     internal static ObjectRef Object(V1.ObjectReference? value, string operation, string field)

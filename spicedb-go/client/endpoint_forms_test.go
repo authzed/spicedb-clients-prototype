@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -87,7 +88,9 @@ func TestEndpointForms_RejectedAtConstruction(t *testing.T) {
 			require.Nil(t, c)
 			require.ErrorIs(t, err, ErrInvalidArgument)
 			require.ErrorContains(t, err, tc.reason)
-			require.ErrorContains(t, err, "expected host:port (e.g. localhost:50051), http://host:port (plaintext), https://host[:port] (TLS), dns:///host:port, unix:/path/to.sock or passthrough:///host:port")
+			require.ErrorContains(t, err, "http://host:port (plaintext), https://host[:port] (TLS), dns:///host:port, unix:/path/to.sock or passthrough:///host:port")
+			// The forms list host:port; an example appears once, never repeated.
+			require.LessOrEqual(t, strings.Count(err.Error(), "e.g."), 1, err.Error())
 			require.NotContains(t, err.Error(), "WithRemotePlaintextCredentials(RemotePlaintextAllowed)")
 		})
 	}

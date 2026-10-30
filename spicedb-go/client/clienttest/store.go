@@ -345,8 +345,8 @@ func (s *Store) Relationships() []rel.Relationship {
 // SetCheckResult registers the result checks and lookups resolve to for the
 // given resource, permission and subject. It takes precedence over the
 // resolver and the stored relationships. A result whose permissionship is
-// unspecified (and that carries no Err) is reported as NoPermission, since a
-// real server never sends an unspecified permissionship.
+// PermissionshipUnspecified (and that carries no Err) is reported as
+// NoPermission, since a real server never sends an unset permissionship.
 func (s *Store) SetCheckResult(resource rel.ObjectRef, permission string, subject rel.SubjectRef, result client.CheckResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -360,8 +360,8 @@ func (s *Store) SetCheckResult(resource rel.ObjectRef, permission string, subjec
 // returns the result and true to answer, or false to fall through to the
 // stored relationships. The check's Context includes the call's context
 // option. Return PermissionshipConditionalPermission (with MissingContext) to
-// emulate a caveat the caller did not satisfy. An unspecified permissionship
-// is reported as NoPermission.
+// emulate a caveat the caller did not satisfy. A PermissionshipUnspecified
+// result is reported as NoPermission.
 type CheckResolver func(client.PermissionCheck) (client.CheckResult, bool)
 
 // GrantAll is a CheckResolver that grants every check:
@@ -773,8 +773,8 @@ func (s *Store) check(request client.PermissionCheck, callContext map[string]any
 		result = s.fromRelationships(request)
 	}
 	// A real server always sets a permissionship and the real client fails
-	// one it does not recognize, so the Store never produces an unspecified
-	// one: a registered or resolved result left unspecified (such as a zero
+	// an unset one, so the Store never produces an unset one: a registered or
+	// resolved result left at PermissionshipUnspecified (such as a zero
 	// CheckResult) denies, unless it carries an item error.
 	if result.Err == nil && result.Permissionship != client.PermissionshipHasPermission &&
 		result.Permissionship != client.PermissionshipConditionalPermission {

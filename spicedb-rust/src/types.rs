@@ -194,14 +194,14 @@ impl Relationship {
 pub(crate) fn missing_in_response(what: &str) -> SpiceDBError {
     crate::error::internal(format!("missing {what}"))
 }
-/// Fails a check or lookup result whose permissionship is the proto's
-/// unspecified (zero) value: the server always sets it, so an unset one is a
+/// Fails a check or lookup result whose permissionship is unset (the proto's
+/// zero `UNSPECIFIED` value): the server always sets it, so an unset one is a
 /// malformed response, never an answer. Values this client does not know are
 /// left to the mapping functions, which treat them as `Unspecified`.
 pub(crate) fn require_permissionship(value: i32, what: &str) -> Result<(), SpiceDBError> {
     if value == 0 {
         return Err(crate::error::internal(format!(
-            "{what} permissionship is unspecified"
+            "{what} permissionship is unset"
         )));
     }
     Ok(())

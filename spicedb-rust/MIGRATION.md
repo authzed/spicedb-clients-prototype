@@ -169,7 +169,7 @@ generated copies are distinct Rust types.
   stream fails with `DeadlineExceeded`; raw tonic streams had no limit.
   `DefaultDeadline::Disabled` removes it; watches have none.
 - A response missing a relationship, resource, subject or object, or a
-  check or lookup result with an unspecified permissionship, fails with
+  check or lookup result with an unset permissionship, fails with
   `Internal`. Raw tonic gave you `None` fields and `UNSPECIFIED` values to
   handle yourself. The error's `is_client_detected()` is `true` and it
   displays as `client detected malformed response from server: ...`, so it

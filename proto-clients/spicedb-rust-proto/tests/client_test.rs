@@ -617,6 +617,30 @@ mod insecure_host_guard {
         assert!(tls.is_ok(), "{:?}", tls.err());
     }
 
+    /// A missing port's error gives its example once: the reason and the
+    /// accepted forms that follow it never both show `http://host:50051`.
+    #[tokio::test]
+    async fn missing_port_error_does_not_repeat_its_example() {
+        for endpoint in ["http://localhost", "localhost", "HTTP://127.0.0.1/"] {
+            match SpiceDBProtoClient::new_with_options(endpoint, "t", true, false).await {
+                Err(SpiceDBProtoClientError::InvalidEndpoint(msg)) => {
+                    assert!(
+                        msg.contains("needs an explicit port"),
+                        "{endpoint:?}: {msg}"
+                    );
+                    assert!(
+                        msg.matches("host:50051").count() == 1,
+                        "{endpoint:?}: {msg}"
+                    );
+                }
+                other => panic!(
+                    "expected InvalidEndpoint for {endpoint:?}, got {:?}",
+                    other.err()
+                ),
+            }
+        }
+    }
+
     /// A multi-byte character straddling byte 5 must return `Err`, not panic.
     ///
     /// The unix-target check sliced `endpoint[..5]`, a BYTE index into a

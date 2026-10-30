@@ -83,7 +83,7 @@ function serve(requireClientCert: boolean): Promise<{
                 checkBulkPermissions: (req) => ({
                     pairs: req.items.map(item => ({
                         request: item,
-                        // SpiceDB always sets permissionship; an unspecified one is malformed.
+                        // SpiceDB always sets permissionship; an unset one is malformed.
                         response: { case: "item" as const, value: { permissionship: CheckPermissionResponse_Permissionship.NO_PERMISSION } }
                     }))
                 })

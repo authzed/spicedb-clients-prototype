@@ -719,7 +719,7 @@ mod resolution_and_lookups {
         assert_eq!(ids, ["d1"]);
     }
 
-    /// The double never sends an unspecified permissionship, which the client
+    /// The double never sends an unset permissionship, which the client
     /// rejects as a malformed response: a resolver or registered `Unspecified`
     /// answers "no" for checks and bulk checks.
     #[tokio::test]

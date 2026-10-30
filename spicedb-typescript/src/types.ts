@@ -553,6 +553,30 @@ export function requireString(value: unknown, field: string): string {
         throw new InvalidArgumentError(`${field} must be a string, got ${describeType(value)}`);
     return value;
 }
+/**
+ * @internal A caller-supplied request object, relationship or array element:
+ * a JavaScript caller's `undefined` or `null` (or any non-object) is an
+ * `InvalidArgumentError` naming what is missing, never a `TypeError` from
+ * reading one of its fields.
+ */
+export function requireObject<T>(value: T, what: string): NonNullable<T> {
+    if (value === null || typeof value !== "object")
+        throw new InvalidArgumentError(`${what} is required, got ${describeType(value)}`);
+    return value as NonNullable<T>;
+}
+/** @internal A caller-supplied array of request objects: the array, then each element, as {@link requireObject} checks them. */
+export function requireObjectArray<T>(value: readonly T[], what: string, item: (index: number) => string): readonly NonNullable<T>[] {
+    if (!Array.isArray(value))
+        throw new InvalidArgumentError(`${what} must be an array, got ${describeType(value)}`);
+    value.forEach((element, index) => requireObject(element, item(index)));
+    return value as readonly NonNullable<T>[];
+}
+/** @internal A caller-supplied sync or async iterable (an import's relationships), else `InvalidArgumentError`. */
+export function requireIterable<T>(value: Iterable<T> | AsyncIterable<T>, what: string): Iterable<T> | AsyncIterable<T> {
+    if (value === null || (typeof value !== "object" && typeof value !== "function") || (typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] !== "function" && typeof (value as Iterable<T>)[Symbol.iterator] !== "function"))
+        throw new InvalidArgumentError(`${what} must be an iterable or async iterable, got ${describeType(value)}`);
+    return value;
+}
 /** @internal An optional caller-supplied name or ID: absent becomes `""` (the wire's unset), present must be a string. */
 export function optionalString(value: unknown, field: string): string {
     return value === undefined ? "" : requireString(value, field);
@@ -585,6 +609,7 @@ export function nativeSubject(subject: {
 }
 /** @internal */
 export function toProtoRelationship(rel: Relationship): ProtoRelationship {
+    requireObject(rel, "relationship");
     if (!rel.resource || !rel.subject || !rel.relation)
         throw new InvalidArgumentError("relationship requires resource, relation, and subject");
     if (rel.expiration !== undefined && (!(rel.expiration instanceof Date) || !Number.isFinite(rel.expiration.getTime())))

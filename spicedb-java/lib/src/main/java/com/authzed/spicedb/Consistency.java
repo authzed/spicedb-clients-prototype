@@ -65,6 +65,26 @@ public final class Consistency {
   }
 
   /**
+   * Structured JSON diagnostic form, for structured loggers: {@code
+   * {"strategy":"atLeast","token":"<token>"}}, with no token for {@code full} and {@code
+   * minLatency}.
+   */
+  public String toJson() {
+    var m = new java.util.LinkedHashMap<String, Object>();
+    m.put(
+        "strategy",
+        switch (kind()) {
+          case FULL -> "full";
+          case MIN_LATENCY -> "minLatency";
+          case AT_LEAST -> "atLeast";
+          case SNAPSHOT -> "snapshot";
+        });
+    ZedToken token = token();
+    if (token != null) m.put("token", token.toString());
+    return Json.write(m);
+  }
+
+  /**
    * Returns a strategy that requires full consistency. This is the least performant option but
    * guarantees the most up-to-date results.
    */

@@ -339,7 +339,7 @@ async def test_unspecified_check_permissionship_is_malformed(client_type):
         await _resolve(client.check(
             PermissionCheck(ObjectRef("document", "a"), "view", _ALICE), consistency=full()
         ))
-    _assert_internal(caught, "permissionship is unspecified")
+    _assert_internal(caught, "permissionship is unset")
     _assert_client_detected(caught)
 
 
@@ -366,7 +366,7 @@ async def test_unspecified_bulk_check_item_permissionship_is_malformed(client_ty
     client._permissions = Mock()
     with pytest.raises(InternalError) as caught:
         await _resolve(client.check_bulk(checks, consistency=full()))
-    _assert_internal(caught, "check item 1: permissionship is unspecified")
+    _assert_internal(caught, "check item 1: permissionship is unset")
     _assert_client_detected(caught)
     assert caught.value.input_index == 1
 
@@ -387,7 +387,7 @@ async def test_unspecified_lookup_resources_permissionship_is_malformed(client_t
             resource_type="document", permission="view", subject=_ALICE, consistency=full()
         )):
             seen.append(item)
-    _assert_internal(caught, "LookupResourcesResponse.permissionship is unspecified")
+    _assert_internal(caught, "LookupResourcesResponse.permissionship is unset")
     _assert_client_detected(caught)
     assert [r.resource_id for r in seen] == ["a"]
 
@@ -412,7 +412,7 @@ async def test_unspecified_lookup_subjects_permissionship_is_malformed(client_ty
             resource=ObjectRef("document", "a"), permission="view", subject_type="user", consistency=full()
         )):
             seen.append(item)
-    _assert_internal(caught, "LookupSubjectsResponse.subject.permissionship is unspecified")
+    _assert_internal(caught, "LookupSubjectsResponse.subject.permissionship is unset")
     _assert_client_detected(caught)
     assert [s.subject.subject_id for s in seen] == ["a"]
 
@@ -534,6 +534,6 @@ async def test_malformed_bulk_item_fails_the_whole_call_even_when_item_errors_ar
     client._permissions = Mock()
     with pytest.raises(InternalError) as caught:
         await _resolve(client.check_bulk(checks, consistency=full(), item_errors=BulkItemErrors.RETURN))
-    _assert_internal(caught, "check item 1: permissionship is unspecified")
+    _assert_internal(caught, "check item 1: permissionship is unset")
     _assert_client_detected(caught)
     assert caught.value.input_index == 1

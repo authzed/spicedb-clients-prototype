@@ -75,7 +75,7 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 				}
 				if resp.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
 					pageCancel()
-					yield(LookupResource{}, malformed("lookup resources", "permissionship is unspecified"))
+					yield(LookupResource{}, malformed("lookup resources", "permissionship is unset"))
 					return
 				}
 				if o.lookupPermissionshipFilter == LookupHasPermissionOnly && resp.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
@@ -182,7 +182,7 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 				}
 			}
 			if rawSubjectPermissionship(resp) == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
-				yield(LookupSubject{}, malformed("lookup subjects", "permissionship is unspecified"))
+				yield(LookupSubject{}, malformed("lookup subjects", "permissionship is unset"))
 				return
 			}
 			count++

@@ -34,7 +34,7 @@ func relationship(r rel.Relationship) (*v1.Relationship, error) {
 }
 
 // malformed reports a response the client cannot interpret: a missing
-// required field, an unspecified enum the server always sets, or a value no
+// required field, an unset enum the server always sets, or a value no
 // valid server response carries. It is INTERNAL, which no retry policy retries
 // by default, and the response is never skipped or filled with empty values.
 // The message says the client detected it, so it is not mistaken for a status

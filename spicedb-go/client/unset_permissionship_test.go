@@ -17,7 +17,7 @@ import (
 // newer than this client is not malformed: it maps to
 // PermissionshipUnspecified, which never grants, so upgrading SpiceDB cannot
 // make the client fail.
-func TestUnspecifiedPermissionshipIsMalformed(t *testing.T) {
+func TestUnsetPermissionshipIsMalformed(t *testing.T) {
 	ctx := context.Background()
 	check := func(p v1.CheckPermissionResponse_Permissionship) (CheckResult, error) {
 		c := checkClient(t, &checkServer{single: func(context.Context, *v1.CheckPermissionRequest) (*v1.CheckPermissionResponse, error) {
@@ -26,7 +26,7 @@ func TestUnspecifiedPermissionshipIsMalformed(t *testing.T) {
 		return c.Check(ctx, testRequest("a"))
 	}
 	_, err := check(v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED)
-	requireMalformed(t, err, "permissionship is unspecified")
+	requireMalformed(t, err, "permissionship is unset")
 	require.ErrorContains(t, err, "client detected malformed response from server")
 
 	future, err := check(99)
@@ -40,21 +40,21 @@ func TestUnspecifiedPermissionshipIsMalformed(t *testing.T) {
 		return out, nil
 	}})
 	_, err = bulk.CheckBulk(ctx, []PermissionCheck{testRequest("a"), testRequest("b")})
-	requireMalformed(t, err, "item permissionship is unspecified")
+	requireMalformed(t, err, "item permissionship is unset")
 	var be *BulkCheckError
 	require.True(t, errors.As(err, &be))
 	require.Equal(t, 1, be.Index)
 
-	unspecifiedLookup := &v1.LookupResourcesResponse{ResourceObjectId: "bad", AfterResultCursor: &v1.Cursor{Token: "2"}}
+	unsetLookup := &v1.LookupResourcesResponse{ResourceObjectId: "bad", AfterResultCursor: &v1.Cursor{Token: "2"}}
 	for _, opts := range [][]LookupResourcesOption{nil, {WithLookupResourcesPermissionshipFilter(LookupHasPermissionOnly)}} {
-		srv := &malformedServer{lookup: unspecifiedLookup}
+		srv := &malformedServer{lookup: unsetLookup}
 		n, _, err := drain(newMalformedClient(t, srv).LookupResources(ctx, lookupReq(), opts...))
-		requireMalformed(t, err, "permissionship is unspecified")
+		requireMalformed(t, err, "permissionship is unset")
 		require.Equal(t, 1, n)
 	}
 
 	srv := &malformedServer{subject: &v1.LookupSubjectsResponse{Subject: &v1.ResolvedSubject{SubjectObjectId: "bob"}}}
 	n, _, err := drain(newMalformedClient(t, srv).LookupSubjects(ctx, LookupSubjectsRequest{Resource: testObject("document", "1"), Permission: "view", SubjectType: "user", Consistency: consistency.Full()}))
-	requireMalformed(t, err, "permissionship is unspecified")
+	requireMalformed(t, err, "permissionship is unset")
 	require.Equal(t, 1, n)
 }

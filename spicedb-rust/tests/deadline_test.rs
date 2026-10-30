@@ -66,6 +66,8 @@ async fn unary_call_against_a_stub_that_never_responds_times_out_with_deadline_e
     let addr = spawn_permissions_server(mock).await;
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .default_timeout(Duration::from_millis(200))
         .build()
         .await
@@ -118,6 +120,8 @@ async fn per_call_timeout_overrides_a_much_larger_client_default() {
     // override did not take effect, this call would not fail quickly.
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .default_timeout(STALL * 10)
         .build()
         .await
@@ -239,6 +243,8 @@ async fn lookup_stalling_mid_page_fails_after_the_per_page_default_with_no_calle
     let addr = spawn_permissions_server(mock).await;
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .default_timeout(Duration::from_millis(300))
         .build()
         .await
@@ -285,6 +291,8 @@ async fn the_per_page_default_bounds_each_page_not_the_whole_read() {
     let addr = spawn_permissions_server(mock).await;
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .default_timeout(Duration::from_millis(400))
         .build()
         .await
@@ -328,6 +336,8 @@ async fn an_earlier_caller_total_deadline_wins_over_the_per_page_default() {
     let addr = spawn_permissions_server(mock).await;
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .default_timeout(Duration::from_secs(60))
         .build()
         .await
@@ -364,6 +374,8 @@ async fn disabling_the_default_deadline_lets_a_slow_page_finish() {
     let addr = spawn_permissions_server(mock).await;
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .default_timeout(Duration::from_millis(100))
         .default_deadline(spicedb::DefaultDeadline::Disabled)
         .build()
@@ -403,6 +415,8 @@ async fn import_relationships_does_not_inherit_the_unary_default() {
     let addr = spawn_permissions_server(mock).await;
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .default_timeout(Duration::from_millis(100))
         .build()
         .await
@@ -445,6 +459,8 @@ async fn import_relationships_with_timeout_still_bounds_the_call() {
     let addr = spawn_permissions_server(mock).await;
     let client = SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .build()
         .await
         .expect("client should connect to mock server");

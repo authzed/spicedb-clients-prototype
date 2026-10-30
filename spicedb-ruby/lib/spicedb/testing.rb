@@ -689,7 +689,7 @@ module SpiceDB
       private_constant :GRANTING
 
       # Permissionships a check answers with. SpiceDB never answers
-      # UNSPECIFIED, and the client raises a malformed-response error for
+      # with an unset permissionship, and the client raises a malformed-response error for
       # it, so the double never returns :unspecified except on an errored
       # bulk item. (The client also maps a permissionship newer than itself
       # to :unspecified, which never grants; the double has no newer ones.)

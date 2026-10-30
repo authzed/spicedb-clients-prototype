@@ -430,6 +430,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     unset (zero) value is malformed: an enum value newer than the client maps
     to the documented safe unknown (which never grants) and never fails the
     call, so upgrading SpiceDB cannot turn into a client outage.
+    Docs, comments and error messages call the malformed zero value "unset"
+    (for example `permissionship is unset`); "unspecified" names only the safe
+    enum value, so a reader never takes an `Unspecified` result for a failure.
   - Local cancellation surfaces as the client's cancelled error, never as the
     platform's own abort exception, whose fields may resemble a status code.
   - Provide a public constructor for native errors from a code and message, so

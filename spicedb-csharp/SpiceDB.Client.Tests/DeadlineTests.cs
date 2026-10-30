@@ -38,7 +38,9 @@ namespace SpiceDB.Client.Tests;
 
 public class DeadlineTests
 {
-    private const int StallMs = 1500;
+    // Long enough that a deadline of a few hundred milliseconds firing, rather than the stall
+    // ending, is unmistakable even when a busy machine delays the client by a second or so.
+    private const int StallMs = 3000;
     private static readonly TimeSpan WatchdogTimeout = TimeSpan.FromSeconds(10);
 
     private sealed class StallingPermissionsService : PermissionsService.PermissionsServiceBase
@@ -130,6 +132,9 @@ public class DeadlineTests
 
         var channel = GrpcChannel.ForAddress(address);
         var client = SpiceDBClient.CreateFromChannel(channel, "test-token", new ClientOptions { DefaultTimeout = defaultTimeout });
+        // Each test times a call against a short deadline; the first call on the channel would
+        // also pay for connection setup, so it is made here, untimed.
+        await ConnectionWarmup.WarmAsync(client);
 
         return (app, client);
     }

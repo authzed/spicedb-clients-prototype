@@ -1,6 +1,7 @@
 package spicedbgoproto
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -80,7 +81,7 @@ func TestResolveEndpointRejectedForms(t *testing.T) {
 			_, err := resolveEndpoint(tc.endpoint, tc.insecure)
 			require.ErrorIs(t, err, ErrInvalidEndpoint)
 			require.ErrorContains(t, err, tc.reason)
-			require.ErrorContains(t, err, endpointForms)
+			require.ErrorContains(t, err, endpointFormsList)
 		})
 	}
 }
@@ -103,4 +104,28 @@ func TestNewClientChecksFormBeforeRemotePlaintextPolicy(t *testing.T) {
 	c, err := NewClient("http://127.0.0.1:50101", "t", WithInsecure())
 	require.NoError(t, err)
 	require.NoError(t, c.Close())
+}
+
+// TestMissingPlaintextPortGivesOneExample: a bare plaintext host's error
+// gives one example, built from the caller's host, and does not repeat the
+// forms' own example after it.
+func TestMissingPlaintextPortGivesOneExample(t *testing.T) {
+	for endpoint, example := range map[string]string{
+		"localhost":   "localhost:50051",
+		"127.0.0.1":   "127.0.0.1:50051",
+		"::1":         "[::1]:50051",
+		"[::1]":       "[::1]:50051",
+		"spicedb.dev": "spicedb.dev:50051",
+	} {
+		_, err := resolveEndpoint(endpoint, true)
+		require.ErrorIs(t, err, ErrInvalidEndpoint, endpoint)
+		msg := err.Error()
+		require.Equal(t, 1, strings.Count(msg, "e.g."), msg)
+		require.Contains(t, msg, "a plaintext endpoint needs an explicit port, e.g. "+example+"; expected host:port, "+endpointFormsList, msg)
+	}
+
+	// Through NewClient too, the path the bare-host report took.
+	_, err := NewClient("localhost", "t", WithInsecure())
+	require.ErrorIs(t, err, ErrInvalidEndpoint)
+	require.Equal(t, 1, strings.Count(err.Error(), "localhost:50051"), err.Error())
 }

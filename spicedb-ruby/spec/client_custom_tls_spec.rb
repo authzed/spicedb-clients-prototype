@@ -237,6 +237,41 @@ RSpec.describe 'SpiceDB::Client.new_custom_tls argument validation' do
     end.to raise_error(SpiceDB::InvalidArgumentError, /RemoteCredentials::ALLOW_PLAINTEXT/)
   end
 
+  # Root DESIGN.md, "Reject unusable credentials and trust material at
+  # construction". gRPC's C-core accepts a non-PEM ca_cert, and the first call
+  # then fails with "empty address list" and a C-core trace naming nothing.
+  {
+    'a non-PEM ca_cert' => [{ ca_cert: 'not a certificate' }, /ca_cert is not a PEM-encoded X\.509 certificate/],
+    'a ca_cert with a corrupt body' => [{ ca_cert: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n" },
+                                        /ca_cert is not a PEM-encoded X\.509 certificate/],
+    'a non-PEM client_cert' => [{ client_cert: 'garbage', client_key: :real }, /client_cert is not a PEM-encoded X\.509 certificate/],
+    'a non-PEM client_key' => [{ client_cert: :real, client_key: 'garbage' }, /client_key is not a PEM-encoded private key/]
+  }.each do |name, (material, message)|
+    it "refuses #{name} at construction, naming the input" do
+      real = { client_cert: TestPki.client[:cert].to_pem, client_key: TestPki.client[:key].to_pem }
+      material = material.to_h { |key, value| [key, value == :real ? real.fetch(key) : value] }
+      expect do
+        SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', **material)
+      end.to raise_error(SpiceDB::LocalValidationError, message)
+    end
+  end
+
+  it 'accepts parseable CA and client identity material' do
+    client = SpiceDB::Client.new_custom_tls('localhost:50116', 'testtoken', ca_cert: TestPki.ca[:cert].to_pem,
+                                                                            client_cert: TestPki.client[:cert].to_pem,
+                                                                            client_key: TestPki.client[:key].to_pem)
+    client.close
+  end
+
+  ['', ' ', "\t\n"].each do |token|
+    it "refuses the blank token #{token.inspect} at construction" do
+      expect { SpiceDB::Client.new_plaintext('localhost:50116', token) }
+        .to raise_error(SpiceDB::LocalValidationError, /token must not be empty or whitespace/)
+      expect { SpiceDB::Client.new_system_tls('localhost:50116', token) }
+        .to raise_error(SpiceDB::LocalValidationError, /token must not be empty or whitespace/)
+    end
+  end
+
   it 'does not expose the block-form helper as a public class method' do
     # yield_or_return is private in SpiceDB::Connecting, so extending Client
     # must not widen the public surface.

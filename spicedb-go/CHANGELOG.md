@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check: permissionship is unset` (it said "is unspecified"), and the docs and comments match. `PermissionshipUnspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** an empty or whitespace-only preshared key fails at construction (`NewPlaintext`, `NewSystemTLS`, `NewWithOpts`) with `ErrInvalidArgument`, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - **Behavior change:** a whitespace-only revision token is rejected like an empty one: `AtLeast`/`Snapshot` strategies and the permission-set revision and watch-start options fail locally with `ErrInvalidArgument`, `AtLeastOrFull`/`AtLeastOrMinLatency` treat it as absent, and `WithUpdatesStart` rejects it (the zero token still starts at the current revision). New `ZedToken.IsBlank` reports either form.
 - Docs: with bulk item errors returned (`ItemErrorsReturned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the option's doc comment, `CheckResult.Err`, the design notes, migration guide and AI guide now say so.
@@ -11,12 +12,12 @@
   check pair mismatches, a page cursor that does not advance, an unknown
   delete progress and a counter response with no state use the same wording.
 - A check, bulk-check item, `LookupResources` result or `LookupSubjects`
-  subject whose permissionship is unset (unspecified) fails with
+  subject whose permissionship is unset fails with
   `ErrInternal` as a client-detected malformed response instead of yielding
   `PermissionshipUnspecified`; a permissionship newer than the client still
   maps to `PermissionshipUnspecified` (never a grant) and does not fail; `LookupHasPermissionOnly` no longer silently
-  drops such a row. The `clienttest.Store` never produces an unspecified
-  permissionship: a registered or resolved result left unspecified (such as a
+  drops such a row. The `clienttest.Store` never produces an unset
+  permissionship: a registered or resolved result left at `PermissionshipUnspecified` (such as a
   zero `CheckResult`) without an `Err` reports `PermissionshipNoPermission`.
 - The AI integration guide notes that projects whose permissions are all
   computed (unions, arrows) get little from stored-relation grants on the

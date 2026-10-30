@@ -324,7 +324,7 @@ response the client cannot interpret raises `SpiceDB::Error` with code INTERNAL
 (grpc's `GRPC::Internal` matches it), and its message says the client detected
 it (`spicedb: client detected malformed response from server: ...`). That
 includes a check, bulk-check item, `lookup_resources` result or `lookup_subjects`
-subject (not its excluded subjects) whose permissionship is UNSPECIFIED: code that branched on `:unspecified` there now
+subject (not its excluded subjects) whose permissionship is unset: code that branched on `:unspecified` there now
 gets this error instead (an errored bulk item under
 `BulkItemErrors::RETURNED` still has `:unspecified`). Closing a client while another thread reads one
 of its streams raises `SpiceDB::CancelledError` in that reader, never grpc's

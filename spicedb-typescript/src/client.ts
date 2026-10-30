@@ -773,7 +773,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
     }
 }
 /**
- * A check or lookup result whose wire permissionship is `UNSPECIFIED` (0 in
+ * A check or lookup result whose wire permissionship is unset (`UNSPECIFIED`, 0 in
  * both the check and the lookup enum) is malformed: SpiceDB always sets it,
  * and reading it as "no permission" would hide the defect. A value newer than
  * this client is not malformed: it maps to `"unspecified"` and never grants.
@@ -781,7 +781,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
 function requireSpecified(permissionship: CheckPermissionResponse_Permissionship | LookupPermissionship, what: string, inputIndex?: number): void {
     if (permissionship !== CheckPermissionResponse_Permissionship.UNSPECIFIED && permissionship !== LookupPermissionship.UNSPECIFIED)
         return;
-    const error = malformedResponse(`${what} has unspecified permissionship`);
+    const error = malformedResponse(`${what}: permissionship is unset`);
     if (inputIndex !== undefined)
         Object.defineProperty(error, "inputIndex", { value: inputIndex, enumerable: true });
     throw error;

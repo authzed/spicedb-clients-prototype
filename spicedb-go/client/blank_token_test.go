@@ -59,6 +59,6 @@ func TestBulkItemErrorsReturnedStillFailsOnMalformedItem(t *testing.T) {
 		return out, nil
 	}})
 	results, err := c.CheckBulk(context.Background(), []PermissionCheck{testRequest("a"), testRequest("b")}, WithBulkItemErrors(ItemErrorsReturned))
-	requireMalformed(t, err, "item permissionship is unspecified")
+	requireMalformed(t, err, "item permissionship is unset")
 	require.Nil(t, results)
 }

@@ -953,11 +953,11 @@ public final class SpiceDBClient implements SpiceDBApi {
         "lookup",
         options.cursor(),
         response -> {
-          // Checked before the filter, so an unspecified result fails the read rather than being
+          // Checked before the filter, so an unset permissionship fails the read rather than being
           // skipped as "not HAS_PERMISSION".
           if (response.getPermissionship()
               == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
-            throw malformed("looked-up resource has no permissionship");
+            throw malformed("looked-up resource: permissionship is unset");
           return options.permissionshipFilter() == LookupPermissionshipFilter.ALL
               || response.getPermissionship()
                   == LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION;
@@ -2796,7 +2796,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   private static Permissionship checkPermissionshipFromProto(
       CheckPermissionResponse.Permissionship v, String where) {
     if (v == CheckPermissionResponse.Permissionship.PERMISSIONSHIP_UNSPECIFIED)
-      throw malformed(where + " has no permissionship");
+      throw malformed(where + ": permissionship is unset");
     return ProtoConv.fromProto(v);
   }
 

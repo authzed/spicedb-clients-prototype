@@ -248,7 +248,7 @@ try { /* ... */ } catch (err) {
 A caller abort (`signal`, iterator `return()`, `close()`) rejects with
 `CancelledError` (`Code.Canceled`, `name` `"AbortError"`, `cause` the signal's
 reason), never a `DOMException`. A response the client cannot interpret (a
-missing required field, an unspecified permissionship on a check, bulk-check
+missing required field, an unset permissionship on a check, bulk-check
 item or lookup result, a cursor that does not advance) fails with
 `Code.Internal` and a message starting `client detected malformed response from
 server:`, so it is not mistaken for a status SpiceDB sent: treat it as a bug

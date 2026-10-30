@@ -55,7 +55,7 @@ def _check_permissionship(value: int, what: str) -> Permissionship:
     not malformed; it maps to ``Permissionship.UNSPECIFIED``, which never
     grants, and the call succeeds."""
     if value == permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_UNSPECIFIED:
-        raise _wire.malformed(f"{what}.permissionship is unspecified")
+        raise _wire.malformed(f"{what}.permissionship is unset")
     return _check_permissionship_from_proto(value)
 
 
@@ -64,7 +64,7 @@ def _lookup_permissionship(value: int, what: str) -> Permissionship:
     unset (zero) one is malformed; a newer value maps to
     ``Permissionship.UNSPECIFIED`` (never a grant) without failing."""
     if value == permission_service_pb2.LOOKUP_PERMISSIONSHIP_UNSPECIFIED:
-        raise _wire.malformed(f"{what}.permissionship is unspecified")
+        raise _wire.malformed(f"{what}.permissionship is unset")
     return _permissionship_from_proto(value)
 
 
@@ -146,7 +146,7 @@ def check_results(
             pair.item.permissionship
             == permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_UNSPECIFIED
         ):
-            error = _wire.malformed(f"check item {offset + i}: permissionship is unspecified")
+            error = _wire.malformed(f"check item {offset + i}: permissionship is unset")
             error.input_index = offset + i
             raise error
         permissionship = _check_permissionship_from_proto(pair.item.permissionship)

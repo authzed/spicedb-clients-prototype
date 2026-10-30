@@ -320,7 +320,7 @@ an `InvalidArgumentError` and also a `ValueError`, so `except ValueError`
 around parsing input works. A server `INVALID_ARGUMENT` is a plain
 `InvalidArgumentError`. A bad endpoint or constructor argument is local
 validation too. A response the client cannot interpret (a missing required
-field, an unspecified permissionship, a cursor that does not advance) raises
+field, an unset permissionship, a cursor that does not advance) raises
 `InternalError`, whose message begins "client detected malformed response
 from server" (the server sent no such status); it is not retried: treat it as
 a server or proxy bug, not a transient error.

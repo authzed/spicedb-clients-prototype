@@ -2,8 +2,9 @@
 
 ## Unreleased
 
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `check: client detected malformed response from server: permissionship is unset` (it said "is unspecified"; a bulk item says `bulk response permissionship is unset`), and the docs and comments match. `Permissionship.Unspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** a whitespace-only preshared key throws `InvalidArgumentException` at construction (`CreatePlaintext`, `CreateSystemTls`, `CreateFromChannel`), as an empty one already did, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
-- `InMemorySpiceDBClient` rejects an unspecified permissionship with `SetCheckResult was given permissionship Unspecified` (before: `SetCheckResult returned ...`, though it registers a value); a resolver's answer still reads `The check resolver returned ...`.
+- `InMemorySpiceDBClient` rejects `Permissionship.Unspecified` with `SetCheckResult was given permissionship Unspecified` (before: `SetCheckResult returned ...`, though it registers a value); a resolver's answer still reads `The check resolver returned ...`.
 - Docs: the AI guide and migration guide note that `SpiceDB.Client.CallOptions` collides with `Grpc.Core.CallOptions` (CS0104) in a file that imports both. The fix they show aliases the bare name to the type the file means (`using CallOptions = Grpc.Core.CallOptions;`, with `using SpiceDBCallOptions = SpiceDB.Client.CallOptions;` alongside if needed); aliasing only this library's type, as an earlier note suggested, leaves `CallOptions` ambiguous. A unit test compiles a custom `CallInvoker` in a file importing both namespaces.
 - **Behavior change:** `Consistency.AtLeast` and `Consistency.Snapshot` reject a whitespace-only revision token with `InvalidArgumentException`, as they already rejected an empty one, instead of sending it to the server; `AtLeastOrFull` and `AtLeastOrMinLatency` treat it like an empty token and use their fallback. A watch start revision (`UpdatesAsync`, `ExperimentalWatchPermissionSetsAsync`) or materialize at-revision (`ExperimentalLookupPermissionSetsAsync`, `ExperimentalDownloadPermissionSetsAsync`) that is present but empty or whitespace-only now throws `InvalidArgumentException` before any RPC, instead of being sent and read as no revision; null still means absent.
 - Docs: the `BulkItemErrors.Returned` and `CheckOptions.ItemErrors` API docs no longer claim every item gets a result: a malformed item in the server's response still fails the whole bulk check.
@@ -31,7 +32,7 @@
   missing bulk item, unknown deletion progress, an empty counter response) now report
   `Internal`; a non-advancing cursor already did.
 - A check, bulk-check item, LookupResources result or LookupSubjects subject whose
-  permissionship is unspecified (`PERMISSIONSHIP_UNSPECIFIED`, which SpiceDB never sends)
+  permissionship is unset (the wire zero value `PERMISSIONSHIP_UNSPECIFIED`, which SpiceDB never sends)
   now fails with an `Internal`-status `SpiceDBException` instead of returning
   `Permissionship.Unspecified`; a bulk item's error carries its `InputIndex`, and
   `PermissionshipFilter.HasPermissionOnly` no longer skips such a result silently. A

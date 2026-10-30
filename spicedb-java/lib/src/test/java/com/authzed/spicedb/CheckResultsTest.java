@@ -57,7 +57,7 @@ class CheckResultsTest {
             CheckPermissionResponse.Permissionship.PERMISSIONSHIP_CONDITIONAL_PERMISSION,
             Permissionship.CONDITIONAL_PERMISSION,
             false));
-    // An unspecified permissionship is a malformed response: MalformedResponseTest.
+    // An unset permissionship is a malformed response: MalformedResponseTest.
   }
 
   @ParameterizedTest

@@ -696,7 +696,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         if (registered instanceof SpiceDBError)
             throw registered;
         const resolved = registered ?? this.#resolver?.(request);
-        // SpiceDB never answers with an unspecified permissionship, so neither does the double.
+        // SpiceDB never answers with an unset permissionship (the client fails one), so the double never answers "unspecified".
         if (resolved === "unspecified")
             throw new InvalidArgumentError("check resolver returned \"unspecified\"; return a specified permissionship, or undefined to fall through to the stored relationships");
         return resolved ?? this.#stored(request);

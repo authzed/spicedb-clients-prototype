@@ -199,7 +199,7 @@
 
 - **LookupResources can filter for unconditional grants on the client.**
   - The default `All` mode returns every response, including conditional and unknown permissionship values. Before mapping results to accessible IDs, require unconditional permission explicitly or opt into `new LookupOptions { PermissionshipFilter = LookupPermissionshipFilter.HasPermissionOnly }`.
-  - The filter yields only exact HAS_PERMISSION responses; conditional and unknown values are skipped. An unspecified permissionship is a malformed response and fails the lookup with `Internal` whatever the filter. Limits count yielded matches, and skipped responses still advance pagination and cursors.
+  - The filter yields only exact HAS_PERMISSION responses; conditional and unknown values are skipped. An unset permissionship is a malformed response and fails the lookup with `Internal` whatever the filter. Limits count yielded matches, and skipped responses still advance pagination and cursors.
   - Filtering does not deduplicate results or change server caveat evaluation. LookupSubjects rejects the nondefault filter.
 
 - **Relationship writes return a native WriteResult.**

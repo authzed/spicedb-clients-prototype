@@ -11,13 +11,13 @@ namespace SpiceDB.Client.Tests;
 
 /// <summary>
 /// SpiceDB always sets the permissionship of a check, a bulk-check item and a lookup result, so
-/// <c>PERMISSIONSHIP_UNSPECIFIED</c> there is a response the client cannot interpret: it fails
+/// an unset (zero, <c>PERMISSIONSHIP_UNSPECIFIED</c>) one there is a response the client cannot interpret: it fails
 /// with INTERNAL as a client-detected malformed response, never as
 /// <see cref="Permissionship.Unspecified"/> (root DESIGN.md, "Expose native errors…"). An
 /// unrecognised newer value still maps to <see cref="Permissionship.Unspecified"/>, and the
 /// in-memory double never produces it.
 /// </summary>
-public class UnspecifiedPermissionshipTests
+public class UnsetPermissionshipTests
 {
     private const CheckPermissionResponse.Types.Permissionship Unset = CheckPermissionResponse.Types.Permissionship.Unspecified;
 
@@ -30,12 +30,12 @@ public class UnspecifiedPermissionshipTests
     {
         var error = (await act.Should().ThrowAsync<SpiceDBException>()).Which;
         error.StatusCode.Should().Be(StatusCode.Internal);
-        error.Message.Should().Contain("client detected malformed response from server").And.Contain("permissionship is unspecified");
+        error.Message.Should().Contain("client detected malformed response from server").And.Contain("permissionship is unset");
         return error;
     }
 
     [Fact]
-    public async Task CheckFailsOnUnspecifiedPermissionship()
+    public async Task CheckFailsOnUnsetPermissionship()
     {
         var mock = new Mock<PermissionsService.PermissionsServiceClient>();
         var calls = 0;
@@ -49,7 +49,7 @@ public class UnspecifiedPermissionshipTests
     [Theory]
     [InlineData(BulkItemErrors.Fail)]
     [InlineData(BulkItemErrors.Returned)]
-    public async Task BulkCheckItemFailsOnUnspecifiedPermissionship(BulkItemErrors itemErrors)
+    public async Task BulkCheckItemFailsOnUnsetPermissionship(BulkItemErrors itemErrors)
     {
         var mock = new Mock<PermissionsService.PermissionsServiceClient>();
         mock.Setup(c => c.CheckBulkPermissionsAsync(It.IsAny<CheckBulkPermissionsRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
@@ -87,7 +87,7 @@ public class UnspecifiedPermissionshipTests
     [Theory]
     [InlineData(LookupPermissionshipFilter.All)]
     [InlineData(LookupPermissionshipFilter.HasPermissionOnly)]
-    public async Task LookupResultsFailOnUnspecifiedPermissionship(LookupPermissionshipFilter filter)
+    public async Task LookupResultsFailOnUnsetPermissionship(LookupPermissionshipFilter filter)
     {
         await using var client = NewClient(LookupServer(0));
         var resources = new List<LookupResource>();

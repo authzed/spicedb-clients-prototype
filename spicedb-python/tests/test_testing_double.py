@@ -152,7 +152,7 @@ def test_registered_check_results():
 @pytest.mark.parametrize("double", [InMemoryClient, AsyncInMemoryClient])
 async def test_double_never_answers_unspecified_permissionship(double):
     """A real server always sets a check's permissionship and the client fails
-    an unspecified one as malformed, so the double refuses to produce it."""
+    an unset one as malformed, so the double refuses to produce it."""
     from spicedb import LocalValidationError
 
     store = double([rel("document:a#viewer@user:alice")])

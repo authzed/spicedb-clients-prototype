@@ -262,7 +262,7 @@ constructor that takes an inner exception: a subclass could not keep the server'
   `InvalidArgumentException` instead. A server `INVALID_ARGUMENT` is also an
   `InvalidArgumentException`; a local one has no `InnerException`.
 - A response the client cannot interpret (for example a relationship without a subject, or
-  a check, bulk-check item or lookup result whose permissionship is unspecified) fails with
+  a check, bulk-check item or lookup result whose permissionship is unset) fails with
   an `Internal`-status `SpiceDBException` rather than yielding empty fields or
   `Permissionship.Unspecified`. Its message reads `<operation>: client detected malformed
   response from server: <detail>.`, so logs do not mistake it for an `Internal` status the

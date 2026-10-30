@@ -464,7 +464,7 @@ public final class ProtoConv {
     // Only an unset permissionship is malformed; a newer value maps to UNSPECIFIED and never
     // grants.
     if (resp.getPermissionship() == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
-      throw malformed("looked-up resource has no permissionship");
+      throw malformed("looked-up resource: permissionship is unset");
     var permissionship = fromProto(resp.getPermissionship());
     return new LookupResult.LookupResource(
         resp.getResourceObjectId(),
@@ -522,7 +522,7 @@ public final class ProtoConv {
             ? resp.getSubject().getPermissionship()
             : resp.getPermissionship();
     if (rawPermissionship == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
-      throw malformed("looked-up subject has no permissionship");
+      throw malformed("looked-up subject: permissionship is unset");
     List<LookupResult.ResolvedSubject> excluded;
     if (!resp.getExcludedSubjectsList().isEmpty()) {
       excluded = resp.getExcludedSubjectsList().stream().map(ProtoConv::fromProto).toList();

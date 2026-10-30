@@ -133,7 +133,7 @@ and its generated schema facade.
     `CancelledError` (`Code.Canceled`) named `"AbortError"` whose `cause` is the
     caller's reason, never a `DOMException`.
   - A response the client cannot interpret (a missing relationship, resource,
-    subject or lookup ID, an unset oneof, a wire-`UNSPECIFIED` permissionship
+    subject or lookup ID, an unset oneof, an unset (wire-zero `UNSPECIFIED`) permissionship
     on a check, bulk-check item, lookup-resources result or lookup-subjects
     subject, a cursor that does not advance) fails with a `SpiceDBError` coded
     `Internal` whose message starts `client detected malformed response from

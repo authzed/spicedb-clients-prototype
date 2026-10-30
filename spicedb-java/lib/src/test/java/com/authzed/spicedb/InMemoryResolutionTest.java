@@ -387,9 +387,9 @@ class InMemoryResolutionTest {
     assertEquals("c", rest.get(0).resourceId());
   }
 
-  /** A real server never sends an unspecified permissionship, so the double never produces one. */
+  /** A real server never sends an unset permissionship, so the double never produces one. */
   @Test
-  void neverProducesAnUnspecifiedPermissionship() {
+  void neverProducesAnUnsetPermissionship() {
     var db = new InMemorySpiceDB();
     assertThrows(
         LocalValidationException.class,

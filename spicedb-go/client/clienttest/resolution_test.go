@@ -262,10 +262,10 @@ func TestLookupsAreRecordedAndInjectable(t *testing.T) {
 	require.Len(t, s.CallsOf(clienttest.OpLookupSubjects), 1)
 }
 
-// The Store never produces an unspecified permissionship, which the real
-// client reports as a malformed response: a registered or resolved result
-// left unspecified (a zero CheckResult) denies, and lookups skip it.
-func TestStoreNeverProducesUnspecifiedPermissionship(t *testing.T) {
+// The Store never produces an unset permissionship, which the real client
+// reports as a malformed response: a registered or resolved result left at
+// PermissionshipUnspecified (a zero CheckResult) denies, and lookups skip it.
+func TestStoreNeverProducesUnsetPermissionship(t *testing.T) {
 	ctx := context.Background()
 	alice := subject("user", "alice")
 	s := clienttest.NewStore(rel.MustFromTuple("doc:a#view@user:alice"), rel.MustFromTuple("doc:b#view@user:alice"))

@@ -278,7 +278,7 @@ def _resolved(value: Any) -> CheckResult | None:
 
 def _answer(result: CheckResult, what: str) -> CheckResult:
     """``result``, refused when it has no answer. A real server always sets a
-    check's permissionship (the client fails an unspecified one as a
+    check's permissionship (the client fails an unset one as a
     malformed response), so the double never returns UNSPECIFIED except on a
     per-item error result."""
     if result.error is None and result.permissionship is Permissionship.UNSPECIFIED:

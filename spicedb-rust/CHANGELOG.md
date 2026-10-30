@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: <what> permissionship is unset` (it said "is unspecified"), and the docs, guides and comments match. `Permissionship::Unspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** an empty or whitespace-only token fails at construction with `SpiceDBError::InvalidArgument` (`new_plaintext`, `new_system_tls`, `builder(...).build()`, and `from_channel(...).token(...).build()`), before any dial, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - Docs: with bulk item errors returned (`BulkItemErrors::Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the `BulkItemErrors::Returned` rustdoc, design notes, migration guide and AI guide now say so.
 - **Behavior change:** a whitespace-only revision token is refused like an empty one. `consistency::at_least` and `consistency::snapshot` with an empty or whitespace-only token fail with `SpiceDBError::InvalidArgument` before any request (previously only an empty token was refused), `at_least_or_full` and `at_least_or_min_latency` treat one as absent, and an empty or whitespace-only `with_start_revision` on `updates` or `watch_permission_sets` now fails with `InvalidArgument` instead of being sent.
@@ -14,10 +15,10 @@
   and delete-progress wrappers report their cause's), and `to_status()` keeps
   the prefix when forwarding. `error::internal` builds a client-detected error.
 - A check, bulk-check item, resource lookup result or subject lookup result
-  whose permissionship is unspecified fails with `Internal` as a
+  whose permissionship is unset fails with `Internal` as a
   client-detected malformed response instead of returning
   `Permissionship::Unspecified`. Unknown future values still map to
-  `Unspecified`. The `testing` double never sends an unspecified
+  `Unspecified`. The `testing` double never sends an unset
   permissionship: a registered result or resolver answer of `Unspecified`
   reaches the client as `NoPermission`.
 - The AI integration guide notes that projects whose permissions are all

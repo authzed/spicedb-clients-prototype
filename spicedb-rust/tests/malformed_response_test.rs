@@ -137,7 +137,7 @@ fn check_question() -> spicedb::PermissionCheck {
 }
 
 #[tokio::test]
-async fn check_fails_on_an_unspecified_permissionship() {
+async fn check_fails_on_an_unset_permissionship() {
     let mock = MockPermissionsService::new();
     mock.push_check_permission_response(proto::CheckPermissionResponse {
         checked_at: Some(proto::ZedToken { token: "t".into() }),
@@ -148,16 +148,16 @@ async fn check_fails_on_an_unspecified_permissionship() {
     let err = client
         .check(check_question())
         .await
-        .expect_err("an unspecified permissionship is not an answer");
+        .expect_err("an unset permissionship is not an answer");
     assert_internal(&err);
     assert!(
-        err.to_string().contains("permissionship is unspecified"),
+        err.to_string().contains("permissionship is unset"),
         "{err}"
     );
 }
 
 #[tokio::test]
-async fn check_bulk_fails_on_an_item_with_an_unspecified_permissionship() {
+async fn check_bulk_fails_on_an_item_with_an_unset_permissionship() {
     let item = |permissionship: proto::check_permission_response::Permissionship| {
         proto::CheckBulkPermissionsPair {
             request: None,
@@ -186,11 +186,11 @@ async fn check_bulk_fails_on_an_item_with_an_unspecified_permissionship() {
             check_question(),
         ]))
         .await
-        .expect_err("an unspecified item is not an answer");
+        .expect_err("an unset item is not an answer");
     assert_internal(&err);
     assert!(
         err.to_string()
-            .contains("check item 1: permissionship is unspecified"),
+            .contains("check item 1: permissionship is unset"),
         "{err}"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1, "INTERNAL is not retried");

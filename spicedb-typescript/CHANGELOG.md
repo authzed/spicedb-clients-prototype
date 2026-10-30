@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: check response: permissionship is unset` (it said "check response has unspecified permissionship"; bulk items and lookups likewise), and the docs and comments match. `"unspecified"` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** a missing (`undefined` or `null`) request, transaction, bulk-check element, import element, reflect-schema filter or watch filter throws `InvalidArgumentError` naming what is missing, before any RPC, in both `SpiceDBClient` and `InMemorySpiceDB`. `check(undefined)`, `write(undefined)` and `readRelationships(undefined)` used to throw a raw `TypeError`, and `checkBulk([undefined])` a `SpiceDBError` wrapping one. A watch, permission-set watch or permission-set download without a request still uses the default request.
 - **Behavior change:** an empty or whitespace-only `token` throws `InvalidArgumentError` at construction, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - **Behavior change:** `tls.caCert`, `tls.clientCert` and `tls.clientKey` are parsed at construction (`X509Certificate` and `createPrivateKey` from `node:crypto`). Material that does not parse throws `InvalidArgumentError` naming the option; before, `node:tls` accepted a non-PEM `caCert` silently and the first call failed its handshake.
@@ -13,7 +14,7 @@
 ### Client-detected malformed responses and the double's resume cursor
 
 - **Behavior change:** a check, bulk-check item, lookup-resources result or
-  lookup-subjects subject whose permissionship is unspecified on the wire now
+  lookup-subjects subject whose permissionship is unset on the wire now
   fails with a `SpiceDBError` coded `Code.Internal` (the item's `inputIndex`
   set for a bulk check, even with `BulkItemErrors.Returned`) instead of being
   returned as `"unspecified"`. A permissionship value newer than the client

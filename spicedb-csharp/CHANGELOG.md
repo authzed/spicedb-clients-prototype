@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Behavior change:** a whitespace-only preshared key throws `InvalidArgumentException` at construction (`CreatePlaintext`, `CreateSystemTls`, `CreateFromChannel`), as an empty one already did, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
+- `InMemorySpiceDBClient` rejects an unspecified permissionship with `SetCheckResult was given permissionship Unspecified` (before: `SetCheckResult returned ...`, though it registers a value); a resolver's answer still reads `The check resolver returned ...`.
+- Docs: the AI guide and migration guide note that `SpiceDB.Client.CallOptions` collides with `Grpc.Core.CallOptions` (CS0104) in a file that imports both, and show the alias `using SpiceDBCallOptions = SpiceDB.Client.CallOptions;`.
+- Docs: with bulk item errors returned (`BulkItemErrors.Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
+
 ### Deadlines, malformed responses, readiness and target schemes
 
 - Relationship reads, lookups (resources, subjects, permission sets) and exports apply the

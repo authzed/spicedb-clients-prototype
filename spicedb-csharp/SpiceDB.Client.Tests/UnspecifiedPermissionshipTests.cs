@@ -112,11 +112,13 @@ public class UnspecifiedPermissionshipTests
     public async Task DoubleNeverProducesUnspecified()
     {
         await using var store = new InMemorySpiceDBClient();
+        // SetCheckResult registers a value; the message says it was given one, not that it returned one.
         store.Invoking(s => s.SetCheckResult(Check.Resource, Check.Permission, Check.Subject, Permissionship.Unspecified))
-            .Should().Throw<InvalidArgumentException>();
+            .Should().Throw<InvalidArgumentException>().WithMessage("SetCheckResult was given permissionship Unspecified*");
 
         store.SetCheckResolver(_ => new CheckResult(Permissionship.Unspecified, [], default));
-        await store.Invoking(s => s.CheckAsync(Check)).Should().ThrowAsync<InvalidArgumentException>();
+        await store.Invoking(s => s.CheckAsync(Check)).Should().ThrowAsync<InvalidArgumentException>()
+            .WithMessage("The check resolver returned permissionship Unspecified*");
         await store.Invoking(s => s.CheckBulkAsync([Check])).Should().ThrowAsync<InvalidArgumentException>();
 
         var seed = new Transaction();

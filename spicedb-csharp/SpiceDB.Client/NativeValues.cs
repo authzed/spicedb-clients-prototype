@@ -93,6 +93,14 @@ internal static class Native
 {
     internal static T Required<T>(T? value, string path) where T : class => value ?? throw new InvalidArgumentException($"{path} is required.");
     internal static string Required(string? value, string path) => string.IsNullOrEmpty(value) ? throw new InvalidArgumentException($"{path} must not be empty.") : value;
+    /// <summary>
+    /// A credential that must hold something: an empty or whitespace-only key (usually an
+    /// unset environment variable) would otherwise be sent as a bare "Bearer" header the
+    /// server rejects on the first call.
+    /// </summary>
+    internal static string Credential(string? value, string path) => string.IsNullOrWhiteSpace(value)
+        ? throw new InvalidArgumentException($"{path} must not be empty or whitespace (check that the variable holding it is set).")
+        : value;
     internal static IReadOnlyList<T> List<T>(IEnumerable<T> values) => Array.AsReadOnly((values ?? throw new InvalidArgumentException("Collection cannot be null.")).ToArray());
     internal static IReadOnlyDictionary<string, object?>? Context(IReadOnlyDictionary<string, object?>? value) => value is null ? null : (IReadOnlyDictionary<string, object?>)Snapshot(value, "context", new HashSet<object>(ReferenceEqualityComparer.Instance))!;
     private static object? Snapshot(object? value, string path, HashSet<object> visiting)

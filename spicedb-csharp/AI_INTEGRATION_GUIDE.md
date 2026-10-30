@@ -47,6 +47,17 @@ use `SpiceDBClient.CreateFromCallInvoker(channel.CreateCallInvoker())` (the invo
 carries its own credentials) or `CreateFromChannel(channel, token)`; disposing the client
 never disposes either.
 
+An empty or whitespace-only preshared key (usually an unset environment
+variable) throws `InvalidArgumentException` at construction.
+
+`SpiceDB.Client.CallOptions` and `Grpc.Core.CallOptions` share a name, so a file that imports
+both namespaces (for example one with a custom `CallInvoker` passed to
+`CreateFromCallInvoker`) fails with CS0104. Alias this library's type there:
+
+```csharp
+using SpiceDBCallOptions = SpiceDB.Client.CallOptions;
+```
+
 ## Check (fail closed)
 
 ```csharp
@@ -75,7 +86,8 @@ var visible = orgIds.Where((_, i) => results[i].HasPermission).ToList();
 ```
 
   `new CheckOptions { ItemErrors = BulkItemErrors.Returned }` returns per-item errors on
-  `results[i].Error` instead of throwing for the first one.
+  `results[i].Error` instead of throwing for the first one. A malformed item in the
+  server's response (such as an unset permissionship) still fails the whole call.
 - Permission names chosen at runtime (e.g. per API method): verify every configured name
   at startup, since the native client cannot reject them at compile time:
 

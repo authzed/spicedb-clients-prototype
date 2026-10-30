@@ -81,19 +81,54 @@ await using var client = SpiceDBClient.CreateSystemTls("spicedb.example.com:443"
 An empty or whitespace-only preshared key (usually an unset environment
 variable) throws `InvalidArgumentException` at construction.
 
-`SpiceDB.Client.CallOptions` and `Grpc.Core.CallOptions` share a name, so a file that imports
-both namespaces (for example one with a custom `CallInvoker` passed to
-`CreateFromCallInvoker`) fails with CS0104 wherever it writes `CallOptions`. Aliasing only
-this library's type does not help, because both namespace imports stay in scope. Alias the
-bare name to the type you mean there (a using-alias takes precedence over namespace
-imports), and give the other type its own alias if the file needs it too:
+`SpiceDB.Client` shares type names with two namespaces its callers often import:
+
+- `Grpc.Core`: `CallOptions` and `WriteOptions`.
+- `Authzed.Api.V1` (the protocol types, for example in code moving off `authzed-dotnet` or
+  using the raw escape hatch): `Relationship`, `Consistency`, `ZedToken`, `Precondition`,
+  `RelationshipUpdate`, `ResolvedSubject`, `PartialCaveatInfo`, `DebugInformation` and
+  `CheckDebugTrace`.
+
+A file that imports `SpiceDB.Client` and either of them fails with CS0104 wherever it writes
+one of those names. Aliasing only one side does not help, because both namespace imports stay
+in scope. Alias the bare name to the type you mean (a using-alias takes precedence over
+namespace imports), and give the other type a prefixed alias. A file that imports all three
+can copy this block whole; keep the lines for the namespaces it imports:
 
 ```csharp
+using Authzed.Api.V1;
 using Grpc.Core;
 using SpiceDB.Client;
-using CallOptions = Grpc.Core.CallOptions;             // CallInvoker overrides
-using SpiceDBCallOptions = SpiceDB.Client.CallOptions; // per-call options for this client
+
+// Shared with Grpc.Core
+using CallOptions = SpiceDB.Client.CallOptions;
+using WriteOptions = SpiceDB.Client.WriteOptions;
+using GrpcCallOptions = Grpc.Core.CallOptions;   // CallInvoker overrides
+using GrpcWriteOptions = Grpc.Core.WriteOptions;
+
+// Shared with Authzed.Api.V1
+using Relationship = SpiceDB.Client.Relationship;
+using Consistency = SpiceDB.Client.Consistency;
+using ZedToken = SpiceDB.Client.ZedToken;
+using Precondition = SpiceDB.Client.Precondition;
+using RelationshipUpdate = SpiceDB.Client.RelationshipUpdate;
+using ResolvedSubject = SpiceDB.Client.ResolvedSubject;
+using PartialCaveatInfo = SpiceDB.Client.PartialCaveatInfo;
+using DebugInformation = SpiceDB.Client.DebugInformation;
+using CheckDebugTrace = SpiceDB.Client.CheckDebugTrace;
+using ProtoRelationship = Authzed.Api.V1.Relationship;
+using ProtoConsistency = Authzed.Api.V1.Consistency;
+using ProtoZedToken = Authzed.Api.V1.ZedToken;
+using ProtoPrecondition = Authzed.Api.V1.Precondition;
+using ProtoRelationshipUpdate = Authzed.Api.V1.RelationshipUpdate;
+using ProtoResolvedSubject = Authzed.Api.V1.ResolvedSubject;
+using ProtoPartialCaveatInfo = Authzed.Api.V1.PartialCaveatInfo;
+using ProtoDebugInformation = Authzed.Api.V1.DebugInformation;
+using ProtoCheckDebugTrace = Authzed.Api.V1.CheckDebugTrace;
 ```
+
+`NamespaceCollisionTests` finds these names by reflection and fails when a new one appears, and
+`CallOptionsAliasTests` compiles a file with exactly this block.
 
 ## Requests and consistency
 

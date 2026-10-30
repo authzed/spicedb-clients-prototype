@@ -91,7 +91,9 @@ func pagingClient(t *testing.T, s *pagingServer) *Client {
 	v1.RegisterPermissionsServiceServer(srv, s)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
-	return newTestClient(t, func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })
+	c := newTestClient(t, func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })
+	warm(t, c)
+	return c
 }
 func TestPagedStreamsRespectPageSizeTotalLimitAndRepeatCursorArguments(t *testing.T) {
 	s := &pagingServer{t: t}
@@ -129,11 +131,14 @@ func TestPagedStreamsRespectPageSizeTotalLimitAndRepeatCursorArguments(t *testin
 	require.Equal(t, uint32(1), s.exports[1].OptionalLimit)
 	require.Equal(t, "1", s.exports[1].OptionalCursor.Token)
 }
+// The first page (30 ms) fits the caller's 500 ms total with room for a busy machine; the
+// second page stalls, so only the shared total ends it. The client is warmed first, so the
+// total never also covers connection setup.
 func TestPagedReadAndDeleteAllShareDeadlineAcrossPages(t *testing.T) {
 	s := &pagingServer{t: t, stall: true}
 	c := pagingClient(t, s)
 	var readErr error
-	for _, e := range c.ReadRelationships(context.Background(), ReadRelationshipsRequest{Filter: testFilter("document"), Consistency: consistency.Full()}, WithReadRelationshipsPageSize(2), WithReadRelationshipsTimeout(80*time.Millisecond)) {
+	for _, e := range c.ReadRelationships(context.Background(), ReadRelationshipsRequest{Filter: testFilter("document"), Consistency: consistency.Full()}, WithReadRelationshipsPageSize(2), WithReadRelationshipsTimeout(500*time.Millisecond)) {
 		if e != nil {
 			readErr = e
 		}
@@ -142,7 +147,7 @@ func TestPagedReadAndDeleteAllShareDeadlineAcrossPages(t *testing.T) {
 	s.mu.Lock()
 	require.Len(t, s.reads, 2)
 	s.mu.Unlock()
-	progress, e := c.DeleteAllRelationshipsNonAtomic(context.Background(), DeleteAllRequest{Filter: testFilter("document")}, WithDeleteAllTimeout(80*time.Millisecond))
+	progress, e := c.DeleteAllRelationshipsNonAtomic(context.Background(), DeleteAllRequest{Filter: testFilter("document")}, WithDeleteAllTimeout(500*time.Millisecond))
 	require.ErrorIs(t, e, context.DeadlineExceeded)
 	require.Equal(t, uint64(1), progress.DeletedCount)
 	require.EqualValues(t, "ack", progress.Revision.String())

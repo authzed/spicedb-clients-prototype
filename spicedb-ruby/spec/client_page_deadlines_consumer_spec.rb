@@ -78,6 +78,7 @@ RSpec.describe 'SpiceDB::Client per-page deadlines exclude the caller\'s process
     Thread.new { server.run }
     server.wait_till_running(5)
     SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: CONSUMER_DEFAULT) do |client|
+      client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
       @client = client
       example.run
     end

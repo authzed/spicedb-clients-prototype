@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Tests: the deadline, consumer-time and shared-budget tests against a real server build their clients with `ConnectMode::Eager`, so a short allowance never has to cover connection setup on a busy machine; the shared-budget tests use wider stalls and budgets.
 - `consistency::Strategy` implements `Display` (`full`, `min_latency`, `at_least(<token>)`, `snapshot(<token>)`) and, with the `serde` feature, `Serialize` as `{"strategy":"at_least","token":"<token>"}` (no token for `full` and `min_latency`), like the other native values. It had only `Debug`.
 - An `http://` endpoint without a port fails with its example once: the accepted-forms list after the reason no longer repeats `for example http://host:50051`.
 - The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `client detected malformed response from server: <what> permissionship is unset` (it said "is unspecified"), and the docs, guides and comments match. `Permissionship::Unspecified` names only the safe value a permissionship newer than this client maps to, which never fails the call.

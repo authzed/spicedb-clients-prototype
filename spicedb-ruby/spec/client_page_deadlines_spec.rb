@@ -10,8 +10,9 @@ require 'grpc'
 # default deadline to each page request, so a server that stalls mid-read
 # fails the read instead of hanging it. A caller's total deadline still bounds
 # the whole call and wins when earlier; watch keeps no default.
-PAGE_STALL = 2.0
-PAGE_DEFAULT = 0.3
+PAGE_STALL = 3.0
+# Each page (connection already warm) must fit this with room for a busy machine.
+PAGE_DEFAULT = 0.5
 
 class PageStallingPermissionsService < Authzed::Api::V1::PermissionsService::Service
   def initialize(stall_page:, page_delay: 0)
@@ -106,6 +107,7 @@ RSpec.describe 'SpiceDB::Client per-page default deadlines' do
   it 'fails a lookup that stalls on page 3 after the per-page default, with no caller option' do
     with_server do |port|
       SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: PAGE_DEFAULT) do |client|
+        client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
         seen = []
         error, elapsed = timed { lookup(client).each { |item| seen << item.resource_id } }
         expect(error).to be_a(SpiceDB::DeadlineExceededError)
@@ -119,6 +121,7 @@ RSpec.describe 'SpiceDB::Client per-page default deadlines' do
     # Every page takes 60% of the default; three pages take nearly twice it.
     with_server(stall_page: nil, page_delay: PAGE_DEFAULT * 0.6) do |port|
       SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: PAGE_DEFAULT) do |client|
+        client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
         error, elapsed = timed { lookup(client, limit: 6).to_a }
         expect(error).to be_nil
         expect(elapsed).to be > PAGE_DEFAULT
@@ -129,6 +132,7 @@ RSpec.describe 'SpiceDB::Client per-page default deadlines' do
   it "lets a caller's earlier total deadline bound the whole lookup" do
     with_server(stall_page: nil, page_delay: 0.2) do |port|
       SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: 10) do |client|
+        client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
         error, elapsed = timed { lookup(client, limit: 20, timeout: 0.5).to_a }
         expect(error).to be_a(SpiceDB::DeadlineExceededError)
         expect(elapsed).to be < 1.5
@@ -140,6 +144,7 @@ RSpec.describe 'SpiceDB::Client per-page default deadlines' do
     with_server(stall_page: 2) do |port|
       SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: PAGE_DEFAULT,
                                                               default_deadline: SpiceDB::DefaultDeadline::DISABLED) do |client|
+        client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
         error, elapsed = timed { lookup(client, limit: 4).to_a }
         expect(error).to be_nil
         expect(elapsed).to be >= PAGE_STALL
@@ -150,6 +155,7 @@ RSpec.describe 'SpiceDB::Client per-page default deadlines' do
   it 'fails a stalled lookup_subjects after the per-page default' do
     with_server do |port|
       SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: PAGE_DEFAULT) do |client|
+        client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
         error, elapsed = timed do
           client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'x'), permission: 'view',
                                  subject_type: 'user', consistency: SpiceDB::Consistency.full).to_a
@@ -163,6 +169,7 @@ RSpec.describe 'SpiceDB::Client per-page default deadlines' do
   it 'fails an export whose server stalls before page 3, after the per-page default' do
     with_server do |port|
       SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: PAGE_DEFAULT) do |client|
+        client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
         seen = []
         error, elapsed = timed do
           client.export_relationships(consistency: SpiceDB::Consistency.full).each { |item| seen << item.resource_id }
@@ -178,6 +185,7 @@ RSpec.describe 'SpiceDB::Client per-page default deadlines' do
   it 'does not count time the caller spends consuming an export page' do
     with_server(stall_page: nil) do |port|
       SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: PAGE_DEFAULT) do |client|
+        client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
         error, = timed do
           client.export_relationships(consistency: SpiceDB::Consistency.full).each { sleep(PAGE_DEFAULT * 1.5) }
         end
@@ -189,6 +197,7 @@ RSpec.describe 'SpiceDB::Client per-page default deadlines' do
   it 'keeps no default on watch' do
     with_server do |port|
       SpiceDB::Client.new_plaintext("localhost:#{port}", 't', default_timeout: PAGE_DEFAULT) do |client|
+        client.connect!(timeout: 30) # untimed: the per-page allowance covers pages, not connection setup
         event = nil
         error, = timed { client.watch { |e| event = e; break } } # rubocop:disable Style/Semicolon
         expect(error).to be_nil

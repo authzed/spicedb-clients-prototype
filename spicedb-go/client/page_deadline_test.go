@@ -104,7 +104,16 @@ func newStallClient(t *testing.T, srv *stallServer, opts ...Option) *Client {
 	c, err := NewWithOpts("passthrough:///bufnet", "t", append(base, opts...)...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
+	warm(t, c)
 	return c
+}
+
+// warm opens the client's connection with one untimed call, so a test's short
+// per-page allowance covers only the page under test, never connection setup
+// (which on a busy machine can by itself exceed a few hundred milliseconds).
+func warm(t *testing.T, c *Client) {
+	t.Helper()
+	require.NoError(t, c.Ready(context.Background(), WithReadyTimeout(30*time.Second)))
 }
 
 func lookupReq() LookupResourcesRequest {
@@ -310,6 +319,7 @@ func TestPageDeadline_PermissionSetLookupProcessingTimeNeverCounts(t *testing.T)
 		WithDialOptions(grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) })))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
+	warm(t, c)
 	n, err := slowConsumer(c.LookupPermissionSets(context.Background(), LookupPermissionSetsRequest{Limit: 5}), 100*time.Millisecond)
 	require.NoError(t, err)
 	require.Equal(t, 5, n)

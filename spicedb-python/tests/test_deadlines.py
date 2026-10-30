@@ -37,7 +37,9 @@ from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
 
 _ONE_REL = Relationship.from_triple("document:readme", "view", "user:alice")
 TOKEN = "test-token"
-_STALL_SECONDS = 2.0
+# Far beyond every short deadline below, so a deadline firing (rather than the stall
+# ending) is unmistakable even when a busy machine delays the client.
+_STALL_SECONDS = 3.0
 _WATCHDOG_SECONDS = 10.0
 T = TypeVar("T")
 
@@ -148,6 +150,8 @@ def test_sync_unary_call_times_out_with_deadline_exceeded_error():
         client = SyncSpiceDBClient(
             f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.2
         )
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        client.ready(timeout=30)
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             _run_with_watchdog(
@@ -172,6 +176,8 @@ def test_sync_per_call_timeout_overrides_client_default():
             transport_security=TransportSecurity.PLAINTEXT,
             default_timeout=_STALL_SECONDS * 10,
         )
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        client.ready(timeout=30)
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             _run_with_watchdog(
@@ -196,6 +202,8 @@ def test_sync_stalled_page_fails_after_the_per_page_default():
         client = SyncSpiceDBClient(
             f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        client.ready(timeout=30)
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError, match="did not send a page within 0.1s"):
             _run_with_watchdog(
@@ -239,6 +247,8 @@ def test_sync_import_relationships_does_not_inherit_unary_default():
             f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
         rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        client.ready(timeout=30)
         start = time.monotonic()
         num_loaded = _run_with_watchdog(lambda: client.import_relationships([rel]))
         elapsed = time.monotonic() - start
@@ -259,6 +269,8 @@ def test_sync_import_relationships_with_explicit_timeout_still_fires():
     try:
         client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
         rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        client.ready(timeout=30)
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             _run_with_watchdog(lambda: client.import_relationships([rel], timeout=0.2))
@@ -277,6 +289,8 @@ async def test_aio_unary_call_times_out_with_deadline_exceeded_error():
         client = AioSpiceDBClient(
             f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.2
         )
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        await client.ready(timeout=30)
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(
@@ -299,6 +313,8 @@ async def test_aio_per_call_timeout_overrides_client_default():
             transport_security=TransportSecurity.PLAINTEXT,
             default_timeout=_STALL_SECONDS * 10,
         )
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        await client.ready(timeout=30)
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(
@@ -322,6 +338,8 @@ async def test_aio_stalled_page_fails_after_the_per_page_default():
         async def _collect() -> list[Any]:
             return [r async for r in client.read_relationships(Filter(resource_type="document"), consistency=full())]
 
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        await client.ready(timeout=30)
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError, match="did not send a page within 0.1s"):
             await asyncio.wait_for(_collect(), timeout=_WATCHDOG_SECONDS)
@@ -365,6 +383,8 @@ async def test_aio_import_relationships_does_not_inherit_unary_default():
             f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
         rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        await client.ready(timeout=30)
         start = time.monotonic()
         num_loaded = await asyncio.wait_for(
             client.import_relationships([rel]), timeout=_WATCHDOG_SECONDS
@@ -384,6 +404,8 @@ async def test_aio_import_relationships_with_explicit_timeout_still_fires():
     try:
         client = AioSpiceDBClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
         rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
+        # Connect before timing: the short deadline covers the call, not connection setup.
+        await client.ready(timeout=30)
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(

@@ -40,6 +40,8 @@ const WATCHDOG: Duration = Duration::from_secs(10);
 async fn client_for(addr: std::net::SocketAddr) -> SpiceDBClient {
     SpiceDBClient::builder(addr.to_string(), "token")
         .plaintext()
+        // Connect at build, untimed: a short allowance below covers the call, not connection setup.
+        .connect_mode(spicedb::ConnectMode::Eager)
         .default_timeout(PAGE_DEFAULT)
         .build()
         .await

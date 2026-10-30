@@ -14,6 +14,7 @@
 
 ## Unreleased
 
+- Tests: the deadline and per-page deadline tests against a real gRPC server call `ready()` before starting a clock or a short deadline, so an allowance never has to cover connection setup on a busy machine; the stalling server's pause is 3 s and two import watchdogs are wider.
 - `Consistency` has a readable `str()` (`full()`, `min_latency()`, `at_least(<token>)`, `snapshot(<token>)`) and a JSON-compatible `to_dict()` (`{"strategy": "at_least", "token": "<token>"}`; no token for `full` and `min_latency`), like the other native values. It printed only its dataclass repr, and `dataclasses.asdict` exposed the token as `{"_value": ...}`.
 - The malformed wire-zero permissionship is now called "unset" everywhere: the client-detected error reads `spicedb: client detected malformed response from server: CheckPermissionResponse.permissionship is unset` (it said "is unspecified"), and the docs and docstrings match. `Permissionship.UNSPECIFIED` names only the safe value a permissionship newer than this client maps to, which never fails the call.
 - **Behavior change:** an empty or whitespace-only `token` raises `LocalValidationError` at construction (both flavors), instead of being sent as a bare `Bearer` prefix the server rejects on the first call.

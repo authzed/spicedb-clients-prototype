@@ -207,6 +207,8 @@ def healthy():
 def test_sync_slow_consumer_finishes_a_healthy_read(healthy, read):
     channel = grpc.insecure_channel(f"127.0.0.1:{healthy}", options=_NO_BDP)
     client = SyncClient.from_channel(channel, default_timeout=DEFAULT)
+    # Connect before timing: the per-page allowance covers the page, not connection setup.
+    client.ready(timeout=30)
     seen = 0
     try:
         with READS[read](client) as stream:
@@ -222,6 +224,8 @@ def test_sync_slow_consumer_finishes_a_healthy_read(healthy, read):
 async def test_aio_slow_consumer_finishes_a_healthy_read(healthy, read):
     channel = grpc.aio.insecure_channel(f"127.0.0.1:{healthy}", options=_NO_BDP)
     client = AioClient.from_channel(channel, default_timeout=DEFAULT)
+    # Connect before timing: the per-page allowance covers the page, not connection setup.
+    await client.ready(timeout=30)
     seen = 0
     try:
         async with READS[read](client) as stream:
@@ -245,6 +249,8 @@ def test_sync_lookup_stalling_on_page_three_fails_after_the_per_page_default():
     client = SyncClient(f"127.0.0.1:{port}", token="t", transport_security=TransportSecurity.PLAINTEXT,
                         default_timeout=DEFAULT)
     got = []
+    # Connect before timing: the per-page allowance covers the page, not connection setup.
+    client.ready(timeout=30)
     started = time.monotonic()
     try:
         with pytest.raises(DeadlineExceededError, match="did not send a page"):
@@ -262,6 +268,8 @@ async def test_aio_lookup_stalling_on_page_three_fails_after_the_per_page_defaul
     client = AioClient(f"127.0.0.1:{port}", token="t", transport_security=TransportSecurity.PLAINTEXT,
                        default_timeout=DEFAULT)
     got = []
+    # Connect before timing: the per-page allowance covers the page, not connection setup.
+    await client.ready(timeout=30)
     started = time.monotonic()
     try:
         with pytest.raises(DeadlineExceededError, match="did not send a page"):
@@ -278,6 +286,8 @@ def test_sync_caller_total_deadline_wins_when_earlier():
     server, port = _serve(_Server(stall_on_page=1))
     client = SyncClient(f"127.0.0.1:{port}", token="t", transport_security=TransportSecurity.PLAINTEXT,
                         default_timeout=30.0)
+    # Connect before timing: the per-page allowance covers the page, not connection setup.
+    client.ready(timeout=30)
     started = time.monotonic()
     try:
         with pytest.raises(DeadlineExceededError):

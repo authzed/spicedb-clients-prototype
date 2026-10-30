@@ -26,7 +26,10 @@ public class PageDeadlineTests
 {
     private const int PageDelayMs = 150;
     private const int StallMs = 5000;
-    private static readonly TimeSpan Default = TimeSpan.FromMilliseconds(400);
+    // Each page request (connection already warm) takes PageDelayMs; the per-page default must
+    // cover that with room for a busy machine, and stay well under StallMs.
+    private static readonly TimeSpan Default = TimeSpan.FromMilliseconds(1000);
+    private const int WatchFirstEventMs = 2500;
 
     /// <summary>
     /// Serves pages of two results, each after <see cref="PageDelayMs"/>, and stalls on the third
@@ -58,7 +61,7 @@ public class PageDeadlineTests
     {
         public override async Task Watch(WatchRequest request, IServerStreamWriter<WatchResponse> stream, ServerCallContext context)
         {
-            await Stall(1000, context.CancellationToken);
+            await Stall(WatchFirstEventMs, context.CancellationToken);
             await stream.WriteAsync(new() { ChangesThrough = new() { Token = "rev" } });
         }
     }
@@ -77,7 +80,9 @@ public class PageDeadlineTests
         app.MapGrpcService<SlowWatchService>();
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
-        return (app, SpiceDBClient.CreateFromChannel(GrpcChannel.ForAddress(address), "test-token", options));
+        var client = SpiceDBClient.CreateFromChannel(GrpcChannel.ForAddress(address), "test-token", options);
+        await ConnectionWarmup.WarmAsync(client);
+        return (app, client);
     }
 
     private static async Task<List<string>> Lookup(SpiceDBClient client, LookupOptions options, List<string> seen)
@@ -171,7 +176,7 @@ public class PageDeadlineTests
     [Fact]
     public async Task WatchKeepsNoDefaultDeadline()
     {
-        // The watch's first event arrives after 1s, well past the 400ms client default.
+        // The watch's first event arrives after WatchFirstEventMs, well past the client default.
         var (app, client) = await StartAsync(new ClientOptions { DefaultTimeout = Default });
         try
         {

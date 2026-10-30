@@ -115,7 +115,9 @@ public class SlowConsumerPageDeadlineTests
         app.MapGrpcService<HealthySets>();
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
-        return (app, SpiceDBClient.CreateFromChannel(GrpcChannel.ForAddress(address), "test-token", Options));
+        var client = SpiceDBClient.CreateFromChannel(GrpcChannel.ForAddress(address), "test-token", Options);
+        await ConnectionWarmup.WarmAsync(client);
+        return (app, client);
     }
 
     /// <summary>Consumes every item slowly and returns how many there were.</summary>

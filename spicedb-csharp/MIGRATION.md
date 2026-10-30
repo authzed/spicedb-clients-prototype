@@ -121,7 +121,8 @@ var allowed = result.HasPermission; // only an unconditional grant
   unset, pass `Consistency.MinLatency()`, which is what SpiceDB applies when it is absent.
 - `Consistency.AtLeast(token)` and `Snapshot(token)` throw `InvalidArgumentException` for an
   empty or whitespace-only token rather than sending it; use `AtLeastOrFull` or
-  `AtLeastOrMinLatency` when a stored token may be missing.
+  `AtLeastOrMinLatency` when a stored token may be missing. Watch start revisions and
+  materialize at-revisions take `ZedToken?`: pass null, not an empty token, to omit one.
 - Singular checks call `CheckPermission`. Bulk checks (`CheckBulkAsync`) split into chunks
   of 1,000, validate every echoed item, and throw for the first failed item unless
   `CheckOptions.ItemErrors = BulkItemErrors.Returned`. A malformed item in the server's

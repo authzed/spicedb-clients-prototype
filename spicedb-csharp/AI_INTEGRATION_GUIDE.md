@@ -81,6 +81,7 @@ catch (SpiceDBException) { throw new ForbiddenException(); } // errors deny too
 - Need to observe a write? Store `written.Revision.Value` and check with
   `Consistency.AtLeast(new ZedToken(stored))`. An empty or whitespace-only stored token
   throws `InvalidArgumentException`; `Consistency.AtLeastOrFull(...)` falls back instead.
+  Likewise pass `null`, not an empty token, for no watch start revision.
 - Reporting what was denied: `$"{resource}#{permission}"` prints `organization:acme#view`
   (`ObjectRef.ToString()` is `type:id`).
 - Several at once (results stay in input order; only `HasPermission` grants):

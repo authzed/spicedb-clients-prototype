@@ -72,7 +72,7 @@ public sealed partial class SpiceDBClient
     {
         using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, watch: true);
         options?.Validate();
-        var request = new M.WatchPermissionSetsRequest { OptionalStartingAfter = startRevision is { } token ? new() { Token = token.Value } : null };
+        var request = new M.WatchPermissionSetsRequest { OptionalStartingAfter = RevisionInput.Optional(startRevision, nameof(startRevision)) is { } token ? new() { Token = token } : null };
         await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.WatchPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
             yield return response.ResponseCase switch
             {
@@ -87,7 +87,7 @@ public sealed partial class SpiceDBClient
     public async IAsyncEnumerable<LookupPermissionSet> ExperimentalLookupPermissionSetsAsync(int limit, ZedToken? atRevision, PermissionSetLookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, paged: true);
-        var request = new M.LookupPermissionSetsRequest { Limit = (uint)Positive(limit, nameof(limit)), OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null, OptionalStartingAfterCursor = options?.ResumeCursor?.ToProto() };
+        var request = new M.LookupPermissionSetsRequest { Limit = (uint)Positive(limit, nameof(limit)), OptionalAtRevision = RevisionInput.Optional(atRevision, nameof(atRevision)) is { } token ? new() { Token = token } : null, OptionalStartingAfterCursor = options?.ResumeCursor?.ToProto() };
         await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.LookupPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
             yield return new(response.Change is null ? null : MapSetChange(response.Change), PermissionSetCursor.FromProto(response.Cursor));
     }
@@ -96,7 +96,7 @@ public sealed partial class SpiceDBClient
     {
         using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
-        var request = new M.DownloadPermissionSetsRequest { OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null };
+        var request = new M.DownloadPermissionSetsRequest { OptionalAtRevision = RevisionInput.Optional(atRevision, nameof(atRevision)) is { } token ? new() { Token = token } : null };
         var response = await Unary(budget, o => RawProto().MaterializePermissionSets.DownloadPermissionSetsAsync(request, o.Headers, o.Deadline, o.CancellationToken));
         return new(response.Files.Select(x => new PermissionSetFile(x.Name, x.Url)), response.Timestamp?.ToDateTimeOffset(), new(response.AtRevision?.Token ?? ""));
     }

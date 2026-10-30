@@ -28,6 +28,16 @@ internal sealed class ZedTokenJsonConverter : JsonConverter<ZedToken>
         writer.WriteStringValue(value.Value);
 }
 
+/// <summary>Validates an optional caller-supplied revision (watch start, materialize at-revision).</summary>
+internal static class RevisionInput
+{
+    // Null means absent. A present token that is empty or whitespace-only is unusable, so it
+    // fails locally instead of being sent (where it would read as "no revision").
+    internal static string? Optional(ZedToken? token, string name) => token is not { } t ? null
+        : string.IsNullOrWhiteSpace(t.Value) ? throw new InvalidArgumentException($"{name} must be null or a nonempty revision token.")
+        : t.Value;
+}
+
 public sealed record Consistency
 {
     private readonly int _kind;

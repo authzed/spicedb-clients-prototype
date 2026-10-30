@@ -43,14 +43,14 @@ sourceSets {
 // gencode version is pinned in buf.gen.yaml (protoc v33.2) at the floor
 // proto-google-common-protos already needs and below the 4.34.2 Spring Boot 4.1
 // manages. spicedb-java's ProtobufRuntime.FLOOR repeats this number.
-val protobufFloor = "4.33.2"
+val protobufFloor = "4.36.2"
 
 dependencies {
     // Single source of truth for the gRPC stack -- see DESIGN.md "Invariants". Every
     // io.grpc:* coordinate below is deliberately versionless so a partial bump is
     // structurally impossible. It must be at least the grpc-java plugin version
     // that generated gen/'s *Grpc.java stubs.
-    api(platform("io.grpc:grpc-bom:1.84.0"))
+    api(platform("io.grpc:grpc-bom:1.85.1"))
 
     // Types that appear in the generated public API (message/stub signatures).
     api("com.google.protobuf:protobuf-java:$protobufFloor")
@@ -58,7 +58,7 @@ dependencies {
     api("io.grpc:grpc-stub")
     // com.google.rpc.Status appears in generated message signatures; com.google.api
     // annotations are referenced by descriptors. Same artifact authzed-java uses.
-    api("com.google.api.grpc:proto-google-common-protos:2.65.0")
+    api("com.google.api.grpc:proto-google-common-protos:2.78.0")
     // The default transport behind ManagedChannelBuilder.forTarget. No netty type appears in
     // this module's API, so consumers get it at run time without compiling against it.
     runtimeOnly("io.grpc:grpc-netty-shaded")
@@ -67,8 +67,8 @@ dependencies {
     // reference them only to build their file descriptors, never in signatures.
     // These are the canonical Maven artifacts for those protos -- the same ones
     // authzed-java depends on -- so no second copy of validate/buf.validate exists.
-    implementation("build.buf.protoc-gen-validate:pgv-java-stub:1.3.0")
-    implementation("build.buf:protovalidate:1.1.0") {
+    implementation("build.buf.protoc-gen-validate:pgv-java-stub:1.3.3")
+    implementation("build.buf:protovalidate:1.3.0") {
         // Only build.buf.validate.ValidateProto's descriptor is needed; the CEL
         // validation engine is the consumer's choice.
         isTransitive = false

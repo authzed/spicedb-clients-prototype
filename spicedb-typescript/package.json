@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.11.0",
+    "@bufbuild/protobuf": "^2.16.0",
     "@connectrpc/connect": "^2.0.0",
     "@spicedb/proto": "workspace:*"
   },
@@ -24,10 +24,10 @@
   },
   "devDependencies": {
     "@connectrpc/connect-node": "^2.2.0",
-    "@microsoft/api-extractor": "^7.59.2",
-    "@types/node": "^26.6.3",
+    "@microsoft/api-extractor": "^7.60.0",
+    "@types/node": "^26.6.5",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=20.19.0"

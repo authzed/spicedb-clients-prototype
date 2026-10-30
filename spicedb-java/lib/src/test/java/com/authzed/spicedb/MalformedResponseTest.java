@@ -280,6 +280,14 @@ class MalformedResponseTest {
       var check = TestRequests.check(rel, "view", Consistency.full());
       assertInternal(() -> servers.client().check(check));
       assertInternal(() -> servers.client().checkBulk(List.of(check)));
+      // A malformed item is not a per-item error: returned item errors still fail the call.
+      assertInternal(
+          () ->
+              servers
+                  .client()
+                  .checkBulk(
+                      List.of(check),
+                      CheckOptions.builder().bulkItemErrors(BulkItemErrors.RETURNED).build()));
       assertInternal(
           () ->
               servers
@@ -315,5 +323,96 @@ class MalformedResponseTest {
                     .setResourceObjectId("a")
                     .setPermissionship(LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
                     .build()));
+  }
+
+  /**
+   * Only the unset (zero) permissionship is malformed. A value newer than this client maps to
+   * UNSPECIFIED, which never grants, and does not fail the call, so upgrading SpiceDB cannot turn
+   * into a client outage.
+   */
+  @Test
+  void newerPermissionshipMapsToUnspecifiedWithoutFailing() throws Exception {
+    int newer = 99;
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkPermission(
+              CheckPermissionRequest r, StreamObserver<CheckPermissionResponse> out) {
+            out.onNext(CheckPermissionResponse.newBuilder().setPermissionshipValue(newer).build());
+            out.onCompleted();
+          }
+
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest r, StreamObserver<CheckBulkPermissionsResponse> out) {
+            out.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .addPairs(
+                        CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(r.getItems(0))
+                            .setItem(
+                                CheckBulkPermissionsResponseItem.newBuilder()
+                                    .setPermissionshipValue(newer)))
+                    .build());
+            out.onCompleted();
+          }
+
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest r, StreamObserver<LookupResourcesResponse> out) {
+            out.onNext(
+                LookupResourcesResponse.newBuilder()
+                    .setResourceObjectId("a")
+                    .setPermissionshipValue(newer)
+                    .build());
+            out.onCompleted();
+          }
+
+          @Override
+          public void lookupSubjects(
+              LookupSubjectsRequest r, StreamObserver<LookupSubjectsResponse> out) {
+            out.onNext(
+                LookupSubjectsResponse.newBuilder()
+                    .setSubject(
+                        com.authzed.api.v1.ResolvedSubject.newBuilder()
+                            .setSubjectObjectId("j")
+                            .setPermissionshipValue(newer))
+                    .build());
+            out.onCompleted();
+          }
+        };
+    try (var servers = TestServers.start(service)) {
+      var rel = Relationship.of(new ObjectRef("document", "a"), "view", JIMMY);
+      var check = TestRequests.check(rel, "view", Consistency.full());
+      var single = servers.client().check(check);
+      assertEquals(Permissionship.UNSPECIFIED, single.permissionship());
+      assertFalse(single.hasPermission());
+      var bulk = servers.client().checkBulk(List.of(check));
+      assertEquals(Permissionship.UNSPECIFIED, bulk.get(0).permissionship());
+      assertFalse(bulk.get(0).hasPermission());
+      var resources =
+          servers.client().lookupResources(Consistency.full(), "document", "view", JIMMY).toList();
+      assertEquals(Permissionship.UNSPECIFIED, resources.get(0).permissionship());
+      // The HAS_PERMISSION-only filter excludes it rather than failing.
+      assertEquals(
+          List.of(),
+          servers
+              .client()
+              .lookupResources(
+                  Consistency.full(),
+                  "document",
+                  "view",
+                  JIMMY,
+                  LookupOptions.builder()
+                      .permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+                      .build())
+              .toList());
+      var subjects =
+          servers
+              .client()
+              .lookupSubjects(Consistency.full(), new ObjectRef("document", "a"), "view", "user")
+              .toList();
+      assertEquals(Permissionship.UNSPECIFIED, subjects.get(0).subject().permissionship());
+    }
   }
 }

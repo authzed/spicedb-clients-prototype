@@ -96,4 +96,26 @@ class ConsistencyTest {
     Consistency c = Consistency.atLeastOrMinLatency(new com.authzed.spicedb.ZedToken("rev2"));
     assertEquals("rev2", c.toProto().getAtLeastAsFresh().getToken());
   }
+
+  @Test
+  void strictStrategiesRejectWhitespaceOnlyRevisionLikeEmpty() {
+    for (var blank : java.util.List.of(" ", "\t", " \n ")) {
+      var token = new com.authzed.spicedb.ZedToken(blank);
+      var atLeast =
+          assertThrows(
+              com.authzed.spicedb.errors.LocalValidationException.class,
+              () -> Consistency.atLeast(token));
+      assertTrue(atLeast.getMessage().contains("whitespace-only"), atLeast.getMessage());
+      assertThrows(
+          com.authzed.spicedb.errors.LocalValidationException.class,
+          () -> Consistency.snapshot(token));
+    }
+  }
+
+  @Test
+  void fallbackStrategiesTreatWhitespaceOnlyRevisionAsAbsent() {
+    var token = new com.authzed.spicedb.ZedToken("  ");
+    assertTrue(Consistency.atLeastOrFull(token).toProto().getFullyConsistent());
+    assertTrue(Consistency.atLeastOrMinLatency(token).toProto().getMinimizeLatency());
+  }
 }

@@ -87,11 +87,12 @@ public final class Consistency {
    * for read-after-write consistency.
    *
    * @param revision an opaque ZedToken value from a previous write
-   * @throws com.authzed.spicedb.errors.InvalidArgumentException if revision is null or empty
+   * @throws com.authzed.spicedb.errors.InvalidArgumentException if revision is null, empty or
+   *     whitespace-only
    */
   public static Consistency atLeast(ZedToken revision) {
-    if (revision == null || revision.value().isEmpty()) {
-      throw new LocalValidationException("revision must not be null or empty");
+    if (revision == null || revision.value().isBlank()) {
+      throw new LocalValidationException("revision must not be null, empty or whitespace-only");
     }
     return new Consistency(
         com.authzed.api.v1.Consistency.newBuilder()
@@ -104,11 +105,12 @@ public final class Consistency {
    * Returns a strategy that reads at the exact given revision.
    *
    * @param revision an opaque ZedToken value
-   * @throws com.authzed.spicedb.errors.InvalidArgumentException if revision is null or empty
+   * @throws com.authzed.spicedb.errors.InvalidArgumentException if revision is null, empty or
+   *     whitespace-only
    */
   public static Consistency snapshot(ZedToken revision) {
-    if (revision == null || revision.value().isEmpty()) {
-      throw new LocalValidationException("revision must not be null or empty");
+    if (revision == null || revision.value().isBlank()) {
+      throw new LocalValidationException("revision must not be null, empty or whitespace-only");
     }
     return new Consistency(
         com.authzed.api.v1.Consistency.newBuilder()
@@ -118,28 +120,28 @@ public final class Consistency {
   }
 
   /**
-   * Returns {@link #atLeast(ZedToken)} if revision is non-null and non-empty, otherwise {@link
+   * Returns {@link #atLeast(ZedToken)} if revision is non-null and not blank, otherwise {@link
    * #full()}. Use this when you have an optional revision from a previous write and want the safest
    * fallback.
    *
-   * @param revision an opaque ZedToken value, or null/empty
+   * @param revision an opaque ZedToken value, or null, empty or whitespace-only
    */
   public static Consistency atLeastOrFull(ZedToken revision) {
-    if (revision == null || revision.value().isEmpty()) {
+    if (revision == null || revision.value().isBlank()) {
       return full();
     }
     return atLeast(revision);
   }
 
   /**
-   * Returns {@link #atLeast(ZedToken)} if revision is non-null and non-empty, otherwise {@link
+   * Returns {@link #atLeast(ZedToken)} if revision is non-null and not blank, otherwise {@link
    * #minLatency()}. Use this when you have an optional revision but prefer performance over full
    * consistency as the fallback.
    *
-   * @param revision an opaque ZedToken value, or null/empty
+   * @param revision an opaque ZedToken value, or null, empty or whitespace-only
    */
   public static Consistency atLeastOrMinLatency(ZedToken revision) {
-    if (revision == null || revision.value().isEmpty()) {
+    if (revision == null || revision.value().isBlank()) {
       return minLatency();
     }
     return atLeast(revision);

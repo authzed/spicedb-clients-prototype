@@ -367,3 +367,10 @@ resolver callback (`set_check_resolver(grant_all)` grants everything) or the
 stored relationships, and lookups over the objects it knows, with the real
 client's method signatures. A generated `TypedClient` wraps it:
 `TypedClient(InMemoryClient())`.
+
+The double does not evaluate your schema: a computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a check resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).

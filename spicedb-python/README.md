@@ -106,6 +106,13 @@ in for the client: it stores relationships, resolves checks and lookups from
 them (or from results and a resolver you register), records every call and
 injects faults.
 
+The double does not evaluate your schema: a computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a check resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).
+
 ## Typed client
 
 Generate a schema-checked client from your `.zed` file with `spicedb-gen`

@@ -77,6 +77,13 @@ fake.set_check_resolver(spicedb::testing::grant_all);
 let client = fake.client()?; // a real SpiceDBClient over an in-memory channel
 ```
 
+The double does not evaluate your schema: a computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a check resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).
+
 ## Further reading
 
 - [DESIGN.md](DESIGN.md): the client's contracts (deadlines, retries, paging,

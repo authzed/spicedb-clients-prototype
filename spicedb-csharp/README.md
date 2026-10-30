@@ -108,6 +108,13 @@ store.GrantAllChecks();   // or SetCheckResolver(check => ...) / SetCheckResult(
 It stores relationships, answers checks and serves lookups from them, records every call,
 and accepts fault injection. See [DESIGN.md](DESIGN.md) for its exact semantics.
 
+The double does not evaluate your schema: a computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a check resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).
+
 ## Building and testing
 
 ```bash

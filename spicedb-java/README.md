@@ -135,6 +135,21 @@ SpiceDBClient.createPlaintext("spicedb:50051", System.getenv("SPICEDB_TOKEN"),
 
 Without the opt-in, construction fails with a message naming both choices.
 
+## Testing without a server
+
+`InMemorySpiceDB` implements `SpiceDBApi`, the full client surface, so code
+written against the interface runs on the double or the real client, and a
+generated `TypedClient` wraps it. It records every call, accepts fault
+injection, resolves checks from registered results, a `CheckResolver`
+(`InMemorySpiceDB.grantAll()`) or stored relationships, and serves lookups.
+
+The double does not evaluate your schema: a computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a check resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).
+
 ## More
 
 - [DESIGN.md](DESIGN.md): the API's rules and guarantees.

@@ -147,6 +147,13 @@ resolver callback (`store.check_resolver = SpiceDB::Testing::Store::GRANT_ALL`),
 or its stored relationships, and serves `lookup_resources` and
 `lookup_subjects`. See [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md#test).
 
+The double does not evaluate your schema: a computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a check resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).
+
 The double does **not** evaluate the schema. A permission such as
 `permission view = reader + writer + parent_folder->read` is granted only by a
 stored relationship whose relation is literally `view`, or by the check

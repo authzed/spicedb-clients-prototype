@@ -116,6 +116,13 @@ naming both options.
 In tests, use `InMemorySpiceDB` (exported from the same module) wherever a
 `SpiceDBClientInterface` is accepted, including a generated `TypedClient`.
 
+The double does not evaluate your schema: a computed permission such as
+`view = reader + writer + parent->read` is granted only by a stored
+relationship named `view` or by a check resolver you install. Projects whose
+permissions are all computed get little from stored-relationship grants;
+model them with the resolver, or test the permission logic against SpiceDB
+itself (`spicedb serve-testing` or a container).
+
 ## Learn more
 
 - [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md): the typed client, safe

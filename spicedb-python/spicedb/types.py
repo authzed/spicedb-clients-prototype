@@ -107,6 +107,35 @@ def context_from_struct(context: struct_pb2.Struct) -> JSONObject:
     return _snapshot({k: convert(v) for k, v in context.fields.items()})
 
 
+def _require_str(value, what: str, *, optional: bool = False) -> None:
+    """Refuse a caller-supplied name or ID that is not a ``str``.
+
+    A dynamically typed caller can pass ``42`` or ``True`` where a name or ID
+    belongs; it must fail here as local validation rather than reach the
+    server coerced (or fail later as protobuf's ``TypeError``). ``bool`` is
+    not a ``str``, so it is refused too. See root DESIGN.md, "Reject unusable
+    credentials and trust material at construction".
+    """
+    if optional and value is None:
+        return
+    if not isinstance(value, str):
+        expected = "str or None" if optional else "str"
+        raise LocalValidationError(
+            f"{what}: expected {expected}, got {type(value).__name__} {value!r}"
+        )
+
+
+def _require_type(value, cls, what: str, *, optional: bool = False) -> None:
+    """Refuse a caller-supplied value that is not a ``cls`` (e.g. a raw string
+    where an ``ObjectRef`` belongs)."""
+    if optional and value is None:
+        return
+    if not isinstance(value, cls):
+        raise LocalValidationError(
+            f"{what}: expected {cls.__name__}, got {type(value).__name__} {value!r}"
+        )
+
+
 def _format_expiration(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -257,6 +286,8 @@ class SubjectRef:
         return cls(ObjectRef.parse(obj), relation if sep and relation != "..." else None)
 
     def __post_init__(self) -> None:
+        _require_type(self.object, ObjectRef, "subject.object")
+        _require_str(self.relation, "subject.relation", optional=True)
         if self.relation == "":
             raise LocalValidationError("subject.relation: must be nonempty or None")
         _freeze(self)
@@ -277,6 +308,7 @@ class Caveat:
     context: JSONObject | None = None
 
     def __post_init__(self) -> None:
+        _require_str(self.name, "caveat.name")
         if self.context is not None:
             context_to_struct(self.context, "caveat.context")
         _freeze(self)
@@ -290,6 +322,9 @@ class PermissionCheck:
     context: JSONObject | None = None
 
     def __post_init__(self) -> None:
+        _require_type(self.resource, ObjectRef, "check.resource")
+        _require_str(self.permission, "check.permission")
+        _require_type(self.subject, SubjectRef, "check.subject")
         if self.context is not None:
             context_to_struct(self.context, "check.context")
         _freeze(self)
@@ -313,6 +348,9 @@ class Relationship:
         caveat: Caveat | None = None,
         expiration: datetime | None = None,
     ) -> Relationship:
+        _require_str(resource, "relationship.resource")
+        _require_str(relation, "relationship.relation")
+        _require_str(subject, "relationship.subject")
         try:
             rt, ri = resource.split(":", 1)
             subj, sep, sr = subject.partition("#")
@@ -509,6 +547,11 @@ class Relationship:
         )
 
     def __post_init__(self) -> None:
+        _require_type(self.resource, ObjectRef, "relationship.resource")
+        _require_str(self.relation, "relationship.relation")
+        _require_type(self.subject, SubjectRef, "relationship.subject")
+        _require_type(self.caveat, Caveat, "relationship.caveat", optional=True)
+        _require_type(self.expiration, datetime, "relationship.expiration", optional=True)
         _freeze(self)
 
 
@@ -524,6 +567,7 @@ class SubjectRelationFilter:
     name: str | None = None
 
     def __post_init__(self) -> None:
+        _require_str(self.name, "subject.relation.name", optional=True)
         if (
             not isinstance(self.kind, SubjectRelationMode)
             or (self.kind == SubjectRelationMode.NAMED and (not self.name))
@@ -562,6 +606,9 @@ class SubjectFilter:
     )
 
     def __post_init__(self) -> None:
+        _require_str(self.subject_type, "subject.subject_type")
+        _require_str(self.subject_id, "subject.subject_id", optional=True)
+        _require_type(self.relation, SubjectRelationFilter, "subject.relation")
         if not self.subject_type:
             raise LocalValidationError("subject.subject_type: required")
         _freeze(self)
@@ -590,6 +637,10 @@ class Filter:
     subject: SubjectFilter | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        _require_str(self.resource_type, "filter.resource_type")
+        for name in ("resource_id", "resource_id_prefix", "relation"):
+            _require_str(getattr(self, name), f"filter.{name}", optional=True)
+        _require_type(self.subject, SubjectFilter, "filter.subject", optional=True)
         if self.resource_id is not None and self.resource_id_prefix is not None:
             raise LocalValidationError(
                 "filter.resource_id and resource_id_prefix are mutually exclusive"
@@ -681,6 +732,8 @@ class SchemaFilter:
         )
 
     def __post_init__(self) -> None:
+        for name in ("definition_name", "caveat_name", "relation_name", "permission_name"):
+            _require_str(getattr(self, name), f"schema_filter.{name}", optional=True)
         _freeze(self)
 
 

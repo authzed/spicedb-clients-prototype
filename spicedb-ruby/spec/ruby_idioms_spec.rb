@@ -41,6 +41,47 @@ RSpec.describe 'Ruby idioms' do
       expect { SpiceDB::ObjectRef.new(object_type: :'', object_id: '1') }.to raise_error(SpiceDB::InvalidArgumentError, /got Symbol/)
     end
 
+    # Root DESIGN.md: a dynamically typed client checks the types of names
+    # and IDs before use. Integers are the one deliberate extra ID type.
+    [nil, 1.5, :alice, { id: 1 }, [1], true].each do |bad|
+      it "rejects the object ID #{bad.inspect} with LocalValidationError" do
+        expect { SpiceDB::ObjectRef.new(object_type: 'user', object_id: bad) }
+          .to raise_error(SpiceDB::LocalValidationError, /\Aobject_id: expected a nonempty String or Integer, got #{bad.class}/)
+      end
+    end
+
+    [1.5, :alice, { id: 1 }, [1], true].each do |bad|
+      it "rejects the filter ID #{bad.inspect} with LocalValidationError" do
+        expect { SpiceDB::Filter.new(resource_type: 'document', resource_id: bad) }
+          .to raise_error(SpiceDB::LocalValidationError, /\Aresource_id: expected a String or Integer, got #{bad.class}/)
+        expect { SpiceDB::Filter.new(resource_type: 'document', resource_id_prefix: bad) }
+          .to raise_error(SpiceDB::LocalValidationError, /\Aresource_id_prefix: expected a String or Integer/)
+        expect { SpiceDB::SubjectFilter.new(subject_type: 'user', subject_id: bad) }
+          .to raise_error(SpiceDB::LocalValidationError, /\Asubject_id: expected a String or Integer/)
+      end
+    end
+
+    [7, 1.5, { name: 'x' }, ['x'], true].each do |bad|
+      it "rejects the name #{bad.inspect} with LocalValidationError" do
+        expect { SpiceDB::ObjectRef.new(object_type: bad, object_id: '1') }
+          .to raise_error(SpiceDB::LocalValidationError, /\Aobject_type: expected a nonempty String or Symbol, got #{bad.class}/)
+        expect { SpiceDB::Filter.new(resource_type: bad) }
+          .to raise_error(SpiceDB::LocalValidationError, /\Aresource_type: expected a String or Symbol, got #{bad.class}/)
+        expect { SpiceDB::Filter.new(resource_type: 'document', relation: bad) }
+          .to raise_error(SpiceDB::LocalValidationError, /\Arelation: expected a String or Symbol/)
+        expect { SpiceDB::SchemaFilter.new(definition_name: bad) }
+          .to raise_error(SpiceDB::LocalValidationError, /\Adefinition_name: expected a String or Symbol/)
+      end
+    end
+
+    it 'rejects a wrong-typed schema reflection name before any request' do
+      SpiceDB::Client.new_plaintext('localhost:50051', 'key') do |client|
+        expect(client.proto_client.schema).not_to receive(:computable_permissions)
+        expect { client.computable_permissions(definition_name: 7, relation_name: 'viewer', consistency: SpiceDB::Consistency.full) }
+          .to raise_error(SpiceDB::LocalValidationError, /\Adefinition_name: expected a String or Symbol, got Integer/)
+      end
+    end
+
     it 'sends Symbol names from the lookup operations' do
       store = SpiceDB::Testing::Store.new([SpiceDB::Relationship.from_tuple('document:42#view@user:1')])
       found = store.lookup_resources(resource_type: :document, permission: :view, subject: alice, consistency: SpiceDB::Consistency.full)

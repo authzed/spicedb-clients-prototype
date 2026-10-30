@@ -177,4 +177,71 @@ class TlsConfigurationTest {
       }
     }
   }
+
+  /** Writes a fresh self-signed certificate and its PKCS#8 key under {@code name}. */
+  private Path[] selfSigned(String name, String... keyArgs) throws Exception {
+    var cert = directory.resolve(name + "-certificate.pem");
+    var key = directory.resolve(name + "-key.pem");
+    var command = new java.util.ArrayList<>(java.util.List.of("openssl", "req", "-x509"));
+    command.addAll(java.util.List.of(keyArgs));
+    command.addAll(
+        java.util.List.of(
+            "-nodes",
+            "-days",
+            "1",
+            "-keyout",
+            key.toString(),
+            "-out",
+            cert.toString(),
+            "-subj",
+            "/CN=localhost"));
+    var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+    var output =
+        new String(
+            process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    assertEquals(0, process.waitFor(), output);
+    return new Path[] {cert, key};
+  }
+
+  /**
+   * A client key from a different key pair than its certificate fails at construction with a local
+   * validation error naming both inputs, never as a handshake failure on the first call. See root
+   * DESIGN.md, "Reject unusable credentials and trust material at construction".
+   */
+  @Test
+  void clientKeyNotMatchingItsCertificateIsRejectedAtConstruction() throws Exception {
+    var rsaA = selfSigned("rsa-a", "-newkey", "rsa:2048");
+    var rsaB = selfSigned("rsa-b", "-newkey", "rsa:2048");
+    var ec = new String[] {"-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"};
+    var ecB = selfSigned("ec-b", ec);
+    var ecOther = selfSigned("ec-other", ec);
+    record Pair(Path cert, Path key) {}
+    var mismatched =
+        java.util.List.of(
+            new Pair(rsaA[0], rsaB[1]), new Pair(ecB[0], ecOther[1]), new Pair(ecB[0], rsaA[1]));
+    for (var p : mismatched) {
+      var e =
+          assertThrows(
+              com.authzed.spicedb.errors.LocalValidationException.class,
+              () ->
+                  SpiceDBClient.createSystemTls(
+                      "localhost:50116",
+                      "test",
+                      ClientOptions.builder()
+                          .clientCertificate(p.cert())
+                          .clientKey(p.key())
+                          .build()));
+      assertTrue(
+          e.getMessage()
+              .contains("clientKey " + p.key() + " does not match clientCertificate " + p.cert()),
+          e.getMessage());
+    }
+    // Matching pairs still build (construction does not connect).
+    for (var p : java.util.List.of(new Pair(rsaA[0], rsaA[1]), new Pair(ecB[0], ecB[1])))
+      SpiceDBClient.createSystemTls(
+              "localhost:50116",
+              "test",
+              ClientOptions.builder().clientCertificate(p.cert()).clientKey(p.key()).build())
+          .close();
+  }
 }

@@ -67,12 +67,24 @@ module SpiceDB
       raise LocalValidationError, "#{path}: expected a nonempty String or Integer, got #{received(value)}"
     end
 
-    # +value+ with a Symbol converted to a String, for fields (filters) that
-    # have always accepted any value and are validated by the server.
-    def loose_name(value) = value.is_a?(Symbol) ? value.to_s : value
+    # A name for a field (filters, schema reflection) whose emptiness the
+    # server validates: nil, a String, or a Symbol converted with +to_s+.
+    # Any other type is a local validation error, never sent coerced.
+    def loose_name(value, path)
+      return value.to_s if value.is_a?(Symbol)
+      return value if value.nil? || value.is_a?(String)
 
-    # +value+ with an Integer converted to a String; see #loose_name.
-    def loose_id(value) = value.is_a?(Integer) ? value.to_s : value
+      raise LocalValidationError, "#{path}: expected a String or Symbol, got #{received(value)}"
+    end
+
+    # An ID for a field whose emptiness the server validates: nil, a String,
+    # or an Integer converted with +to_s+; see #loose_name.
+    def loose_id(value, path)
+      return value.to_s if value.is_a?(Integer)
+      return value if value.nil? || value.is_a?(String)
+
+      raise LocalValidationError, "#{path}: expected a String or Integer, got #{received(value)}"
+    end
 
     # nil, or #name of +value+.
     def optional_name(value, path) = value.nil? ? nil : name(value, path)

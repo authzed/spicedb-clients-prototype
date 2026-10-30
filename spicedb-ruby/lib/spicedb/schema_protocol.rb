@@ -87,9 +87,9 @@ module SpiceDB
       resp = invoke(proto_client.schema, :computable_permissions,
                     Authzed::Api::V1::ComputablePermissionsRequest.new(
                       consistency: build_consistency(consistency),
-                      definition_name: Values.loose_name(definition_name),
-                      relation_name: Values.loose_name(relation_name),
-                      optional_definition_name_filter: Values.loose_name(definition_name_filter) || ''
+                      definition_name: Values.loose_name(definition_name, 'definition_name'),
+                      relation_name: Values.loose_name(relation_name, 'relation_name'),
+                      optional_definition_name_filter: Values.loose_name(definition_name_filter, 'definition_name_filter') || ''
                     ),
                     timeout_seconds)
 
@@ -108,8 +108,8 @@ module SpiceDB
       resp = invoke(proto_client.schema, :dependent_relations,
                     Authzed::Api::V1::DependentRelationsRequest.new(
                       consistency: build_consistency(consistency),
-                      definition_name: Values.loose_name(definition_name),
-                      permission_name: Values.loose_name(permission_name)
+                      definition_name: Values.loose_name(definition_name, 'definition_name'),
+                      permission_name: Values.loose_name(permission_name, 'permission_name')
                     ),
                     timeout_seconds)
 

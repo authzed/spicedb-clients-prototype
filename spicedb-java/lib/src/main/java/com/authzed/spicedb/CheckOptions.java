@@ -66,7 +66,10 @@ public final class CheckOptions {
 
     private BulkItemErrors bulkItemErrors = BulkItemErrors.FAIL_CALL;
 
-    /** How bulk checks report per-item errors (default {@link BulkItemErrors#FAIL_CALL}). */
+    /**
+     * How bulk checks report per-item errors (default {@link BulkItemErrors#FAIL_CALL}). A
+     * malformed item in the server's response still fails the whole call in either mode.
+     */
     public Builder bulkItemErrors(BulkItemErrors value) {
       this.bulkItemErrors = value;
       return this;

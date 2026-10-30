@@ -34,7 +34,7 @@ module SpiceDB
     def initialize(subject_type:, subject_id: nil, relation: SubjectRelationFilter.any)
       raise LocalValidationError, 'subject.relation: expected SubjectRelationFilter' unless relation.is_a?(SubjectRelationFilter)
 
-      super(subject_type: Values.name(subject_type, 'subject_type'), subject_id: Values.snapshot(Values.loose_id(subject_id)), relation: relation)
+      super(subject_type: Values.name(subject_type, 'subject_type'), subject_id: Values.snapshot(Values.loose_id(subject_id, 'subject_id')), relation: relation)
     end
 
     def matches?(subject)
@@ -52,8 +52,9 @@ module SpiceDB
       raise LocalValidationError, 'resource_id and resource_id_prefix are mutually exclusive' if resource_id && resource_id_prefix
       raise LocalValidationError, 'subject: expected SubjectFilter' unless subject.nil? || subject.is_a?(SubjectFilter)
 
-      super(**Values.snapshot({ resource_type: Values.loose_name(resource_type), resource_id: Values.loose_id(resource_id),
-                                resource_id_prefix: Values.loose_id(resource_id_prefix), relation: Values.loose_name(relation),
+      super(**Values.snapshot({ resource_type: Values.loose_name(resource_type, 'resource_type'), resource_id: Values.loose_id(resource_id, 'resource_id'),
+                                resource_id_prefix: Values.loose_id(resource_id_prefix, 'resource_id_prefix'),
+                                relation: Values.loose_name(relation, 'relation'),
                                 subject: subject }))
     end
 
@@ -106,8 +107,10 @@ module SpiceDB
     include DeepHash
 
     def initialize(definition_name: nil, caveat_name: nil, relation_name: nil, permission_name: nil)
-      super(**Values.snapshot({ definition_name: Values.loose_name(definition_name), caveat_name: Values.loose_name(caveat_name),
-                                relation_name: Values.loose_name(relation_name), permission_name: Values.loose_name(permission_name) }))
+      super(**Values.snapshot({ definition_name: Values.loose_name(definition_name, 'definition_name'),
+                                caveat_name: Values.loose_name(caveat_name, 'caveat_name'),
+                                relation_name: Values.loose_name(relation_name, 'relation_name'),
+                                permission_name: Values.loose_name(permission_name, 'permission_name') }))
     end
   end
 end

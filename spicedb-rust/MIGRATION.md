@@ -174,7 +174,19 @@ generated copies are distinct Rust types.
   handle yourself. The error's `is_client_detected()` is `true` and it
   displays as `client detected malformed response from server: ...`, so it
   is not mistaken for an `INTERNAL` status the server sent; match on
-  `is_client_detected()` rather than on the text.
+  `is_client_detected()` rather than on the text. Only an unset
+  permissionship fails: a value newer than this client maps to
+  `Permissionship::Unspecified`, which never grants.
+- `check_bulk` fails the whole call on the first per-item error by default.
+  `CheckOptions::new().with_bulk_item_errors(BulkItemErrors::Returned)`
+  instead returns every item, with a failed item's error on
+  `CheckResult::error` (and never a grant). A malformed item in the server's
+  response, such as an unset permissionship, still fails the whole call:
+  it is not a per-item error.
+- An empty or whitespace-only revision token in `consistency::at_least`,
+  `consistency::snapshot` or a watch's `with_start_revision` fails with
+  `InvalidArgument` before any request; `at_least_or_full` and
+  `at_least_or_min_latency` treat one as absent.
 - `lookup_resources` keeps conditional results by default. Add
   `LookupResourcesOptions::new().with_permissionship_filter(LookupPermissionshipFilter::HasPermissionOnly)`
   to list only unconditional grants. A hand-written mock that set

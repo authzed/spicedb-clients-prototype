@@ -109,6 +109,13 @@ let results = client.check_bulk(BulkCheckRequest::new(questions)).await?;
 let allowed: Vec<bool> = results.iter().map(|r| r.has_permission()).collect();
 ```
 
+- The first failing item fails the whole bulk call. To keep the other items'
+  answers, pass
+  `CheckOptions::new().with_bulk_item_errors(BulkItemErrors::Returned)`: a
+  failed item then carries `CheckResult::error` and never grants. A malformed
+  item in the server's response (such as an unset permissionship) still fails
+  the whole call; it is not a per-item error.
+
 - Permission names chosen at runtime are plain strings in the native tier;
   validate configured names at startup (for example with
   `client.reflect_schema(...)`) rather than at check time.
@@ -288,10 +295,11 @@ relaying an error to another party; `err.reason()` is SpiceDB's
 `ERROR_REASON_*`. Bulk-item and delete-progress errors convert to their inner
 server status, so the server's message appears once. A response the client
 cannot interpret (a relationship, resource, subject or object missing, or a
-check or lookup result with an unspecified permissionship) fails with code
+check or lookup result with an unset permissionship) fails with code
 `Internal` and `err.is_client_detected()` true, displayed as "client detected
 malformed response from server: ...". It is not retried; such items are never
-skipped or filled with empty values.
+skipped or filled with empty values. A permissionship newer than this client
+is not malformed: it maps to `Permissionship::Unspecified`, which never grants.
 
 ## Test
 

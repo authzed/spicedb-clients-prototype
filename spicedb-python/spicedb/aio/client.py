@@ -21,7 +21,7 @@ from spicedb.options import (
     Operation,
     _option,
 )
-from spicedb.token import ZedToken, _token_string
+from spicedb.token import ZedToken, _revision_string
 
 import asyncio
 import time
@@ -83,6 +83,7 @@ from spicedb.errors import (
 )
 from spicedb.raw import RawGrpc
 from spicedb.types import (
+    _require_str,
     PermissionSetCursor,
     PermissionSetEvent,
     PermissionSetLookup,
@@ -374,6 +375,8 @@ class SpiceDBClient(ClientConfig):
 
         ``item_errors=BulkItemErrors.RETURN`` puts each failing item's error on
         ``CheckResult.error`` instead of raising the first one.
+        A malformed item in the server's response (such as an unset
+        permissionship) is not a per-item error and still fails the whole call.
         """
         _option(tracing, Tracing)
         return_errors = _option(item_errors, BulkItemErrors) == "return"
@@ -563,6 +566,7 @@ class SpiceDBClient(ClientConfig):
         self, schema: str, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> ZedToken:
         """Write schema. Idempotent, so it may opt in to retries with ``CallOptions(retry_policy=...)``."""
+        _require_str(schema, "schema")
         budget = self._budget(timeout)
         policy = self._mutation_policy(call_options, True, "write schema", Operation.WRITE_SCHEMA)
         self._ensure_channel()
@@ -625,6 +629,7 @@ class SpiceDBClient(ClientConfig):
         call_options: CallOptions | None = None,
     ) -> RelationsResult:
         """Computable permissions."""
+        _require_str(definition_name_filter, "definition_name_filter", optional=True)
         budget = self._budget(timeout)
         self._ensure_channel()
         request = _requests.computable_permissions_request(
@@ -691,6 +696,7 @@ class SpiceDBClient(ClientConfig):
         self, name: str, filter: Filter, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> None:
         """Experimental: register a stored relationship counter."""
+        _require_str(name, "name")
         budget = self._budget(timeout)
         self._mutation_policy(call_options, False, "register relationship counter", Operation.EXPERIMENTAL_REGISTER_RELATIONSHIP_COUNTER)
         self._ensure_channel()
@@ -708,6 +714,7 @@ class SpiceDBClient(ClientConfig):
         self, name: str, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> None:
         """Experimental: unregister a stored relationship counter."""
+        _require_str(name, "name")
         budget = self._budget(timeout)
         self._mutation_policy(call_options, False, "unregister relationship counter", Operation.EXPERIMENTAL_UNREGISTER_RELATIONSHIP_COUNTER)
         self._ensure_channel()
@@ -723,6 +730,7 @@ class SpiceDBClient(ClientConfig):
         self, name: str, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> CountResult:
         """Experimental: inspect a stored relationship counter."""
+        _require_str(name, "name")
         budget = self._budget(timeout)
         self._ensure_channel()
         response = await self._rpc(
@@ -756,6 +764,7 @@ class SpiceDBClient(ClientConfig):
         call_options: CallOptions | None = None,
     ) -> RoaringLookupResourcesResult:
         """Experimental: return the server's opaque roaring64 bitmap."""
+        _requests.require_lookup_resources_args(resource_type, permission, subject)
         budget = self._budget(timeout)
         self._ensure_channel()
         request = roaring.ExperimentalRoaringLookupResourcesRequest(
@@ -977,6 +986,7 @@ class SpiceDBClient(ClientConfig):
         single = _option(paging, Paging) == "single_request"
         _option(permissionship_filter, LookupPermissionshipFilter)
         _option(debug, LookupDebug)
+        _requests.require_lookup_resources_args(resource_type, permission, subject)
         budget = Budget(timeout)
         _positive(page_size, "page_size")
         if limit is not None:
@@ -1026,6 +1036,7 @@ class SpiceDBClient(ClientConfig):
     ) -> AsyncStream[LookupSubject]:
         """Lookup subjects."""
         _option(wildcards, Wildcards)
+        _requests.require_lookup_subjects_args(resource, permission, subject_type, subject_relation)
         budget = Budget(timeout)
         if page_size is not None:
             _positive(page_size, "page_size")
@@ -1039,7 +1050,7 @@ class SpiceDBClient(ClientConfig):
                 resource,
                 permission,
                 subject_type,
-                subject_relation or "",
+                subject_relation,
                 ctx,
                 consistency,
             )
@@ -1278,7 +1289,7 @@ class SpiceDBClient(ClientConfig):
         """Materialize: watch normalized set changes; never auto-reconnects."""
         budget = Budget(timeout)
         request = permission_sets.WatchPermissionSetsRequest(
-            optional_starting_after=core.ZedToken(token=_token_string(start_revision))
+            optional_starting_after=core.ZedToken(token=_revision_string(start_revision, "start_revision"))
             if start_revision is not None
             else None
         )
@@ -1308,7 +1319,7 @@ class SpiceDBClient(ClientConfig):
             raise LocalValidationError("limit: exceeds uint32")
         request = permission_sets.LookupPermissionSetsRequest(
             limit=limit,
-            optional_at_revision=core.ZedToken(token=_token_string(at_revision))
+            optional_at_revision=core.ZedToken(token=_revision_string(at_revision, "at_revision"))
             if at_revision is not None
             else None,
             optional_starting_after_cursor=cursor._to_proto()
@@ -1336,7 +1347,7 @@ class SpiceDBClient(ClientConfig):
         """Materialize: return native file URLs without downloading their contents."""
         budget = self._budget(timeout)
         request = permission_sets.DownloadPermissionSetsRequest(
-            optional_at_revision=core.ZedToken(token=_token_string(at_revision))
+            optional_at_revision=core.ZedToken(token=_revision_string(at_revision, "at_revision"))
             if at_revision is not None
             else None
         )

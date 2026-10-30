@@ -1271,7 +1271,7 @@ class InMemoryClient:
         if not isinstance(resource, ObjectRef):
             raise LocalValidationError("resource: expected ObjectRef")
         _requests.lookup_subjects_request(
-            resource, permission, subject_type, subject_relation or "", _requests.context_struct(context),
+            resource, permission, subject_type, subject_relation, _requests.context_struct(context),
             consistency,
         )
         store = self._store

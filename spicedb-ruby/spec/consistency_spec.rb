@@ -61,8 +61,8 @@ RSpec.describe SpiceDB::Consistency do
       expect(cs.type).to eq(:full)
     end
 
-    it 'preserves an empty opaque token' do
-      cs = described_class.at_least_or_full(SpiceDB::ZedToken.new(''))
+    it 'keeps an empty token the server sent' do
+      cs = described_class.at_least_or_full(SpiceDB::ZedToken.from_proto(Authzed::Api::V1::ZedToken.new(token: '')))
       expect(cs.type).to eq(:at_least)
     end
 
@@ -79,8 +79,8 @@ RSpec.describe SpiceDB::Consistency do
       expect(cs.type).to eq(:min_latency)
     end
 
-    it 'preserves an empty opaque token' do
-      cs = described_class.at_least_or_min_latency(SpiceDB::ZedToken.new(''))
+    it 'keeps an empty token the server sent' do
+      cs = described_class.at_least_or_min_latency(SpiceDB::ZedToken.from_proto(Authzed::Api::V1::ZedToken.new(token: '')))
       expect(cs.type).to eq(:at_least)
     end
 

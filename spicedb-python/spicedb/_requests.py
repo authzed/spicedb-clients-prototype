@@ -7,7 +7,7 @@ once.
 """
 
 from __future__ import annotations
-from spicedb.token import ZedToken, _token_string
+from spicedb.token import ZedToken, _revision_string
 from spicedb.options import Tracing, WatchContent, _option
 
 import itertools
@@ -33,6 +33,8 @@ from spicedb.types import (
     SubjectRef,
     SchemaFilter,
     Transaction,
+    _require_str,
+    _require_type,
     context_to_struct,
 )
 
@@ -148,6 +150,21 @@ def read_relationships_request(
     )
 
 
+def require_lookup_resources_args(resource_type, permission, subject) -> None:
+    """Type-check lookup_resources' caller-supplied names before any RPC."""
+    _require_str(resource_type, "resource_type")
+    _require_str(permission, "permission")
+    _require_type(subject, SubjectRef, "subject")
+
+
+def require_lookup_subjects_args(resource, permission, subject_type, subject_relation) -> None:
+    """Type-check lookup_subjects' caller-supplied names before any RPC."""
+    _require_type(resource, ObjectRef, "resource")
+    _require_str(permission, "permission")
+    _require_str(subject_type, "subject_type")
+    _require_str(subject_relation, "subject_relation", optional=True)
+
+
 def lookup_resources_request(
     resource_type: str,
     permission: str,
@@ -157,6 +174,8 @@ def lookup_resources_request(
     limit: int,
     cursor: core_pb2.Cursor | None,
 ) -> permission_service_pb2.LookupResourcesRequest:
+    _require_str(resource_type, "resource_type")
+    _require_str(permission, "permission")
     return permission_service_pb2.LookupResourcesRequest(
         consistency=consistency._to_proto(),
         resource_object_type=resource_type,
@@ -172,16 +191,17 @@ def lookup_subjects_request(
     resource: ObjectRef,
     permission: str,
     subject_type: str,
-    subject_relation: str,
+    subject_relation: str | None,
     ctx_struct: struct_pb2.Struct | None,
     consistency: Consistency,
 ) -> permission_service_pb2.LookupSubjectsRequest:
+    require_lookup_subjects_args(resource, permission, subject_type, subject_relation)
     return permission_service_pb2.LookupSubjectsRequest(
         consistency=consistency._to_proto(),
         resource=resource._to_proto(),
         permission=permission,
         subject_object_type=subject_type,
-        optional_subject_relation=subject_relation,
+        optional_subject_relation=subject_relation or "",
         context=ctx_struct,
     )
 
@@ -274,11 +294,13 @@ def watch_request(
     *,
     filters: Sequence[Filter] = (),
 ) -> watch_service_pb2.WatchRequest:
+    for index, object_type in enumerate(object_types or ()):
+        _require_str(object_type, f"object_types[{index}]")
     if object_types and filters:
         raise LocalValidationError("watch object_types and filters are mutually exclusive")
     cursor = None
     if start_revision is not None:
-        cursor = core_pb2.ZedToken(token=_token_string(start_revision))
+        cursor = core_pb2.ZedToken(token=_revision_string(start_revision, "start_revision"))
 
     update_kinds = [_option(value, WatchContent) for value in content]
 
@@ -295,6 +317,8 @@ def expand_request(
     permission: str,
     consistency: Consistency,
 ) -> permission_service_pb2.ExpandPermissionTreeRequest:
+    _require_type(resource, ObjectRef, "resource")
+    _require_str(permission, "permission")
     return permission_service_pb2.ExpandPermissionTreeRequest(
         consistency=consistency._to_proto(),
         resource=resource._to_proto(),
@@ -313,6 +337,7 @@ def diff_schema_request(
     consistency: Consistency,
     comparison_schema: str,
 ) -> schema_service_pb2.DiffSchemaRequest:
+    _require_str(comparison_schema, "comparison_schema")
     return schema_service_pb2.DiffSchemaRequest(
         consistency=consistency._to_proto(),
         comparison_schema=comparison_schema,
@@ -324,6 +349,8 @@ def computable_permissions_request(
     definition_name: str,
     relation_name: str,
 ) -> schema_service_pb2.ComputablePermissionsRequest:
+    _require_str(definition_name, "definition_name")
+    _require_str(relation_name, "relation_name")
     return schema_service_pb2.ComputablePermissionsRequest(
         consistency=consistency._to_proto(),
         definition_name=definition_name,
@@ -336,6 +363,8 @@ def dependent_relations_request(
     definition_name: str,
     permission_name: str,
 ) -> schema_service_pb2.DependentRelationsRequest:
+    _require_str(definition_name, "definition_name")
+    _require_str(permission_name, "permission_name")
     return schema_service_pb2.DependentRelationsRequest(
         consistency=consistency._to_proto(),
         definition_name=definition_name,

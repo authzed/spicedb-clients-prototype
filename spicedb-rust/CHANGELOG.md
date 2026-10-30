@@ -3,7 +3,9 @@
 ## Unreleased
 
 - **Behavior change:** an empty or whitespace-only token fails at construction with `SpiceDBError::InvalidArgument` (`new_plaintext`, `new_system_tls`, `builder(...).build()`, and `from_channel(...).token(...).build()`), before any dial, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
-- Docs: with bulk item errors returned (`BulkItemErrors::Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
+- Docs: with bulk item errors returned (`BulkItemErrors::Returned`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the `BulkItemErrors::Returned` rustdoc, design notes, migration guide and AI guide now say so.
+- **Behavior change:** a whitespace-only revision token is refused like an empty one. `consistency::at_least` and `consistency::snapshot` with an empty or whitespace-only token fail with `SpiceDBError::InvalidArgument` before any request (previously only an empty token was refused), `at_least_or_full` and `at_least_or_min_latency` treat one as absent, and an empty or whitespace-only `with_start_revision` on `updates` or `watch_permission_sets` now fails with `InvalidArgument` instead of being sent.
+- Docs: the migration and AI guides say that only an unset permissionship is a malformed response; a value newer than the client maps to `Permissionship::Unspecified` and never fails the call.
 - A malformed response the client detects now says so: `Display` reads
   `client detected malformed response from server: missing relationship`
   instead of `grpc status 13: malformed response: missing relationship`, which

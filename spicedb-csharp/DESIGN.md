@@ -18,8 +18,11 @@
     Optional positions use `ZedToken?`; credentials and opaque resume cursors
     remain strings. `PermissionSetCursor` is a separate native value.
   - Reads require `Consistency.Full()`, `MinLatency()`, `AtLeast(token)`, or
-    `Snapshot(token)`. Strict token strategies reject empty/default tokens;
+    `Snapshot(token)`. Strict token strategies reject empty, whitespace-only and default tokens;
     `AtLeastOrFull` and `AtLeastOrMinLatency` provide explicitly named fallbacks.
+  - Optional revision inputs (watch start revisions, materialize at-revisions) take
+    `ZedToken?`: null means absent, and a present empty or whitespace-only token throws
+    `InvalidArgumentException` before any RPC.
 
 - **Make behavioral choices discoverable with named enums.**
   - `CheckOptions.Tracing` uses `CheckTracing.Disabled` (default) or `Enabled`.

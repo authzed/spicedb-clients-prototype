@@ -690,8 +690,9 @@ module SpiceDB
 
       # Permissionships a check answers with. SpiceDB never answers
       # UNSPECIFIED, and the client raises a malformed-response error for
-      # it, so the double never returns :unspecified (or an unknown state)
-      # except on an errored bulk item, as the client does.
+      # it, so the double never returns :unspecified except on an errored
+      # bulk item. (The client also maps a permissionship newer than itself
+      # to :unspecified, which never grants; the double has no newer ones.)
       ANSWERS = %i[no_permission has_permission conditional_permission].freeze
       private_constant :ANSWERS
 

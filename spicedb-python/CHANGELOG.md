@@ -16,7 +16,11 @@
 
 - **Behavior change:** an empty or whitespace-only `token` raises `LocalValidationError` at construction (both flavors), instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - **Behavior change:** `ca_cert`, `client_cert` and `client_key` are parsed at construction. Material that does not parse (not PEM, or a corrupt body) raises `LocalValidationError` naming the argument, instead of failing the first call as an unexplained transport error. Certificates are parsed with the standard library's OpenSSL; the key's PEM structure and DER envelope are checked, and grpc parses the key itself when the channel opens.
-- Docs: with bulk item errors returned (`BulkItemErrors.RETURN`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
+- Docs: with bulk item errors returned (`BulkItemErrors.RETURN`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the `BulkItemErrors` and `check_bulk` docstrings, design notes, migration guide and AI guide now say so.
+- **Behavior change:** a `client_key` from a different key pair than `client_cert` raises `LocalValidationError` at construction naming both, instead of failing the first call's TLS handshake. The standard library's OpenSSL compares them; no dependency is added.
+- **Behavior change:** caller-supplied names and IDs must be `str`. An `int`, `bool` or other non-string object type or ID, relation, permission, caveat name, filter field, lookup or schema argument, counter name or watch object type raises `LocalValidationError` before any request, instead of being coerced or failing as a protobuf `TypeError`.
+- **Behavior change:** a whitespace-only `ZedToken` is treated like an empty one: `at_least`, `snapshot`, and watch and materialize start/at revisions raise `LocalValidationError` for either (watch and materialize revisions previously sent an empty token as is), and `at_least_or_full` / `at_least_or_min_latency` fall back.
+- Docs: a check or lookup permissionship value newer than this client maps to `Permissionship.UNSPECIFIED` (never a grant) and does not fail the call; only the unset value is malformed. Docstrings that implied otherwise are corrected.
 
 ### Client-detected errors say so
 
@@ -25,8 +29,10 @@
   response: <detail>`), so it is not mistaken for an `INTERNAL` the server
   sent. `server_message` stays None.
 - A check, bulk-check item, lookup-resources result or looked-up subject (not
-  its excluded subjects) whose permissionship is unspecified now raises that `InternalError` (a bulk item carries its
-  `input_index`) instead of returning `Permissionship.UNSPECIFIED`. The
+  its excluded subjects) whose permissionship is unset now raises that `InternalError` (a bulk item carries its
+  `input_index`) instead of returning `Permissionship.UNSPECIFIED`. A value
+  newer than this client is not malformed: it still maps to
+  `Permissionship.UNSPECIFIED`, which never grants. The
   in-memory doubles never answer UNSPECIFIED: `set_check_result` with it, and
   a check, bulk check or lookup whose resolver returns it, raise
   `LocalValidationError`.

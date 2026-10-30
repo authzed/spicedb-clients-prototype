@@ -244,7 +244,7 @@ public final class SpiceDBClient implements SpiceDBApi {
       tls.trustManager(ca);
     }
     if (options.clientCertificate() != null) {
-      requireCertificates("clientCertificate", options.clientCertificate());
+      var chain = requireCertificates("clientCertificate", options.clientCertificate());
       try {
         tls.keyManager(options.clientCertificate().toFile(), options.clientKey().toFile());
       } catch (IllegalArgumentException e) {
@@ -256,6 +256,7 @@ public final class SpiceDBClient implements SpiceDBApi {
                 + ")",
             e);
       }
+      requireKeyMatchesCertificate(options.clientKey(), options.clientCertificate(), chain[0]);
     }
     try {
       builder.sslContext(tls.build());
@@ -1524,7 +1525,8 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
-   * Watches relationship changes; a null {@code startRevision} starts at head. The client-wide
+   * Watches relationship changes; a null {@code startRevision} starts at head, and an empty or
+   * whitespace-only one throws {@link LocalValidationException} before any request. The client-wide
    * retry policy and stream-retry setting never reopen a watch: a failure before the first event
    * (UNAVAILABLE included) is thrown, since a reopened watch without a start revision would begin
    * at a later revision and skip the changes between. Only {@link WatchOptions.Builder#retryPolicy}
@@ -1539,6 +1541,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   public Stream<WatchEvent> updates(
       List<String> objectTypes, ZedToken startRevision, WatchOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
+    requireOptionalRevision("startRevision", startRevision);
     if (objectTypes != null && !objectTypes.isEmpty() && !options.relationshipFilters().isEmpty())
       throw new LocalValidationException(
           "objectTypes and relationshipFilters are mutually exclusive");
@@ -1736,8 +1739,9 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
-   * Experimental closeable permission-set watch; null starts at head. Like {@link #updates(List,
-   * ZedToken)}, it is reopened before its first event only under a per-call or {@link
+   * Experimental closeable permission-set watch; null starts at head (an empty or whitespace-only
+   * token throws {@link LocalValidationException}). Like {@link #updates(List, ZedToken)}, it is
+   * reopened before its first event only under a per-call or {@link
    * ClientOperation#WATCH_PERMISSION_SETS} retry policy, never the client-wide one.
    */
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
@@ -1748,6 +1752,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
       ZedToken startRevision, CallOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
+    requireOptionalRevision("startRevision", startRevision);
     var b = com.authzed.api.materialize.v0.WatchPermissionSetsRequest.newBuilder();
     if (startRevision != null)
       b.setOptionalStartingAfter(
@@ -1775,6 +1780,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(
       ZedToken atRevision, PermissionSetOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
+    requireOptionalRevision("atRevision", atRevision);
     var b =
         com.authzed.api.materialize.v0.LookupPermissionSetsRequest.newBuilder()
             .setLimit(options.limit());
@@ -1821,6 +1827,7 @@ public final class SpiceDBClient implements SpiceDBApi {
   public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
       ZedToken atRevision, CallOptions options) {
     if (options == null) throw new LocalValidationException("options must not be null");
+    requireOptionalRevision("atRevision", atRevision);
     var deadline = deadlineFor(options.timeout());
     var b = com.authzed.api.materialize.v0.DownloadPermissionSetsRequest.newBuilder();
     if (atRevision != null)
@@ -2034,6 +2041,16 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
+   * An optional caller-supplied revision is null (omitted) or a usable token: an empty or
+   * whitespace-only one is a local validation error before any request, never sent to the server.
+   */
+  private static void requireOptionalRevision(String input, ZedToken revision) {
+    if (revision != null && revision.value().isBlank())
+      throw new LocalValidationException(
+          input + " must not be empty or whitespace-only; pass null to omit it");
+  }
+
+  /**
    * Reads and parses {@code path} as PEM X.509 certificates, throwing {@link
    * LocalValidationException} naming {@code input} when it cannot be read or holds none.
    */
@@ -2063,6 +2080,73 @@ public final class SpiceDBClient implements SpiceDBApi {
       throw new LocalValidationException(
           input + " " + path + " is not a PEM-encoded X.509 certificate (" + e.getMessage() + ")",
           e);
+    }
+  }
+
+  /**
+   * Throws {@link LocalValidationException} naming both inputs when the PKCS#8 private key in
+   * {@code keyPath} is not the private half of {@code certificate}'s public key, which otherwise
+   * surfaces only as a handshake failure on the first call. Runs after Netty has accepted the key;
+   * a key form this check cannot read itself is left to Netty.
+   */
+  private static void requireKeyMatchesCertificate(
+      java.nio.file.Path keyPath,
+      java.nio.file.Path certificatePath,
+      java.security.cert.X509Certificate certificate) {
+    byte[] der;
+    try {
+      var text =
+          java.nio.file.Files.readString(keyPath, java.nio.charset.StandardCharsets.US_ASCII);
+      var begin = "-----BEGIN PRIVATE KEY-----";
+      int start = text.indexOf(begin);
+      int end = text.indexOf("-----END PRIVATE KEY-----");
+      if (start < 0 || end < start) return;
+      der = java.util.Base64.getMimeDecoder().decode(text.substring(start + begin.length(), end));
+    } catch (java.io.IOException | IllegalArgumentException e) {
+      return;
+    }
+    var mismatch =
+        new LocalValidationException(
+            "clientKey "
+                + keyPath
+                + " does not match clientCertificate "
+                + certificatePath
+                + " (the key is not the private key of the certificate's public key)");
+    var publicKey = certificate.getPublicKey();
+    java.security.PrivateKey privateKey = null;
+    for (var algorithm : java.util.List.of(publicKey.getAlgorithm(), "RSA", "EC", "Ed25519")) {
+      try {
+        privateKey =
+            java.security.KeyFactory.getInstance(algorithm)
+                .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(der));
+        break;
+      } catch (java.security.GeneralSecurityException e) {
+        // Try the next algorithm.
+      }
+    }
+    if (privateKey == null) return;
+    if (!privateKey.getAlgorithm().equals(publicKey.getAlgorithm())) throw mismatch;
+    String signatureAlgorithm =
+        switch (privateKey.getAlgorithm()) {
+          case "RSA" -> "SHA256withRSA";
+          case "EC" -> "SHA256withECDSA";
+          case "Ed25519", "EdDSA" -> "Ed25519";
+          default -> null;
+        };
+    if (signatureAlgorithm == null) return;
+    try {
+      var message = "spicedb client key check".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      var signer = java.security.Signature.getInstance(signatureAlgorithm);
+      signer.initSign(privateKey);
+      signer.update(message);
+      var signature = signer.sign();
+      var verifier = java.security.Signature.getInstance(signatureAlgorithm);
+      verifier.initVerify(publicKey);
+      verifier.update(message);
+      if (!verifier.verify(signature)) throw mismatch;
+    } catch (java.security.GeneralSecurityException e) {
+      // An EC key on a different curve fails here rather than verifying false.
+      throw new LocalValidationException(mismatch.getMessage(), e);
     }
   }
 

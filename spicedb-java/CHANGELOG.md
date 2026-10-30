@@ -4,7 +4,10 @@
 
 - **Behavior change:** an empty or whitespace-only preshared key throws `LocalValidationException` at construction (`createPlaintext`, `createSystemTls`, `create`), before any channel is built, instead of being sent as a bare `Bearer` prefix the server rejects on the first call.
 - **Behavior change:** `caCertificate`, `clientCertificate` and `clientKey` are each read and parsed at construction, and a file that cannot be read or does not parse throws `LocalValidationException` naming the option and path (before: one `invalid TLS configuration` message for all three).
-- Docs: with bulk item errors returned (`BulkItemErrors.RETURNED`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide and AI guide now say so.
+- **Behavior change:** a `clientKey` from a different key pair than `clientCertificate` throws `LocalValidationException` at construction naming both paths, instead of failing the TLS handshake on the first call.
+- **Behavior change:** `Consistency.atLeast` and `Consistency.snapshot` reject a whitespace-only `ZedToken` with `LocalValidationException`, as they reject an empty one; `atLeastOrFull` and `atLeastOrMinLatency` treat a whitespace-only token as absent and use their fallback. An empty or whitespace-only start or at revision passed to `updates`, `experimentalWatchPermissionSets`, `experimentalLookupPermissionSets` or `experimentalDownloadPermissionSets` also throws `LocalValidationException` before any request (it was sent to the server); pass `null` to omit it.
+- Docs: a permissionship value newer than the client maps to `UNSPECIFIED` (never grants) without failing the call; only an unset permissionship is a malformed response. The design notes, migration guide and the entry below said an unknown value was malformed too. A regression test now covers the newer-value case.
+- Docs: with bulk item errors returned (`BulkItemErrors.RETURNED`), a malformed item in the server's response, such as an unset permissionship, still fails the whole bulk check; the design notes, migration guide, AI guide and the `BulkItemErrors` and `CheckOptions.Builder.bulkItemErrors` Javadoc now say so.
 
 ### Client-detected errors, unspecified permissionship and validation
 
@@ -12,9 +15,10 @@
   malformed response from server: ...`, so it is not mistaken for a status the
   server sent. A page whose cursor does not advance uses the same wording.
 - A check, bulk-check item, looked-up resource or looked-up subject whose permissionship is
-  unspecified (or unknown) fails with that `INTERNAL` error, even under the
+  unset fails with that `INTERNAL` error, even under the
   `HAS_PERMISSION_ONLY` filter, instead of
-  returning `UNSPECIFIED`. The double never produces one: `setCheckResult`
+  returning `UNSPECIFIED`. A value newer than the client still maps to
+  `UNSPECIFIED` (never grants) without failing the call. The double never produces one: `setCheckResult`
   rejects `UNSPECIFIED` or null with `LocalValidationException`, and a
   `CheckResolver` result carrying one throws `IllegalStateException`.
 - The grpc-java floor error names Maven's `<grpc.version>`, Spring Boot's

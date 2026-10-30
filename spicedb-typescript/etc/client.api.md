@@ -36,10 +36,10 @@ export class AlreadyExistsError extends SpiceDBError {
 // @public (undocumented)
 export function atLeast(revision: ZedToken): Consistency;
 
-// @public (undocumented)
+// @public
 export function atLeastOrFull(revision: ZedToken | undefined): Consistency;
 
-// @public (undocumented)
+// @public
 export function atLeastOrMinLatency(revision: ZedToken | undefined): Consistency;
 
 // @public

@@ -430,9 +430,15 @@ pub enum BulkItemErrors {
     /// [`SpiceDBError::BulkItem`].
     #[default]
     Fail,
-    /// Every item gets a result; a failed item carries its
-    /// [`SpiceDBError::BulkItem`] in [`CheckResult::error`](crate::CheckResult::error)
-    /// and `Permissionship::Unspecified`, so it never grants.
+    /// Every item the server answered or failed gets a result; a failed item
+    /// carries its [`SpiceDBError::BulkItem`] in
+    /// [`CheckResult::error`](crate::CheckResult::error) and
+    /// `Permissionship::Unspecified`, so it never grants.
+    ///
+    /// A malformed item in the server's response (such as an unset
+    /// permissionship) is not a per-item error: it still fails the whole call
+    /// with `Internal`, for which
+    /// [`SpiceDBError::is_client_detected`] is true.
     Returned,
 }
 

@@ -1409,6 +1409,9 @@ impl SpiceDBClient {
                 &request.options.call,
             ),
             async_stream::try_stream! {
+                if let Some(revision) = &request.options.start_revision {
+                    crate::types::require_revision("watch start_revision", revision)?;
+                }
                 if !request.object_types.is_empty() && !request.options.filters.is_empty() {
                     Err(invalid(
                         "watch filters",
@@ -1655,6 +1658,9 @@ impl SpiceDBClient {
                 &request.options.call,
             ),
             async_stream::try_stream! {
+                if let Some(revision) = &request.options.start_revision {
+                    crate::types::require_revision("watch start_revision", revision)?;
+                }
                 let value=materialize_proto::WatchPermissionSetsRequest{optional_starting_after:request.options.start_revision.map(|t|t.to_proto())};
                 let mut stream=open_stream(||async{service.clone().watch_permission_sets(wire(value.clone())).await}).await?.into_inner();
                 while let Some(response) = next_message(&mut stream).await? {

@@ -53,7 +53,9 @@ reason you can name.
   turn an error into a grant, and never cache an error as a decision.
 - **Check many things at once with bulk checks**, not a loop of singular
   checks. Results come back in input order. In bulk checks with per-item errors
-  enabled, an errored item is never a grant.
+  returned, an errored item is never a grant, but a malformed item in the
+  server's response (such as an unset permissionship) still fails the whole
+  call, since it is not a per-item error.
 - **Listing what a user can see → LookupResources with the "has permission
   only" filter**, not "list everything, then check each". Without the filter,
   results include conditional matches that are *not* grants.
@@ -111,6 +113,11 @@ type's own string conversion.
 
 - Match errors with the library's typed errors or codes, not message text.
   Native errors also work with the ecosystem's standard gRPC status inspection.
+- Bad input fails locally, before any call: an empty or whitespace-only token
+  or `ZedToken`, a client key that does not match its certificate (in clients
+  that take certificate material) and, in the dynamically typed clients, a
+  name or ID of the wrong type. Ruby deliberately accepts Integer IDs and
+  converts them with `to_s`.
 - If you forward an error to another party, use the error's *server message*
   field (the server's words, verbatim) rather than the display message.
 

@@ -17,6 +17,7 @@ import { TransportSecurity, Retries } from "../modes.js";
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as http2 from "node:http2";
 import { tmpdir } from "node:os";
@@ -183,6 +184,22 @@ describe("SpiceDBClient tls option", () => {
     it("accepts parseable CA and client identity material", () => {
         const client = new SpiceDBClient({ endpoint: "localhost:50116", token: TOKEN, tls: { caCert: ca, clientCert: serverCert, clientKey: serverKey } });
         client.close();
+    });
+    // Root DESIGN.md: a client key that does not match its certificate fails at
+    // construction naming both inputs, not as a handshake error on the first call.
+    it.each([
+        ["an RSA key from another pair (the CA's)", () => readFileSync(join(dir, "ca.key"))],
+        ["an EC key", () => generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ type: "pkcs8", format: "pem" })],
+    ])("refuses a client certificate paired with %s", (_name, otherKey) => {
+        let thrown: unknown;
+        try {
+            new SpiceDBClient({ endpoint: "localhost:50116", token: TOKEN, tls: { caCert: ca, clientCert: serverCert, clientKey: otherKey() } });
+        }
+        catch (error) {
+            thrown = error;
+        }
+        expect(thrown).toBeInstanceOf(InvalidArgumentError);
+        expect((thrown as Error).message).toMatch(/tls\.clientKey does not match tls\.clientCert/);
     });
     it.each(["", " ", "\t\n"])("refuses a blank token %j at construction", (token) => {
         for (const transportSecurity of [TransportSecurity.Tls, TransportSecurity.Plaintext]) {

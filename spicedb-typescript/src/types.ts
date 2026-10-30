@@ -97,7 +97,7 @@ export interface CallOptions {
 export interface CheckOptions extends CallOptions {
     readonly context?: JSONObject;
     readonly tracing?: Tracing;
-    /** `checkBulk` only: report per-item failures on `CheckResult.error` instead of failing the call. Defaults to `BulkItemErrors.Fail`. */
+    /** `checkBulk` only: report per-item failures on `CheckResult.error` instead of failing the call. Defaults to `BulkItemErrors.Fail`. A malformed item in the server's response (such as an unset permissionship) still fails the whole call. */
     readonly itemErrors?: BulkItemErrors;
 }
 /** Options for `importRelationships`. */
@@ -460,7 +460,9 @@ export class CheckResult {
      * A per-item failure, set only by `checkBulk` with
      * `itemErrors: BulkItemErrors.Returned`. An errored result has
      * `"unspecified"` permissionship and never grants. Its `inputIndex` is the
-     * caller's absolute input index.
+     * caller's absolute input index. A malformed item in the server's
+     * response (such as an unset permissionship) is not a per-item error: it
+     * still fails the whole call.
      */
     readonly error?: SpiceDBError;
     constructor(readonly permissionship: Permissionship, missingContext: readonly string[], readonly checkedAt: ZedToken, debugTrace?: DebugInformation, expiration?: Date, error?: SpiceDBError) {
@@ -538,13 +540,41 @@ export function mergeCheckContext(defaults?: JSONObject, item?: JSONObject): Jso
         return undefined;
     return jsonSnapshot({ ...(defaults === undefined ? {} : jsonSnapshot(defaults, "options.context")), ...(item === undefined ? {} : jsonSnapshot(item)) }) as JsonObject;
 }
+// Names and IDs are type-checked where caller values become wire messages:
+// protobuf-es assigns fields without checking them, so a JavaScript caller's
+// number, null or object would otherwise reach the server coerced or fail
+// there. These helpers are the one place that check happens.
+function describeType(value: unknown): string {
+    return value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+}
+/** @internal A caller-supplied name or ID: a string, else `InvalidArgumentError` naming the field. */
+export function requireString(value: unknown, field: string): string {
+    if (typeof value !== "string")
+        throw new InvalidArgumentError(`${field} must be a string, got ${describeType(value)}`);
+    return value;
+}
+/** @internal An optional caller-supplied name or ID: absent becomes `""` (the wire's unset), present must be a string. */
+export function optionalString(value: unknown, field: string): string {
+    return value === undefined ? "" : requireString(value, field);
+}
+/** @internal A caller-supplied object reference with string type and ID. */
+export function protoObject(object: ObjectRef, field: string) {
+    if (object === null || typeof object !== "object")
+        throw new InvalidArgumentError(`${field} requires objectType and objectId`);
+    const objectType = requireString(object.objectType, `${field}.objectType`);
+    const objectId = requireString(object.objectId, `${field}.objectId`);
+    if (!objectType)
+        throw new InvalidArgumentError(`${field} requires objectType and objectId`);
+    return create(ObjectReferenceSchema, { objectType, objectId });
+}
 /** @internal */
 export function protoSubject(subject: SubjectRef) {
     if (!subject?.object)
         throw new InvalidArgumentError("subject.object is required");
-    if (subject.relation !== undefined && !subject.relation)
+    const relation = optionalString(subject.relation, "subject.relation");
+    if (subject.relation !== undefined && !relation)
         throw new InvalidArgumentError("subject.relation must be nonempty when present");
-    return create(SubjectReferenceSchema, { object: subject.object, optionalRelation: subject.relation ?? "" });
+    return create(SubjectReferenceSchema, { object: protoObject(subject.object, "subject.object"), optionalRelation: relation });
 }
 /** @internal */
 export function nativeSubject(subject: {
@@ -559,7 +589,7 @@ export function toProtoRelationship(rel: Relationship): ProtoRelationship {
         throw new InvalidArgumentError("relationship requires resource, relation, and subject");
     if (rel.expiration !== undefined && (!(rel.expiration instanceof Date) || !Number.isFinite(rel.expiration.getTime())))
         throw new InvalidArgumentError("expiration must be a valid Date");
-    return create(RelationshipSchema, { resource: rel.resource, relation: rel.relation, subject: protoSubject(rel.subject), optionalCaveat: rel.caveat ? create(ContextualizedCaveatSchema, { caveatName: rel.caveat.name, context: rel.caveat.context === undefined ? undefined : jsonSnapshot(rel.caveat.context, "caveat.context") as JsonObject }) : undefined, optionalExpiresAt: rel.expiration === undefined ? undefined : timestampFromDate(rel.expiration) });
+    return create(RelationshipSchema, { resource: protoObject(rel.resource, "relationship.resource"), relation: requireString(rel.relation, "relationship.relation"), subject: protoSubject(rel.subject), optionalCaveat: rel.caveat ? create(ContextualizedCaveatSchema, { caveatName: requireString(rel.caveat.name, "caveat.name"), context: rel.caveat.context === undefined ? undefined : jsonSnapshot(rel.caveat.context, "caveat.context") as JsonObject }) : undefined, optionalExpiresAt: rel.expiration === undefined ? undefined : timestampFromDate(rel.expiration) });
 }
 /** @internal */
 export function fromProtoRelationship(rel: ProtoRelationship): Relationship {
@@ -585,6 +615,9 @@ export function checkedRelationship(rel: ProtoRelationship | undefined, what: st
     return fromProtoRelationship(rel);
 }
 export function relationship(resource: string, relation: string, subject: string): Relationship {
+    requireString(resource, "resource");
+    requireString(relation, "relation");
+    requireString(subject, "subject");
     const parse = (value: string): ObjectRef => {
         const i = value.indexOf(":");
         if (i < 1 || i === value.length - 1)
@@ -609,6 +642,7 @@ export function relationship(resource: string, relation: string, subject: string
  * produces text this function parses.
  */
 export function relationshipFromTuple(tuple: string): Relationship {
+    requireString(tuple, "tuple");
     const bracket = tuple.indexOf("[");
     const main = bracket < 0 ? tuple : tuple.slice(0, bracket);
     let suffix = bracket < 0 ? "" : tuple.slice(bracket);
@@ -772,20 +806,30 @@ export function relationshipToFilter(rel: Relationship): RelationshipFilter {
 }
 /** @internal */
 export function toProtoRelationshipFilter(filter: RelationshipFilter): ProtoRelationshipFilter {
-    if (!filter.resourceType)
+    if (filter === null || typeof filter !== "object")
+        throw new InvalidArgumentError("filter must be a RelationshipFilter");
+    const resourceType = optionalString(filter.resourceType, "filter.resourceType");
+    const resourceId = optionalString(filter.resourceId, "filter.resourceId");
+    const resourceIdPrefix = optionalString(filter.resourceIdPrefix, "filter.resourceIdPrefix");
+    const filterRelation = optionalString(filter.relation, "filter.relation");
+    if (!resourceType)
         throw new InvalidArgumentError("filter.resourceType is required");
     if (filter.resourceId !== undefined && filter.resourceIdPrefix !== undefined)
         throw new InvalidArgumentError("filter.resourceId and resourceIdPrefix cannot be combined");
     const subject = filter.subject;
-    if (subject && !subject.subjectType)
+    const subjectType = subject ? optionalString(subject.subjectType, "filter.subject.subjectType") : "";
+    const subjectId = subject ? optionalString(subject.subjectId, "filter.subject.subjectId") : "";
+    if (subject && !subjectType)
         throw new InvalidArgumentError("filter.subject.subjectType is required");
     const relation = subject?.relation;
+    if (relation?.kind === SubjectRelationKind.Named)
+        requireString(relation.relation, "filter.subject.relation.relation");
     if (relation?.kind === SubjectRelationKind.Named && !relation.relation)
         throw new InvalidArgumentError("filter.subject.relation must be nonempty for named");
     if (relation && !Object.values(SubjectRelationKind).includes(relation.kind))
         throw new InvalidArgumentError("invalid subject relation filter");
-    return create(RelationshipFilterSchema, { resourceType: filter.resourceType, optionalResourceId: filter.resourceId ?? "", optionalResourceIdPrefix: filter.resourceIdPrefix ?? "", optionalRelation: filter.relation ?? "",
-        optionalSubjectFilter: subject ? create(SubjectFilterSchema, { subjectType: subject.subjectType, optionalSubjectId: subject.subjectId ?? "", optionalRelation: relation === undefined || relation.kind === SubjectRelationKind.Any ? undefined : create(SubjectFilter_RelationFilterSchema, { relation: relation.kind === SubjectRelationKind.Direct ? "" : relation.relation }) }) : undefined });
+    return create(RelationshipFilterSchema, { resourceType, optionalResourceId: resourceId, optionalResourceIdPrefix: resourceIdPrefix, optionalRelation: filterRelation,
+        optionalSubjectFilter: subject ? create(SubjectFilterSchema, { subjectType, optionalSubjectId: subjectId, optionalRelation: relation === undefined || relation.kind === SubjectRelationKind.Any ? undefined : create(SubjectFilter_RelationFilterSchema, { relation: relation.kind === SubjectRelationKind.Direct ? "" : relation.relation }) }) : undefined });
 }
 /** @internal */
 export function toProtoPrecondition(operation: Precondition_Operation, filter: RelationshipFilter): ProtoPrecondition { return create(PreconditionSchema, { operation, filter: toProtoRelationshipFilter(filter) }); }
@@ -803,7 +847,7 @@ export function toProtoDeleteRelationshipsRequest(filter: RelationshipFilter, op
         throw new InvalidArgumentError("deleteRelationships options.limit is required");
     const partial = mode(options.partial, DeletePartial, DeletePartial.Allowed, "partial");
     const limit = partial === DeletePartial.Disallowed && options.limit === undefined ? 0 : positiveLimit(options.limit as number, "limit");
-    return create(DeleteRelationshipsRequestSchema, { relationshipFilter: toProtoRelationshipFilter(filter), optionalPreconditions: toProtoDeletePreconditions(options), optionalLimit: limit, optionalAllowPartialDeletions: partial === DeletePartial.Allowed, optionalCursor: options.cursor ? create(CursorSchema, { token: options.cursor }) : undefined });
+    return create(DeleteRelationshipsRequestSchema, { relationshipFilter: toProtoRelationshipFilter(filter), optionalPreconditions: toProtoDeletePreconditions(options), optionalLimit: limit, optionalAllowPartialDeletions: partial === DeletePartial.Allowed, optionalCursor: options.cursor === undefined ? undefined : optionalString(options.cursor, "cursor") ? create(CursorSchema, { token: options.cursor }) : undefined });
 }
 /** One relationship mutation in a transaction or watch event. */
 export interface RelationshipUpdate {

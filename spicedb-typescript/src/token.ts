@@ -28,5 +28,17 @@ export function tokenString(value: ZedToken): string {
     return value.toString();
 }
 
+/**
+ * @internal A caller-supplied revision (consistency, watch start, permission-set
+ * revision): an empty or whitespace-only token is a local validation error,
+ * never sent for the server to reject.
+ */
+export function requestToken(value: ZedToken, what = "revision"): string {
+    const token = tokenString(value);
+    if (token.trim() === "")
+        throw new InvalidArgumentError(`${what} must be a nonempty ZedToken, not empty or whitespace`);
+    return token;
+}
+
 /** @internal An absent required wire revision retains its empty representation. */
 export function serverToken(value?: string): ZedToken { return new ZedToken(value ?? ""); }

@@ -35,7 +35,8 @@ client.check(check, consistency: SpiceDB::Consistency.min_latency).has_permissio
 ```
 
 Names (types, relations, permissions) may be Strings or Symbols, and object
-IDs Strings or Integers; both are stored as Strings.
+IDs Strings or Integers (a database primary key); both are stored as Strings.
+Any other type raises `SpiceDB::LocalValidationError` before any request.
 
 ### Endpoints
 

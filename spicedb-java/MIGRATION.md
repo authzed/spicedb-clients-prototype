@@ -163,7 +163,8 @@ SpiceDBClient client = SpiceDBClient.createSystemTls("spicedb.example.com:443", 
 An empty or whitespace-only preshared key (usually an unset environment
 variable) throws `LocalValidationException` at construction, and so does a
 `caCertificate`, `clientCertificate` or `clientKey` file that cannot be read or
-parsed; the message names the option and path.
+parsed, or a `clientKey` that is not the private key of `clientCertificate`;
+the message names the option and path.
 
 ## Checks
 
@@ -195,6 +196,10 @@ boolean allowed = result.hasPermission(); // only an unconditional grant is true
 
 - Consistency is required on every read; there is no implicit default.
   Revisions are `ZedToken` values: `Consistency.atLeast(written.revision())`.
+  `atLeast` and `snapshot` reject an empty or whitespace-only token with
+  `LocalValidationException`; `atLeastOrFull`/`atLeastOrMinLatency` treat one
+  as absent. Watch and materialize start/at revisions take `null` to omit them;
+  an empty or whitespace-only one throws `LocalValidationException`.
 - `check` uses the singular `CheckPermission` RPC. `checkBulk(List<PermissionCheck>)`
   uses `CheckBulkPermissions` in chunks of 1,000, returns results in input order,
   and by default throws the first item's error (`BulkItemErrors.RETURNED` returns
@@ -342,10 +347,11 @@ try {
   `java.util.concurrent.CancellationException` with a `CANCELLED` status cause.
 - A response the client cannot interpret (a relationship, resource, subject or
   object missing; a check, bulk-check item, looked-up resource or subject with an
-  unspecified permissionship; a cursor that does not advance) fails with
+  unset permissionship; a cursor that does not advance) fails with
   `INTERNAL`, which is not retried by default. It is never skipped or filled
-  with empty values, and a successful `CheckResult` or `LookupResource` never
-  carries `UNSPECIFIED`. The message begins `client detected malformed response
+  with empty values. Only the unset permissionship is malformed: a value newer
+  than the client maps to `UNSPECIFIED`, which never grants, without failing
+  the call. The message begins `client detected malformed response
   from server:`, so it is not mistaken for a status the server sent.
 - Local validation (`Relationship.fromTuple`, `ObjectRef`, option builders,
   endpoint parsing) throws `LocalValidationException`, a subclass of

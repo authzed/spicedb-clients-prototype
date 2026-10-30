@@ -95,7 +95,8 @@ supplied channel down. `new TypedClient(api)` wraps any `SpiceDBApi`, including
 An empty or whitespace-only preshared key (usually an unset environment
 variable) throws `LocalValidationException` at construction, and so does a
 `caCertificate`, `clientCertificate` or `clientKey` file that cannot be read or
-parsed; the message names the option and path.
+parsed, or a `clientKey` that is not the private key of `clientCertificate`;
+the message names the option and path.
 
 ## Check (fail closed)
 
@@ -112,7 +113,9 @@ if (!result.hasPermission()) {
 ```
 
 - Need to observe a write? Store `written.revision().value()` and check with
-  `Consistency.atLeast(new ZedToken(stored))`.
+  `Consistency.atLeast(new ZedToken(stored))`. An empty or whitespace-only
+  token throws `LocalValidationException`; for a token that may be missing use
+  `Consistency.atLeastOrFull(...)`, which falls back to full consistency.
 - Reporting what was denied: `perm.toString()` is `organization:acme#view`.
 - Several at once:
 
@@ -123,6 +126,12 @@ List<CheckResult> results =
         checksFor(User(userId), Organization("a").view(), Organization("b").view()));
 // results.get(i) matches input i; only results.get(i).hasPermission() grants.
 ```
+
+  By default the first item error throws. With
+  `CheckOptions.builder().bulkItemErrors(BulkItemErrors.RETURNED)` each errored
+  item instead carries `error()` and never grants; a malformed item in the
+  server's response (such as an unset permissionship) still fails the whole
+  call with an `INTERNAL` error.
 
 - Permission names chosen at runtime (e.g. per API method):
 

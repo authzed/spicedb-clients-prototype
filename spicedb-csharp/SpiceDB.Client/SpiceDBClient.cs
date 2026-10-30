@@ -685,7 +685,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     public async IAsyncEnumerable<WatchEvent> UpdatesAsync(IReadOnlyList<string> objectTypes, ZedToken? startRevision, WatchOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, watch: true);
-        var request = new WatchRequest { OptionalStartCursor = startRevision is { } token ? new() { Token = token.Value } : null };
+        var request = new WatchRequest { OptionalStartCursor = RevisionInput.Optional(startRevision, nameof(startRevision)) is { } token ? new() { Token = token } : null };
         request.OptionalObjectTypes.AddRange(Native.Required(objectTypes, nameof(objectTypes)).ToArray());
         if (request.OptionalObjectTypes.Count > 0 && (options?.RelationshipFilters.Count ?? 0) > 0)
             throw new InvalidArgumentException("Object types and relationship filters are mutually exclusive.");

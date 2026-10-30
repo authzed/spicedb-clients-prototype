@@ -147,4 +147,31 @@ class MaterializeContractTest {
                   LookupOptions.builder().debug(com.authzed.spicedb.LookupDebug.ENABLED).build()));
     }
   }
+
+  /**
+   * A caller-supplied start or at revision is null (omitted) or a usable token: an empty or
+   * whitespace-only one fails with a local validation error when the call is made, before any
+   * request (the client points at a port nothing listens on, so a request would fail otherwise).
+   */
+  @Test
+  void blankStartAndAtRevisionsAreRejectedBeforeAnyRequest() {
+    try (var client = SpiceDBClient.createPlaintext("localhost:50116", "test")) {
+      for (var blank : List.of("", " ", "\t\n")) {
+        var token = new ZedToken(blank);
+        for (var call :
+            List.<Map.Entry<String, org.junit.jupiter.api.function.Executable>>of(
+                Map.entry("startRevision", () -> client.updates(List.of("document"), token)),
+                Map.entry("startRevision", () -> client.experimentalWatchPermissionSets(token)),
+                Map.entry("atRevision", () -> client.experimentalLookupPermissionSets(token)),
+                Map.entry("atRevision", () -> client.experimentalDownloadPermissionSets(token)))) {
+          var e =
+              assertThrows(
+                  com.authzed.spicedb.errors.LocalValidationException.class, call.getValue());
+          assertTrue(
+              e.getMessage().startsWith(call.getKey() + " must not be empty or whitespace-only"),
+              e.getMessage());
+        }
+      }
+    }
+  }
 }

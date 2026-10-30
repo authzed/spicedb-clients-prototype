@@ -92,7 +92,10 @@ class BulkItemErrors(Enum):
 
     RAISE (default) raises the first item's error. RETURN puts each failing
     item's error on ``CheckResult.error`` (never a grant) and returns every
-    other result.
+    other result. RETURN covers per-item errors the server reports; a
+    malformed item in the server's response (such as an unset
+    permissionship) is not one, and still fails the whole call with the
+    client-detected malformed-response ``InternalError``.
     """
 
     RAISE = "raise"

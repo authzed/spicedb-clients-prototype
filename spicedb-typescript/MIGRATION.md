@@ -101,8 +101,17 @@ long-lived stream that relied on the old cut-off.
 
 An empty or whitespace-only `token` (usually an unset environment variable)
 throws `InvalidArgumentError` at construction, and so do `tls.caCert`,
-`tls.clientCert` or `tls.clientKey` values that do not parse; the message names
-the option.
+`tls.clientCert` or `tls.clientKey` values that do not parse, or a client key
+that does not match the client certificate; the message names the option(s).
+
+Names and IDs are type-checked: `authzed-node` sent whatever a JavaScript caller
+passed (an `objectId: 42` reached the server). Here a non-string object type or
+ID, relation, permission, caveat name, filter field or cursor throws
+`InvalidArgumentError` naming the field before any RPC; convert numeric IDs with
+`String(id)`. A caller-supplied revision (`atLeast`, `snapshot`, a watch or
+permission-set start revision) that is empty or whitespace-only also throws
+`InvalidArgumentError`; `atLeastOrFull`/`atLeastOrMinLatency` fall back for it
+as for `undefined`.
 
 ## Checks
 

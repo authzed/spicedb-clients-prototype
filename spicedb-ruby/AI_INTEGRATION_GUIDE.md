@@ -49,13 +49,17 @@ a child whose parent already used gRPC raises `SpiceDB::ForkedClientError`,
 even from a client built in the child.
 See [README.md, "Concurrency and forking"](README.md#concurrency-and-forking).
 
-Names may be Symbols (`permission: :view`) and object IDs Integers
-(`object_id: record.id`); they are converted with `to_s`.
+Names may be Strings or Symbols (`permission: :view`) and object IDs Strings or
+Integers (`object_id: record.id`, deliberately accepted for primary keys); they
+are converted with `to_s`. Any other type (`nil`, a Float, a Hash, an Array, a
+Symbol ID) raises `LocalValidationError` before any request, filters included.
 
 An empty or whitespace-only token (usually an unset environment variable) raises
 `LocalValidationError` at construction, and so does `ca_cert:`, `client_cert:`
-or `client_key:` material that does not parse as PEM; the message names the
-argument.
+or `client_key:` material that does not parse as PEM, or a `client_key:` from a
+different key pair than `client_cert:`; the message names the argument.
+`SpiceDB::ZedToken.new` raises `LocalValidationError` for an empty or
+whitespace-only revision token too.
 
 ## Check (fail closed)
 

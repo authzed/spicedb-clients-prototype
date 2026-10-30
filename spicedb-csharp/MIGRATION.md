@@ -83,10 +83,16 @@ variable) throws `InvalidArgumentException` at construction.
 
 `SpiceDB.Client.CallOptions` and `Grpc.Core.CallOptions` share a name, so a file that imports
 both namespaces (for example one with a custom `CallInvoker` passed to
-`CreateFromCallInvoker`) fails with CS0104. Alias this library's type there:
+`CreateFromCallInvoker`) fails with CS0104 wherever it writes `CallOptions`. Aliasing only
+this library's type does not help, because both namespace imports stay in scope. Alias the
+bare name to the type you mean there (a using-alias takes precedence over namespace
+imports), and give the other type its own alias if the file needs it too:
 
 ```csharp
-using SpiceDBCallOptions = SpiceDB.Client.CallOptions;
+using Grpc.Core;
+using SpiceDB.Client;
+using CallOptions = Grpc.Core.CallOptions;             // CallInvoker overrides
+using SpiceDBCallOptions = SpiceDB.Client.CallOptions; // per-call options for this client
 ```
 
 ## Requests and consistency
@@ -113,6 +119,10 @@ var allowed = result.HasPermission; // only an unconditional grant
   includes the schema reads (`ReflectSchemaAsync`, `ComputablePermissionsAsync`,
   `DependentRelationsAsync`, `DiffSchemaAsync`): where your raw requests left consistency
   unset, pass `Consistency.MinLatency()`, which is what SpiceDB applies when it is absent.
+- `Consistency.AtLeast(token)` and `Snapshot(token)` throw `InvalidArgumentException` for an
+  empty or whitespace-only token rather than sending it; use `AtLeastOrFull` or
+  `AtLeastOrMinLatency` when a stored token may be missing. Watch start revisions and
+  materialize at-revisions take `ZedToken?`: pass null, not an empty token, to omit one.
 - Singular checks call `CheckPermission`. Bulk checks (`CheckBulkAsync`) split into chunks
   of 1,000, validate every echoed item, and throw for the first failed item unless
   `CheckOptions.ItemErrors = BulkItemErrors.Returned`. A malformed item in the server's

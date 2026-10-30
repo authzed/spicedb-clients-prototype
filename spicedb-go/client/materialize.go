@@ -199,8 +199,8 @@ func WithWatchPermissionSetsTimeout(d time.Duration) WatchPermissionSetsOption {
 }
 func WithWatchPermissionSetsStart(token consistency.ZedToken) WatchPermissionSetsOption {
 	return func(o *operationOptions) {
-		if token.String() == "" {
-			o.err = invalid("watch starting token must be nonempty")
+		if token.IsBlank() {
+			o.err = invalid("watch starting token must not be blank")
 			return
 		}
 		o.start = token
@@ -250,8 +250,8 @@ func WithLookupPermissionSetsTimeout(d time.Duration) LookupPermissionSetsOption
 }
 func WithLookupPermissionSetsRevision(token consistency.ZedToken) LookupPermissionSetsOption {
 	return func(o *operationOptions) {
-		if token.String() == "" {
-			o.err = invalid("lookup revision must be nonempty")
+		if token.IsBlank() {
+			o.err = invalid("lookup revision must not be blank")
 			return
 		}
 		o.start = token
@@ -319,8 +319,8 @@ func WithDownloadPermissionSetsTimeout(d time.Duration) DownloadPermissionSetsOp
 }
 func WithDownloadPermissionSetsRevision(token consistency.ZedToken) DownloadPermissionSetsOption {
 	return func(o *operationOptions) {
-		if token.String() == "" {
-			o.err = invalid("download revision must be nonempty")
+		if token.IsBlank() {
+			o.err = invalid("download revision must not be blank")
 			return
 		}
 		o.start = token

@@ -1,4 +1,4 @@
-import { serverToken, tokenString } from "./token.js";
+import { serverToken, tokenString, requestToken } from "./token.js";
 import { requireParseableTls, requireUsableToken } from "./credentials.js";
 import { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, Paging, mode } from "./modes.js";
 import { Code, type Transport } from "@connectrpc/connect";
@@ -9,7 +9,7 @@ import { createSpiceDBClient as createProtoClient, endpointScheme, InsecureRemot
 import { ExperimentalCountRelationshipsByFilterRequestSchema, MaterializePermissionSetsProtocol as PermissionSets } from "@spicedb/proto";
 import type { WatchPermissionSetsRequest, PermissionSetEvent, LookupPermissionSetsRequest, LookupPermissionSet, DownloadPermissionSetsRequest, DownloadPermissionSetsResult, PermissionSetCursor, PermissionSetChange, PermissionSetReference } from "./types.js";
 import { Consistency } from "./consistency.js";
-import { type Relationship, type RelationshipFilter, type CheckRequest, type CheckOptions, CheckResult, type CallOptions, type DeleteOptions, type DeleteAllOptions, type DeleteResult, type WriteResult, type ReadRelationshipsRequest, type LookupResourcesRequest, type LookupSubjectsRequest, type LookupResource, type LookupSubject, type ExpandPermissionTreeRequest, type ExpandResult, type ExportRelationshipsRequest, type WatchRequest, type WatchEvent, type WatchChange, type ReflectSchemaRequest, type ReflectSchemaResult, type ComputablePermissionsRequest, type DependentRelationsRequest, type RelationsResult, type DiffSchemaRequest, type SchemaDiffResult, type SchemaResult, type RelationshipCountResult, type RoaringLookupResourcesRequest, type RoaringLookupResourcesResult, type ZedToken, type ReadRelationship, type ExportedRelationship, type ImportOptions, Transaction, toProtoRelationship, checkedRelationship, toProtoRelationshipFilter, toProtoDeleteRelationshipsRequest, fromProtoPermissionTree, fromProtoSchemaDefinition, fromProtoSchemaCaveat, fromProtoRelationReference, fromProtoSchemaDiff, fromProtoLookupResource, fromProtoLookupSubject, checkResultFromProto, checkResultFromBulkItem, mergeCheckContext, immutableSnapshot, jsonSnapshot, protoSubject, positiveLimit, } from "./types.js";
+import { type Relationship, type RelationshipFilter, type CheckRequest, type CheckOptions, CheckResult, type CallOptions, type DeleteOptions, type DeleteAllOptions, type DeleteResult, type WriteResult, type ReadRelationshipsRequest, type LookupResourcesRequest, type LookupSubjectsRequest, type LookupResource, type LookupSubject, type ExpandPermissionTreeRequest, type ExpandResult, type ExportRelationshipsRequest, type WatchRequest, type WatchEvent, type WatchChange, type ReflectSchemaRequest, type ReflectSchemaResult, type ComputablePermissionsRequest, type DependentRelationsRequest, type RelationsResult, type DiffSchemaRequest, type SchemaDiffResult, type SchemaResult, type RelationshipCountResult, type RoaringLookupResourcesRequest, type RoaringLookupResourcesResult, type ZedToken, type ReadRelationship, type ExportedRelationship, type ImportOptions, Transaction, toProtoRelationship, checkedRelationship, toProtoRelationshipFilter, toProtoDeleteRelationshipsRequest, fromProtoPermissionTree, fromProtoSchemaDefinition, fromProtoSchemaCaveat, fromProtoRelationReference, fromProtoSchemaDiff, fromProtoLookupResource, fromProtoLookupSubject, checkResultFromProto, checkResultFromBulkItem, mergeCheckContext, immutableSnapshot, jsonSnapshot, protoSubject, protoObject, requireString, optionalString, positiveLimit, } from "./types.js";
 import { InvalidArgumentError, SpiceDBError, toSpiceDBError, toSpiceDBErrorFromStatus, malformedResponse } from "./errors.js";
 import { Operation, pageOf, withDeleteProgress, withResumeCursor, type PageProgress } from "./operation.js";
 export type { SpiceDBProtoClient, TlsOptions };
@@ -348,7 +348,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
         };
     }
     async check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult> {
-        const wire = create(CheckPermissionRequestSchema, { resource: request.resource, permission: request.permission, subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: mergeCheckContext(options?.context, request.context), withTracing: mode(options?.tracing, Tracing, Tracing.Disabled, "tracing") === Tracing.Enabled });
+        const wire = create(CheckPermissionRequestSchema, { resource: protoObject(request.resource, "resource"), permission: requireString(request.permission, "permission"), subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: mergeCheckContext(options?.context, request.context), withTracing: mode(options?.tracing, Tracing, Tracing.Disabled, "tracing") === Tracing.Enabled });
         return this.unary("check", options, true, async (op) => {
             const resp = await this.proto.permissions.checkPermission(wire, op.callOptions());
             requireSpecified(resp.permissionship, "check response");
@@ -363,7 +363,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
             const items = requests.map((request, index) => {
                 if (!(request.consistency instanceof Consistency) || !(key instanceof Consistency) || request.consistency._key() !== key._key())
                     throw new InvalidArgumentError(`check item ${index}: bulk consistency must be identical`);
-                return create(CheckBulkPermissionsRequestItemSchema, { resource: request.resource, permission: request.permission, subject: protoSubject(request.subject), context: mergeCheckContext(options?.context, request.context) });
+                return create(CheckBulkPermissionsRequestItemSchema, { resource: protoObject(request.resource, `check item ${index}: resource`), permission: requireString(request.permission, `check item ${index}: permission`), subject: protoSubject(request.subject), context: mergeCheckContext(options?.context, request.context) });
             });
             const tracing = mode(options?.tracing, Tracing, Tracing.Disabled, "tracing") === Tracing.Enabled;
             const returnItemErrors = mode(options?.itemErrors, BulkItemErrors, BulkItemErrors.Fail, "itemErrors") === BulkItemErrors.Returned;
@@ -432,7 +432,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
         const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
         // Single-request mode sends the total limit (0: unbounded) and ignores pageSize.
         const size = single ? limit ?? 0 : positiveLimit(request.pageSize ?? 1000, "pageSize");
-        const wire = create(ReadRelationshipsRequestSchema, { consistency: this.consistency(request.consistency), relationshipFilter: toProtoRelationshipFilter(request.filter), optionalLimit: size, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }) });
+        const wire = create(ReadRelationshipsRequestSchema, { consistency: this.consistency(request.consistency), relationshipFilter: toProtoRelationshipFilter(request.filter), optionalLimit: size, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: requireString(request.cursor, "cursor") }) });
         const self = this;
         return this.stream("readRelationships", options, async function* (op, progress) {
             let total = 0;
@@ -503,7 +503,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
             positiveLimit(request.limit, "limit");
         // Single-request mode sends the total limit (0: unbounded) and ignores pageSize.
         const size = single ? request.limit ?? 0 : positiveLimit(request.pageSize ?? 1000, "pageSize");
-        const wire = create(LookupResourcesRequestSchema, { resourceObjectType: request.resourceType, permission: request.permission, subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalLimit: size, withDebug: mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug") === LookupDebug.Enabled, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }) });
+        const wire = create(LookupResourcesRequestSchema, { resourceObjectType: requireString(request.resourceType, "resourceType"), permission: requireString(request.permission, "permission"), subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalLimit: size, withDebug: mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug") === LookupDebug.Enabled, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: requireString(request.cursor, "cursor") }) });
         const self = this;
         const limit = request.limit;
         return this.stream("lookupResources", options, async function* (op, progress) {
@@ -546,7 +546,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
         if (request.limit !== undefined)
             positiveLimit(request.limit, "limit");
         const wildcards = mode(request.wildcards, Wildcards, Wildcards.Default, "wildcards");
-        const wire = create(LookupSubjectsRequestSchema, { resource: request.resource, permission: request.permission, subjectObjectType: request.subjectType, optionalSubjectRelation: request.subjectRelation ?? "", consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalConcreteLimit: request.limit ?? 0, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }), wildcardOption: wildcards === Wildcards.Exclude ? LookupSubjectsRequest_WildcardOption.EXCLUDE_WILDCARDS : wildcards === Wildcards.Include ? LookupSubjectsRequest_WildcardOption.INCLUDE_WILDCARDS : LookupSubjectsRequest_WildcardOption.UNSPECIFIED });
+        const wire = create(LookupSubjectsRequestSchema, { resource: protoObject(request.resource, "resource"), permission: requireString(request.permission, "permission"), subjectObjectType: requireString(request.subjectType, "subjectType"), optionalSubjectRelation: optionalString(request.subjectRelation, "subjectRelation"), consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalConcreteLimit: request.limit ?? 0, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: requireString(request.cursor, "cursor") }), wildcardOption: wildcards === Wildcards.Exclude ? LookupSubjectsRequest_WildcardOption.EXCLUDE_WILDCARDS : wildcards === Wildcards.Include ? LookupSubjectsRequest_WildcardOption.INCLUDE_WILDCARDS : LookupSubjectsRequest_WildcardOption.UNSPECIFIED });
         const self = this;
         return this.stream("lookupSubjects", options, async function* (op) {
             for await (const resp of pageOf(op, self.proto.permissions.lookupSubjects(wire, op.callOptions()))) {
@@ -561,7 +561,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
         }, true, { resumable: false });
     }
     async expandPermissionTree(request: ExpandPermissionTreeRequest, options?: CallOptions): Promise<ExpandResult> {
-        const wire = create(ExpandPermissionTreeRequestSchema, { resource: request.resource, permission: request.permission, consistency: this.consistency(request.consistency) });
+        const wire = create(ExpandPermissionTreeRequestSchema, { resource: protoObject(request.resource, "resource"), permission: requireString(request.permission, "permission"), consistency: this.consistency(request.consistency) });
         return this.unary("expandPermissionTree", options, true, async (op) => { const resp = await this.proto.permissions.expandPermissionTree(wire, op.callOptions()); checkPermissionTree(resp.treeRoot); return immutableSnapshot({ treeRoot: fromProtoPermissionTree(resp.treeRoot), revision: serverToken(resp.expandedAt?.token) }); });
     }
     /**
@@ -630,7 +630,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
     }
     /** Streams every matching relationship; each item carries its response batch's `afterResultCursor`. Exports have no read-at revision. */
     exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship> {
-        const wire = create(ExportBulkRelationshipsRequestSchema, { consistency: this.consistency(request.consistency), optionalLimit: positiveLimit(request.pageSize ?? 1000, "pageSize"), optionalRelationshipFilter: request.filter === undefined ? undefined : toProtoRelationshipFilter(request.filter), optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }) });
+        const wire = create(ExportBulkRelationshipsRequestSchema, { consistency: this.consistency(request.consistency), optionalLimit: positiveLimit(request.pageSize ?? 1000, "pageSize"), optionalRelationshipFilter: request.filter === undefined ? undefined : toProtoRelationshipFilter(request.filter), optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: requireString(request.cursor, "cursor") }) });
         const self = this;
         return this.stream("exportRelationships", options, async function* (op, progress) {
             // Each response message is one batch (the export's page), so each gets the per-page budget.
@@ -649,39 +649,39 @@ export class SpiceDBClient implements SpiceDBClientInterface {
     }
     async readSchema(options?: CallOptions): Promise<SchemaResult> { return this.unary("readSchema", options, true, async (op) => { const resp = await this.proto.schema.readSchema(create(ReadSchemaRequestSchema), op.callOptions()); return immutableSnapshot({ schema: resp.schemaText, revision: serverToken(resp.readAt?.token) }); }); }
     /** Writes the schema. Not retried unless the call opts in with `retryPolicy` or the client sets `operationRetryPolicies.writeSchema` (a schema write is idempotent on replay). */
-    async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> { return this.unary("writeSchema", options, mutationRetry(options?.retryPolicy, this.operationRetryPolicies.get("writeSchema"), true, "writeSchema"), async (op) => serverToken((await this.proto.schema.writeSchema(create(WriteSchemaRequestSchema, { schema }), op.callOptions())).writtenAt?.token)); }
+    async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> { return this.unary("writeSchema", options, mutationRetry(options?.retryPolicy, this.operationRetryPolicies.get("writeSchema"), true, "writeSchema"), async (op) => serverToken((await this.proto.schema.writeSchema(create(WriteSchemaRequestSchema, { schema: requireString(schema, "schema") }), op.callOptions())).writtenAt?.token)); }
     async reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult> {
-        const wire = create(ReflectSchemaRequestSchema, { consistency: this.consistency(request.consistency), optionalFilters: request.filters?.map(f => create(ReflectionSchemaFilterSchema, { optionalDefinitionNameFilter: f.definitionName ?? "", optionalCaveatNameFilter: f.caveatName ?? "", optionalRelationNameFilter: f.relationName ?? "", optionalPermissionNameFilter: f.permissionName ?? "" })) });
+        const wire = create(ReflectSchemaRequestSchema, { consistency: this.consistency(request.consistency), optionalFilters: request.filters?.map(f => create(ReflectionSchemaFilterSchema, { optionalDefinitionNameFilter: optionalString(f.definitionName, "filter.definitionName"), optionalCaveatNameFilter: optionalString(f.caveatName, "filter.caveatName"), optionalRelationNameFilter: optionalString(f.relationName, "filter.relationName"), optionalPermissionNameFilter: optionalString(f.permissionName, "filter.permissionName") })) });
         return this.unary("reflectSchema", options, true, async (op) => { const resp = await this.proto.schema.reflectSchema(wire, op.callOptions()); return immutableSnapshot({ definitions: resp.definitions.map(fromProtoSchemaDefinition), caveats: resp.caveats.map(fromProtoSchemaCaveat), revision: serverToken(resp.readAt?.token) }); });
     }
     async computablePermissions(request: ComputablePermissionsRequest, options?: CallOptions): Promise<RelationsResult> {
-        const wire = create(ComputablePermissionsRequestSchema, { consistency: this.consistency(request.consistency), definitionName: request.definitionName, relationName: request.relationName, optionalDefinitionNameFilter: request.definitionNameFilter ?? "" });
+        const wire = create(ComputablePermissionsRequestSchema, { consistency: this.consistency(request.consistency), definitionName: requireString(request.definitionName, "definitionName"), relationName: requireString(request.relationName, "relationName"), optionalDefinitionNameFilter: optionalString(request.definitionNameFilter, "definitionNameFilter") });
         return this.unary("computablePermissions", options, true, async (op) => { const resp = await this.proto.schema.computablePermissions(wire, op.callOptions()); return immutableSnapshot({ relations: resp.permissions.map(fromProtoRelationReference), revision: serverToken(resp.readAt?.token) }); });
     }
     async dependentRelations(request: DependentRelationsRequest, options?: CallOptions): Promise<RelationsResult> {
-        const wire = create(DependentRelationsRequestSchema, { consistency: this.consistency(request.consistency), definitionName: request.definitionName, permissionName: request.permissionName });
+        const wire = create(DependentRelationsRequestSchema, { consistency: this.consistency(request.consistency), definitionName: requireString(request.definitionName, "definitionName"), permissionName: requireString(request.permissionName, "permissionName") });
         return this.unary("dependentRelations", options, true, async (op) => { const resp = await this.proto.schema.dependentRelations(wire, op.callOptions()); return immutableSnapshot({ relations: resp.relations.map(fromProtoRelationReference), revision: serverToken(resp.readAt?.token) }); });
     }
     async diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult> {
-        const wire = create(DiffSchemaRequestSchema, { consistency: this.consistency(request.consistency), comparisonSchema: request.comparisonSchema });
+        const wire = create(DiffSchemaRequestSchema, { consistency: this.consistency(request.consistency), comparisonSchema: requireString(request.comparisonSchema, "comparisonSchema") });
         return this.unary("diffSchema", options, true, async (op) => { const resp = await this.proto.schema.diffSchema(wire, op.callOptions()); return immutableSnapshot({ diffs: resp.diffs.map(fromProtoSchemaDiff), revision: serverToken(resp.readAt?.token) }); });
     }
     /** @experimental */
     async experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilter, options?: CallOptions): Promise<void> {
         mutationRetry(options?.retryPolicy, undefined, false, "experimentalRegisterRelationshipCounter");
-        const wire = create(ExperimentalRegisterRelationshipCounterRequestSchema, { name, relationshipFilter: toProtoRelationshipFilter(filter) });
+        const wire = create(ExperimentalRegisterRelationshipCounterRequestSchema, { name: requireString(name, "name"), relationshipFilter: toProtoRelationshipFilter(filter) });
         await this.unary("experimentalRegisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalRegisterRelationshipCounter(wire, op.callOptions()));
     }
     /** @experimental */
     async experimentalCountRelationships(name: string, options?: CallOptions): Promise<RelationshipCountResult> {
-        return this.unary("experimentalCountRelationships", options, true, async (op) => { const resp = await this.proto.experimental.experimentalCountRelationships(create(ExperimentalCountRelationshipsRequestSchema, { name }), op.callOptions()); if (resp.counterResult.case === "readCounterValue")
+        return this.unary("experimentalCountRelationships", options, true, async (op) => { const resp = await this.proto.experimental.experimentalCountRelationships(create(ExperimentalCountRelationshipsRequestSchema, { name: requireString(name, "name") }), op.callOptions()); if (resp.counterResult.case === "readCounterValue")
                 return immutableSnapshot({ stillCalculating: false, count: resp.counterResult.value.relationshipCount, revision: serverToken(resp.counterResult.value.readAt?.token) });
             if (resp.counterResult.case === "counterStillCalculating")
                 return immutableSnapshot({ stillCalculating: true });
             throw malformedResponse("count relationships response has neither a count nor a still-calculating marker"); });
     }
     /** @experimental */
-    async experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void> { mutationRetry(options?.retryPolicy, undefined, false, "experimentalUnregisterRelationshipCounter"); await this.unary("experimentalUnregisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalUnregisterRelationshipCounter(create(ExperimentalUnregisterRelationshipCounterRequestSchema, { name }), op.callOptions())); }
+    async experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void> { mutationRetry(options?.retryPolicy, undefined, false, "experimentalUnregisterRelationshipCounter"); await this.unary("experimentalUnregisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalUnregisterRelationshipCounter(create(ExperimentalUnregisterRelationshipCounterRequestSchema, { name: requireString(name, "name") }), op.callOptions())); }
     watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent> {
         if (request?.objectTypes?.length && request.relationshipFilters?.length)
             throw new InvalidArgumentError("watch objectTypes and relationshipFilters cannot be combined");
@@ -691,7 +691,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
                 [WatchContent.Checkpoints]: WatchKind.INCLUDE_CHECKPOINTS,
                 [WatchContent.Schema]: WatchKind.INCLUDE_SCHEMA_UPDATES }[content];
         });
-        const wire = create(WatchRequestSchema, { optionalObjectTypes: [...(request?.objectTypes ?? [])], optionalStartCursor: request?.startRevision === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(request.startRevision) }), optionalUpdateKinds: kinds, optionalRelationshipFilters: request?.relationshipFilters?.map(toProtoRelationshipFilter) });
+        const wire = create(WatchRequestSchema, { optionalObjectTypes: [...(request?.objectTypes ?? [])].map((t, i) => requireString(t, `objectTypes[${i}]`)), optionalStartCursor: request?.startRevision === undefined ? undefined : create(ZedTokenSchema, { token: requestToken(request.startRevision, "startRevision") }), optionalUpdateKinds: kinds, optionalRelationshipFilters: request?.relationshipFilters?.map(toProtoRelationshipFilter) });
         const self = this;
         return this.stream("watch", options, async function* (op) {
             for await (const resp of self.proto.watch.watch(wire, op.callOptions())) {
@@ -708,7 +708,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
     }
     /** @experimental Infinite permission-set events. Resume explicitly after interruption. */
     experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent> {
-        const wire = create(PermissionSets.WatchPermissionSetsRequestSchema, { optionalStartingAfter: request?.startRevision === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(request.startRevision) }) });
+        const wire = create(PermissionSets.WatchPermissionSetsRequestSchema, { optionalStartingAfter: request?.startRevision === undefined ? undefined : create(ZedTokenSchema, { token: requestToken(request.startRevision, "startRevision") }) });
         const self = this;
         return this.stream("experimentalWatchPermissionSets", options, async function* (op) { for await (const response of self.proto.permissionSets.watchPermissionSets(wire, op.callOptions())) {
             op.check();
@@ -720,7 +720,7 @@ export class SpiceDBClient implements SpiceDBClientInterface {
         const size = positiveLimit(request.pageSize ?? 1000, "pageSize");
         if (request.limit !== undefined)
             positiveLimit(request.limit, "limit");
-        const wire = create(PermissionSets.LookupPermissionSetsRequestSchema, { limit: size, optionalAtRevision: request.revision === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(request.revision) }), optionalStartingAfterCursor: request.cursor === undefined ? undefined : protoPermissionSetCursor(request.cursor) });
+        const wire = create(PermissionSets.LookupPermissionSetsRequestSchema, { limit: size, optionalAtRevision: request.revision === undefined ? undefined : create(ZedTokenSchema, { token: requestToken(request.revision) }), optionalStartingAfterCursor: request.cursor === undefined ? undefined : protoPermissionSetCursor(request.cursor) });
         const self = this;
         const limit = request.limit;
         return this.stream("experimentalLookupPermissionSets", options, async function* (op) {
@@ -747,12 +747,12 @@ export class SpiceDBClient implements SpiceDBClientInterface {
     }
     /** @experimental Returns snapshot file URLs, timestamp and revision without downloading files. */
     async experimentalDownloadPermissionSets(request?: DownloadPermissionSetsRequest, options?: CallOptions): Promise<DownloadPermissionSetsResult> {
-        const wire = create(PermissionSets.DownloadPermissionSetsRequestSchema, { optionalAtRevision: request?.revision === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(request.revision) }) });
+        const wire = create(PermissionSets.DownloadPermissionSetsRequestSchema, { optionalAtRevision: request?.revision === undefined ? undefined : create(ZedTokenSchema, { token: requestToken(request.revision) }) });
         return this.unary("experimentalDownloadPermissionSets", options, true, async (op) => { const response = await this.proto.permissionSets.downloadPermissionSets(wire, op.callOptions()); return immutableSnapshot({ files: response.files.map(file => ({ name: file.name, url: file.url })), ...(response.timestamp ? { timestamp: new Date(Number(response.timestamp.seconds) * 1000 + response.timestamp.nanos / 1e6) } : {}), revision: serverToken(response.atRevision?.token) }); });
     }
     /** @experimental Returns the raw roaring64 bitmap without decoding its IDs. */
     async experimentalRoaringLookupResources(request: RoaringLookupResourcesRequest, options?: CallOptions): Promise<RoaringLookupResourcesResult> {
-        const wire = { consistency: this.consistency(request.consistency), resourceObjectType: request.resourceType, permission: request.permission, subject: protoSubject(request.subject) };
+        const wire = { consistency: this.consistency(request.consistency), resourceObjectType: requireString(request.resourceType, "resourceType"), permission: requireString(request.permission, "permission"), subject: protoSubject(request.subject) };
         return this.unary("experimentalRoaringLookupResources", options, true, async (op) => { const resp = await this.proto.materialize.experimentalRoaringLookupResources(wire, op.callOptions()); return immutableSnapshot({ bitmap: resp.bitmap, cardinality: resp.cardinality, revision: serverToken(resp.atRevision?.token) }); });
     }
 }

@@ -575,8 +575,10 @@ func (d {{$def.PascalName}}Ref) RelationByName(name string) (Permission, error) 
 // RelationshipByName builds a relationship on the named relation of this
 // {{$def.Name}}. It fails with ErrNotInSchema for an unknown relation and
 // ErrSubjectNotAllowed for a subject the relation does not admit.
-func (d {{$def.PascalName}}Ref) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
 {{- $writable := false}}{{range $r := $def.Relations}}{{if $r.HasSubjects}}{{$writable = true}}{{end}}{{end}}
+{{- /* With no writable relation the subject is never read: name it _ so
+       unused-parameter lint passes. */}}
+func (d {{$def.PascalName}}Ref) RelationshipByName(relation string, {{if $writable}}subject{{else}}_{{end}} Subject) (TypedRelationship, error) {
 {{- if $writable}}
 	switch relation {
 {{- range $r := $def.Relations}}

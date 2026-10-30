@@ -76,33 +76,89 @@ export type SubjectType =
     | ((id: string) => { readonly _type: string })
     | { readonly _type: string; readonly _relation: string };
 
+/** The type of a value an untyped caller passed, for error messages. */
+function typeName(value: unknown): string {
+    return value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+}
+
 /**
- * Rejects a missing string (null or undefined from an untyped caller) as a
- * local validation error, before it reaches a string method.
+ * Rejects a missing or non-string name (null, undefined or another type from
+ * an untyped caller) as a local validation error, before it reaches a string
+ * method or the server.
  */
 function requireText(value: string, what: string): string {
-    if (typeof value !== "string") throw new InvalidArgumentError(`${what} is required`);
+    if (value === null || value === undefined) throw new InvalidArgumentError(`${what} is required`);
+    if (typeof value !== "string") throw new InvalidArgumentError(`${what} must be a string, got ${typeName(value)}`);
     return value;
 }
 
-/** Rejects a missing subject (null or undefined from an untyped caller) as a local validation error. */
+/** Rejects an object ID that is not a nonempty string as a local validation error. */
+function requireId(type: string, id: string, what = "object ID"): string {
+    if (typeof id !== "string")
+        throw new InvalidArgumentError(`${type}: ${what} must be a string, got ${typeName(id)}`);
+    if (!id) throw new InvalidArgumentError(`${type}: ${what} must be nonempty`);
+    return id;
+}
+
+/**
+ * Rejects a missing subject, or a value that is not a generated subject ref,
+ * as a local validation error, before a property lookup on it.
+ */
 function requireSubject<S extends AnySubject>(subject: S): S {
     if (subject === null || subject === undefined) throw new InvalidArgumentError("subject is required");
+    const s: unknown = subject;
+    if (typeof s !== "object" || typeof subject._ref !== "string" || typeof subject._type !== "string")
+        throw new InvalidArgumentError(`subject must be a generated subject ref, got ${typeName(s)}`);
     return subject;
+}
+
+/** Rejects a missing or non-array collection argument as a local validation error. */
+function requireArray<T>(value: readonly T[], what: string): readonly T[] {
+    if (!Array.isArray(value)) throw new InvalidArgumentError(`${what} must be an array, got ${typeName(value)}`);
+    return value;
+}
+
+/** Rejects a value that is not an object (null, undefined, a string or a number) as a local validation error. */
+function requireObject<T extends object>(value: T, what: string): T {
+    const v: unknown = value;
+    if (v === null || typeof v !== "object")
+        throw new InvalidArgumentError(`${what} must be an object, got ${typeName(v)}`);
+    return value;
+}
+
+/** Rejects a value that is not a generated Permission as a local validation error. */
+function requirePermission<P extends Permission>(p: P, what = "permission"): P {
+    const v: unknown = p;
+    if (!(v instanceof Permission))
+        throw new InvalidArgumentError(`${what} must be a generated Permission, got ${typeName(v)}`);
+    return p;
 }
 
 function subjectRef(subject: AnySubject): SubjectRef {
     requireSubject(subject);
+    requireId(subject._type, subject._id, "subject ID");
     return {
         object: { objectType: subject._type, objectId: subject._id },
         ...(subject._relation === undefined ? {} : { relation: subject._relation }),
     };
 }
 
+/** Every CallOptions key; the Record type keeps it in step with CallOptions. */
+const callOptionKeys: Readonly<Record<keyof CallOptions, true>> = Object.freeze({
+    signal: true,
+    timeoutMs: true,
+    headers: true,
+    onHeader: true,
+    onTrailer: true,
+    retryPolicy: true,
+});
+
 /** The request fields of a lookup/read options object, without the CallOptions that go to the call itself. */
 function requestFields<T extends CallOptions>(options: T | undefined): Omit<T, keyof CallOptions> {
-    const { signal, timeoutMs, headers, onHeader, onTrailer, retryPolicy, ...request } = options ?? ({} as T);
-    return request;
+    const entries = Object.entries(options ?? {}).filter(
+        ([key]) => !Object.prototype.hasOwnProperty.call(callOptionKeys, key),
+    );
+    return Object.fromEntries(entries) as Omit<T, keyof CallOptions>;
 }
 
 function subjectString(subject: AnySubject): string {
@@ -138,7 +194,7 @@ export class Permission<T extends string = string, P extends string = string> {
     }
     /** The native check request for `subject`; a caveated subject's context becomes the check's context. */
     checkRequest(subject: AnySubject, consistency: Consistency, context?: JSONObject): CheckRequest {
-        if (!this._id) throw new InvalidArgumentError(`${this._type}: resource ID must be nonempty`);
+        requireId(this._type, this._id, "resource ID");
         requireSubject(subject);
         const merged = subject._caveatContext === undefined ? context : { ...context, ...subject._caveatContext };
         return {
@@ -277,9 +333,9 @@ function nativeRelationship(
     subject: AnySubject,
     identityOnly: boolean,
 ): Relationship {
-    if (!id) throw new InvalidArgumentError(`${type}#${relation}: resource ID must be nonempty`);
+    requireId(`${type}#${relation}`, id, "resource ID");
     requireSubject(subject);
-    if (!subject._id) throw new InvalidArgumentError(`${type}#${relation}: subject ID must be nonempty`);
+    requireId(`${type}#${relation}`, subject._id, "subject ID");
     const caveat =
         identityOnly || subject._caveat === undefined
             ? {}
@@ -323,7 +379,20 @@ export function errRelationship(error: Error): TypedRelationship {
     });
 }
 
+/** Validates withSubject's arguments: a filter, and a subject ref, definition factory or userset type. */
+function requireSubjectType(filter: RelationshipFilter, subject: AnySubject | SubjectType): void {
+    requireObject(filter, "filter");
+    if (subject === null || subject === undefined) throw new InvalidArgumentError("subject is required");
+    if (typeof subject === "function") return;
+    if (typeof subject !== "object" || typeof subject._type !== "string")
+        throw new InvalidArgumentError(
+            `subject must be a generated subject ref, definition factory or userset type, got ${typeName(subject)}`,
+        );
+}
+
 function resourceFilter(type: string, id: string, relation?: string): RelationshipFilter {
+    if (typeof id !== "string")
+        throw new InvalidArgumentError(`${type}: resource ID must be a string, got ${typeName(id)}`);
     if (!id)
         throw new InvalidArgumentError(
             `${type}: resource ID must be nonempty; use ${type}'s type filter for the whole type`,
@@ -339,7 +408,7 @@ function resourceFilter(type: string, id: string, relation?: string): Relationsh
  * `withSubjectAnyRelation` to leave the subject relation unconstrained.
  */
 export function withSubject(filter: RelationshipFilter, subject: AnySubject | SubjectType): RelationshipFilter {
-    if (subject === null || subject === undefined) throw new InvalidArgumentError("subject is required");
+    requireSubjectType(filter, subject);
     if (typeof subject === "function")
         return {
             ...filter,
@@ -374,7 +443,7 @@ export function withSubjectAnyRelation(
     filter: RelationshipFilter,
     subject: AnySubject | SubjectType,
 ): RelationshipFilter {
-    if (subject === null || subject === undefined) throw new InvalidArgumentError("subject is required");
+    requireSubjectType(filter, subject);
     if (typeof subject === "function") return { ...filter, subject: { subjectType: subject("")._type } };
     if (!("_ref" in subject)) return { ...filter, subject: { subjectType: subject._type } };
     return { ...filter, subject: { subjectType: subject._type, subjectId: subject._id } };
@@ -427,26 +496,43 @@ export class TypedTransaction {
         readonly filter: RelationshipFilter;
     }[] = [];
     #metadata?: JSONObject;
-    touch(rel: TypedRelationship): this {
-        this.#updates.push({ operation: "touch", value: rel });
+    #preconditionError?: Error;
+    #add(operation: "touch" | "create" | "delete", rel: TypedRelationship | RelationshipKey): this {
+        const value: unknown = rel;
+        const ok = value instanceof TypedRelationship || (operation === "delete" && value instanceof RelationshipKey);
+        const want = operation === "delete" ? "a TypedRelationship or RelationshipKey" : "a TypedRelationship";
+        this.#updates.push({
+            operation,
+            value: ok
+                ? rel
+                : errRelationship(new InvalidArgumentError(`${operation}: expected ${want}, got ${typeName(value)}`)),
+        });
         return this;
     }
-    create(rel: TypedRelationship): this {
-        this.#updates.push({ operation: "create", value: rel });
+    #addPrecondition(operation: "mustMatch" | "mustNotMatch", filter: RelationshipFilter): this {
+        const value: unknown = filter;
+        if (value === null || typeof value !== "object")
+            this.#preconditionError ??= new InvalidArgumentError(
+                `${operation}: expected a RelationshipFilter, got ${typeName(value)}`,
+            );
+        else this.#preconditions.push({ operation, filter });
         return this;
+    }
+    touch(rel: TypedRelationship): this {
+        return this.#add("touch", rel);
+    }
+    create(rel: TypedRelationship): this {
+        return this.#add("create", rel);
     }
     /** Deletes by tuple identity; a key needs no caveat context or expiration. */
     delete(rel: TypedRelationship | RelationshipKey): this {
-        this.#updates.push({ operation: "delete", value: rel });
-        return this;
+        return this.#add("delete", rel);
     }
     mustMatch(filter: RelationshipFilter): this {
-        this.#preconditions.push({ operation: "mustMatch", filter });
-        return this;
+        return this.#addPrecondition("mustMatch", filter);
     }
     mustNotMatch(filter: RelationshipFilter): this {
-        this.#preconditions.push({ operation: "mustNotMatch", filter });
-        return this;
+        return this.#addPrecondition("mustNotMatch", filter);
     }
     withMetadata(metadata: JSONObject): this {
         this.#metadata = metadata;
@@ -458,7 +544,7 @@ export class TypedTransaction {
     }
     /** The first deferred construction error, if any. */
     get error(): Error | undefined {
-        return this.#updates.find((u) => u.value.error !== undefined)?.value.error;
+        return this.#preconditionError ?? this.#updates.find((u) => u.value.error !== undefined)?.value.error;
     }
     /** The native updates added so far, in order; empty when `error` is set. */
     get updates(): readonly RelationshipUpdate[] {
@@ -476,6 +562,8 @@ export class TypedTransaction {
     }
     /** The native transaction; throws the first deferred construction error. */
     build(): Transaction {
+        const error = this.error;
+        if (error !== undefined) throw error;
         const txn = new Transaction();
         for (const p of this.#preconditions) txn[p.operation](p.filter);
         for (const u of this.#updates) txn[u.operation](u.value.relationship());
@@ -500,7 +588,10 @@ export interface TypedCheck {
 
 /** Checks of several permissions for one subject, in order. */
 export function checksFor(subject: AnySubject, ...permissions: readonly Permission[]): TypedCheck[] {
-    return permissions.map((permission) => ({ permission, subject }));
+    return permissions.map((permission) => ({
+        permission: requirePermission(permission),
+        subject: requireSubject(subject),
+    }));
 }
 
 // --- Caveat Contexts ---
@@ -512,6 +603,7 @@ export interface IpRangeContext {
 // ipRangeContextToRaw translates IpRangeContext's camelCase field names back to the
 // raw schema parameter names SpiceDB's CEL evaluator looks up. Undefined fields are omitted.
 function ipRangeContextToRaw(ctx: IpRangeContext): JSONObject {
+    requireObject(ctx, "caveat context");
     const raw: Record<string, JSONValue> = {};
     if (ctx.allowedCidr !== undefined) raw["allowed_cidr"] = ctx.allowedCidr;
     return raw;
@@ -525,10 +617,19 @@ export interface TimeWindowContext {
 // timeWindowContextToRaw translates TimeWindowContext's camelCase field names back to the
 // raw schema parameter names SpiceDB's CEL evaluator looks up. Undefined fields are omitted.
 function timeWindowContextToRaw(ctx: TimeWindowContext): JSONObject {
+    requireObject(ctx, "caveat context");
     const raw: Record<string, JSONValue> = {};
     if (ctx.end !== undefined) raw["end"] = ctx.end;
     if (ctx.start !== undefined) raw["start"] = ctx.start;
     return raw;
+}
+
+/** A copy of an expiration; anything but a valid Date is a local validation error. */
+function expirationOf(at: Date): Date {
+    const v: unknown = at;
+    if (!(v instanceof Date) || Number.isNaN(v.getTime()))
+        throw new InvalidArgumentError(`expiration must be a valid Date, got ${typeName(v)}`);
+    return new Date(v.getTime());
 }
 
 // --- Subject refs ---
@@ -541,12 +642,12 @@ export interface UserIpRangeRef extends AnySubject {
     toString(): string;
 }
 
-function makeUserIpRangeRef(id: string, ctx?: JSONObject, at?: Date): UserIpRangeRef {
+function makeUserIpRangeRef(id: string, ctx: JSONObject): UserIpRangeRef {
     const ref: UserIpRangeRef = {
         _ref: "UserIpRangeRef",
         _type: "user",
         _id: id,
-        _caveatContext: ctx ?? {},
+        _caveatContext: ctx,
         _caveat: "ip_range",
         toString: () => `user:${id}`,
     };
@@ -561,12 +662,12 @@ export interface UserTimeWindowRef extends AnySubject {
     toString(): string;
 }
 
-function makeUserTimeWindowRef(id: string, ctx?: JSONObject, at?: Date): UserTimeWindowRef {
+function makeUserTimeWindowRef(id: string, ctx: JSONObject): UserTimeWindowRef {
     const ref: UserTimeWindowRef = {
         _ref: "UserTimeWindowRef",
         _type: "user",
         _id: id,
-        _caveatContext: ctx ?? {},
+        _caveatContext: ctx,
         _caveat: "time_window",
         toString: () => `user:${id}`,
     };
@@ -580,12 +681,12 @@ export interface UserExpiringRef extends AnySubject {
     toString(): string;
 }
 
-function makeUserExpiringRef(id: string, ctx?: JSONObject, at?: Date): UserExpiringRef {
+function makeUserExpiringRef(id: string, at: Date): UserExpiringRef {
     const ref: UserExpiringRef = {
         _ref: "UserExpiringRef",
         _type: "user",
         _id: id,
-        _expiration: new Date(at!.getTime()),
+        _expiration: expirationOf(at),
         toString: () => `user:${id}`,
     };
     return Object.freeze(ref);
@@ -598,7 +699,7 @@ export interface UserWildcardRef extends AnySubject {
     toString(): string;
 }
 
-function makeUserWildcardRef(id: string, ctx?: JSONObject, at?: Date): UserWildcardRef {
+function makeUserWildcardRef(): UserWildcardRef {
     const ref: UserWildcardRef = {
         _ref: "UserWildcardRef",
         _type: "user",
@@ -615,7 +716,7 @@ export interface TeamMemberRef extends AnySubject {
     toString(): string;
 }
 
-function makeTeamMemberRef(id: string, ctx?: JSONObject, at?: Date): TeamMemberRef {
+function makeTeamMemberRef(id: string): TeamMemberRef {
     const ref: TeamMemberRef = {
         _ref: "TeamMemberRef",
         _type: "team",
@@ -634,13 +735,13 @@ export interface OrganizationCanAdminRef extends AnySubject {
     toString(): string;
 }
 
-function makeOrganizationCanAdminRef(id: string, ctx?: JSONObject, at?: Date): OrganizationCanAdminRef {
+function makeOrganizationCanAdminRef(id: string): OrganizationCanAdminRef {
     const ref: OrganizationCanAdminRef = {
         _ref: "OrganizationCanAdminRef",
         _type: "organization",
         _id: id,
         _relation: "can_admin",
-        withExpiration: (expiresAt: Date) => makeOrganizationCanAdminExpiringRef(id, ctx, expiresAt),
+        withExpiration: (expiresAt: Date) => makeOrganizationCanAdminExpiringRef(id, expiresAt),
         toString: () => `organization:${id}#can_admin`,
     };
     return Object.freeze(ref);
@@ -654,13 +755,13 @@ export interface OrganizationCanAdminExpiringRef extends AnySubject {
     toString(): string;
 }
 
-function makeOrganizationCanAdminExpiringRef(id: string, ctx?: JSONObject, at?: Date): OrganizationCanAdminExpiringRef {
+function makeOrganizationCanAdminExpiringRef(id: string, at: Date): OrganizationCanAdminExpiringRef {
     const ref: OrganizationCanAdminExpiringRef = {
         _ref: "OrganizationCanAdminExpiringRef",
         _type: "organization",
         _id: id,
         _relation: "can_admin",
-        _expiration: new Date(at!.getTime()),
+        _expiration: expirationOf(at),
         toString: () => `organization:${id}#can_admin`,
     };
     return Object.freeze(ref);
@@ -704,7 +805,7 @@ function makeUserRef(id: string): UserRef {
         _id: id,
         withIpRange: (context: IpRangeContext) => makeUserIpRangeRef(id, ipRangeContextToRaw(context)),
         withTimeWindow: (context: TimeWindowContext) => makeUserTimeWindowRef(id, timeWindowContextToRaw(context)),
-        withExpiration: (expiresAt: Date) => makeUserExpiringRef(id, undefined, expiresAt),
+        withExpiration: (expiresAt: Date) => makeUserExpiringRef(id, expiresAt),
         filter: () => resourceFilter("user", id),
         permissionByName: (name: string) => permissionByName("user", id, UserPermissionNames, name, "permission"),
         relationByName: (name: string) => permissionByName("user", id, UserRelationNames, name, "relation"),
@@ -727,7 +828,7 @@ export function UserFilter(): RelationshipFilter {
 
 /** The `user:*` wildcard subject. */
 export function UserWildcard(): UserWildcardRef {
-    return makeUserWildcardRef("*");
+    return makeUserWildcardRef();
 }
 
 export type TeamRelationName = "member";
@@ -1231,19 +1332,13 @@ const subjectSetMakers: Readonly<Record<string, (id: string) => AnySubjectSet>> 
 export function subjectSetByName(definition: string, id: string, relation: string): AnySubjectSet {
     const info = definitionByName(definition);
     requireText(relation, "relation");
+    requireId(definition, id);
     const key = `${definition}#${relation}`;
     const make = Object.prototype.hasOwnProperty.call(subjectSetMakers, key) ? subjectSetMakers[key] : undefined;
-    if (make !== undefined) {
-        requireId(definition, id);
-        return make(id);
-    }
+    if (make !== undefined) return make(id);
     if (!info.relationNames.includes(relation) && !info.permissionNames.includes(relation))
         throw new NotInSchemaError(`${definition} has no relation or permission named "${relation}"`);
     throw new NotInSchemaError(`${key} is not a subject anywhere in the schema`);
-}
-
-function requireId(type: string, id: string): void {
-    if (!id) throw new InvalidArgumentError(`${type}: object ID must be nonempty`);
 }
 
 function objectText(text: string, what: string): { readonly type: string; readonly id: string } {
@@ -1350,13 +1445,21 @@ export function relationshipFromTriple(
     if (rawRelation === "") throw new InvalidArgumentError(`invalid subject (empty relation): ${subject}`);
     const subjectRelation = rawRelation === "..." ? undefined : rawRelation;
     const s = objectText(hash < 0 ? subject : subject.slice(0, hash), "subject");
-    if (!relation) throw new InvalidArgumentError("relation must be nonempty");
+    if (!requireText(relation, "relation")) throw new InvalidArgumentError("relation must be nonempty");
+    if (options !== undefined) requireObject(options, "options");
     const info = definitionByName(r.type);
     definitionByName(s.type);
     if (!info.relationNames.includes(relation))
         throw new NotInSchemaError(`${r.type} has no relation named "${relation}"`);
     const caveat = options?.caveat;
     const expiration = options?.expiration;
+    if (caveat !== undefined) {
+        requireText(requireObject(caveat, "options.caveat").name, "options.caveat.name");
+        if (caveat.context !== undefined) requireObject(caveat.context, "options.caveat.context");
+    }
+    const at: unknown = expiration;
+    if (at !== undefined && (!(at instanceof Date) || Number.isNaN(at.getTime())))
+        throw new InvalidArgumentError(`options.expiration must be a valid Date, got ${typeName(at)}`);
     const rule =
         s.type +
         (s.id === "*" ? ":*" : "") +
@@ -1584,7 +1687,7 @@ export class TypedClient {
     async check(c: Consistency, p: Permission, s: AnySubject, options?: CheckOptions): Promise<CheckResult> {
         // A caveated subject's own context is item-level context: it wins per
         // key over options.context, the call-level default.
-        return this.client.check(p.checkRequest(s, c), options);
+        return this.client.check(requirePermission(p).checkRequest(s, c), options);
     }
 
     /** Typed bulk check: forwards native options and preserves input order, per-chunk revisions and per-item errors. */
@@ -1593,10 +1696,14 @@ export class TypedClient {
         checks: readonly TypedCheck[],
         options?: CheckOptions,
     ): Promise<readonly CheckResult[]> {
-        return this.client.checkBulk(
-            checks.map((check) => check.permission.checkRequest(check.subject, c, check.context)),
-            options,
+        const requests = requireArray(checks, "checks").map((check, i) =>
+            requirePermission(requireObject(check, `checks[${i}]`).permission, `checks[${i}].permission`).checkRequest(
+                check.subject,
+                c,
+                check.context,
+            ),
         );
+        return this.client.checkBulk(requests, options);
     }
 
     /** Writes a typed transaction atomically; throws its first deferred construction error before any RPC. */
@@ -1607,21 +1714,21 @@ export class TypedClient {
     // Writes accept a collection so cancellation and total budget options remain available.
     async touch(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
         return this.writeTransaction(
-            rels.reduce((txn, r) => txn.touch(r), new TypedTransaction()),
+            requireArray(rels, "relationships").reduce((txn, r) => txn.touch(r), new TypedTransaction()),
             options,
         );
     }
 
     async create(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
         return this.writeTransaction(
-            rels.reduce((txn, r) => txn.create(r), new TypedTransaction()),
+            requireArray(rels, "relationships").reduce((txn, r) => txn.create(r), new TypedTransaction()),
             options,
         );
     }
 
     async delete(rels: readonly (TypedRelationship | RelationshipKey)[], options?: CallOptions): Promise<WriteResult> {
         return this.writeTransaction(
-            rels.reduce((txn, r) => txn.delete(r), new TypedTransaction()),
+            requireArray(rels, "relationships").reduce((txn, r) => txn.delete(r), new TypedTransaction()),
             options,
         );
     }
@@ -1673,6 +1780,9 @@ export class TypedClient {
         s: AnySubject,
         options?: LookupResourcesOptions,
     ): AsyncIterableIterator<LookupResource> {
+        const ref: unknown = p;
+        if (!(ref instanceof PermissionRef))
+            throw new InvalidArgumentError(`permission must be a generated PermissionRef, got ${typeName(ref)}`);
         const requestOptions = requestFields(options);
         return this.client.lookupResources(
             {
@@ -1713,9 +1823,13 @@ export class TypedClient {
         checks: readonly NamedCheck[],
         options?: CheckOptions,
     ): Promise<readonly CheckResult[]> {
-        const requests = checks.map((check) =>
-            checkTarget(check.definition, check.id, check.permission, check.subject).checkRequest(check.subject, c),
-        );
+        const requests = requireArray(checks, "checks").map((check, i) => {
+            requireObject(check, `checks[${i}]`);
+            return checkTarget(check.definition, check.id, check.permission, check.subject).checkRequest(
+                check.subject,
+                c,
+            );
+        });
         return this.client.checkBulk(requests, options);
     }
 
@@ -1760,11 +1874,14 @@ export class TypedClient {
         options?: LookupSubjectsOptions,
     ): AsyncIterableIterator<LookupSubject> {
         resolveByName(definition, permission);
+        requireId(definition, id, "resource ID");
         const type = subjectType;
-        const relation =
-            subjectRelation === undefined || subjectRelation === "..." || subjectRelation === ""
+        // null, from a JavaScript caller, means omitted, as undefined does.
+        const given =
+            subjectRelation === null || subjectRelation === undefined
                 ? undefined
-                : subjectRelation;
+                : requireText(subjectRelation, "subject relation");
+        const relation = given === undefined || given === "..." || given === "" ? undefined : given;
         const info = definitionByName(type);
         if (
             relation !== undefined &&
@@ -1785,7 +1902,7 @@ export class TypedClient {
                 ...(relation === undefined ? {} : { subjectRelation: relation }),
                 subjectType: type,
                 permission,
-                resource: { objectType: definition, objectId: requireText(id, "id") },
+                resource: { objectType: definition, objectId: id },
                 consistency: c,
             },
             options,
@@ -1798,6 +1915,12 @@ export class TypedClient {
         subjectType: (id: string) => { _type: string },
         options?: LookupSubjectsOptions,
     ): AsyncIterableIterator<LookupSubject> {
+        requireId(requirePermission(p)._type, p._id, "resource ID");
+        const factory: unknown = subjectType;
+        if (typeof factory !== "function")
+            throw new InvalidArgumentError(
+                `subject type must be a generated definition factory, got ${typeName(factory)}`,
+            );
         const requestOptions = requestFields(options);
         return this.client.lookupSubjects(
             {
@@ -1816,6 +1939,7 @@ export class TypedClient {
         filter: RelationshipFilter | { _type: string; _id?: string; _relation?: string },
         options?: ReadRelationshipsOptions,
     ): AsyncIterableIterator<ReadRelationship> {
+        requireObject(filter, "filter");
         const requestOptions = requestFields(options);
         return this.client.readRelationships(
             {

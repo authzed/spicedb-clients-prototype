@@ -27,7 +27,7 @@ func TestLanguage(t *testing.T) {
 
 func TestCanonicalRequestsAndDirectStreams(t *testing.T) {
 	output := generateSample(t, nil)
-	assert.Contains(t, output, "return this.client.check(p.checkRequest(s, c), options);")
+	assert.Contains(t, output, "return this.client.check(requirePermission(p).checkRequest(s, c), options);")
 	assert.Contains(t, output, "consistency: c,")
 	assert.NotContains(t, output, "Promise<AsyncIterableIterator<")
 	assert.NotContains(t, output, "async lookupResources(")

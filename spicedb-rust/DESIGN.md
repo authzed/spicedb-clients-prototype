@@ -9,7 +9,7 @@
 - **Carry revisions as opaque `ZedToken` values.**
   - Every public revision input and result, consistency strategy, watch resume point, delete result, schema result, permission-set cursor, and Materialize event uses `ZedToken` (or `Option<ZedToken>` for absence).
   - `From<String>`, `From<&str>`, `AsRef<str>`, `Display`, and `into_string()` preserve the exact string contents. Authentication credentials and opaque pagination cursors remain distinct string values.
-  - Read requests require explicit `Strategy`; `full()`, `min_latency()`, `at_least(ZedToken)`, and `snapshot(ZedToken)` select consistency. Named optional-token fallback helpers treat absent/empty tokens as their documented fallback; directly supplied empty revision tokens fail validation before RPC.
+  - Read requests require explicit `Strategy`; `full()`, `min_latency()`, `at_least(ZedToken)`, and `snapshot(ZedToken)` select consistency. Named optional-token fallback helpers treat absent, empty or whitespace-only tokens as their documented fallback; directly supplied empty or whitespace-only revision tokens (consistency tokens and watch start revisions) fail validation with `InvalidArgument` before RPC.
 
 - **Make execution choices discoverable through enums.**
   - `CheckOptions::with_tracing(TracingMode::{Disabled, Enabled})` and `LookupResourcesOptions::with_debug(DebugMode::{Disabled, Enabled})` default to disabled and map independently to their wire controls.

@@ -41,25 +41,27 @@ pub fn snapshot(revision: ZedToken) -> Strategy {
     Strategy::Snapshot(revision)
 }
 
-/// Returns [`at_least`] if the revision is `Some`, otherwise [`full`].
+/// Returns [`at_least`] if the revision is `Some`, otherwise [`full`]. An
+/// empty or whitespace-only revision counts as absent.
 ///
 /// Use this when you have an optional revision from a previous write and want
 /// the safest fallback.
 pub fn at_least_or_full(revision: Option<ZedToken>) -> Strategy {
     match revision {
-        Some(r) if !r.as_ref().is_empty() => at_least(r),
+        Some(r) if !r.as_ref().trim().is_empty() => at_least(r),
         Some(_) => full(),
         None => full(),
     }
 }
 
 /// Returns [`at_least`] if the revision is `Some`, otherwise [`min_latency`].
+/// An empty or whitespace-only revision counts as absent.
 ///
 /// Use this when you have an optional revision but prefer performance over full
 /// consistency as the fallback.
 pub fn at_least_or_min_latency(revision: Option<ZedToken>) -> Strategy {
     match revision {
-        Some(r) if !r.as_ref().is_empty() => at_least(r),
+        Some(r) if !r.as_ref().trim().is_empty() => at_least(r),
         Some(_) => min_latency(),
         None => min_latency(),
     }
@@ -70,9 +72,9 @@ use spicedb_proto::authzed::api::v1 as proto;
 impl Strategy {
     pub(crate) fn validate(&self) -> Result<(), crate::error::SpiceDBError> {
         match self {
-            Self::AtLeast(t) | Self::Snapshot(t) if t.as_ref().is_empty() => Err(
-                crate::types::invalid("consistency.token", "must not be empty"),
-            ),
+            Self::AtLeast(t) | Self::Snapshot(t) => {
+                crate::types::require_revision("consistency.token", t)
+            }
             _ => Ok(()),
         }
     }

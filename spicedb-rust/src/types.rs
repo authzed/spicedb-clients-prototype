@@ -206,6 +206,14 @@ pub(crate) fn require_permissionship(value: i32, what: &str) -> Result<(), Spice
     }
     Ok(())
 }
+/// Refuses an empty or whitespace-only caller-supplied revision token, which
+/// can name no revision (usually an unset variable or a blank stored value).
+pub(crate) fn require_revision(field: &str, token: &ZedToken) -> Result<(), SpiceDBError> {
+    if token.as_ref().trim().is_empty() {
+        return Err(invalid(field, "must not be empty or whitespace"));
+    }
+    Ok(())
+}
 pub(crate) fn invalid(field: &str, reason: &str) -> SpiceDBError {
     SpiceDBError::InvalidArgument(format!("{field}: {reason}").into())
 }
@@ -553,7 +561,9 @@ impl WatchOptions {
         Self::default()
     }
 
-    /// Resumes from `revision` rather than from head.
+    /// Resumes from `revision` rather than from head. An empty or
+    /// whitespace-only revision fails the stream with `InvalidArgument`
+    /// before any request.
     pub fn with_start_revision(mut self, revision: ZedToken) -> Self {
         self.start_revision = Some(revision);
         self

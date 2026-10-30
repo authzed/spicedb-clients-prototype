@@ -760,7 +760,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		"SchemaObject", "object_by_name", "parse_object", "relationship_from_triple",
 		"_RELATIONS", "_SUBJECT_RULES", "_subject_rule", "SubjectSet", "subject_set_by_name",
 		"_SUBJECT_SETS", "_lookup_target", "_reaches", "get_args", "SchemaSubject", "parse_subject",
-		"_WILDCARDS",
+		"_WILDCARDS", "_require_subject",
 	} {
 		n.claim("", fixed, "generated support code")
 	}
@@ -1196,6 +1196,7 @@ func clientTypeImports(data TemplateData) []string {
 		"_lookup_target":         true,
 		"_object":                true,
 		"_reaches":               true,
+		"_require_subject":       true,
 		"definition_by_name":     true,
 		"SubjectNotAllowedError": true,
 		"RelationshipKey":        true,

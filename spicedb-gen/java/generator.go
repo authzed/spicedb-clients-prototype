@@ -354,7 +354,7 @@ var fixedTypes = []string{
 
 var fixedStaticMethods = []string{"withSubject", "withSubjectAnyRelation", "checksFor", "subjectRef", "subjectString", "resourceFilter", "notAllowed", "definitionByName", "permissionRefByName",
 	"subjectSetByName", "reaches", "resolveByName", "subjectPosition", "notASubjectSet", "reachable", "checkTarget",
-	"objectByName", "parseObject", "parseSubject", "objectText", "relationshipFromTriple", "admitsShape"}
+	"objectByName", "parseObject", "parseSubject", "objectText", "relationshipFromTriple", "admitsShape", "requireArgument"}
 
 // fixedStaticFields are the always-generated static fields of Permissions.
 var fixedStaticFields = []string{"SCHEMA"}
@@ -846,7 +846,7 @@ func renderSchemaBlocks(s *schema.Schema) ([]string, error) {
 		w.line("public static Definition definitionByName(String name) {")
 		w.indent()
 		if len(s.Definitions) > 0 {
-			w.line(`switch (Objects.requireNonNull(name, "name")) {`)
+			w.line(`switch (requireArgument(name, "name")) {`)
 			w.indent()
 			for _, d := range s.Definitions {
 				dp := defIdent(d.Name)
@@ -892,7 +892,7 @@ func renderSchemaBlocks(s *schema.Schema) ([]string, error) {
 			}
 		}
 		if len(cases) > 0 {
-			w.line(`switch (definition + "#" + Objects.requireNonNull(permission, "permission")) {`)
+			w.line(`switch (definition + "#" + requireArgument(permission, "permission")) {`)
 			w.indent()
 			for _, c := range cases {
 				w.line("case " + javaString(c[0]) + ":")
@@ -941,7 +941,7 @@ func (b *builder) renderRuntimeNameBlocks() []string {
 			}
 		}
 		if len(cases) > 0 {
-			w.line(`switch (definition + "#" + Objects.requireNonNull(relation, "relation")) {`)
+			w.line(`switch (definition + "#" + requireArgument(relation, "relation")) {`)
 			w.indent()
 			for _, c := range cases {
 				w.line("case " + javaString(c[0]) + ":")
@@ -976,7 +976,7 @@ func (b *builder) renderRuntimeNameBlocks() []string {
 		w.line(" */")
 		w.line("public static Subject parseSubject(String text) {")
 		w.indent()
-		w.line(`var hash = Objects.requireNonNull(text, "subject").indexOf('#');`)
+		w.line(`var hash = requireArgument(text, "subject").indexOf('#');`)
 		w.line("var relation = hash < 0 ? null : text.substring(hash + 1);")
 		w.line(`var object = objectText(hash < 0 ? text : text.substring(0, hash), "subject");`)
 		w.line(`if (relation != null && !relation.equals("...")) {`)

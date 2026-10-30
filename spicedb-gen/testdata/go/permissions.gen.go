@@ -749,16 +749,12 @@ func UserPermissionNames() []string {
 // PermissionByName returns the named permission on this user, or an
 // error wrapping ErrNotInSchema.
 func (d UserRef) PermissionByName(name string) (Permission, error) {
-	switch name {
-	}
 	return Permission{}, fmt.Errorf("%w: user has no permission %q", ErrNotInSchema, name)
 }
 
 // RelationByName returns a checkable Permission for the named relation on
 // this user, or an error wrapping ErrNotInSchema.
 func (d UserRef) RelationByName(name string) (Permission, error) {
-	switch name {
-	}
 	return Permission{}, fmt.Errorf("%w: user has no relation %q", ErrNotInSchema, name)
 }
 
@@ -766,8 +762,6 @@ func (d UserRef) RelationByName(name string) (Permission, error) {
 // user. It fails with ErrNotInSchema for an unknown relation and
 // ErrSubjectNotAllowed for a subject the relation does not admit.
 func (d UserRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
-	switch relation {
-	}
 	return TypedRelationship{}, fmt.Errorf("%w: user has no relation %q", ErrNotInSchema, relation)
 }
 
@@ -828,8 +822,6 @@ func TeamPermissionNames() []string {
 // PermissionByName returns the named permission on this team, or an
 // error wrapping ErrNotInSchema.
 func (d TeamRef) PermissionByName(name string) (Permission, error) {
-	switch name {
-	}
 	return Permission{}, fmt.Errorf("%w: team has no permission %q", ErrNotInSchema, name)
 }
 

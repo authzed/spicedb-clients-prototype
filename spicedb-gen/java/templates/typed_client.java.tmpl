@@ -76,7 +76,7 @@ public final class Permissions {
 
     /** The typed ref for one object of this definition. */
     public DefinitionRef ref(String id) {
-      return factory.apply(Objects.requireNonNull(id, "id"));
+      return factory.apply(requireArgument(id, "id"));
     }
 
     /** The type-level filter for this definition's relationships. */
@@ -131,7 +131,7 @@ public final class Permissions {
 
     /** Pairs this permission with a subject it admits, for {@link TypedClient#checkBulk}. */
     public TypedCheck forSubject(S subject) {
-      return new TypedCheck(this, Objects.requireNonNull(subject, "subject"));
+      return new TypedCheck(this, requireArgument(subject, "subject"));
     }
 
     /** Like {@link #forSubject}, validating at run time a subject chosen at run time. */
@@ -216,7 +216,7 @@ public final class Permissions {
       S subject, Permission<? super S>... permissions) {
     var checks = new ArrayList<TypedCheck>(permissions.length);
     for (var permission : permissions) {
-      checks.add(new TypedCheck(permission, Objects.requireNonNull(subject, "subject")));
+      checks.add(new TypedCheck(permission, requireArgument(subject, "subject")));
     }
     return List.copyOf(checks);
   }
@@ -276,7 +276,7 @@ public final class Permissions {
 
     /** A relationship that carries a construction error, for helpers that defer errors. */
     public static TypedRelationship ofError(RuntimeException error) {
-      return new TypedRelationship(null, Objects.requireNonNull(error, "error"));
+      return new TypedRelationship(null, requireArgument(error, "error"));
     }
 
     /** The deferred construction error, if any. */
@@ -554,7 +554,7 @@ public final class Permissions {
   /** Validates a definition and one of its relation or permission names. */
   private static void resolveByName(String definition, String name) {
     var d = definitionByName(definition);
-    if (!d.relationNames().contains(Objects.requireNonNull(name, "name"))
+    if (!d.relationNames().contains(requireArgument(name, "name"))
         && !d.permissionNames().contains(name)) {
       throw new NotInSchemaException(definition + " has no permission or relation " + name);
     }
@@ -566,7 +566,7 @@ public final class Permissions {
    */
   private static boolean reachable(String definition, String name, Subject subject) {
     resolveByName(definition, name);
-    Objects.requireNonNull(subject, "subject");
+    requireArgument(subject, "subject");
     if (!reaches(definition + "#" + name, subjectPosition(subject))) {
       return false;
     }
@@ -612,7 +612,7 @@ public final class Permissions {
   }
 
   private static ObjectRef objectText(String text, String what) {
-    var i = Objects.requireNonNull(text, what).indexOf(':');
+    var i = requireArgument(text, what).indexOf(':');
     if (i < 1 || i == text.length() - 1) {
       throw new com.authzed.spicedb.errors.LocalValidationException(
           "invalid " + what + " (want type:id): " + text);
@@ -647,7 +647,7 @@ public final class Permissions {
       Map<String, Object> caveatContext,
       Instant expiration) {
     var r = objectText(resource, "resource");
-    var hash = Objects.requireNonNull(subject, "subject").indexOf('#');
+    var hash = requireArgument(subject, "subject").indexOf('#');
     var rawRelation = hash < 0 ? null : subject.substring(hash + 1);
     if (rawRelation != null && rawRelation.isEmpty()) {
       throw new com.authzed.spicedb.errors.LocalValidationException(
@@ -657,7 +657,7 @@ public final class Permissions {
     var s = objectText(hash < 0 ? subject : subject.substring(0, hash), "subject");
     var d = definitionByName(r.objectType());
     definitionByName(s.objectType());
-    if (!d.relationNames().contains(Objects.requireNonNull(relation, "relation"))) {
+    if (!d.relationNames().contains(requireArgument(relation, "relation"))) {
       throw new NotInSchemaException(r.objectType() + " has no relation " + relation);
     }
     var rule =
@@ -692,6 +692,14 @@ public final class Permissions {
 
   // --- Helpers ---
 
+  /** Rejects a null argument with the client library's local-validation error. */
+  private static <T> T requireArgument(T value, String what) {
+    if (value == null) {
+      throw new com.authzed.spicedb.errors.LocalValidationException(what + " is required");
+    }
+    return value;
+  }
+
   /**
    * Narrows a filter to a subject: its type, its ID unless a type sentinel, and its exact subject
    * relation. It always constrains the subject relation: a subject without one ({@code User("x")})
@@ -699,6 +707,7 @@ public final class Permissions {
    * #withSubjectAnyRelation} to leave the relation unconstrained.
    */
   public static Filter withSubject(Filter filter, Subject subject) {
+    requireArgument(subject, "subject");
     var narrowed = filter.withSubjectType(subject.definitionName());
     if (!subject.id().isEmpty()) {
       narrowed = narrowed.withSubjectId(subject.id());
@@ -714,6 +723,7 @@ public final class Permissions {
    * relation, direct or userset.
    */
   public static Filter withSubjectAnyRelation(Filter filter, Subject subject) {
+    requireArgument(subject, "subject");
     var narrowed = filter.withSubjectType(subject.definitionName());
     if (!subject.id().isEmpty()) {
       narrowed = narrowed.withSubjectId(subject.id());
@@ -731,6 +741,7 @@ public final class Permissions {
   }
 
   private static SubjectRef subjectRef(Subject subject) {
+    requireArgument(subject, "subject");
     var object = new ObjectRef(subject.definitionName(), subject.id());
     return subject.subRelation().isEmpty()
         ? SubjectRef.direct(object)
@@ -759,7 +770,7 @@ public final class Permissions {
     }
 
     public TypedClient(SpiceDBApi client, boolean ownsClient) {
-      this.client = Objects.requireNonNull(client);
+      this.client = requireArgument(client, "client");
       this.ownsClient = ownsClient;
     }
 
@@ -1156,7 +1167,8 @@ public final class Permissions {
 
     public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(
         Consistency c, Permission<S> perm, S subject, LookupOptions options) {
-      Objects.requireNonNull(options, "options");
+      requireArgument(options, "options");
+      requireArgument(subject, "subject");
       var relation = subject.subRelation().isEmpty() ? null : subject.subRelation();
       if (options.subjectRelation() != null
           && !Objects.equals(options.subjectRelation(), relation)) {
@@ -1215,7 +1227,7 @@ public final class Permissions {
         String subjectType,
         String subjectRelation,
         LookupOptions options) {
-      Objects.requireNonNull(options, "options");
+      requireArgument(options, "options");
       resolveByName(definition, permission);
       var relation =
           subjectRelation == null || subjectRelation.isEmpty() || subjectRelation.equals("...")
@@ -1238,7 +1250,7 @@ public final class Permissions {
       }
       return client.lookupSubjects(
           c,
-          new ObjectRef(definition, Objects.requireNonNull(id, "id")),
+          new ObjectRef(definition, requireArgument(id, "id")),
           permission,
           subjectType,
           options.toBuilder().subjectRelation(relation).build());

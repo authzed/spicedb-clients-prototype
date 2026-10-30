@@ -220,3 +220,40 @@ describe("runtime names: subject sets, any object, checks and lookups", () => {
         expect(db.callsOf("lookupSubjects")).toHaveLength(1);
     });
 });
+
+describe("null and undefined from untyped callers", () => {
+    it("are local validation errors, never a TypeError", async () => {
+        const db = new InMemorySpiceDB([]);
+        const tc = new TypedClient(db);
+        // What a JavaScript caller, or a value cast past the types, can pass.
+        const none = null as unknown as string;
+        const noSubject = undefined as unknown as AnySubject;
+        const drain = async (it: AsyncIterable<unknown>) => {
+            for await (const _ of it);
+        };
+        const calls: (() => unknown)[] = [
+            () => definitionByName(none),
+            () => permissionRefByName("document", none),
+            () => objectByName("document", none),
+            () => parseObject(none),
+            () => parseSubject(none),
+            () => subjectSetByName("team", "eng", none),
+            () => relationshipFromTriple(none, "viewer", "user:alice"),
+            () => relationshipFromTriple("document:readme", none, "user:alice"),
+            () => relationshipFromTriple("document:readme", "viewer", none),
+            () => Document("readme").relationshipByName("viewer", noSubject),
+            () => Document("readme").viewer(noSubject as never).relationship(),
+            () => tc.check(full(), Document("readme").view, noSubject as never),
+            () => tc.checkByName(full(), none, "readme", "view", User("alice")),
+            () => tc.checkByName(full(), "document", none, "view", User("alice")),
+            () => tc.checkByName(full(), "document", "readme", none, User("alice")),
+            () => tc.checkByName(full(), "document", "readme", "view", noSubject),
+            () => drain(tc.lookupResourcesByName(full(), "document", "view", noSubject)),
+            () => drain(tc.lookupSubjectsByName(full(), "document", none, "view", "user")),
+        ];
+        for (const [i, call] of calls.entries()) {
+            await expect((async () => call())(), `call ${i}`).rejects.toThrow(InvalidArgumentError);
+        }
+        expect(db.calls).toHaveLength(0);
+    });
+});

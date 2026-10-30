@@ -14,7 +14,13 @@ export enum Retries { Enabled = "enabled", Disabled = "disabled" }
 export enum StreamRetries { Enabled = "enabled", Disabled = "disabled" }
 /** Whether unary operations get the client's default deadline. The caller's own `timeoutMs`/`signal` always apply. */
 export enum DefaultDeadline { Enabled = "enabled", Disabled = "disabled" }
-/** How `checkBulk` reports per-item failures: fail the call (default), or return them on each `CheckResult.error`. */
+/**
+ * How `checkBulk` reports per-item failures: fail the call (default), or return
+ * them on each `CheckResult.error`. `Returned` covers only per-item errors the
+ * server reports; a malformed item in the server's response (such as an unset
+ * permissionship) still fails the whole call with the client-detected
+ * malformed-response error.
+ */
 export enum BulkItemErrors { Fail = "fail", Returned = "returned" }
 /** Whether `deleteRelationships` may delete part of the matches (default) or is all-or-nothing. */
 export enum DeletePartial { Allowed = "allowed", Disallowed = "disallowed" }

@@ -9,7 +9,7 @@ import { diffSchemas } from "./schemadiff.js";
 import type { SpiceDBClientInterface, SpiceDBProtoClient } from "./client.js";
 import {
     CheckResult, Transaction, filterMatches, immutableSnapshot, jsonSnapshot, nativeRelationshipFields, objectRefToString, positiveLimit, preconditionToString, relationshipToFilter,
-    relationshipToString, subjectRefToString, toProtoRelationship, toProtoRelationshipFilter,
+    relationshipToString, subjectRefToString, toProtoRelationship, toProtoRelationshipFilter, protoObject, protoSubject, requireString, optionalString,
     type CallOptions, type CheckOptions, type CheckRequest, type DeleteAllOptions, type DeleteOptions, type DeleteResult, type ExportedRelationship,
     type ExportRelationshipsRequest, type ImportOptions, type ObjectRef, type Permissionship, type Precondition, type ReadRelationship,
     type ReadRelationshipsRequest, type ReflectSchemaRequest, type ReflectSchemaResult, type Relationship, type RelationshipFilter, type SchemaResult,
@@ -475,12 +475,14 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
 
     async check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult> {
         this.#start("check", request, options);
+        requireCheckShape(request, "");
         this.#begin(options);
         return this.#check(request, options?.context);
     }
 
     async checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]> {
         this.#start("checkBulk", requests, options);
+        requests.forEach((request, index) => requireCheckShape(request, `check item ${index}: `));
         this.#begin(options);
         const results: CheckResult[] = [];
         for (const [index, request] of requests.entries()) {
@@ -521,6 +523,11 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         const filter = mode(request.permissionshipFilter, LookupPermissionshipFilter, LookupPermissionshipFilter.All, "permissionshipFilter");
         const single = mode(request.paging, Paging, Paging.Automatic, "paging") === Paging.SingleRequest;
         mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug");
+        requireString(request.resourceType, "resourceType");
+        requireString(request.permission, "permission");
+        protoSubject(request.subject);
+        if (request.cursor !== undefined)
+            requireString(request.cursor, "cursor");
         const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
         if (!single)
             positiveLimit(request.pageSize ?? 1000, "pageSize");
@@ -551,6 +558,12 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
             return failedStream(fault);
         const wildcards = mode(request.wildcards, Wildcards, Wildcards.Default, "wildcards");
         const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
+        protoObject(request.resource, "resource");
+        requireString(request.permission, "permission");
+        requireString(request.subjectType, "subjectType");
+        optionalString(request.subjectRelation, "subjectRelation");
+        if (request.cursor !== undefined)
+            requireString(request.cursor, "cursor");
         requireConsistency(request.consistency);
         if (request.context !== undefined)
             jsonSnapshot(request.context);
@@ -884,4 +897,11 @@ function directRelation(relation: string | undefined): string | undefined {
 function requireConsistency(value: Consistency): void {
     if (!(value instanceof Consistency))
         throw new InvalidArgumentError("consistency is required");
+}
+
+/** The real client's request-shape checks for one check: string names and IDs, else `InvalidArgumentError`. */
+function requireCheckShape(request: CheckRequest, prefix: string): void {
+    protoObject(request.resource, `${prefix}resource`);
+    requireString(request.permission, `${prefix}permission`);
+    protoSubject(request.subject);
 }

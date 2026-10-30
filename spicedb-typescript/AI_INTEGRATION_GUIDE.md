@@ -88,8 +88,15 @@ A private CA goes in `tls: { caCert }`. For an existing Connect `Transport`
 
 An empty or whitespace-only `token` (usually an unset environment variable)
 throws `InvalidArgumentError` at construction, and so do `tls.caCert`,
-`tls.clientCert` or `tls.clientKey` values that do not parse; the message names
-the option.
+`tls.clientCert` or `tls.clientKey` values that do not parse, or a client key
+that does not match the client certificate; the message names the option(s).
+
+Names and IDs must be strings: a number, `null` or object as an object type or
+ID, relation, permission, caveat name, filter field or cursor throws
+`InvalidArgumentError` naming the field before any RPC (use `String(id)` for
+numeric IDs). A revision you pass (`atLeast`, `snapshot`, watch/permission-set
+start revisions) that is empty or whitespace-only throws `InvalidArgumentError`;
+`atLeastOrFull`/`atLeastOrMinLatency` fall back for it as for `undefined`.
 
 ## Check (fail closed)
 
@@ -245,7 +252,10 @@ missing required field, an unspecified permissionship on a check, bulk-check
 item or lookup result, a cursor that does not advance) fails with
 `Code.Internal` and a message starting `client detected malformed response from
 server:`, so it is not mistaken for a status SpiceDB sent: treat it as a bug
-report, not a retry.
+report, not a retry. A malformed bulk-check item fails the whole call even with
+`itemErrors: BulkItemErrors.Returned`, which returns only the per-item errors
+the server reports. A permissionship value newer than the client is not
+malformed: it maps to `"unspecified"` and never grants.
 
 Every native error has `code` (Connect's `Code`); `errorCode(err)` classifies
 any error, including raw `ConnectError`s, and `toConnectError(err)` converts for

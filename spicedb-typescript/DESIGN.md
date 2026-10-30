@@ -25,8 +25,12 @@ and its generated schema facade.
   - Every public revision input/result uses `ZedToken`, including checks, schema,
     watch, deletion, counters and materialize cursors. Authentication tokens and
     ordinary opaque pagination cursors remain strings.
-  - An empty wire revision remains an empty token value; token-based consistency
-    rejects empty values. Absent optional tokens remain `undefined`.
+  - An empty wire revision remains an empty token value. A caller-supplied
+    revision (`atLeast`/`snapshot`, a watch or permission-set start revision, a
+    permission-set revision) that is empty or whitespace-only throws
+    `InvalidArgumentError` before any RPC; `atLeastOrFull`/`atLeastOrMinLatency`
+    treat such a token like `undefined` and fall back. Absent optional tokens
+    remain `undefined`.
   - `Consistency` is immutable. `full()`, `minLatency()`, `atLeast(token)` and
     `snapshot(token)` are explicit strategies; optional-token helpers name their fallback.
 
@@ -65,6 +69,15 @@ and its generated schema facade.
     (`endpoint`, `token`, `tls`, `headers`, transport security) are rejected
     there because the transport carries them; behavior options apply. `close()`
     cancels the client's operations and never closes the supplied transport.
+  - `tls.caCert`, `tls.clientCert` and `tls.clientKey` are parsed at
+    construction; unparseable material, or a client key that does not match
+    the client certificate, throws `InvalidArgumentError` naming the inputs.
+  - Names and IDs from callers (object types and IDs, relations, permissions,
+    caveat names, filter fields, watch object types, schema and counter names,
+    cursors) are type-checked where they become wire messages (`requireString`,
+    `protoObject` in `types.ts`); a non-string throws `InvalidArgumentError`
+    naming the field before any RPC. The in-memory double applies the same
+    checks.
   - Remote plaintext is supported through the normal constructor and
     `createSpiceDBClient`: select `TransportSecurity.Plaintext` and explicitly
     set `RemoteCredentials.AllowPlaintext`. The loopback-only policy is the default.

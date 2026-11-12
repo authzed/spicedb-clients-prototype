@@ -269,6 +269,54 @@ def test_lookup_resource_carries_looked_up_at():
     assert got.looked_up_at == ZedToken("deadbeef")
 
 
+def test_lookup_resources_batch_passes_through_singular_response():
+    """A response with no `batched` field flattens to the same single item
+    `lookup_resource` would produce."""
+    resp = psp.LookupResourcesResponse(
+        looked_up_at=core_pb2.ZedToken(token="t"),
+        resource_object_id="doc1",
+        permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+        after_result_cursor=core_pb2.Cursor(token="c1"),
+    )
+    assert mapping.lookup_resources_batch(resp) == [mapping.lookup_resource(resp)]
+
+
+def test_lookup_resources_batch_flattens_batched_results():
+    """Only the LAST item in a batch carries after_result_cursor -- the
+    proto defines one resume point per message, not per result, so giving
+    every item the batch cursor would make resuming from an earlier item
+    silently skip the rest of the batch."""
+    resp = psp.LookupResourcesResponse(
+        looked_up_at=core_pb2.ZedToken(token="t"),
+        batched=psp.LookupResourcesBatch(
+            results=[
+                psp.LookupResourcesResult(
+                    resource_object_id="doc1",
+                    permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+                ),
+                psp.LookupResourcesResult(
+                    resource_object_id="doc2",
+                    permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+                    partial_caveat_info=core_pb2.PartialCaveatInfo(
+                        missing_required_context=["ip_address"]
+                    ),
+                ),
+            ],
+            after_cursor=core_pb2.Cursor(token="batch-cursor"),
+        ),
+    )
+    got = mapping.lookup_resources_batch(resp)
+    assert [r.resource_id for r in got] == ["doc1", "doc2"]
+    assert [r.permissionship for r in got] == [
+        Permissionship.HAS_PERMISSION,
+        Permissionship.CONDITIONAL_PERMISSION,
+    ]
+    assert got[1].partial_caveat.missing_required_context == ("ip_address",)
+    assert all(r.looked_up_at == ZedToken("t") for r in got)
+    assert got[0].after_result_cursor is None
+    assert got[1].after_result_cursor == "batch-cursor"
+
+
 def test_lookup_subject_carries_looked_up_at():
     resp = psp.LookupSubjectsResponse(
         subject=psp.ResolvedSubject(

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `LookupResourcesOptions::with_response_batch_size` requests that the server group multiple results into each `LookupResources` response message (`optional_response_batch_size` on the wire) instead of sending one per message, trading a later first result for higher throughput on large lookups. This client keeps yielding one `LookupResource` per result either way: it unbatches `LookupResourcesResponse.batched` transparently, the way it already shares one cursor across a response's items for `export_relationships` -- every item of one batch carries that batch's `after_result_cursor`. Unset (the default) preserves the existing one-result-per-message wire behavior.
 - Tests: the deadline, consumer-time and shared-budget tests against a real server build their clients with `ConnectMode::Eager`, so a short allowance never has to cover connection setup on a busy machine; the shared-budget tests use wider stalls and budgets, and the consumer-time tests a 500 ms per-page default (5 x 250 ms of caller work), since moving one 3 MiB message through a debug build once took over 200 ms.
 - `consistency::Strategy` implements `Display` (`full`, `min_latency`, `at_least(<token>)`, `snapshot(<token>)`) and, with the `serde` feature, `Serialize` as `{"strategy":"at_least","token":"<token>"}` (no token for `full` and `min_latency`), like the other native values. It had only `Debug`.
 - An `http://` endpoint without a port fails with its example once: the accepted-forms list after the reason no longer repeats `for example http://host:50051`.

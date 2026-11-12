@@ -179,7 +179,7 @@ namespace Authzed.Api.V1 {
             "eHBhbmRQZXJtaXNzaW9uVHJlZVJlc3BvbnNlEjkKC2V4cGFuZGVkX2F0GAEg",
             "ASgLMhguYXV0aHplZC5hcGkudjEuWmVkVG9rZW5SCmV4cGFuZGVkQXQSRwoJ",
             "dHJlZV9yb290GAIgASgLMiouYXV0aHplZC5hcGkudjEuUGVybWlzc2lvblJl",
-            "bGF0aW9uc2hpcFRyZWVSCHRyZWVSb290IrMFChZMb29rdXBSZXNvdXJjZXNS",
+            "bGF0aW9uc2hpcFRyZWVSCHRyZWVSb290IvQFChZMb29rdXBSZXNvdXJjZXNS",
             "ZXF1ZXN0Ej0KC2NvbnNpc3RlbmN5GAEgASgLMhsuYXV0aHplZC5hcGkudjEu",
             "Q29uc2lzdGVuY3lSC2NvbnNpc3RlbmN5EsMBChRyZXNvdXJjZV9vYmplY3Rf",
             "dHlwZRgCIAEoCUKQAfpCRXJDKIABMj5eKFthLXpdW2EtejAtOV9dezEsNjF9",
@@ -194,117 +194,129 @@ namespace Authzed.Api.V1 {
             "Y3RCDvpCBYoBAhAAukgDyAEAUgdjb250ZXh0EjUKDm9wdGlvbmFsX2xpbWl0",
             "GAYgASgNQg76QgQqAigAukgEKgIoAFINb3B0aW9uYWxMaW1pdBI/Cg9vcHRp",
             "b25hbF9jdXJzb3IYByABKAsyFi5hdXRoemVkLmFwaS52MS5DdXJzb3JSDm9w",
-            "dGlvbmFsQ3Vyc29yEh0KCndpdGhfZGVidWcYCCABKAhSCXdpdGhEZWJ1ZyKS",
-            "AwoXTG9va3VwUmVzb3VyY2VzUmVzcG9uc2USOgoMbG9va2VkX3VwX2F0GAEg",
-            "ASgLMhguYXV0aHplZC5hcGkudjEuWmVkVG9rZW5SCmxvb2tlZFVwQXQSLAoS",
-            "cmVzb3VyY2Vfb2JqZWN0X2lkGAIgASgJUhByZXNvdXJjZU9iamVjdElkEmIK",
-            "DnBlcm1pc3Npb25zaGlwGAMgASgOMiQuYXV0aHplZC5hcGkudjEuTG9va3Vw",
-            "UGVybWlzc2lvbnNoaXBCFPpCB4IBBBABIAC6SAeCAQQQASAAUg5wZXJtaXNz",
-            "aW9uc2hpcBJhChNwYXJ0aWFsX2NhdmVhdF9pbmZvGAQgASgLMiEuYXV0aHpl",
-            "ZC5hcGkudjEuUGFydGlhbENhdmVhdEluZm9CDvpCBYoBAhAAukgDyAEAUhFw",
-            "YXJ0aWFsQ2F2ZWF0SW5mbxJGChNhZnRlcl9yZXN1bHRfY3Vyc29yGAUgASgL",
-            "MhYuYXV0aHplZC5hcGkudjEuQ3Vyc29yUhFhZnRlclJlc3VsdEN1cnNvciKc",
-            "CAoVTG9va3VwU3ViamVjdHNSZXF1ZXN0Ej0KC2NvbnNpc3RlbmN5GAEgASgL",
-            "MhsuYXV0aHplZC5hcGkudjEuQ29uc2lzdGVuY3lSC2NvbnNpc3RlbmN5EksK",
-            "CHJlc291cmNlGAIgASgLMh8uYXV0aHplZC5hcGkudjEuT2JqZWN0UmVmZXJl",
-            "bmNlQg76QgWKAQIQAbpIA8gBAVIIcmVzb3VyY2USdAoKcGVybWlzc2lvbhgD",
-            "IAEoCUJU+kInciUoQDIhXihbYS16XVthLXowLTlfXXsxLDYyfVthLXowLTld",
-            "KT8kukgnciUoQDIhXihbYS16XVthLXowLTlfXXsxLDYyfVthLXowLTldKT8k",
-            "UgpwZXJtaXNzaW9uEsEBChNzdWJqZWN0X29iamVjdF90eXBlGAQgASgJQpAB",
-            "+kJFckMogAEyPl4oW2Etel1bYS16MC05X117MSw2MX1bYS16MC05XS8pKlth",
-            "LXpdW2EtejAtOV9dezEsNjJ9W2EtejAtOV0kukhFckMogAEyPl4oW2Etel1b",
-            "YS16MC05X117MSw2MX1bYS16MC05XS8pKlthLXpdW2EtejAtOV9dezEsNjJ9",
-            "W2EtejAtOV0kUhFzdWJqZWN0T2JqZWN0VHlwZRKQAQoZb3B0aW9uYWxfc3Vi",
-            "amVjdF9yZWxhdGlvbhgFIAEoCUJU+kInciUoQDIhXihbYS16XVthLXowLTlf",
-            "XXsxLDYyfVthLXowLTldKT8kukgnciUoQDIhXihbYS16XVthLXowLTlfXXsx",
-            "LDYyfVthLXowLTldKT8kUhdvcHRpb25hbFN1YmplY3RSZWxhdGlvbhJBCgdj",
-            "b250ZXh0GAYgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdEIO+kIFigEC",
-            "EAC6SAPIAQBSB2NvbnRleHQSRgoXb3B0aW9uYWxfY29uY3JldGVfbGltaXQY",
-            "ByABKA1CDvpCBCoCKAC6SAQqAigAUhVvcHRpb25hbENvbmNyZXRlTGltaXQS",
-            "PwoPb3B0aW9uYWxfY3Vyc29yGAggASgLMhYuYXV0aHplZC5hcGkudjEuQ3Vy",
-            "c29yUg5vcHRpb25hbEN1cnNvchJdCg93aWxkY2FyZF9vcHRpb24YCSABKA4y",
-            "NC5hdXRoemVkLmFwaS52MS5Mb29rdXBTdWJqZWN0c1JlcXVlc3QuV2lsZGNh",
-            "cmRPcHRpb25SDndpbGRjYXJkT3B0aW9uIn8KDldpbGRjYXJkT3B0aW9uEh8K",
-            "G1dJTERDQVJEX09QVElPTl9VTlNQRUNJRklFRBAAEiUKIVdJTERDQVJEX09Q",
-            "VElPTl9JTkNMVURFX1dJTERDQVJEUxABEiUKIVdJTERDQVJEX09QVElPTl9F",
-            "WENMVURFX1dJTERDQVJEUxACItYEChZMb29rdXBTdWJqZWN0c1Jlc3BvbnNl",
-            "EjoKDGxvb2tlZF91cF9hdBgBIAEoCzIYLmF1dGh6ZWQuYXBpLnYxLlplZFRv",
-            "a2VuUgpsb29rZWRVcEF0Ei4KEXN1YmplY3Rfb2JqZWN0X2lkGAIgASgJQgIY",
-            "AVIPc3ViamVjdE9iamVjdElkEjQKFGV4Y2x1ZGVkX3N1YmplY3RfaWRzGAMg",
-            "AygJQgIYAVISZXhjbHVkZWRTdWJqZWN0SWRzEmQKDnBlcm1pc3Npb25zaGlw",
-            "GAQgASgOMiQuYXV0aHplZC5hcGkudjEuTG9va3VwUGVybWlzc2lvbnNoaXBC",
-            "FhgB+kIHggEEEAEgALpIB4IBBBABIABSDnBlcm1pc3Npb25zaGlwEmMKE3Bh",
-            "cnRpYWxfY2F2ZWF0X2luZm8YBSABKAsyIS5hdXRoemVkLmFwaS52MS5QYXJ0",
-            "aWFsQ2F2ZWF0SW5mb0IQGAH6QgWKAQIQALpIA8gBAFIRcGFydGlhbENhdmVh",
-            "dEluZm8SOQoHc3ViamVjdBgGIAEoCzIfLmF1dGh6ZWQuYXBpLnYxLlJlc29s",
-            "dmVkU3ViamVjdFIHc3ViamVjdBJMChFleGNsdWRlZF9zdWJqZWN0cxgHIAMo",
-            "CzIfLmF1dGh6ZWQuYXBpLnYxLlJlc29sdmVkU3ViamVjdFIQZXhjbHVkZWRT",
-            "dWJqZWN0cxJGChNhZnRlcl9yZXN1bHRfY3Vyc29yGAggASgLMhYuYXV0aHpl",
-            "ZC5hcGkudjEuQ3Vyc29yUhFhZnRlclJlc3VsdEN1cnNvciKEAgoPUmVzb2x2",
-            "ZWRTdWJqZWN0EioKEXN1YmplY3Rfb2JqZWN0X2lkGAEgASgJUg9zdWJqZWN0",
-            "T2JqZWN0SWQSYgoOcGVybWlzc2lvbnNoaXAYAiABKA4yJC5hdXRoemVkLmFw",
-            "aS52MS5Mb29rdXBQZXJtaXNzaW9uc2hpcEIU+kIHggEEEAEgALpIB4IBBBAB",
-            "IABSDnBlcm1pc3Npb25zaGlwEmEKE3BhcnRpYWxfY2F2ZWF0X2luZm8YAyAB",
-            "KAsyIS5hdXRoemVkLmFwaS52MS5QYXJ0aWFsQ2F2ZWF0SW5mb0IO+kIFigEC",
-            "EAC6SAPIAQBSEXBhcnRpYWxDYXZlYXRJbmZvInMKHkltcG9ydEJ1bGtSZWxh",
-            "dGlvbnNoaXBzUmVxdWVzdBJRCg1yZWxhdGlvbnNoaXBzGAEgAygLMhwuYXV0",
-            "aHplZC5hcGkudjEuUmVsYXRpb25zaGlwQg36QgqSAQciBYoBAhABUg1yZWxh",
-            "dGlvbnNoaXBzIkAKH0ltcG9ydEJ1bGtSZWxhdGlvbnNoaXBzUmVzcG9uc2US",
-            "HQoKbnVtX2xvYWRlZBgBIAEoBFIJbnVtTG9hZGVkIr0CCh5FeHBvcnRCdWxr",
-            "UmVsYXRpb25zaGlwc1JlcXVlc3QSPQoLY29uc2lzdGVuY3kYASABKAsyGy5h",
-            "dXRoemVkLmFwaS52MS5Db25zaXN0ZW5jeVILY29uc2lzdGVuY3kSNQoOb3B0",
-            "aW9uYWxfbGltaXQYAiABKA1CDvpCBCoCKAC6SAQqAigAUg1vcHRpb25hbExp",
-            "bWl0Ej8KD29wdGlvbmFsX2N1cnNvchgDIAEoCzIWLmF1dGh6ZWQuYXBpLnYx",
-            "LkN1cnNvclIOb3B0aW9uYWxDdXJzb3ISZAocb3B0aW9uYWxfcmVsYXRpb25z",
-            "aGlwX2ZpbHRlchgEIAEoCzIiLmF1dGh6ZWQuYXBpLnYxLlJlbGF0aW9uc2hp",
-            "cEZpbHRlclIab3B0aW9uYWxSZWxhdGlvbnNoaXBGaWx0ZXIirQEKH0V4cG9y",
-            "dEJ1bGtSZWxhdGlvbnNoaXBzUmVzcG9uc2USRgoTYWZ0ZXJfcmVzdWx0X2N1",
-            "cnNvchgBIAEoCzIWLmF1dGh6ZWQuYXBpLnYxLkN1cnNvclIRYWZ0ZXJSZXN1",
-            "bHRDdXJzb3ISQgoNcmVsYXRpb25zaGlwcxgCIAMoCzIcLmF1dGh6ZWQuYXBp",
-            "LnYxLlJlbGF0aW9uc2hpcFINcmVsYXRpb25zaGlwcyqZAQoUTG9va3VwUGVy",
-            "bWlzc2lvbnNoaXASJQohTE9PS1VQX1BFUk1JU1NJT05TSElQX1VOU1BFQ0lG",
-            "SUVEEAASKAokTE9PS1VQX1BFUk1JU1NJT05TSElQX0hBU19QRVJNSVNTSU9O",
-            "EAESMAosTE9PS1VQX1BFUk1JU1NJT05TSElQX0NPTkRJVElPTkFMX1BFUk1J",
-            "U1NJT04QAjKKDQoSUGVybWlzc2lvbnNTZXJ2aWNlEp0BChFSZWFkUmVsYXRp",
-            "b25zaGlwcxIoLmF1dGh6ZWQuYXBpLnYxLlJlYWRSZWxhdGlvbnNoaXBzUmVx",
-            "dWVzdBopLmF1dGh6ZWQuYXBpLnYxLlJlYWRSZWxhdGlvbnNoaXBzUmVzcG9u",
-            "c2UiMZJBDQoLUGVybWlzc2lvbnOC0+STAhsiFi92MS9yZWxhdGlvbnNoaXBz",
-            "L3JlYWQ6ASowARKfAQoSV3JpdGVSZWxhdGlvbnNoaXBzEikuYXV0aHplZC5h",
-            "cGkudjEuV3JpdGVSZWxhdGlvbnNoaXBzUmVxdWVzdBoqLmF1dGh6ZWQuYXBp",
-            "LnYxLldyaXRlUmVsYXRpb25zaGlwc1Jlc3BvbnNlIjKSQQ0KC1Blcm1pc3Np",
-            "b25zgtPkkwIcIhcvdjEvcmVsYXRpb25zaGlwcy93cml0ZToBKhKjAQoTRGVs",
-            "ZXRlUmVsYXRpb25zaGlwcxIqLmF1dGh6ZWQuYXBpLnYxLkRlbGV0ZVJlbGF0",
-            "aW9uc2hpcHNSZXF1ZXN0GisuYXV0aHplZC5hcGkudjEuRGVsZXRlUmVsYXRp",
-            "b25zaGlwc1Jlc3BvbnNlIjOSQQ0KC1Blcm1pc3Npb25zgtPkkwIdIhgvdjEv",
-            "cmVsYXRpb25zaGlwcy9kZWxldGU6ASoSlAEKD0NoZWNrUGVybWlzc2lvbhIm",
-            "LmF1dGh6ZWQuYXBpLnYxLkNoZWNrUGVybWlzc2lvblJlcXVlc3QaJy5hdXRo",
-            "emVkLmFwaS52MS5DaGVja1Blcm1pc3Npb25SZXNwb25zZSIwkkENCgtQZXJt",
-            "aXNzaW9uc4LT5JMCGiIVL3YxL3Blcm1pc3Npb25zL2NoZWNrOgEqEqcBChRD",
-            "aGVja0J1bGtQZXJtaXNzaW9ucxIrLmF1dGh6ZWQuYXBpLnYxLkNoZWNrQnVs",
-            "a1Blcm1pc3Npb25zUmVxdWVzdBosLmF1dGh6ZWQuYXBpLnYxLkNoZWNrQnVs",
-            "a1Blcm1pc3Npb25zUmVzcG9uc2UiNJJBDQoLUGVybWlzc2lvbnOC0+STAh4i",
-            "GS92MS9wZXJtaXNzaW9ucy9jaGVja2J1bGs6ASoSpAEKFEV4cGFuZFBlcm1p",
-            "c3Npb25UcmVlEisuYXV0aHplZC5hcGkudjEuRXhwYW5kUGVybWlzc2lvblRy",
-            "ZWVSZXF1ZXN0GiwuYXV0aHplZC5hcGkudjEuRXhwYW5kUGVybWlzc2lvblRy",
-            "ZWVSZXNwb25zZSIxkkENCgtQZXJtaXNzaW9uc4LT5JMCGyIWL3YxL3Blcm1p",
-            "c3Npb25zL2V4cGFuZDoBKhKaAQoPTG9va3VwUmVzb3VyY2VzEiYuYXV0aHpl",
-            "ZC5hcGkudjEuTG9va3VwUmVzb3VyY2VzUmVxdWVzdBonLmF1dGh6ZWQuYXBp",
-            "LnYxLkxvb2t1cFJlc291cmNlc1Jlc3BvbnNlIjSSQQ0KC1Blcm1pc3Npb25z",
-            "gtPkkwIeIhkvdjEvcGVybWlzc2lvbnMvcmVzb3VyY2VzOgEqMAESlgEKDkxv",
-            "b2t1cFN1YmplY3RzEiUuYXV0aHplZC5hcGkudjEuTG9va3VwU3ViamVjdHNS",
-            "ZXF1ZXN0GiYuYXV0aHplZC5hcGkudjEuTG9va3VwU3ViamVjdHNSZXNwb25z",
-            "ZSIzkkENCgtQZXJtaXNzaW9uc4LT5JMCHSIYL3YxL3Blcm1pc3Npb25zL3N1",
-            "YmplY3RzOgEqMAEStQEKF0ltcG9ydEJ1bGtSZWxhdGlvbnNoaXBzEi4uYXV0",
-            "aHplZC5hcGkudjEuSW1wb3J0QnVsa1JlbGF0aW9uc2hpcHNSZXF1ZXN0Gi8u",
-            "YXV0aHplZC5hcGkudjEuSW1wb3J0QnVsa1JlbGF0aW9uc2hpcHNSZXNwb25z",
-            "ZSI3kkENCgtQZXJtaXNzaW9uc4LT5JMCISIcL3YxL3JlbGF0aW9uc2hpcHMv",
-            "aW1wb3J0YnVsazoBKigBErUBChdFeHBvcnRCdWxrUmVsYXRpb25zaGlwcxIu",
-            "LmF1dGh6ZWQuYXBpLnYxLkV4cG9ydEJ1bGtSZWxhdGlvbnNoaXBzUmVxdWVz",
-            "dBovLmF1dGh6ZWQuYXBpLnYxLkV4cG9ydEJ1bGtSZWxhdGlvbnNoaXBzUmVz",
-            "cG9uc2UiN5JBDQoLUGVybWlzc2lvbnOC0+STAiEiHC92MS9yZWxhdGlvbnNo",
-            "aXBzL2V4cG9ydGJ1bGs6ASowAUJKChJjb20uYXV0aHplZC5hcGkudjFQAVoy",
-            "Z2l0aHViLmNvbS9hdXRoemVkL2F1dGh6ZWQtZ28vcHJvdG8vYXV0aHplZC9h",
-            "cGkvdjFiBnByb3RvMw=="));
+            "dGlvbmFsQ3Vyc29yEh0KCndpdGhfZGVidWcYCCABKAhSCXdpdGhEZWJ1ZxI/",
+            "ChxvcHRpb25hbF9yZXNwb25zZV9iYXRjaF9zaXplGAkgASgNUhlvcHRpb25h",
+            "bFJlc3BvbnNlQmF0Y2hTaXplItIDChdMb29rdXBSZXNvdXJjZXNSZXNwb25z",
+            "ZRI6Cgxsb29rZWRfdXBfYXQYASABKAsyGC5hdXRoemVkLmFwaS52MS5aZWRU",
+            "b2tlblIKbG9va2VkVXBBdBIsChJyZXNvdXJjZV9vYmplY3RfaWQYAiABKAlS",
+            "EHJlc291cmNlT2JqZWN0SWQSYgoOcGVybWlzc2lvbnNoaXAYAyABKA4yJC5h",
+            "dXRoemVkLmFwaS52MS5Mb29rdXBQZXJtaXNzaW9uc2hpcEIU+kIHggEEEAEg",
+            "ALpIB4IBBBABIABSDnBlcm1pc3Npb25zaGlwEmEKE3BhcnRpYWxfY2F2ZWF0",
+            "X2luZm8YBCABKAsyIS5hdXRoemVkLmFwaS52MS5QYXJ0aWFsQ2F2ZWF0SW5m",
+            "b0IO+kIFigECEAC6SAPIAQBSEXBhcnRpYWxDYXZlYXRJbmZvEkYKE2FmdGVy",
+            "X3Jlc3VsdF9jdXJzb3IYBSABKAsyFi5hdXRoemVkLmFwaS52MS5DdXJzb3JS",
+            "EWFmdGVyUmVzdWx0Q3Vyc29yEj4KB2JhdGNoZWQYBiABKAsyJC5hdXRoemVk",
+            "LmFwaS52MS5Mb29rdXBSZXNvdXJjZXNCYXRjaFIHYmF0Y2hlZCKSAQoUTG9v",
+            "a3VwUmVzb3VyY2VzQmF0Y2gSPwoHcmVzdWx0cxgBIAMoCzIlLmF1dGh6ZWQu",
+            "YXBpLnYxLkxvb2t1cFJlc291cmNlc1Jlc3VsdFIHcmVzdWx0cxI5CgxhZnRl",
+            "cl9jdXJzb3IYAiABKAsyFi5hdXRoemVkLmFwaS52MS5DdXJzb3JSC2FmdGVy",
+            "Q3Vyc29yIowCChVMb29rdXBSZXNvdXJjZXNSZXN1bHQSLAoScmVzb3VyY2Vf",
+            "b2JqZWN0X2lkGAEgASgJUhByZXNvdXJjZU9iamVjdElkEmIKDnBlcm1pc3Np",
+            "b25zaGlwGAIgASgOMiQuYXV0aHplZC5hcGkudjEuTG9va3VwUGVybWlzc2lv",
+            "bnNoaXBCFPpCB4IBBBABIAC6SAeCAQQQASAAUg5wZXJtaXNzaW9uc2hpcBJh",
+            "ChNwYXJ0aWFsX2NhdmVhdF9pbmZvGAMgASgLMiEuYXV0aHplZC5hcGkudjEu",
+            "UGFydGlhbENhdmVhdEluZm9CDvpCBYoBAhAAukgDyAEAUhFwYXJ0aWFsQ2F2",
+            "ZWF0SW5mbyKcCAoVTG9va3VwU3ViamVjdHNSZXF1ZXN0Ej0KC2NvbnNpc3Rl",
+            "bmN5GAEgASgLMhsuYXV0aHplZC5hcGkudjEuQ29uc2lzdGVuY3lSC2NvbnNp",
+            "c3RlbmN5EksKCHJlc291cmNlGAIgASgLMh8uYXV0aHplZC5hcGkudjEuT2Jq",
+            "ZWN0UmVmZXJlbmNlQg76QgWKAQIQAbpIA8gBAVIIcmVzb3VyY2USdAoKcGVy",
+            "bWlzc2lvbhgDIAEoCUJU+kInciUoQDIhXihbYS16XVthLXowLTlfXXsxLDYy",
+            "fVthLXowLTldKT8kukgnciUoQDIhXihbYS16XVthLXowLTlfXXsxLDYyfVth",
+            "LXowLTldKT8kUgpwZXJtaXNzaW9uEsEBChNzdWJqZWN0X29iamVjdF90eXBl",
+            "GAQgASgJQpAB+kJFckMogAEyPl4oW2Etel1bYS16MC05X117MSw2MX1bYS16",
+            "MC05XS8pKlthLXpdW2EtejAtOV9dezEsNjJ9W2EtejAtOV0kukhFckMogAEy",
+            "Pl4oW2Etel1bYS16MC05X117MSw2MX1bYS16MC05XS8pKlthLXpdW2EtejAt",
+            "OV9dezEsNjJ9W2EtejAtOV0kUhFzdWJqZWN0T2JqZWN0VHlwZRKQAQoZb3B0",
+            "aW9uYWxfc3ViamVjdF9yZWxhdGlvbhgFIAEoCUJU+kInciUoQDIhXihbYS16",
+            "XVthLXowLTlfXXsxLDYyfVthLXowLTldKT8kukgnciUoQDIhXihbYS16XVth",
+            "LXowLTlfXXsxLDYyfVthLXowLTldKT8kUhdvcHRpb25hbFN1YmplY3RSZWxh",
+            "dGlvbhJBCgdjb250ZXh0GAYgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVj",
+            "dEIO+kIFigECEAC6SAPIAQBSB2NvbnRleHQSRgoXb3B0aW9uYWxfY29uY3Jl",
+            "dGVfbGltaXQYByABKA1CDvpCBCoCKAC6SAQqAigAUhVvcHRpb25hbENvbmNy",
+            "ZXRlTGltaXQSPwoPb3B0aW9uYWxfY3Vyc29yGAggASgLMhYuYXV0aHplZC5h",
+            "cGkudjEuQ3Vyc29yUg5vcHRpb25hbEN1cnNvchJdCg93aWxkY2FyZF9vcHRp",
+            "b24YCSABKA4yNC5hdXRoemVkLmFwaS52MS5Mb29rdXBTdWJqZWN0c1JlcXVl",
+            "c3QuV2lsZGNhcmRPcHRpb25SDndpbGRjYXJkT3B0aW9uIn8KDldpbGRjYXJk",
+            "T3B0aW9uEh8KG1dJTERDQVJEX09QVElPTl9VTlNQRUNJRklFRBAAEiUKIVdJ",
+            "TERDQVJEX09QVElPTl9JTkNMVURFX1dJTERDQVJEUxABEiUKIVdJTERDQVJE",
+            "X09QVElPTl9FWENMVURFX1dJTERDQVJEUxACItYEChZMb29rdXBTdWJqZWN0",
+            "c1Jlc3BvbnNlEjoKDGxvb2tlZF91cF9hdBgBIAEoCzIYLmF1dGh6ZWQuYXBp",
+            "LnYxLlplZFRva2VuUgpsb29rZWRVcEF0Ei4KEXN1YmplY3Rfb2JqZWN0X2lk",
+            "GAIgASgJQgIYAVIPc3ViamVjdE9iamVjdElkEjQKFGV4Y2x1ZGVkX3N1Ympl",
+            "Y3RfaWRzGAMgAygJQgIYAVISZXhjbHVkZWRTdWJqZWN0SWRzEmQKDnBlcm1p",
+            "c3Npb25zaGlwGAQgASgOMiQuYXV0aHplZC5hcGkudjEuTG9va3VwUGVybWlz",
+            "c2lvbnNoaXBCFhgB+kIHggEEEAEgALpIB4IBBBABIABSDnBlcm1pc3Npb25z",
+            "aGlwEmMKE3BhcnRpYWxfY2F2ZWF0X2luZm8YBSABKAsyIS5hdXRoemVkLmFw",
+            "aS52MS5QYXJ0aWFsQ2F2ZWF0SW5mb0IQGAH6QgWKAQIQALpIA8gBAFIRcGFy",
+            "dGlhbENhdmVhdEluZm8SOQoHc3ViamVjdBgGIAEoCzIfLmF1dGh6ZWQuYXBp",
+            "LnYxLlJlc29sdmVkU3ViamVjdFIHc3ViamVjdBJMChFleGNsdWRlZF9zdWJq",
+            "ZWN0cxgHIAMoCzIfLmF1dGh6ZWQuYXBpLnYxLlJlc29sdmVkU3ViamVjdFIQ",
+            "ZXhjbHVkZWRTdWJqZWN0cxJGChNhZnRlcl9yZXN1bHRfY3Vyc29yGAggASgL",
+            "MhYuYXV0aHplZC5hcGkudjEuQ3Vyc29yUhFhZnRlclJlc3VsdEN1cnNvciKE",
+            "AgoPUmVzb2x2ZWRTdWJqZWN0EioKEXN1YmplY3Rfb2JqZWN0X2lkGAEgASgJ",
+            "Ug9zdWJqZWN0T2JqZWN0SWQSYgoOcGVybWlzc2lvbnNoaXAYAiABKA4yJC5h",
+            "dXRoemVkLmFwaS52MS5Mb29rdXBQZXJtaXNzaW9uc2hpcEIU+kIHggEEEAEg",
+            "ALpIB4IBBBABIABSDnBlcm1pc3Npb25zaGlwEmEKE3BhcnRpYWxfY2F2ZWF0",
+            "X2luZm8YAyABKAsyIS5hdXRoemVkLmFwaS52MS5QYXJ0aWFsQ2F2ZWF0SW5m",
+            "b0IO+kIFigECEAC6SAPIAQBSEXBhcnRpYWxDYXZlYXRJbmZvInMKHkltcG9y",
+            "dEJ1bGtSZWxhdGlvbnNoaXBzUmVxdWVzdBJRCg1yZWxhdGlvbnNoaXBzGAEg",
+            "AygLMhwuYXV0aHplZC5hcGkudjEuUmVsYXRpb25zaGlwQg36QgqSAQciBYoB",
+            "AhABUg1yZWxhdGlvbnNoaXBzIkAKH0ltcG9ydEJ1bGtSZWxhdGlvbnNoaXBz",
+            "UmVzcG9uc2USHQoKbnVtX2xvYWRlZBgBIAEoBFIJbnVtTG9hZGVkIr0CCh5F",
+            "eHBvcnRCdWxrUmVsYXRpb25zaGlwc1JlcXVlc3QSPQoLY29uc2lzdGVuY3kY",
+            "ASABKAsyGy5hdXRoemVkLmFwaS52MS5Db25zaXN0ZW5jeVILY29uc2lzdGVu",
+            "Y3kSNQoOb3B0aW9uYWxfbGltaXQYAiABKA1CDvpCBCoCKAC6SAQqAigAUg1v",
+            "cHRpb25hbExpbWl0Ej8KD29wdGlvbmFsX2N1cnNvchgDIAEoCzIWLmF1dGh6",
+            "ZWQuYXBpLnYxLkN1cnNvclIOb3B0aW9uYWxDdXJzb3ISZAocb3B0aW9uYWxf",
+            "cmVsYXRpb25zaGlwX2ZpbHRlchgEIAEoCzIiLmF1dGh6ZWQuYXBpLnYxLlJl",
+            "bGF0aW9uc2hpcEZpbHRlclIab3B0aW9uYWxSZWxhdGlvbnNoaXBGaWx0ZXIi",
+            "rQEKH0V4cG9ydEJ1bGtSZWxhdGlvbnNoaXBzUmVzcG9uc2USRgoTYWZ0ZXJf",
+            "cmVzdWx0X2N1cnNvchgBIAEoCzIWLmF1dGh6ZWQuYXBpLnYxLkN1cnNvclIR",
+            "YWZ0ZXJSZXN1bHRDdXJzb3ISQgoNcmVsYXRpb25zaGlwcxgCIAMoCzIcLmF1",
+            "dGh6ZWQuYXBpLnYxLlJlbGF0aW9uc2hpcFINcmVsYXRpb25zaGlwcyqZAQoU",
+            "TG9va3VwUGVybWlzc2lvbnNoaXASJQohTE9PS1VQX1BFUk1JU1NJT05TSElQ",
+            "X1VOU1BFQ0lGSUVEEAASKAokTE9PS1VQX1BFUk1JU1NJT05TSElQX0hBU19Q",
+            "RVJNSVNTSU9OEAESMAosTE9PS1VQX1BFUk1JU1NJT05TSElQX0NPTkRJVElP",
+            "TkFMX1BFUk1JU1NJT04QAjKKDQoSUGVybWlzc2lvbnNTZXJ2aWNlEp0BChFS",
+            "ZWFkUmVsYXRpb25zaGlwcxIoLmF1dGh6ZWQuYXBpLnYxLlJlYWRSZWxhdGlv",
+            "bnNoaXBzUmVxdWVzdBopLmF1dGh6ZWQuYXBpLnYxLlJlYWRSZWxhdGlvbnNo",
+            "aXBzUmVzcG9uc2UiMZJBDQoLUGVybWlzc2lvbnOC0+STAhsiFi92MS9yZWxh",
+            "dGlvbnNoaXBzL3JlYWQ6ASowARKfAQoSV3JpdGVSZWxhdGlvbnNoaXBzEiku",
+            "YXV0aHplZC5hcGkudjEuV3JpdGVSZWxhdGlvbnNoaXBzUmVxdWVzdBoqLmF1",
+            "dGh6ZWQuYXBpLnYxLldyaXRlUmVsYXRpb25zaGlwc1Jlc3BvbnNlIjKSQQ0K",
+            "C1Blcm1pc3Npb25zgtPkkwIcIhcvdjEvcmVsYXRpb25zaGlwcy93cml0ZToB",
+            "KhKjAQoTRGVsZXRlUmVsYXRpb25zaGlwcxIqLmF1dGh6ZWQuYXBpLnYxLkRl",
+            "bGV0ZVJlbGF0aW9uc2hpcHNSZXF1ZXN0GisuYXV0aHplZC5hcGkudjEuRGVs",
+            "ZXRlUmVsYXRpb25zaGlwc1Jlc3BvbnNlIjOSQQ0KC1Blcm1pc3Npb25zgtPk",
+            "kwIdIhgvdjEvcmVsYXRpb25zaGlwcy9kZWxldGU6ASoSlAEKD0NoZWNrUGVy",
+            "bWlzc2lvbhImLmF1dGh6ZWQuYXBpLnYxLkNoZWNrUGVybWlzc2lvblJlcXVl",
+            "c3QaJy5hdXRoemVkLmFwaS52MS5DaGVja1Blcm1pc3Npb25SZXNwb25zZSIw",
+            "kkENCgtQZXJtaXNzaW9uc4LT5JMCGiIVL3YxL3Blcm1pc3Npb25zL2NoZWNr",
+            "OgEqEqcBChRDaGVja0J1bGtQZXJtaXNzaW9ucxIrLmF1dGh6ZWQuYXBpLnYx",
+            "LkNoZWNrQnVsa1Blcm1pc3Npb25zUmVxdWVzdBosLmF1dGh6ZWQuYXBpLnYx",
+            "LkNoZWNrQnVsa1Blcm1pc3Npb25zUmVzcG9uc2UiNJJBDQoLUGVybWlzc2lv",
+            "bnOC0+STAh4iGS92MS9wZXJtaXNzaW9ucy9jaGVja2J1bGs6ASoSpAEKFEV4",
+            "cGFuZFBlcm1pc3Npb25UcmVlEisuYXV0aHplZC5hcGkudjEuRXhwYW5kUGVy",
+            "bWlzc2lvblRyZWVSZXF1ZXN0GiwuYXV0aHplZC5hcGkudjEuRXhwYW5kUGVy",
+            "bWlzc2lvblRyZWVSZXNwb25zZSIxkkENCgtQZXJtaXNzaW9uc4LT5JMCGyIW",
+            "L3YxL3Blcm1pc3Npb25zL2V4cGFuZDoBKhKaAQoPTG9va3VwUmVzb3VyY2Vz",
+            "EiYuYXV0aHplZC5hcGkudjEuTG9va3VwUmVzb3VyY2VzUmVxdWVzdBonLmF1",
+            "dGh6ZWQuYXBpLnYxLkxvb2t1cFJlc291cmNlc1Jlc3BvbnNlIjSSQQ0KC1Bl",
+            "cm1pc3Npb25zgtPkkwIeIhkvdjEvcGVybWlzc2lvbnMvcmVzb3VyY2VzOgEq",
+            "MAESlgEKDkxvb2t1cFN1YmplY3RzEiUuYXV0aHplZC5hcGkudjEuTG9va3Vw",
+            "U3ViamVjdHNSZXF1ZXN0GiYuYXV0aHplZC5hcGkudjEuTG9va3VwU3ViamVj",
+            "dHNSZXNwb25zZSIzkkENCgtQZXJtaXNzaW9uc4LT5JMCHSIYL3YxL3Blcm1p",
+            "c3Npb25zL3N1YmplY3RzOgEqMAEStQEKF0ltcG9ydEJ1bGtSZWxhdGlvbnNo",
+            "aXBzEi4uYXV0aHplZC5hcGkudjEuSW1wb3J0QnVsa1JlbGF0aW9uc2hpcHNS",
+            "ZXF1ZXN0Gi8uYXV0aHplZC5hcGkudjEuSW1wb3J0QnVsa1JlbGF0aW9uc2hp",
+            "cHNSZXNwb25zZSI3kkENCgtQZXJtaXNzaW9uc4LT5JMCISIcL3YxL3JlbGF0",
+            "aW9uc2hpcHMvaW1wb3J0YnVsazoBKigBErUBChdFeHBvcnRCdWxrUmVsYXRp",
+            "b25zaGlwcxIuLmF1dGh6ZWQuYXBpLnYxLkV4cG9ydEJ1bGtSZWxhdGlvbnNo",
+            "aXBzUmVxdWVzdBovLmF1dGh6ZWQuYXBpLnYxLkV4cG9ydEJ1bGtSZWxhdGlv",
+            "bnNoaXBzUmVzcG9uc2UiN5JBDQoLUGVybWlzc2lvbnOC0+STAiEiHC92MS9y",
+            "ZWxhdGlvbnNoaXBzL2V4cG9ydGJ1bGs6ASowAUJKChJjb20uYXV0aHplZC5h",
+            "cGkudjFQAVoyZ2l0aHViLmNvbS9hdXRoemVkL2F1dGh6ZWQtZ28vcHJvdG8v",
+            "YXV0aHplZC9hcGkvdjFiBnByb3RvMw=="));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { global::Authzed.Api.V1.CoreReflection.Descriptor, global::Authzed.Api.V1.DebugReflection.Descriptor, global::Buf.Validate.ValidateReflection.Descriptor, global::Google.Api.AnnotationsReflection.Descriptor, global::Google.Protobuf.WellKnownTypes.StructReflection.Descriptor, global::Google.Protobuf.WellKnownTypes.TimestampReflection.Descriptor, global::Google.Rpc.StatusReflection.Descriptor, global::Grpc.Gateway.ProtocGenOpenapiv2.Options.AnnotationsReflection.Descriptor, global::Validate.ValidateReflection.Descriptor, },
           new pbr::GeneratedClrTypeInfo(new[] {typeof(global::Authzed.Api.V1.LookupPermissionship), }, null, new pbr::GeneratedClrTypeInfo[] {
@@ -327,8 +339,10 @@ namespace Authzed.Api.V1 {
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.CheckBulkPermissionsResponseItem), global::Authzed.Api.V1.CheckBulkPermissionsResponseItem.Parser, new[]{ "Permissionship", "PartialCaveatInfo", "DebugTrace" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.ExpandPermissionTreeRequest), global::Authzed.Api.V1.ExpandPermissionTreeRequest.Parser, new[]{ "Consistency", "Resource", "Permission" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.ExpandPermissionTreeResponse), global::Authzed.Api.V1.ExpandPermissionTreeResponse.Parser, new[]{ "ExpandedAt", "TreeRoot" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.LookupResourcesRequest), global::Authzed.Api.V1.LookupResourcesRequest.Parser, new[]{ "Consistency", "ResourceObjectType", "Permission", "Subject", "Context", "OptionalLimit", "OptionalCursor", "WithDebug" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.LookupResourcesResponse), global::Authzed.Api.V1.LookupResourcesResponse.Parser, new[]{ "LookedUpAt", "ResourceObjectId", "Permissionship", "PartialCaveatInfo", "AfterResultCursor" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.LookupResourcesRequest), global::Authzed.Api.V1.LookupResourcesRequest.Parser, new[]{ "Consistency", "ResourceObjectType", "Permission", "Subject", "Context", "OptionalLimit", "OptionalCursor", "WithDebug", "OptionalResponseBatchSize" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.LookupResourcesResponse), global::Authzed.Api.V1.LookupResourcesResponse.Parser, new[]{ "LookedUpAt", "ResourceObjectId", "Permissionship", "PartialCaveatInfo", "AfterResultCursor", "Batched" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.LookupResourcesBatch), global::Authzed.Api.V1.LookupResourcesBatch.Parser, new[]{ "Results", "AfterCursor" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.LookupResourcesResult), global::Authzed.Api.V1.LookupResourcesResult.Parser, new[]{ "ResourceObjectId", "Permissionship", "PartialCaveatInfo" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.LookupSubjectsRequest), global::Authzed.Api.V1.LookupSubjectsRequest.Parser, new[]{ "Consistency", "Resource", "Permission", "SubjectObjectType", "OptionalSubjectRelation", "Context", "OptionalConcreteLimit", "OptionalCursor", "WildcardOption" }, null, new[]{ typeof(global::Authzed.Api.V1.LookupSubjectsRequest.Types.WildcardOption) }, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.LookupSubjectsResponse), global::Authzed.Api.V1.LookupSubjectsResponse.Parser, new[]{ "LookedUpAt", "SubjectObjectId", "ExcludedSubjectIds", "Permissionship", "PartialCaveatInfo", "Subject", "ExcludedSubjects", "AfterResultCursor" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.V1.ResolvedSubject), global::Authzed.Api.V1.ResolvedSubject.Parser, new[]{ "SubjectObjectId", "Permissionship", "PartialCaveatInfo" }, null, null, null, null),
@@ -6869,6 +6883,7 @@ namespace Authzed.Api.V1 {
       optionalLimit_ = other.optionalLimit_;
       optionalCursor_ = other.optionalCursor_ != null ? other.optionalCursor_.Clone() : null;
       withDebug_ = other.withDebug_;
+      optionalResponseBatchSize_ = other.optionalResponseBatchSize_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -7005,6 +7020,35 @@ namespace Authzed.Api.V1 {
       }
     }
 
+    /// <summary>Field number for the "optional_response_batch_size" field.</summary>
+    public const int OptionalResponseBatchSizeFieldNumber = 9;
+    private uint optionalResponseBatchSize_;
+    /// <summary>
+    /// optional_response_batch_size, if non-zero, requests that the server return
+    /// multiple resources per response message (up to this many) in
+    /// LookupResourcesResponse.batched, instead of a single resource per message.
+    /// Zero (the default) preserves one-resource-per-message streaming for
+    /// backward compatibility.
+    ///
+    /// The batch size trades time-to-first-result against overall throughput: a
+    /// larger batch size increases throughput (fewer, larger messages, less
+    /// per-message overhead) but delays the first results, since the server
+    /// accumulates more of them before sending a message; a smaller batch size
+    /// returns initial results sooner. A value around 1000 is a good default.
+    ///
+    /// The maximum batch size is bounded by a server-side configuration flag;
+    /// requesting more than the server allows is clamped to that maximum rather
+    /// than rejected.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public uint OptionalResponseBatchSize {
+      get { return optionalResponseBatchSize_; }
+      set {
+        optionalResponseBatchSize_ = value;
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -7028,6 +7072,7 @@ namespace Authzed.Api.V1 {
       if (OptionalLimit != other.OptionalLimit) return false;
       if (!object.Equals(OptionalCursor, other.OptionalCursor)) return false;
       if (WithDebug != other.WithDebug) return false;
+      if (OptionalResponseBatchSize != other.OptionalResponseBatchSize) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -7043,6 +7088,7 @@ namespace Authzed.Api.V1 {
       if (OptionalLimit != 0) hash ^= OptionalLimit.GetHashCode();
       if (optionalCursor_ != null) hash ^= OptionalCursor.GetHashCode();
       if (WithDebug != false) hash ^= WithDebug.GetHashCode();
+      if (OptionalResponseBatchSize != 0) hash ^= OptionalResponseBatchSize.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -7093,6 +7139,10 @@ namespace Authzed.Api.V1 {
         output.WriteRawTag(64);
         output.WriteBool(WithDebug);
       }
+      if (OptionalResponseBatchSize != 0) {
+        output.WriteRawTag(72);
+        output.WriteUInt32(OptionalResponseBatchSize);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -7135,6 +7185,10 @@ namespace Authzed.Api.V1 {
         output.WriteRawTag(64);
         output.WriteBool(WithDebug);
       }
+      if (OptionalResponseBatchSize != 0) {
+        output.WriteRawTag(72);
+        output.WriteUInt32(OptionalResponseBatchSize);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -7168,6 +7222,9 @@ namespace Authzed.Api.V1 {
       }
       if (WithDebug != false) {
         size += 1 + 1;
+      }
+      if (OptionalResponseBatchSize != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(OptionalResponseBatchSize);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -7216,6 +7273,9 @@ namespace Authzed.Api.V1 {
       }
       if (other.WithDebug != false) {
         WithDebug = other.WithDebug;
+      }
+      if (other.OptionalResponseBatchSize != 0) {
+        OptionalResponseBatchSize = other.OptionalResponseBatchSize;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -7278,6 +7338,10 @@ namespace Authzed.Api.V1 {
           }
           case 64: {
             WithDebug = input.ReadBool();
+            break;
+          }
+          case 72: {
+            OptionalResponseBatchSize = input.ReadUInt32();
             break;
           }
         }
@@ -7343,6 +7407,10 @@ namespace Authzed.Api.V1 {
             WithDebug = input.ReadBool();
             break;
           }
+          case 72: {
+            OptionalResponseBatchSize = input.ReadUInt32();
+            break;
+          }
         }
       }
     }
@@ -7394,6 +7462,7 @@ namespace Authzed.Api.V1 {
       permissionship_ = other.permissionship_;
       partialCaveatInfo_ = other.partialCaveatInfo_ != null ? other.partialCaveatInfo_.Clone() : null;
       afterResultCursor_ = other.afterResultCursor_ != null ? other.afterResultCursor_.Clone() : null;
+      batched_ = other.batched_ != null ? other.batched_.Clone() : null;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -7468,7 +7537,7 @@ namespace Authzed.Api.V1 {
     private global::Authzed.Api.V1.Cursor afterResultCursor_;
     /// <summary>
     /// after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-    /// result.
+    /// result. Used only for the singular, one-resource-per-message form.
     /// </summary>
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
@@ -7476,6 +7545,25 @@ namespace Authzed.Api.V1 {
       get { return afterResultCursor_; }
       set {
         afterResultCursor_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "batched" field.</summary>
+    public const int BatchedFieldNumber = 6;
+    private global::Authzed.Api.V1.LookupResourcesBatch batched_;
+    /// <summary>
+    /// batched, when set, holds multiple found resources in a single response
+    /// message along with a single resume cursor for the batch. It is populated
+    /// instead of the singular fields above when the request set
+    /// optional_response_batch_size > 0. A response message uses either the
+    /// singular fields or batched, never both.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Authzed.Api.V1.LookupResourcesBatch Batched {
+      get { return batched_; }
+      set {
+        batched_ = value;
       }
     }
 
@@ -7499,6 +7587,7 @@ namespace Authzed.Api.V1 {
       if (Permissionship != other.Permissionship) return false;
       if (!object.Equals(PartialCaveatInfo, other.PartialCaveatInfo)) return false;
       if (!object.Equals(AfterResultCursor, other.AfterResultCursor)) return false;
+      if (!object.Equals(Batched, other.Batched)) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -7511,6 +7600,7 @@ namespace Authzed.Api.V1 {
       if (Permissionship != global::Authzed.Api.V1.LookupPermissionship.Unspecified) hash ^= Permissionship.GetHashCode();
       if (partialCaveatInfo_ != null) hash ^= PartialCaveatInfo.GetHashCode();
       if (afterResultCursor_ != null) hash ^= AfterResultCursor.GetHashCode();
+      if (batched_ != null) hash ^= Batched.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -7549,6 +7639,10 @@ namespace Authzed.Api.V1 {
         output.WriteRawTag(42);
         output.WriteMessage(AfterResultCursor);
       }
+      if (batched_ != null) {
+        output.WriteRawTag(50);
+        output.WriteMessage(Batched);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -7579,6 +7673,10 @@ namespace Authzed.Api.V1 {
         output.WriteRawTag(42);
         output.WriteMessage(AfterResultCursor);
       }
+      if (batched_ != null) {
+        output.WriteRawTag(50);
+        output.WriteMessage(Batched);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -7603,6 +7701,9 @@ namespace Authzed.Api.V1 {
       }
       if (afterResultCursor_ != null) {
         size += 1 + pb::CodedOutputStream.ComputeMessageSize(AfterResultCursor);
+      }
+      if (batched_ != null) {
+        size += 1 + pb::CodedOutputStream.ComputeMessageSize(Batched);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -7639,6 +7740,12 @@ namespace Authzed.Api.V1 {
           AfterResultCursor = new global::Authzed.Api.V1.Cursor();
         }
         AfterResultCursor.MergeFrom(other.AfterResultCursor);
+      }
+      if (other.batched_ != null) {
+        if (batched_ == null) {
+          Batched = new global::Authzed.Api.V1.LookupResourcesBatch();
+        }
+        Batched.MergeFrom(other.Batched);
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -7686,6 +7793,13 @@ namespace Authzed.Api.V1 {
               AfterResultCursor = new global::Authzed.Api.V1.Cursor();
             }
             input.ReadMessage(AfterResultCursor);
+            break;
+          }
+          case 50: {
+            if (batched_ == null) {
+              Batched = new global::Authzed.Api.V1.LookupResourcesBatch();
+            }
+            input.ReadMessage(Batched);
             break;
           }
         }
@@ -7736,6 +7850,555 @@ namespace Authzed.Api.V1 {
             input.ReadMessage(AfterResultCursor);
             break;
           }
+          case 50: {
+            if (batched_ == null) {
+              Batched = new global::Authzed.Api.V1.LookupResourcesBatch();
+            }
+            input.ReadMessage(Batched);
+            break;
+          }
+        }
+      }
+    }
+    #endif
+
+  }
+
+  /// <summary>
+  /// LookupResourcesBatch holds multiple found resources returned in a single
+  /// LookupResourcesResponse, together with one cursor that resumes the stream
+  /// after the last result in the batch. Grouping the results with a single cursor
+  /// (rather than a cursor per result) keeps the response compact: a stream is
+  /// consumed message-by-message, so only one resume point per message is ever
+  /// needed.
+  /// </summary>
+  [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
+  public sealed partial class LookupResourcesBatch : pb::IMessage<LookupResourcesBatch>
+  #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      , pb::IBufferMessage
+  #endif
+  {
+    private static readonly pb::MessageParser<LookupResourcesBatch> _parser = new pb::MessageParser<LookupResourcesBatch>(() => new LookupResourcesBatch());
+    private pb::UnknownFieldSet _unknownFields;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pb::MessageParser<LookupResourcesBatch> Parser { get { return _parser; } }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pbr::MessageDescriptor Descriptor {
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[21]; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    pbr::MessageDescriptor pb::IMessage.Descriptor {
+      get { return Descriptor; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public LookupResourcesBatch() {
+      OnConstruction();
+    }
+
+    partial void OnConstruction();
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public LookupResourcesBatch(LookupResourcesBatch other) : this() {
+      results_ = other.results_.Clone();
+      afterCursor_ = other.afterCursor_ != null ? other.afterCursor_.Clone() : null;
+      _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public LookupResourcesBatch Clone() {
+      return new LookupResourcesBatch(this);
+    }
+
+    /// <summary>Field number for the "results" field.</summary>
+    public const int ResultsFieldNumber = 1;
+    private static readonly pb::FieldCodec<global::Authzed.Api.V1.LookupResourcesResult> _repeated_results_codec
+        = pb::FieldCodec.ForMessage(10, global::Authzed.Api.V1.LookupResourcesResult.Parser);
+    private readonly pbc::RepeatedField<global::Authzed.Api.V1.LookupResourcesResult> results_ = new pbc::RepeatedField<global::Authzed.Api.V1.LookupResourcesResult>();
+    /// <summary>
+    /// results holds the found resources, in stream order.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public pbc::RepeatedField<global::Authzed.Api.V1.LookupResourcesResult> Results {
+      get { return results_; }
+    }
+
+    /// <summary>Field number for the "after_cursor" field.</summary>
+    public const int AfterCursorFieldNumber = 2;
+    private global::Authzed.Api.V1.Cursor afterCursor_;
+    /// <summary>
+    /// after_cursor holds a cursor that can be used to resume the LookupResources
+    /// stream after the last result in this batch.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Authzed.Api.V1.Cursor AfterCursor {
+      get { return afterCursor_; }
+      set {
+        afterCursor_ = value;
+      }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override bool Equals(object other) {
+      return Equals(other as LookupResourcesBatch);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool Equals(LookupResourcesBatch other) {
+      if (ReferenceEquals(other, null)) {
+        return false;
+      }
+      if (ReferenceEquals(other, this)) {
+        return true;
+      }
+      if(!results_.Equals(other.results_)) return false;
+      if (!object.Equals(AfterCursor, other.AfterCursor)) return false;
+      return Equals(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override int GetHashCode() {
+      int hash = 1;
+      hash ^= results_.GetHashCode();
+      if (afterCursor_ != null) hash ^= AfterCursor.GetHashCode();
+      if (_unknownFields != null) {
+        hash ^= _unknownFields.GetHashCode();
+      }
+      return hash;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override string ToString() {
+      return pb::JsonFormatter.ToDiagnosticString(this);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void WriteTo(pb::CodedOutputStream output) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      output.WriteRawMessage(this);
+    #else
+      results_.WriteTo(output, _repeated_results_codec);
+      if (afterCursor_ != null) {
+        output.WriteRawTag(18);
+        output.WriteMessage(AfterCursor);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(output);
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
+      results_.WriteTo(ref output, _repeated_results_codec);
+      if (afterCursor_ != null) {
+        output.WriteRawTag(18);
+        output.WriteMessage(AfterCursor);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(ref output);
+      }
+    }
+    #endif
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int CalculateSize() {
+      int size = 0;
+      size += results_.CalculateSize(_repeated_results_codec);
+      if (afterCursor_ != null) {
+        size += 1 + pb::CodedOutputStream.ComputeMessageSize(AfterCursor);
+      }
+      if (_unknownFields != null) {
+        size += _unknownFields.CalculateSize();
+      }
+      return size;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(LookupResourcesBatch other) {
+      if (other == null) {
+        return;
+      }
+      results_.Add(other.results_);
+      if (other.afterCursor_ != null) {
+        if (afterCursor_ == null) {
+          AfterCursor = new global::Authzed.Api.V1.Cursor();
+        }
+        AfterCursor.MergeFrom(other.AfterCursor);
+      }
+      _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(pb::CodedInputStream input) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      input.ReadRawMessage(this);
+    #else
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
+            break;
+          case 10: {
+            results_.AddEntriesFrom(input, _repeated_results_codec);
+            break;
+          }
+          case 18: {
+            if (afterCursor_ == null) {
+              AfterCursor = new global::Authzed.Api.V1.Cursor();
+            }
+            input.ReadMessage(AfterCursor);
+            break;
+          }
+        }
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalMergeFrom(ref pb::ParseContext input) {
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+            break;
+          case 10: {
+            results_.AddEntriesFrom(ref input, _repeated_results_codec);
+            break;
+          }
+          case 18: {
+            if (afterCursor_ == null) {
+              AfterCursor = new global::Authzed.Api.V1.Cursor();
+            }
+            input.ReadMessage(AfterCursor);
+            break;
+          }
+        }
+      }
+    }
+    #endif
+
+  }
+
+  /// <summary>
+  /// LookupResourcesResult is a single found resource within a batched
+  /// LookupResourcesResponse (see LookupResourcesBatch.results).
+  /// </summary>
+  [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
+  public sealed partial class LookupResourcesResult : pb::IMessage<LookupResourcesResult>
+  #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      , pb::IBufferMessage
+  #endif
+  {
+    private static readonly pb::MessageParser<LookupResourcesResult> _parser = new pb::MessageParser<LookupResourcesResult>(() => new LookupResourcesResult());
+    private pb::UnknownFieldSet _unknownFields;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pb::MessageParser<LookupResourcesResult> Parser { get { return _parser; } }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pbr::MessageDescriptor Descriptor {
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[22]; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    pbr::MessageDescriptor pb::IMessage.Descriptor {
+      get { return Descriptor; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public LookupResourcesResult() {
+      OnConstruction();
+    }
+
+    partial void OnConstruction();
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public LookupResourcesResult(LookupResourcesResult other) : this() {
+      resourceObjectId_ = other.resourceObjectId_;
+      permissionship_ = other.permissionship_;
+      partialCaveatInfo_ = other.partialCaveatInfo_ != null ? other.partialCaveatInfo_.Clone() : null;
+      _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public LookupResourcesResult Clone() {
+      return new LookupResourcesResult(this);
+    }
+
+    /// <summary>Field number for the "resource_object_id" field.</summary>
+    public const int ResourceObjectIdFieldNumber = 1;
+    private string resourceObjectId_ = "";
+    /// <summary>
+    /// resource_object_id is the object ID of the found resource.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string ResourceObjectId {
+      get { return resourceObjectId_; }
+      set {
+        resourceObjectId_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
+    /// <summary>Field number for the "permissionship" field.</summary>
+    public const int PermissionshipFieldNumber = 2;
+    private global::Authzed.Api.V1.LookupPermissionship permissionship_ = global::Authzed.Api.V1.LookupPermissionship.Unspecified;
+    /// <summary>
+    /// permissionship indicates whether the result was partially evaluated or not.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Authzed.Api.V1.LookupPermissionship Permissionship {
+      get { return permissionship_; }
+      set {
+        permissionship_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "partial_caveat_info" field.</summary>
+    public const int PartialCaveatInfoFieldNumber = 3;
+    private global::Authzed.Api.V1.PartialCaveatInfo partialCaveatInfo_;
+    /// <summary>
+    /// partial_caveat_info holds information of a partially-evaluated caveated result.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Authzed.Api.V1.PartialCaveatInfo PartialCaveatInfo {
+      get { return partialCaveatInfo_; }
+      set {
+        partialCaveatInfo_ = value;
+      }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override bool Equals(object other) {
+      return Equals(other as LookupResourcesResult);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool Equals(LookupResourcesResult other) {
+      if (ReferenceEquals(other, null)) {
+        return false;
+      }
+      if (ReferenceEquals(other, this)) {
+        return true;
+      }
+      if (ResourceObjectId != other.ResourceObjectId) return false;
+      if (Permissionship != other.Permissionship) return false;
+      if (!object.Equals(PartialCaveatInfo, other.PartialCaveatInfo)) return false;
+      return Equals(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override int GetHashCode() {
+      int hash = 1;
+      if (ResourceObjectId.Length != 0) hash ^= ResourceObjectId.GetHashCode();
+      if (Permissionship != global::Authzed.Api.V1.LookupPermissionship.Unspecified) hash ^= Permissionship.GetHashCode();
+      if (partialCaveatInfo_ != null) hash ^= PartialCaveatInfo.GetHashCode();
+      if (_unknownFields != null) {
+        hash ^= _unknownFields.GetHashCode();
+      }
+      return hash;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override string ToString() {
+      return pb::JsonFormatter.ToDiagnosticString(this);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void WriteTo(pb::CodedOutputStream output) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      output.WriteRawMessage(this);
+    #else
+      if (ResourceObjectId.Length != 0) {
+        output.WriteRawTag(10);
+        output.WriteString(ResourceObjectId);
+      }
+      if (Permissionship != global::Authzed.Api.V1.LookupPermissionship.Unspecified) {
+        output.WriteRawTag(16);
+        output.WriteEnum((int) Permissionship);
+      }
+      if (partialCaveatInfo_ != null) {
+        output.WriteRawTag(26);
+        output.WriteMessage(PartialCaveatInfo);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(output);
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
+      if (ResourceObjectId.Length != 0) {
+        output.WriteRawTag(10);
+        output.WriteString(ResourceObjectId);
+      }
+      if (Permissionship != global::Authzed.Api.V1.LookupPermissionship.Unspecified) {
+        output.WriteRawTag(16);
+        output.WriteEnum((int) Permissionship);
+      }
+      if (partialCaveatInfo_ != null) {
+        output.WriteRawTag(26);
+        output.WriteMessage(PartialCaveatInfo);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(ref output);
+      }
+    }
+    #endif
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int CalculateSize() {
+      int size = 0;
+      if (ResourceObjectId.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(ResourceObjectId);
+      }
+      if (Permissionship != global::Authzed.Api.V1.LookupPermissionship.Unspecified) {
+        size += 1 + pb::CodedOutputStream.ComputeEnumSize((int) Permissionship);
+      }
+      if (partialCaveatInfo_ != null) {
+        size += 1 + pb::CodedOutputStream.ComputeMessageSize(PartialCaveatInfo);
+      }
+      if (_unknownFields != null) {
+        size += _unknownFields.CalculateSize();
+      }
+      return size;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(LookupResourcesResult other) {
+      if (other == null) {
+        return;
+      }
+      if (other.ResourceObjectId.Length != 0) {
+        ResourceObjectId = other.ResourceObjectId;
+      }
+      if (other.Permissionship != global::Authzed.Api.V1.LookupPermissionship.Unspecified) {
+        Permissionship = other.Permissionship;
+      }
+      if (other.partialCaveatInfo_ != null) {
+        if (partialCaveatInfo_ == null) {
+          PartialCaveatInfo = new global::Authzed.Api.V1.PartialCaveatInfo();
+        }
+        PartialCaveatInfo.MergeFrom(other.PartialCaveatInfo);
+      }
+      _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(pb::CodedInputStream input) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      input.ReadRawMessage(this);
+    #else
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
+            break;
+          case 10: {
+            ResourceObjectId = input.ReadString();
+            break;
+          }
+          case 16: {
+            Permissionship = (global::Authzed.Api.V1.LookupPermissionship) input.ReadEnum();
+            break;
+          }
+          case 26: {
+            if (partialCaveatInfo_ == null) {
+              PartialCaveatInfo = new global::Authzed.Api.V1.PartialCaveatInfo();
+            }
+            input.ReadMessage(PartialCaveatInfo);
+            break;
+          }
+        }
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalMergeFrom(ref pb::ParseContext input) {
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+            break;
+          case 10: {
+            ResourceObjectId = input.ReadString();
+            break;
+          }
+          case 16: {
+            Permissionship = (global::Authzed.Api.V1.LookupPermissionship) input.ReadEnum();
+            break;
+          }
+          case 26: {
+            if (partialCaveatInfo_ == null) {
+              PartialCaveatInfo = new global::Authzed.Api.V1.PartialCaveatInfo();
+            }
+            input.ReadMessage(PartialCaveatInfo);
+            break;
+          }
         }
       }
     }
@@ -7763,7 +8426,7 @@ namespace Authzed.Api.V1 {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[21]; }
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[23]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -8342,7 +9005,7 @@ namespace Authzed.Api.V1 {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[22]; }
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[24]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -8851,7 +9514,7 @@ namespace Authzed.Api.V1 {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[23]; }
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[25]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -9151,7 +9814,7 @@ namespace Authzed.Api.V1 {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[24]; }
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[26]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -9342,7 +10005,7 @@ namespace Authzed.Api.V1 {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[25]; }
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[27]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -9544,7 +10207,7 @@ namespace Authzed.Api.V1 {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[26]; }
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[28]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -9901,7 +10564,7 @@ namespace Authzed.Api.V1 {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[27]; }
+      get { return global::Authzed.Api.V1.PermissionServiceReflection.Descriptor.MessageTypes[29]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]

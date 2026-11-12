@@ -1126,6 +1126,10 @@ impl SpiceDBClient {
     /// Looks up resources, paging internally with the caller's consistency and
     /// page size on every page (see [`read_relationships`](Self::read_relationships)).
     /// Each item carries its after-result cursor and looked-up-at revision.
+    /// [`LookupResourcesOptions::with_response_batch_size`] asks the server to
+    /// group multiple results per response message for throughput; this
+    /// method still yields one item per result, with every item of one batch
+    /// sharing that batch's cursor.
     pub fn lookup_resources(
         &self,
         request: LookupResourcesRequest,
@@ -1165,6 +1169,11 @@ impl SpiceDBClient {
                                 with_debug: request.options.debug == DebugMode::Enabled,
                                 optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
+                                optional_response_batch_size: request
+                                    .options
+                                    .response_batch_size
+                                    .map(|n| n.get())
+                                    .unwrap_or(0),
                             }, page_end))
                             .await
                     }))
@@ -1177,24 +1186,58 @@ impl SpiceDBClient {
                             .looked_up_at
                             .map(|t| t.token.into())
                             .unwrap_or_default();
-                        cursor = response.after_result_cursor.clone();
-                        count += 1;
-                        if response.resource_object_id.is_empty() {
-                            Err(missing_in_response("resource object ID"))?;
+                        match response.batched {
+                            // Every result in one batch shares the batch's
+                            // single resume cursor, the same way
+                            // `export_relationships` shares one cursor across
+                            // a response's relationships.
+                            Some(batch) => {
+                                cursor = batch.after_cursor.clone();
+                                let after = batch.after_cursor.map(|c| c.token);
+                                for item in batch.results {
+                                    count += 1;
+                                    if item.resource_object_id.is_empty() {
+                                        Err(missing_in_response("resource object ID"))?;
+                                    }
+                                    require_permissionship(item.permissionship, "lookup resources result")?;
+                                    if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
+                                        && item.permissionship != proto::LookupPermissionship::HasPermission as i32 {
+                                        continue;
+                                    }
+                                    remaining -= 1;
+                                    yield LookupResource {
+                                        resource_id: item.resource_object_id,
+                                        permissionship: permissionship_from_proto(item.permissionship),
+                                        partial_caveat: partial_caveat_from_proto(item.partial_caveat_info.as_ref()),
+                                        looked_up_at: revision.clone(),
+                                        after_result_cursor: after.clone(),
+                                    };
+                                    if remaining == 0 {
+                                        break;
+                                    }
+                                }
+                            }
+                            None => {
+                                cursor = response.after_result_cursor.clone();
+                                count += 1;
+                                if response.resource_object_id.is_empty() {
+                                    Err(missing_in_response("resource object ID"))?;
+                                }
+                                require_permissionship(response.permissionship, "lookup resources result")?;
+                                if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
+                                    && response.permissionship != proto::LookupPermissionship::HasPermission as i32 {
+                                    continue;
+                                }
+                                remaining -= 1;
+                                yield LookupResource {
+                                    resource_id: response.resource_object_id,
+                                    permissionship: permissionship_from_proto(response.permissionship),
+                                    partial_caveat: partial_caveat_from_proto(response.partial_caveat_info.as_ref()),
+                                    looked_up_at: revision,
+                                    after_result_cursor: response.after_result_cursor.map(|c| c.token),
+                                };
+                            }
                         }
-                        require_permissionship(response.permissionship, "lookup resources result")?;
-                        if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
-                            && response.permissionship != proto::LookupPermissionship::HasPermission as i32 {
-                            continue;
-                        }
-                        remaining -= 1;
-                        yield LookupResource {
-                            resource_id: response.resource_object_id,
-                            permissionship: permissionship_from_proto(response.permissionship),
-                            partial_caveat: partial_caveat_from_proto(response.partial_caveat_info.as_ref()),
-                            looked_up_at: revision,
-                            after_result_cursor: response.after_result_cursor.map(|c| c.token),
-                        };
                         if remaining == 0 {
                             break;
                         }

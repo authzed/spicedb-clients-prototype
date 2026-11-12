@@ -785,6 +785,25 @@
 
 ### Changed
 
+- **2026-11-12: proto client regenerated.** `LookupResourcesRequest` gained
+  `optional_response_batch_size` (field 9) and `LookupResourcesResponse` gained a
+  `batched` field (field 6, new messages `LookupResourcesBatch`/`LookupResourcesResult`):
+  when set on the request, the server packs multiple resources into one response
+  message instead of one per message. `lookup_resources()` (both flavors) gained a
+  matching `response_batch_size` keyword argument; the client flattens a batched
+  message into its individual `LookupResource` items transparently, so callers
+  iterate the same way either way. Only the batch's last item carries
+  `after_result_cursor` -- the protocol defines one resume point per message, not
+  per result, so giving every item the batch cursor would make resuming from an
+  earlier item silently skip the rest of the batch. spicedb-python-proto's own
+  `client.py` convenience wrapper also gained `ca_cert`/`client_cert`/`client_key`
+  constructor arguments and wired up the `authzed.api.materialize.v0`
+  `RoaringLookupResourcesService` stub it already generated; this client builds its
+  channel and stubs directly rather than through that wrapper (see this file's
+  DESIGN.md, "Single protocol copy and legacy bridge"), so neither change touches
+  this client's code -- its own mTLS support (`spicedb/_tls.py`) and
+  `experimental_roaring_lookup_resources()` already existed independently.
+
 - **2026-09-24: proto client regenerated** (`protobuf` 7.36.1 -> 7.36.2; this client's
   own `uv.lock` re-pinned to match, since the regenerated gencode refuses to load
   against the older runtime). `ExperimentalService.BulkImportRelationships`,

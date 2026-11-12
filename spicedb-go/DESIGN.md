@@ -34,6 +34,7 @@
 
 - **Preserve native stream and schema data.**
   - Reads, lookups and exports support limits and page sizes without confusing their meanings. Lookup subjects retains wildcard exclusions and conditional context. Paging repeats the caller's consistency and page size on every page (SpiceDB hashes both into the cursor, which pins the revision); items carry `AfterResultCursor` (and `ReadAt` for reads) and resume via `With*Cursor` with the same request and page size. `With{ReadRelationships,LookupResources}Paging(PagingSingleRequest)` sends one request like the raw API.
+  - `WithLookupResourcesResponseBatchSize` asks the server to pack multiple resources into one stream message for higher throughput; the client still yields one `LookupResource` per resource regardless, but every resource in one batched message shares that message's single `AfterResultCursor`, since the wire format offers no finer-grained resume point.
   - Watch accepts a native starting token, `WithUpdatesCheckpoints(CheckpointsIncluded)` and `WithUpdatesSchemaChanges(SchemaChangesIncluded)`; events retain update data, changes-through revision, checkpoint and schema-updated facts.
   - Schema reflection/diff, tagged permission trees, counters and materialize operations preserve structured native variants, revisions, safe unknown states and optional values. Materialize cursors retain all fields; download URLs are returned without fetching them.
 

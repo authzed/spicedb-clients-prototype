@@ -543,12 +543,15 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
         if (!single)
             positiveLimit(request.pageSize ?? 1000, "pageSize");
+        if (request.responseBatchSize !== undefined)
+            positiveLimit(request.responseBatchSize, "responseBatchSize");
         requireConsistency(request.consistency);
         if (request.context !== undefined)
             jsonSnapshot(request.context);
         this.#begin(options);
         const lookedUpAt = new ZedToken(String(this.#revision));
         const context = request.context === undefined ? {} : { context: request.context };
+        // The double has no wire messages to group, so responseBatchSize only affects validation above.
         return streamOf(() => this.#lookup(request.resourceType, request.cursor, limit,
             id => this.#resolve({ resource: { objectType: request.resourceType, objectId: id }, permission: request.permission, subject: request.subject, consistency: request.consistency, ...context }),
             permissionship => filter === LookupPermissionshipFilter.All || permissionship === "hasPermission")

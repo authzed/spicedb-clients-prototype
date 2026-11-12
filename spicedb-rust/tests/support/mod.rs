@@ -219,6 +219,7 @@ pub struct MockPermissionsService {
     lookup_resources_pages: Mutex<VecDeque<Vec<proto::LookupResourcesResponse>>>,
     lookup_resources_calls: Arc<AtomicUsize>,
     lookup_resources_debug: Arc<Mutex<Vec<bool>>>,
+    lookup_resources_response_batch_sizes: Arc<Mutex<Vec<u32>>>,
     lookup_resources_cursors: Arc<Mutex<Vec<Option<proto::Cursor>>>>,
     /// `(call, duration)`: the `call`-th `LookupResources` request (1-based)
     /// streams its first item, then stalls mid-page for `duration`.
@@ -291,6 +292,7 @@ impl MockPermissionsService {
             lookup_resources_pages: Mutex::new(VecDeque::new()),
             lookup_resources_calls: Arc::new(AtomicUsize::new(0)),
             lookup_resources_debug: Arc::new(Mutex::new(Vec::new())),
+            lookup_resources_response_batch_sizes: Arc::new(Mutex::new(Vec::new())),
             lookup_resources_cursors: Arc::new(Mutex::new(Vec::new())),
             lookup_resources_stall: Mutex::new(None),
             expand_response: Mutex::new(None),
@@ -375,6 +377,12 @@ impl MockPermissionsService {
     /// Returns a live handle to the `LookupResources` call counter.
     pub fn lookup_resources_debug(&self) -> Arc<Mutex<Vec<bool>>> {
         self.lookup_resources_debug.clone()
+    }
+
+    /// Returns a live handle to the `optional_response_batch_size` seen on
+    /// each `LookupResources` call, in call order.
+    pub fn lookup_resources_response_batch_sizes(&self) -> Arc<Mutex<Vec<u32>>> {
+        self.lookup_resources_response_batch_sizes.clone()
     }
 
     pub fn lookup_resources_calls(&self) -> Arc<AtomicUsize> {
@@ -741,6 +749,10 @@ impl PermissionsService for MockPermissionsService {
             .lock()
             .unwrap()
             .push(request.get_ref().with_debug);
+        self.lookup_resources_response_batch_sizes
+            .lock()
+            .unwrap()
+            .push(request.get_ref().optional_response_batch_size);
         self.lookup_resources_cursors
             .lock()
             .unwrap()

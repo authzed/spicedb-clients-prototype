@@ -14,6 +14,7 @@ import {
     ResolvedSubjectSchema, WatchResponseSchema, RelationshipUpdateSchema, RelationshipUpdate_Operation, ExpandPermissionTreeResponseSchema,
     ExperimentalCountRelationshipsResponseSchema, ReadSchemaResponseSchema, CheckBulkPermissionsResponseSchema, CheckBulkPermissionsPairSchema,
     LookupPermissionship, RelationshipSchema, ObjectReferenceSchema, SubjectReferenceSchema,
+    LookupResourcesBatchSchema, LookupResourcesResultSchema,
 } from "@spicedb/proto";
 import {
     SpiceDBClient, InMemorySpiceDB, createSpiceDBClient, full, ZedToken, Retries, DefaultDeadline, TransportSecurity,
@@ -258,6 +259,57 @@ describe("malformed responses fail with Internal", () => {
             },
         }));
         expectInternal((await failure(client.lookupResources({ ...lookupRequest, pageSize: 1, cursor: "same" }))).error, /cursor did not advance/);
+        client.close();
+    });
+});
+
+describe("lookupResources responseBatchSize", () => {
+    it("sends optionalResponseBatchSize and unbatches a grouped response into individual items sharing the batch cursor", async () => {
+        let receivedBatchSize: number | undefined;
+        const client = clientFor(router => router.service(PermissionsService, {
+            async *lookupResources(req) {
+                receivedBatchSize = req.optionalResponseBatchSize;
+                yield create(LookupResourcesResponseSchema, {
+                    lookedUpAt: { token: "rev-1" },
+                    batched: create(LookupResourcesBatchSchema, {
+                        results: [
+                            create(LookupResourcesResultSchema, { resourceObjectId: "a", permissionship: LookupPermissionship.HAS_PERMISSION }),
+                            create(LookupResourcesResultSchema, { resourceObjectId: "b", permissionship: LookupPermissionship.HAS_PERMISSION }),
+                        ],
+                        afterCursor: { token: "2" },
+                    }),
+                });
+            },
+        }));
+        const items = [];
+        for await (const item of client.lookupResources({ ...lookupRequest, responseBatchSize: 2 }))
+            items.push(item);
+        expect(receivedBatchSize).toBe(2);
+        expect(items).toEqual([
+            { resourceId: "a", afterResultCursor: "2", permissionship: "hasPermission", lookedUpAt: new ZedToken("rev-1") },
+            { resourceId: "b", afterResultCursor: "2", permissionship: "hasPermission", lookedUpAt: new ZedToken("rev-1") },
+        ]);
+        client.close();
+    });
+    it("rejects a batched result with no resource ID instead of skipping it", async () => {
+        const client = clientFor(router => router.service(PermissionsService, {
+            async *lookupResources() {
+                yield create(LookupResourcesResponseSchema, {
+                    batched: create(LookupResourcesBatchSchema, { results: [create(LookupResourcesResultSchema, { permissionship: LookupPermissionship.HAS_PERMISSION })] }),
+                });
+            },
+        }));
+        const { error, items } = await failure(client.lookupResources({ ...lookupRequest, responseBatchSize: 2 }));
+        expect(error).toBeInstanceOf(SpiceDBError);
+        expect(errorCode(error)).toBe(Code.Internal);
+        expect((error as Error).message).toMatch(/no resource ID/);
+        expect(items).toHaveLength(0);
+        client.close();
+    });
+    it("rejects responseBatchSize <= 0", () => {
+        const client = clientFor(() => {});
+        expect(() => client.lookupResources({ ...lookupRequest, responseBatchSize: 0 })).toThrow(InvalidArgumentError);
+        expect(() => client.lookupResources({ ...lookupRequest, responseBatchSize: -1 })).toThrow(InvalidArgumentError);
         client.close();
     });
 });

@@ -35,6 +35,7 @@
   - Materialize lookup preserves cursors and one bounded RPC; callers explicitly resume. Watch preserves every event variant and never reconnects automatically.
   - Lookup subjects bounds results locally with limit; page_size explicitly requests optional server pagination.
   - `paging=Paging.SINGLE_REQUEST` on `read_relationships` and `lookup_resources` sends exactly one request like the raw API: its limit is `limit` (unbounded without one; reads have none) and `page_size` is ignored.
+  - `lookup_resources(response_batch_size=...)` requests server-side response batching: the server packs multiple resources into one message instead of one per message. The client flattens a batch into its individual `LookupResource` items transparently; only the batch's last item carries `after_result_cursor`, since the protocol defines one resume point per message, not per result.
 - **Verify behavior and typed facades.**
   - Unit tests exercise sync/aio parity, transport security, cancellation, budgets, bulk echoes, token round trips and option validation.
   - Generated facades forward enums, tokens, contexts and results; fixtures are regenerated and checked with positive and negative type cases.

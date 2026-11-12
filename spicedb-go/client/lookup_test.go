@@ -373,6 +373,78 @@ func TestLookupResourcesPermissionshipFilter(t *testing.T) {
 	}
 }
 
+// TestLookupResources_WithResponseBatchSizeSetsRequestField proves
+// WithLookupResourcesResponseBatchSize sets
+// LookupResourcesRequest.OptionalResponseBatchSize, and that omitting it
+// leaves the field zero -- the default before this option existed, so a
+// caller that never touches it keeps sending exactly the request it always
+// has.
+func TestLookupResources_WithResponseBatchSizeSetsRequestField(t *testing.T) {
+	stub := &lookupStubServer{}
+	dialer := startLookupStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	for range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}) {
+	}
+	require.NotNil(t, stub.lastLookupResourcesRequest)
+	require.Zero(t, stub.lastLookupResourcesRequest.GetOptionalResponseBatchSize())
+
+	for range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}, WithLookupResourcesResponseBatchSize(1000)) {
+	}
+	require.NotNil(t, stub.lastLookupResourcesRequest)
+	require.EqualValues(t, 1000, stub.lastLookupResourcesRequest.GetOptionalResponseBatchSize())
+}
+
+// TestLookupResources_BatchedResponseYieldsEachResult proves that when the
+// server packs multiple resources into one LookupResourcesResponse.batched
+// message, the client still yields one LookupResource per resource (rather
+// than, say, dropping the batch or yielding it as a single malformed item),
+// and that every resource in the batch shares the batch's single resume
+// cursor, since the wire format has no finer-grained one.
+func TestLookupResources_BatchedResponseYieldsEachResult(t *testing.T) {
+	stub := &lookupStubServer{
+		lookupResourcesResponses: []*v1.LookupResourcesResponse{
+			{
+				LookedUpAt: &v1.ZedToken{Token: "snapshot"},
+				Batched: &v1.LookupResourcesBatch{
+					Results: []*v1.LookupResourcesResult{
+						{ResourceObjectId: "doc1", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION},
+						{
+							ResourceObjectId: "doc2",
+							Permissionship:   v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+							PartialCaveatInfo: &v1.PartialCaveatInfo{
+								MissingRequiredContext: []string{"ip_address"},
+							},
+						},
+					},
+					AfterCursor: &v1.Cursor{Token: "2"},
+				},
+			},
+		},
+	}
+	dialer := startLookupStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	var got []LookupResource
+	for r, err := range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}, WithLookupResourcesResponseBatchSize(1000)) {
+		require.NoError(t, err)
+		got = append(got, r)
+	}
+
+	require.Len(t, got, 2)
+
+	require.Equal(t, "doc1", got[0].ResourceID)
+	require.Equal(t, PermissionshipHasPermission, got[0].Permissionship)
+	require.Equal(t, "2", got[0].AfterResultCursor)
+	require.Equal(t, consistency.NewZedToken("snapshot"), got[0].LookedUpAt)
+
+	require.Equal(t, "doc2", got[1].ResourceID)
+	require.Equal(t, PermissionshipConditionalPermission, got[1].Permissionship)
+	require.Equal(t, []string{"ip_address"}, got[1].PartialCaveat.MissingRequiredContext)
+	// Both results came from the same message, so they share its one cursor.
+	require.Equal(t, "2", got[1].AfterResultCursor)
+}
+
 func TestLookupResourcesRejectsUnknownPermissionshipFilter(t *testing.T) {
 	o := operationOptions{}
 	WithLookupResourcesPermissionshipFilter(LookupPermissionshipFilter(99))(&o)

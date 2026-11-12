@@ -330,6 +330,35 @@ private static final long serialVersionUID = 0L;
     return withDebug_;
   }
 
+  public static final int OPTIONAL_RESPONSE_BATCH_SIZE_FIELD_NUMBER = 9;
+  private int optionalResponseBatchSize_ = 0;
+  /**
+   * <pre>
+   * optional_response_batch_size, if non-zero, requests that the server return
+   * multiple resources per response message (up to this many) in
+   * LookupResourcesResponse.batched, instead of a single resource per message.
+   * Zero (the default) preserves one-resource-per-message streaming for
+   * backward compatibility.
+   *
+   * The batch size trades time-to-first-result against overall throughput: a
+   * larger batch size increases throughput (fewer, larger messages, less
+   * per-message overhead) but delays the first results, since the server
+   * accumulates more of them before sending a message; a smaller batch size
+   * returns initial results sooner. A value around 1000 is a good default.
+   *
+   * The maximum batch size is bounded by a server-side configuration flag;
+   * requesting more than the server allows is clamped to that maximum rather
+   * than rejected.
+   * </pre>
+   *
+   * <code>uint32 optional_response_batch_size = 9 [json_name = "optionalResponseBatchSize"];</code>
+   * @return The optionalResponseBatchSize.
+   */
+  @java.lang.Override
+  public int getOptionalResponseBatchSize() {
+    return optionalResponseBatchSize_;
+  }
+
   private byte memoizedIsInitialized = -1;
   @java.lang.Override
   public final boolean isInitialized() {
@@ -367,6 +396,9 @@ private static final long serialVersionUID = 0L;
     }
     if (withDebug_ != false) {
       output.writeBool(8, withDebug_);
+    }
+    if (optionalResponseBatchSize_ != 0) {
+      output.writeUInt32(9, optionalResponseBatchSize_);
     }
     getUnknownFields().writeTo(output);
   }
@@ -406,6 +438,10 @@ private static final long serialVersionUID = 0L;
     if (withDebug_ != false) {
       size += com.google.protobuf.CodedOutputStream
         .computeBoolSize(8, withDebug_);
+    }
+    if (optionalResponseBatchSize_ != 0) {
+      size += com.google.protobuf.CodedOutputStream
+        .computeUInt32Size(9, optionalResponseBatchSize_);
     }
     size += getUnknownFields().getSerializedSize();
     memoizedSize = size;
@@ -450,6 +486,8 @@ private static final long serialVersionUID = 0L;
     }
     if (getWithDebug()
         != other.getWithDebug()) return false;
+    if (getOptionalResponseBatchSize()
+        != other.getOptionalResponseBatchSize()) return false;
     if (!getUnknownFields().equals(other.getUnknownFields())) return false;
     return true;
   }
@@ -486,6 +524,8 @@ private static final long serialVersionUID = 0L;
     hash = (37 * hash) + WITH_DEBUG_FIELD_NUMBER;
     hash = (53 * hash) + com.google.protobuf.Internal.hashBoolean(
         getWithDebug());
+    hash = (37 * hash) + OPTIONAL_RESPONSE_BATCH_SIZE_FIELD_NUMBER;
+    hash = (53 * hash) + getOptionalResponseBatchSize();
     hash = (29 * hash) + getUnknownFields().hashCode();
     memoizedHashCode = hash;
     return hash;
@@ -656,6 +696,7 @@ private static final long serialVersionUID = 0L;
         optionalCursorBuilder_ = null;
       }
       withDebug_ = false;
+      optionalResponseBatchSize_ = 0;
       return this;
     }
 
@@ -726,6 +767,9 @@ private static final long serialVersionUID = 0L;
       if (((from_bitField0_ & 0x00000080) != 0)) {
         result.withDebug_ = withDebug_;
       }
+      if (((from_bitField0_ & 0x00000100) != 0)) {
+        result.optionalResponseBatchSize_ = optionalResponseBatchSize_;
+      }
       result.bitField0_ |= to_bitField0_;
     }
 
@@ -768,6 +812,9 @@ private static final long serialVersionUID = 0L;
       }
       if (other.getWithDebug() != false) {
         setWithDebug(other.getWithDebug());
+      }
+      if (other.getOptionalResponseBatchSize() != 0) {
+        setOptionalResponseBatchSize(other.getOptionalResponseBatchSize());
       }
       this.mergeUnknownFields(other.getUnknownFields());
       onChanged();
@@ -843,6 +890,11 @@ private static final long serialVersionUID = 0L;
               bitField0_ |= 0x00000080;
               break;
             } // case 64
+            case 72: {
+              optionalResponseBatchSize_ = input.readUInt32();
+              bitField0_ |= 0x00000100;
+              break;
+            } // case 72
             default: {
               if (!super.parseUnknownField(input, extensionRegistry, tag)) {
                 done = true; // was an endgroup tag
@@ -1760,6 +1812,92 @@ private static final long serialVersionUID = 0L;
     public Builder clearWithDebug() {
       bitField0_ = (bitField0_ & ~0x00000080);
       withDebug_ = false;
+      onChanged();
+      return this;
+    }
+
+    private int optionalResponseBatchSize_ ;
+    /**
+     * <pre>
+     * optional_response_batch_size, if non-zero, requests that the server return
+     * multiple resources per response message (up to this many) in
+     * LookupResourcesResponse.batched, instead of a single resource per message.
+     * Zero (the default) preserves one-resource-per-message streaming for
+     * backward compatibility.
+     *
+     * The batch size trades time-to-first-result against overall throughput: a
+     * larger batch size increases throughput (fewer, larger messages, less
+     * per-message overhead) but delays the first results, since the server
+     * accumulates more of them before sending a message; a smaller batch size
+     * returns initial results sooner. A value around 1000 is a good default.
+     *
+     * The maximum batch size is bounded by a server-side configuration flag;
+     * requesting more than the server allows is clamped to that maximum rather
+     * than rejected.
+     * </pre>
+     *
+     * <code>uint32 optional_response_batch_size = 9 [json_name = "optionalResponseBatchSize"];</code>
+     * @return The optionalResponseBatchSize.
+     */
+    @java.lang.Override
+    public int getOptionalResponseBatchSize() {
+      return optionalResponseBatchSize_;
+    }
+    /**
+     * <pre>
+     * optional_response_batch_size, if non-zero, requests that the server return
+     * multiple resources per response message (up to this many) in
+     * LookupResourcesResponse.batched, instead of a single resource per message.
+     * Zero (the default) preserves one-resource-per-message streaming for
+     * backward compatibility.
+     *
+     * The batch size trades time-to-first-result against overall throughput: a
+     * larger batch size increases throughput (fewer, larger messages, less
+     * per-message overhead) but delays the first results, since the server
+     * accumulates more of them before sending a message; a smaller batch size
+     * returns initial results sooner. A value around 1000 is a good default.
+     *
+     * The maximum batch size is bounded by a server-side configuration flag;
+     * requesting more than the server allows is clamped to that maximum rather
+     * than rejected.
+     * </pre>
+     *
+     * <code>uint32 optional_response_batch_size = 9 [json_name = "optionalResponseBatchSize"];</code>
+     * @param value The optionalResponseBatchSize to set.
+     * @return This builder for chaining.
+     */
+    public Builder setOptionalResponseBatchSize(int value) {
+
+      optionalResponseBatchSize_ = value;
+      bitField0_ |= 0x00000100;
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * optional_response_batch_size, if non-zero, requests that the server return
+     * multiple resources per response message (up to this many) in
+     * LookupResourcesResponse.batched, instead of a single resource per message.
+     * Zero (the default) preserves one-resource-per-message streaming for
+     * backward compatibility.
+     *
+     * The batch size trades time-to-first-result against overall throughput: a
+     * larger batch size increases throughput (fewer, larger messages, less
+     * per-message overhead) but delays the first results, since the server
+     * accumulates more of them before sending a message; a smaller batch size
+     * returns initial results sooner. A value around 1000 is a good default.
+     *
+     * The maximum batch size is bounded by a server-side configuration flag;
+     * requesting more than the server allows is clamped to that maximum rather
+     * than rejected.
+     * </pre>
+     *
+     * <code>uint32 optional_response_batch_size = 9 [json_name = "optionalResponseBatchSize"];</code>
+     * @return This builder for chaining.
+     */
+    public Builder clearOptionalResponseBatchSize() {
+      bitField0_ = (bitField0_ & ~0x00000100);
+      optionalResponseBatchSize_ = 0;
       onChanged();
       return this;
     }

@@ -20,6 +20,7 @@ type operationOptions struct {
 	metadata                    map[string]any
 	timeout                     time.Duration
 	pageSize                    uint32
+	responseBatchSize           uint32
 	limit                       uint64
 	cursor                      string
 	checkContext                map[string]any
@@ -387,6 +388,18 @@ func WithLookupResourcesDebug(mode LookupDebug) LookupResourcesOption {
 		}
 		o.debug = mode == DebugEnabled
 	}
+}
+
+// WithLookupResourcesResponseBatchSize asks the server to pack up to n
+// resources into each stream message instead of one resource per message,
+// trading slower time-to-first-result for higher overall throughput. The
+// client still yields one LookupResource per resource either way; every
+// resource packed into the same message shares that message's single
+// AfterResultCursor, since the wire format offers no finer-grained resume
+// point. Zero (the default) keeps one resource per message. A size above the
+// server's own configured maximum is clamped there rather than rejected.
+func WithLookupResourcesResponseBatchSize(n uint32) LookupResourcesOption {
+	return func(o *operationOptions) { o.responseBatchSize = n }
 }
 func WithLookupSubjectsRelation(relation string) LookupSubjectsOption {
 	return func(o *operationOptions) {

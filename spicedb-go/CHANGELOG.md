@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **2026-11-12**: New `LookupResources` option, `WithLookupResourcesResponseBatchSize(n)`,
+  forwards the proto's new `optional_response_batch_size` field, asking the
+  server to pack up to `n` resources into each stream message instead of one
+  per message. This trades slower time-to-first-result for higher overall
+  throughput on large lookups. The client unwraps a batched message
+  transparently: callers still range over one `LookupResource` per resource,
+  exactly as before. Every resource packed into the same message shares that
+  message's single `AfterResultCursor`, since the server only attaches one
+  resume cursor per batched message rather than one per resource — a caller
+  resuming with a batched result's cursor resumes after the whole batch, not
+  after that specific resource. Omitting the option is unaffected: the
+  request field defaults to zero, which keeps the original one-resource-per-message
+  behavior and per-resource cursors.
 - Tests: the timing tests against a real server (page deadlines, the shared paged-read and delete-all deadline, `CheckIter`'s timeout start) connect the client before starting a clock or a short deadline, so an allowance never has to cover connection setup on a busy machine; the shared-deadline and `CheckIter` allowances are wider.
 - `consistency.Strategy` has a readable string form (`Full`, `MinLatency`, `AtLeast(<token>)`, `Snapshot(<token>)`) and a JSON form (`{"strategy":"atLeast","token":"<token>"}`; no token for `full` and `minLatency`). It used to print as `{3 {<token>}}` and serialize as `{}`. `consistency.ZedToken` now serializes as its exact string (`MarshalText` and `UnmarshalText`) instead of `{}`, so results carrying a revision serialize it too.
 - A plaintext bare host without a port (`NewPlaintext("localhost", ...)`) fails with one example, built from the host: `a plaintext endpoint needs an explicit port, e.g. localhost:50051; expected host:port, http://host:port (plaintext), ...`. The message used to repeat the example (`...e.g. localhost:50051; expected host:port (e.g. localhost:50051), ...`), and an IP host was shown `localhost` as its example.

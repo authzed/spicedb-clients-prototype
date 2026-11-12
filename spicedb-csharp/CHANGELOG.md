@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **2026-11-12: proto regen adds an opt-in response-batching field to `LookupResources`, not yet wrapped.**
+  `LookupResourcesRequest.OptionalResponseBatchSize` lets a caller ask the server to pack
+  several results into one `LookupResourcesResponse.Batched` message instead of one per
+  message; zero (never sent by this client) keeps today's one-resource-per-message
+  streaming, so existing behavior and the auto-paging math in `LookupResourcesAsync`
+  (which counts response messages against the page size) are unaffected. This client does
+  not yet surface it: a `LookupResourcesBatch` only carries one resume cursor for the whole
+  batch, not one per contained result, which would change what `LookupResource.AfterResultCursor`
+  means for every item but the batch's last and needs a deliberate design decision this
+  regen does not make. `LookupResourcesBatch`/`LookupResourcesResult` (the new message types)
+  are available through `RawProto()` meanwhile.
 - Tests: the deadline tests against a real Kestrel server (`DeadlineTests`, `PageDeadlineTests`, `SlowConsumerPageDeadlineTests`) warm the connection with an untimed call before timing anything, so a short allowance never has to cover connection setup, and `DeadlineTests`' stall and `PageDeadlineTests`' per-page default are wider (3 s, 1 s). Two of them each failed about once in 36 solution runs on a busy machine.
 - Docs: the CS0104 note in the AI guide and migration guide now lists every type name `SpiceDB.Client` shares with `Grpc.Core` (`CallOptions`, `WriteOptions`) and with `Authzed.Api.V1` (`Relationship`, `Consistency`, `ZedToken`, `Precondition`, `RelationshipUpdate`, `ResolvedSubject`, `PartialCaveatInfo`, `DebugInformation`, `CheckDebugTrace`), with one alias block for a file importing all three. It covered only `CallOptions`. `NamespaceCollisionTests` finds the shared names by reflection and fails on a new one; `CallOptionsAliasTests` compiles the documented block.
 - `Consistency` is observable: `ToString()` returns `Full`, `MinLatency`, `AtLeast(<token>)` or `Snapshot(<token>)` (it printed `Consistency { }`), and `System.Text.Json` writes `{"strategy":"atLeast","token":"<token>"}` (no token for `full` and `minLatency`) and reads that form back (it wrote `{}` for every strategy). `AtLeastOrFull` and `AtLeastOrMinLatency` show as the strategy they chose.

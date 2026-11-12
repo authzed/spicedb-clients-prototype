@@ -1769,6 +1769,7 @@ pub struct LookupResourcesOptions {
     pub(crate) paging: crate::options::Paging,
     pub(crate) context: Option<Context>,
     pub(crate) debug: DebugMode,
+    pub(crate) response_batch_size: Option<std::num::NonZeroU32>,
 }
 impl Default for LookupResourcesOptions {
     fn default() -> Self {
@@ -1782,6 +1783,7 @@ impl Default for LookupResourcesOptions {
             paging: crate::options::Paging::Automatic,
             context: None,
             debug: DebugMode::Disabled,
+            response_batch_size: None,
         }
     }
 }
@@ -1830,6 +1832,21 @@ impl LookupResourcesOptions {
     }
     pub fn with_debug(mut self, value: DebugMode) -> Self {
         self.debug = value;
+        self
+    }
+    /// Requests that the server group up to this many results into each
+    /// response message instead of sending one result per message. A larger
+    /// batch size raises throughput (fewer, larger messages) at the cost of a
+    /// later first result, since the server accumulates a batch before
+    /// sending it; the server may clamp a value above its own configured
+    /// maximum. This client still yields one [`LookupResource`] per result
+    /// either way -- batching is a wire-level grouping, not a change to the
+    /// yielded items -- except that every item of one batch shares that
+    /// batch's `after_result_cursor`, the same way `export_relationships`
+    /// shares one cursor across a response's items. The default (unset)
+    /// preserves one-result-per-message streaming.
+    pub fn with_response_batch_size(mut self, value: std::num::NonZeroU32) -> Self {
+        self.response_batch_size = Some(value);
         self
     }
 }

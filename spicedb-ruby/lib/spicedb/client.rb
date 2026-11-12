@@ -306,18 +306,32 @@ module SpiceDB
                    cursor, mapper, paging: paging, &)
     end
 
+    # +response_batch_size:+, if given, asks the server to pack up to that
+    # many resources into each stream message instead of one resource per
+    # message (the server may clamp it to its own configured maximum rather
+    # than reject it). This trades slower time-to-first-result for higher
+    # overall throughput; the client still yields one LookupResource per
+    # resource either way. Every resource packed into the same message shares
+    # that message's single cursor, since the wire format offers no
+    # finer-grained resume point.
     def lookup_resources(resource_type:, permission:, subject:, consistency:, context: nil, limit: nil, # rubocop:disable Metrics/ParameterLists
                          page_size: 1000, timeout: nil, permissionship_filter: LookupPermissionshipFilter::ALL, cursor: nil,
-                         call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, &)
+                         call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, response_batch_size: nil, &)
       retry_policy = operation_retry_policy(:lookup_resources, retry_policy)
       LookupPermissionshipFilter.validate(permissionship_filter)
+      unless response_batch_size.nil? || (response_batch_size.is_a?(Integer) && response_batch_size >= 0)
+        raise LocalValidationError, "response_batch_size: expected a non-negative Integer, got #{Values.received(response_batch_size)}"
+      end
+
       request = Authzed::Api::V1::LookupResourcesRequest.new(consistency: build_consistency(consistency),
                                                              resource_object_type: Values.name(resource_type, 'resource_type'),
                                                              permission: Values.name(permission, 'permission'), subject: subject_to_proto(subject),
-                                                             context: check_context_to_struct(Values.context(context)))
+                                                             context: check_context_to_struct(Values.context(context)),
+                                                             optional_response_batch_size: response_batch_size || 0)
       include_result = (->(result) { result.permissionship == :has_permission } if permissionship_filter == LookupPermissionshipFilter::HAS_PERMISSION_ONLY)
       paged_stream(:permissions, :lookup_resources, request, page_size, limit, paged_budget(timeout, call_options, retry_policy: retry_policy),
-                   cursor, method(:lookup_resource_from_proto), include_result: include_result, paging: paging, &)
+                   cursor, method(:lookup_resource_from_proto), include_result: include_result, paging: paging,
+                                                                expand: method(:lookup_resources_expand), &)
     end
 
     def lookup_subjects(resource:, permission:, subject_type:, consistency:, subject_relation: nil,

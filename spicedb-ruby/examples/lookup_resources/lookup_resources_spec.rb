@@ -133,4 +133,36 @@ RSpec.describe 'LookupResources' do
   ensure
     client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
   end
+
+  it 'asks the server to pack multiple resources into each stream message with response_batch_size:' do
+    client.write_schema(TEST_SCHEMA)
+    alice = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'))
+
+    txn = SpiceDB::Transaction.new
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: alice))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'seconddoc'), relation: 'editor',
+                                        subject: alice))
+    client.write(txn)
+
+    # response_batch_size: trades slower time-to-first-result for higher
+    # throughput by asking the server to pack up to that many resources into
+    # each stream message instead of one per message. The client still yields
+    # one LookupResource per resource either way -- this only changes how
+    # many resources travel per message on the wire.
+    results = client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
+                                      permissionship_filter: SpiceDB::LookupPermissionshipFilter::HAS_PERMISSION_ONLY,
+                                      response_batch_size: 1000).to_a
+
+    resource_ids = results.map(&:resource_id)
+    expect(resource_ids).to include('firstdoc', 'seconddoc')
+
+    # Whether the server actually packs these into one message or several is
+    # its own call to make (and may depend on timing); either way, every
+    # result still carries a cursor, and resuming after the last one works
+    # exactly as it does for the unbatched stream.
+    expect(results.map(&:cursor)).to all(be_a(String))
+  ensure
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
+  end
 end

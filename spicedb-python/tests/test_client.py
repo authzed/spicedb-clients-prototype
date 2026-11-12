@@ -442,6 +442,71 @@ class TestLookupResourcesYieldsPermissionshipAndPartialCaveat:
         assert got[1].partial_caveat.missing_required_context == ("ip_address",)
 
 
+class TestLookupResourcesResponseBatching:
+    """``response_batch_size`` requests ``LookupResourcesResponse.batched``
+    instead of one resource per message; the client flattens a batch into
+    its individual results transparently."""
+
+    async def test_response_batch_size_reaches_the_request(self, make_client):
+        client = make_client()
+        client._permissions.LookupResources = _async_stream(
+            permission_service_pb2.LookupResourcesResponse(looked_up_at=_core_tok.ZedToken(token="t"),
+                resource_object_id="doc1",
+                permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+            ),
+        )
+        got = [
+            r
+            async for r in client.lookup_resources(
+                resource_type="document",
+                permission="view",
+                subject=_subject("user:alice", ""),
+                consistency=full(),
+                response_batch_size=500,
+            )
+        ]
+        assert len(got) == 1
+        request = client._permissions.LookupResources.calls[0][0][0]
+        assert request.optional_response_batch_size == 500
+
+    async def test_flattens_a_batched_response_only_last_item_carries_cursor(self, make_client):
+        """The proto defines one resume point per message, not per result --
+        giving every item the batch cursor would make resuming from an
+        earlier item silently skip the rest of the batch."""
+        client = make_client()
+        client._permissions.LookupResources = _async_stream(
+            permission_service_pb2.LookupResourcesResponse(
+                looked_up_at=_core_tok.ZedToken(token="t"),
+                batched=permission_service_pb2.LookupResourcesBatch(
+                    results=[
+                        permission_service_pb2.LookupResourcesResult(
+                            resource_object_id="doc1",
+                            permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+                        ),
+                        permission_service_pb2.LookupResourcesResult(
+                            resource_object_id="doc2",
+                            permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+                        ),
+                    ],
+                    after_cursor=core_pb2.Cursor(token="batch-cursor"),
+                ),
+            ),
+        )
+        got = [
+            r
+            async for r in client.lookup_resources(
+                resource_type="document",
+                permission="view",
+                subject=_subject("user:alice", ""),
+                consistency=full(),
+                response_batch_size=500,
+            )
+        ]
+        assert [r.resource_id for r in got] == ["doc1", "doc2"]
+        assert got[0].after_result_cursor is None
+        assert got[1].after_result_cursor == "batch-cursor"
+
+
 class TestLookupSubjectsWildcardSubjectExposesExcludedSubjects:
     """The key over-grant-fix assertion: when LookupSubjects resolves a
     wildcard "*" subject, the excluded_subjects the server attaches to that

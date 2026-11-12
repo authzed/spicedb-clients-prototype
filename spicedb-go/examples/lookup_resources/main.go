@@ -6,7 +6,9 @@
 //
 // It also demonstrates WithLookupResourcesDebug: when a call fails because it
 // exceeds SpiceDB's maximum dispatch depth, this option asks the server to
-// attach a traversal trace to the failure's ReasonMetadata.
+// attach a traversal trace to the failure's ReasonMetadata; and
+// WithLookupResourcesResponseBatchSize, which asks the server to pack
+// multiple resources into each stream message for higher throughput.
 package main
 
 import (
@@ -88,6 +90,24 @@ definition document {
 	if !found["seconddoc"] {
 		log.Fatalf("expected seconddoc in results")
 	}
+
+	// WithLookupResourcesResponseBatchSize: asks the server to pack multiple
+	// resources into each stream message instead of one per message, trading
+	// slower time-to-first-result for higher throughput on large lookups.
+	// The client still yields one LookupResource per resource either way --
+	// this option only changes how many resources travel per message on the
+	// wire, never the shape of what's ranged over.
+	batchedFound := map[string]bool{}
+	for resource, err := range c.LookupResources(ctx, client.LookupResourcesRequest{Consistency: consistency.Full(), ResourceType: "document", Permission: "view", Subject: exampleutil.Subject(exampleutil.Object("user", "alice"), "")}, client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly), client.WithLookupResourcesResponseBatchSize(1000)) {
+		if err != nil {
+			log.Fatalf("batched lookup failed: %v", err)
+		}
+		batchedFound[resource.ResourceID] = true
+	}
+	if !batchedFound["firstdoc"] || !batchedFound["seconddoc"] {
+		log.Fatalf("expected firstdoc and seconddoc in batched results, got: %v", batchedFound)
+	}
+	fmt.Println("WithLookupResourcesResponseBatchSize: found the same resources via batched responses")
 
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared

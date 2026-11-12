@@ -2,9 +2,79 @@ package clauderun
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
+
+// fakeClaudeEnv turns this test binary into a stand-in for the claude CLI, so
+// Run can be exercised end to end without the real one.
+const fakeClaudeEnv = "CLAUDERUN_FAKE_CLAUDE"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(fakeClaudeEnv) != "" {
+		// What Node does to the stdio it is handed, and what makes sharing a
+		// descriptor with it unsafe.
+		_ = syscall.SetNonblock(2, true)
+		fmt.Println(`{"type":"result","subtype":"success"}`)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// TestRunDoesNotLendClaudeItsStderr pins that claude never holds the caller's
+// own stderr descriptor. Under `mage gen:all 2>&1 | tee` that descriptor is the
+// log pipe itself, and the non-blocking flag claude sets belongs to the pipe,
+// not to claude: it outlives the process and makes every later large write by
+// mage stop at the 64 KB pipe buffer. Regeneration run 43266286267 lost the
+// reason spicedb-java failed that way.
+func TestRunDoesNotLendClaudeItsStderr(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locating the test binary: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(exe, filepath.Join(dir, "claude")); err != nil {
+		t.Fatalf("installing the fake claude: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(fakeClaudeEnv, "1")
+	t.Setenv("CI_REGENERATION", "1")
+
+	// A blocking pipe, which is what stderr is on a CI runner.
+	var fds [2]int
+	if err := syscall.Pipe(fds[:]); err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	r, w := os.NewFile(uintptr(fds[0]), "r"), os.NewFile(uintptr(fds[1]), "w")
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("opening %s: %v", os.DevNull, err)
+	}
+	origOut, origErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = devNull, w
+	t.Cleanup(func() {
+		os.Stdout, os.Stderr = origOut, origErr
+		r.Close()
+		w.Close()
+		devNull.Close()
+	})
+
+	if err := Run("prompt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fds[1]), syscall.F_GETFL, 0)
+	if errno != 0 {
+		t.Fatalf("reading the stderr flags: %v", errno)
+	}
+	if flags&syscall.O_NONBLOCK != 0 {
+		t.Fatal("claude was handed the caller's stderr and left it non-blocking")
+	}
+}
 
 // The following tests exercise renderStream, the stream-json log formatter
 // used by Run under CI_REGENERATION. This is the third cross-cutting

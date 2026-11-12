@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/authzed/spicedb-clients/internal/clauderun"
@@ -942,7 +943,25 @@ func (l *langLog) flush(name, out string, failed bool) {
 	block := logBlock(name, out, failed, os.Getenv("GITHUB_ACTIONS") == "true")
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	fmt.Print(block)
+	if err := writeBlock(os.Stdout, block); err != nil {
+		fmt.Fprintf(os.Stderr, "==> Warning: %s output was cut short: %v\n", name, err)
+	}
+}
+
+// writeBlock writes one language's block to f, first putting f back into
+// blocking mode.
+//
+// Stdout is a pipe shared with every child that inherits it, and the
+// non-blocking flag belongs to the pipe, not to the process that set it. Node
+// sets it, so once any Node child has touched the pipe a write larger than the
+// 64 KB pipe buffer stops at whatever fits and the rest fails with EAGAIN.
+// Regeneration run 43266286267 lost the reason spicedb-java failed that way,
+// and with it the line-initial "Error:" the workflow greps for, so the PR
+// reported no failed language at all.
+func writeBlock(f *os.File, block string) error {
+	_ = syscall.SetNonblock(int(f.Fd()), false)
+	_, err := f.WriteString(block)
+	return err
 }
 
 // logBlock renders one language's captured output. It is separate from flush so

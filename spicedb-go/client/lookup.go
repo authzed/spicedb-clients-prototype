@@ -11,6 +11,22 @@ import (
 
 const defaultLookupPageSize = 512
 
+// lookupResourcesItems normalizes one LookupResourcesResponse message into
+// its results and resume cursor, whether the server sent the singular,
+// one-resource-per-message form or the batched form (see
+// WithLookupResourcesResponseBatchSize). A batched message's results all
+// share its one cursor.
+func lookupResourcesItems(resp *v1.LookupResourcesResponse) ([]*v1.LookupResourcesResult, *v1.Cursor) {
+	if batch := resp.GetBatched(); batch != nil {
+		return batch.GetResults(), batch.GetAfterCursor()
+	}
+	return []*v1.LookupResourcesResult{{
+		ResourceObjectId:  resp.GetResourceObjectId(),
+		Permissionship:    resp.GetPermissionship(),
+		PartialCaveatInfo: resp.GetPartialCaveatInfo(),
+	}}, resp.GetAfterResultCursor()
+}
+
 type LookupResourcesRequest struct {
 	ResourceType, Permission string
 	Subject                  rel.SubjectRef
@@ -50,7 +66,7 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 		// limit is enforced here.
 		size := o.pageRequestLimit()
 		for {
-			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug}
+			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug, OptionalResponseBatchSize: o.responseBatchSize}
 			// The page's clock pauses while the caller holds an item.
 			pageCtx, clock, pageCancel := c.serverClock(ctx, true)
 			count := uint32(0)
@@ -65,33 +81,45 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 					yield(LookupResource{}, e)
 					return
 				}
-				count++
-				cur = resp.GetAfterResultCursor()
+				items, afterCursor := lookupResourcesItems(resp)
+				if len(items) == 0 {
+					pageCancel()
+					yield(LookupResource{}, malformed("lookup resources", "response contains no results"))
+					return
+				}
+				count += uint32(len(items))
+				cur = afterCursor
 				exposed = true
-				if resp.GetResourceObjectId() == "" {
-					pageCancel()
-					yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
-					return
+				lookedUpAt := consistency.NewZedToken(resp.GetLookedUpAt().GetToken())
+				for _, item := range items {
+					if item.GetResourceObjectId() == "" {
+						pageCancel()
+						yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
+						return
+					}
+					if item.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
+						pageCancel()
+						yield(LookupResource{}, malformed("lookup resources", "permissionship is unset"))
+						return
+					}
+					if o.lookupPermissionshipFilter == LookupHasPermissionOnly && item.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
+						continue
+					}
+					total++
+					r := LookupResource{ResourceID: item.GetResourceObjectId(), Permissionship: permissionshipFromProto(item.GetPermissionship()), PartialCaveat: partialCaveatFromProto(item.GetPartialCaveatInfo()), LookedUpAt: lookedUpAt, AfterResultCursor: cur.GetToken()}
+					if !yield(r, nil) {
+						pageCancel()
+						return
+					}
+					if o.limit > 0 && total >= o.limit {
+						pageCancel()
+						return
+					}
 				}
-				if resp.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
-					pageCancel()
-					yield(LookupResource{}, malformed("lookup resources", "permissionship is unset"))
-					return
-				}
-				if o.lookupPermissionshipFilter == LookupHasPermissionOnly && resp.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
-					continue
-				}
-				total++
-				r := LookupResource{ResourceID: resp.GetResourceObjectId(), Permissionship: permissionshipFromProto(resp.GetPermissionship()), PartialCaveat: partialCaveatFromProto(resp.GetPartialCaveatInfo()), LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken()), AfterResultCursor: cur.GetToken()}
-				if !yield(r, nil) {
-					pageCancel()
-					return
-				}
+				// No further network wait occurred between items packed into
+				// the same message, so the clock resumes once per message,
+				// after every one of its items has been yielded.
 				clock.wait()
-				if o.limit > 0 && total >= o.limit {
-					pageCancel()
-					return
-				}
 			}
 			pageCancel()
 			if o.singleRequest || count < size {

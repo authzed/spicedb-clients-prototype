@@ -157,7 +157,15 @@ func Gen() error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running tests (attempt %d/%d)...\n", attempt, maxRetries)
 
-		if err := sh.RunV("gradle", "build"); err != nil {
+		// The examples are compiled but not run. They are integration tests
+		// against a live SpiceDB, which a generation run does not have, so a
+		// bare `gradle build` -- which runs :examples:test -- fails every
+		// attempt with UNAVAILABLE no matter what Claude changed, and nothing
+		// Claude can edit fixes that: regeneration run 43266286267 spent three
+		// attempts on it and rolled spicedb-java back. IntegrationTest runs
+		// them. Excluding :examples:test also drops the compile it depends on,
+		// hence the explicit :examples:testClasses.
+		if err := sh.RunV("gradle", "build", ":examples:testClasses", "-x", ":examples:test"); err != nil {
 			if attempt == maxRetries {
 				if err := gitRun("checkout", "--", "."); err != nil {
 					return fmt.Errorf("build failed after %d retries, and rollback (git checkout) also failed: %w", maxRetries, err)
@@ -171,7 +179,7 @@ func Gen() error {
 			continue
 		}
 
-		if err := sh.RunV("gradle", "test"); err == nil {
+		if err := sh.RunV("gradle", ":lib:test"); err == nil {
 			fmt.Println("==> Tests passed!")
 			// Update baseline
 			head, _ := gitOutput("rev-parse", "HEAD")

@@ -5,11 +5,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -950,5 +952,49 @@ func TestVerifyRepairPassesWhenEverythingBuilds(t *testing.T) {
 
 	if err := verifyRepair([]string{"rust", "go"}); err != nil {
 		t.Fatalf("verifyRepair: %v", err)
+	}
+}
+
+// blockingPipe returns a pipe whose write end is what os.Stdout is on a CI
+// runner: an *os.File over a blocking descriptor, which Go writes to directly
+// rather than through the poller.
+func blockingPipe(t *testing.T) (r, w *os.File) {
+	t.Helper()
+	var fds [2]int
+	if err := syscall.Pipe(fds[:]); err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	r, w = os.NewFile(uintptr(fds[0]), "r"), os.NewFile(uintptr(fds[1]), "w")
+	t.Cleanup(func() { r.Close(); w.Close() })
+	return r, w
+}
+
+// A child process sharing stdout can switch the pipe to non-blocking mode --
+// Node does -- and the flag lives on the shared description, so it outlasts the
+// child. A language's block is far larger than the pipe buffer, so the write
+// then stops at whatever fits: regeneration run 43266286267 lost the whole
+// reason spicedb-java failed this way, along with the "Error:" line the
+// workflow greps for.
+func TestWriteBlockSurvivesANonBlockingStdout(t *testing.T) {
+	r, w := blockingPipe(t)
+	if err := syscall.SetNonblock(int(w.Fd()), true); err != nil {
+		t.Fatalf("set non-blocking: %v", err)
+	}
+
+	block := strings.Repeat("x", 1<<20)
+	got := make(chan int)
+	go func() {
+		// Start late, so the writer meets a full pipe first.
+		time.Sleep(100 * time.Millisecond)
+		n, _ := io.Copy(io.Discard, r)
+		got <- int(n)
+	}()
+
+	if err := writeBlock(w, block); err != nil {
+		t.Fatalf("writeBlock: %v", err)
+	}
+	w.Close()
+	if n := <-got; n != len(block) {
+		t.Fatalf("reader got %d of %d bytes", n, len(block))
 	}
 }

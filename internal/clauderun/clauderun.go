@@ -142,7 +142,14 @@ func Run(prompt string) error {
 	}, ModelArgs()...)
 	cmd := exec.Command("claude", args...)
 	cmd.Stdin = strings.NewReader(prompt)
-	cmd.Stderr = os.Stderr
+	// Wrapped so that claude gets a pipe of its own rather than this process's
+	// stderr descriptor: exec hands an *os.File to the child as-is. Under
+	// `mage gen:all 2>&1 | tee` that descriptor is the log pipe, and claude
+	// runs on Node, which switches its stdio to non-blocking -- a flag that
+	// belongs to the pipe and outlives claude. Every later write by mage larger
+	// than the 64 KB pipe buffer then stops at whatever fits, which is how run
+	// 43266286267 lost the reason spicedb-java failed.
+	cmd.Stderr = struct{ io.Writer }{os.Stderr}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

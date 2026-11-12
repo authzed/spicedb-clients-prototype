@@ -842,12 +842,19 @@ class SpiceDBClient(ClientConfig):
                                         if per_page:
                                             page_left -= time.monotonic() - waited
                                 budget.remaining()
-                                page_cursor = (
-                                    response.after_result_cursor
-                                    if hasattr(response, "after_result_cursor")
+                                if hasattr(response, "batched") and response.HasField("batched"):
+                                    page_cursor = (
+                                        response.batched.after_cursor
+                                        if response.batched.HasField("after_cursor")
+                                        else None
+                                    )
+                                elif (
+                                    hasattr(response, "after_result_cursor")
                                     and response.HasField("after_result_cursor")
-                                    else None
-                                )
+                                ):
+                                    page_cursor = response.after_result_cursor
+                                else:
+                                    page_cursor = None
                                 for item in mapper(response):
                                     if owner._closed:
                                         return
@@ -950,6 +957,7 @@ class SpiceDBClient(ClientConfig):
         permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
         limit: int | None = None,
         page_size: int = 1000,
+        response_batch_size: int | None = None,
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
@@ -964,6 +972,12 @@ class SpiceDBClient(ClientConfig):
         same request and page size. ``paging=Paging.SINGLE_REQUEST`` sends
         exactly one request, as the raw API does: its limit is ``limit``
         (unbounded without one) and ``page_size`` is ignored.
+        ``response_batch_size``, if given, asks the server to pack up to that
+        many resources into each response message instead of one per
+        message; the client flattens a batch into its individual results
+        transparently, and only the last result in a batch carries
+        ``after_result_cursor`` (the server defines one resume point per
+        message, not per result).
         """
         single = _option(paging, Paging) == "single_request"
         _option(permissionship_filter, LookupPermissionshipFilter)
@@ -973,6 +987,8 @@ class SpiceDBClient(ClientConfig):
         _positive(page_size, "page_size")
         if limit is not None:
             _positive(limit, "limit")
+        if response_batch_size is not None:
+            _positive(response_batch_size, "response_batch_size")
         subj = subject._to_proto()
         ctx = _requests.context_struct(context)
         start = _cursor(cursor, "cursor")
@@ -983,12 +999,14 @@ class SpiceDBClient(ClientConfig):
                 resource_type, permission, subj, ctx, consistency, size, cursor
             )
             value.with_debug = _option(debug, LookupDebug)
+            if response_batch_size is not None:
+                value.optional_response_batch_size = response_batch_size
             return value
 
         return self._stream(
             lambda: self._permissions.LookupResources,
             request,
-            lambda response: [_mapping.lookup_resource(response)],
+            lambda response: _mapping.lookup_resources_batch(response),
             budget,
             page_size,
             limit,

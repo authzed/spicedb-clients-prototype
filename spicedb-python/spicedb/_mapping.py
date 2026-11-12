@@ -179,6 +179,40 @@ def lookup_resource(
     )
 
 
+def lookup_resources_batch(
+    resp: permission_service_pb2.LookupResourcesResponse,
+) -> list[LookupResource]:
+    """Flatten one `LookupResourcesResponse` into the items it carries.
+
+    A response holds either the singular fields or `batched`, never both
+    (the request's `optional_response_batch_size` selects which); only the
+    batch's last result carries `after_result_cursor` since the proto
+    defines one resume point per message, not per result.
+    """
+    if not resp.HasField("batched"):
+        return [lookup_resource(resp)]
+    looked_up_at = _wire.token(resp, "looked_up_at", "LookupResourcesResponse")
+    after_cursor = (
+        resp.batched.after_cursor.token or None
+        if resp.batched.HasField("after_cursor")
+        else None
+    )
+    results = resp.batched.results
+    last = len(results) - 1
+    return [
+        LookupResource(
+            resource_id=_wire.text(
+                item.resource_object_id, "LookupResourcesResult.resource_object_id"
+            ),
+            permissionship=_lookup_permissionship(item.permissionship, "LookupResourcesResult"),
+            partial_caveat=_partial_caveat_from_proto(item),
+            looked_up_at=looked_up_at,
+            after_result_cursor=after_cursor if i == last else None,
+        )
+        for i, item in enumerate(results)
+    ]
+
+
 def lookup_subject(
     resp: permission_service_pb2.LookupSubjectsResponse,
 ) -> LookupSubject:

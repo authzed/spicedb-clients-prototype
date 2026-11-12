@@ -1168,6 +1168,7 @@ class InMemoryClient:
         permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
         limit: int | None = None,
         page_size: int = 1000,
+        response_batch_size: int | None = None,
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
@@ -1185,7 +1186,8 @@ class InMemoryClient:
         call, call_error = self._store.begin(Operation.LOOKUP_RESOURCES, None, {
             "resource_type": resource_type, "permission": permission, "subject": subject,
             "consistency": consistency, "context": context, "permissionship_filter": permissionship_filter,
-            "limit": limit, "page_size": page_size, "debug": debug, "cursor": cursor, "paging": paging,
+            "limit": limit, "page_size": page_size, "response_batch_size": response_batch_size,
+            "debug": debug, "cursor": cursor, "paging": paging,
             "timeout": timeout, "call_options": call_options,
         })
         _option(paging, Paging)
@@ -1195,6 +1197,8 @@ class InMemoryClient:
         _positive(page_size, "page_size")
         if limit is not None:
             _positive(limit, "limit")
+        if response_batch_size is not None:
+            _positive(response_batch_size, "response_batch_size")
         _call_options(call_options)
         if not isinstance(subject, SubjectRef):
             raise LocalValidationError("subject: expected SubjectRef")
@@ -1715,6 +1719,7 @@ class AsyncInMemoryClient:
         permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
         limit: int | None = None,
         page_size: int = 1000,
+        response_batch_size: int | None = None,
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
@@ -1725,6 +1730,7 @@ class AsyncInMemoryClient:
         return _async_stream(self._sync.lookup_resources(
             resource_type=resource_type, permission=permission, subject=subject, consistency=consistency,
             context=context, permissionship_filter=permissionship_filter, limit=limit, page_size=page_size,
+            response_batch_size=response_batch_size,
             debug=debug, cursor=cursor, paging=paging, timeout=timeout, call_options=call_options,
         ))
 

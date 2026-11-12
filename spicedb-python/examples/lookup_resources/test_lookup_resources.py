@@ -42,3 +42,32 @@ async def test_lookup_resources(client: SpiceDBClient):
         await client.delete_all_relationships_non_atomic(
             Filter(resource_type="document", resource_id=resource_id)
         )
+
+
+async def test_lookup_resources_response_batch_size(client: SpiceDBClient):
+    """``response_batch_size`` asks the server to pack multiple resources
+    into one response message instead of one per message -- useful for
+    large result sets, since it cuts per-message overhead. The client
+    flattens a batch back into individual results transparently, so callers
+    iterate the same way either way."""
+    txn = Transaction()
+    txn.touch(Relationship.from_triple("document:readme", "viewer", "user:alice"))
+    txn.touch(Relationship.from_triple("document:design", "viewer", "user:alice"))
+    await client.write(txn)
+    resource_ids = [
+        resource.resource_id
+        async for resource in client.lookup_resources(
+            resource_type="document",
+            permission="view",
+            subject=SubjectRef(ObjectRef("user", "alice"), None),
+            consistency=full(),
+            permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY,
+            response_batch_size=100,
+        )
+    ]
+    assert "readme" in resource_ids
+    assert "design" in resource_ids
+    for resource_id in ("readme", "design"):
+        await client.delete_all_relationships_non_atomic(
+            Filter(resource_type="document", resource_id=resource_id)
+        )

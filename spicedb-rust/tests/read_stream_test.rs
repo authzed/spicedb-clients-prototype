@@ -170,6 +170,7 @@ async fn lookup_resources_yields_incrementally_and_paginates_lazily() {
                 permissionship: proto::LookupPermissionship::HasPermission as i32,
                 partial_caveat_info: None,
                 after_result_cursor: is_last.then(|| cursor("page1-end")),
+                batched: None,
             }
         })
         .collect();
@@ -180,6 +181,7 @@ async fn lookup_resources_yields_incrementally_and_paginates_lazily() {
             permissionship: proto::LookupPermissionship::HasPermission as i32,
             partial_caveat_info: None,
             after_result_cursor: None,
+            batched: None,
         })
         .collect();
 

@@ -102,3 +102,39 @@ async fn debug_enum_reaches_lookup_wire_and_can_be_disabled() {
     }
     assert_eq!(*captured.lock().unwrap(), vec![true, false]);
 }
+
+#[tokio::test]
+async fn response_batch_size_is_unset_by_default_and_reaches_the_wire_when_set() {
+    let mock = support::MockPermissionsService::new();
+    let captured = mock.lookup_resources_response_batch_sizes();
+    let address = support::spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(
+        address.to_string(),
+        "token",
+        RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .unwrap();
+    let request = || {
+        LookupResourcesRequest::new(
+            "document",
+            "view",
+            SubjectRef::new(ObjectRef::new("user", "alice").unwrap(), None).unwrap(),
+            consistency::full(),
+        )
+    };
+    let stream = client.lookup_resources(request());
+    tokio::pin!(stream);
+    assert!(stream.next().await.is_none());
+
+    let stream = client.lookup_resources(
+        request().with_options(
+            LookupResourcesOptions::new()
+                .with_response_batch_size(std::num::NonZeroU32::new(1000).unwrap()),
+        ),
+    );
+    tokio::pin!(stream);
+    assert!(stream.next().await.is_none());
+
+    assert_eq!(*captured.lock().unwrap(), vec![0, 1000]);
+}

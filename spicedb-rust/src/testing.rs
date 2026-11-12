@@ -1184,6 +1184,7 @@ impl PermissionsService for Service {
                 after_result_cursor: Some(proto::Cursor {
                     token: cursor_after(position),
                 }),
+                batched: None,
             });
         }
         let mut response = Response::new(self.0.faulted_items(call, items));

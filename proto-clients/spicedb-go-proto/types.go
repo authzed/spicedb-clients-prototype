@@ -37,6 +37,8 @@ type (
 	DeleteRelationshipsResponse     = v1.DeleteRelationshipsResponse
 	LookupResourcesRequest          = v1.LookupResourcesRequest
 	LookupResourcesResponse         = v1.LookupResourcesResponse
+	LookupResourcesBatch            = v1.LookupResourcesBatch
+	LookupResourcesResult           = v1.LookupResourcesResult
 	LookupSubjectsRequest           = v1.LookupSubjectsRequest
 	LookupSubjectsResponse          = v1.LookupSubjectsResponse
 	ExpandPermissionTreeRequest     = v1.ExpandPermissionTreeRequest

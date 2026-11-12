@@ -433,10 +433,11 @@ module SpiceDB
       # documentation). The n-th granted object carries the cursor
       # Store.cursor_after(n); results skipped by +permissionship_filter:
       # HAS_PERMISSION_ONLY+ still advance it, and +limit:+ counts yielded
-      # results.
+      # results. +response_batch_size:+ is accepted, for parameter parity with
+      # the client, but has no effect: the double has no wire format to batch.
       def lookup_resources(resource_type:, permission:, subject:, consistency:, context: nil, limit: nil, # rubocop:disable Metrics/ParameterLists
                            page_size: 1000, timeout: nil, permissionship_filter: LookupPermissionshipFilter::ALL, cursor: nil,
-                           call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, &)
+                           call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, response_batch_size: nil, &)
         call = begin_call(:lookup_resources, nil, binding)
         resource_type = Values.name(resource_type, 'resource_type')
         permission = Values.name(permission, 'permission')
@@ -444,6 +445,10 @@ module SpiceDB
 
         LookupPermissionshipFilter.validate(permissionship_filter)
         Paging.validate(paging)
+        unless response_batch_size.nil? || (response_batch_size.is_a?(Integer) && response_batch_size >= 0)
+          raise LocalValidationError, "response_batch_size: expected a non-negative Integer, got #{Values.received(response_batch_size)}"
+        end
+
         validate_paging(page_size, limit, retry_policy)
         state = operation(call_options) { snapshot.merge(start: cursor_start(cursor)) }
         granted = candidates(state, resource_type).filter_map do |id|

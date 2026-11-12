@@ -108,6 +108,28 @@ module SpiceDB
       )
     end
 
+    # Turns one LookupResourcesResponse into its (item, cursor) pairs for
+    # +paged_stream+'s +expand:+, whether the server sent the singular,
+    # one-resource-per-message form or the batched form (see
+    # +response_batch_size:+ on +lookup_resources+). A batched message's
+    # results all share its one after_cursor; +lookup_resource_from_proto+
+    # reads a batched result the same way it reads the singular response,
+    # since both carry resource_object_id, permissionship and
+    # partial_caveat_info.
+    def lookup_resources_expand(response)
+      batch = response.batched
+      return [[response, response.after_result_cursor&.token]] unless batch
+
+      raise malformed_response('lookup_resources: response contains no results') if batch.results.empty?
+
+      cursor = batch.after_cursor&.token
+      batch.results.map do |result|
+        item = Authzed::Api::V1::LookupResourcesResponse.new(looked_up_at: response.looked_up_at, resource_object_id: result.resource_object_id,
+                                                             permissionship: result.permissionship, partial_caveat_info: result.partial_caveat_info)
+        [item, cursor]
+      end
+    end
+
     def excluded_subjects_from_proto(resp)
       return resp.excluded_subjects.map { |e| resolved_subject_from_proto(e) } unless resp.excluded_subjects.empty?
 

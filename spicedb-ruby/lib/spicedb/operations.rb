@@ -196,7 +196,13 @@ module SpiceDB
     # whole under its page deadline (Budget#page) and only then yielded. A
     # single request has no size bound, so it is not buffered: the default
     # bounds each wait for the next response instead (PageWatchdog).
-    def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, paging: Paging::AUTOMATIC, &)
+    #
+    # +expand:+ turns one response into the one-or-more (item, cursor) pairs
+    # it carries (a batched response packs several results, sharing the
+    # batch's one cursor); it defaults to treating the whole response as a
+    # single item under its own +after_result_cursor+.
+    def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, paging: Paging::AUTOMATIC, # rubocop:disable Metrics/ParameterLists
+                     expand: ->(response) { [[response, response.after_result_cursor&.token]] }, &)
       positive(page_size, 'page_size')
       positive(limit, 'limit') if limit
       single = Paging.validate(paging) == Paging::SINGLE_REQUEST
@@ -208,14 +214,18 @@ module SpiceDB
           request.optional_cursor = cursor_proto(cursor)
           previous = cursor
           deliver = lambda do |response|
-            cursor = response.after_result_cursor&.token
-            count += 1
-            result = mapper.call(response, cursor)
-            next false if include_result && !include_result.call(result)
+            stop = false
+            expand.call(response).each do |item, item_cursor|
+              cursor = item_cursor
+              count += 1
+              result = mapper.call(item, cursor)
+              next if include_result && !include_result.call(result)
 
-            delivered += 1
-            out << result
-            limit && delivered >= limit
+              delivered += 1
+              out << result
+              break stop = true if limit && delivered >= limit
+            end
+            stop
           end
           if single
             consume_rpc(owner, service, operation, request, budget, page_timeout: budget.page_timeout) do |response|

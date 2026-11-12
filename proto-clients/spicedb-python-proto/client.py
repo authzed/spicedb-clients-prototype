@@ -5,6 +5,7 @@ import warnings
 import grpc
 import grpc.aio
 
+from authzed.api.materialize.v0 import roaringlookupresources_pb2_grpc
 from authzed.api.v1 import experimental_service_pb2_grpc
 from authzed.api.v1 import permission_service_pb2_grpc
 from authzed.api.v1 import schema_service_pb2_grpc
@@ -163,7 +164,44 @@ class Client:
         *,
         insecure: bool = False,
         allow_insecure_remote_credentials: bool = False,
+        ca_cert: bytes | None = None,
+        client_cert: bytes | None = None,
+        client_key: bytes | None = None,
     ):
+        # See root DESIGN.md, "Reject unusable credentials and trust
+        # material at construction": either half of a client identity is
+        # unusable alone, so catch it here rather than from grpc-python,
+        # which accepts one without the other and fails opaquely at the
+        # first handshake.
+        if (client_cert is None) != (client_key is None):
+            present = "client_cert" if client_key is None else "client_key"
+            missing = "client_key" if client_key is None else "client_cert"
+            raise ValueError(
+                f"spicedb: {present} was supplied without {missing}: mutual TLS needs both "
+                f"or neither"
+            )
+
+        # See root DESIGN.md, "Use secure transport defaults and explicit
+        # trust configuration": reject TLS material combined with
+        # plaintext. A plaintext channel performs no TLS handshake, so this
+        # material would be silently ignored while the bearer token would
+        # still be sent -- in cleartext over the resulting connection.
+        supplied_tls_material = [
+            name
+            for name, value in (
+                ("ca_cert", ca_cert),
+                ("client_cert", client_cert),
+                ("client_key", client_key),
+            )
+            if value is not None
+        ]
+        if insecure and supplied_tls_material:
+            raise ValueError(
+                f"spicedb: refusing to build a client with insecure=True and TLS material "
+                f"({', '.join(supplied_tls_material)}): drop insecure to use TLS, or drop the "
+                f"TLS material to connect in plaintext"
+            )
+
         # See root DESIGN.md, "RULE: Credentials over insecure transport
         # require an explicit opt-in". This is the guard for
         # _BearerTokenInterceptor below -- the only reason it exists is that
@@ -187,7 +225,13 @@ class Client:
             )
         else:
             call_creds = grpc.access_token_call_credentials(token)
-            channel_creds = grpc.ssl_channel_credentials()
+            # root_certificates=None delegates default trust to gRPC's own
+            # trust store rather than this layer picking one.
+            channel_creds = grpc.ssl_channel_credentials(
+                root_certificates=ca_cert,
+                private_key=client_key,
+                certificate_chain=client_cert,
+            )
             composite_creds = grpc.composite_channel_credentials(
                 channel_creds, call_creds
             )
@@ -202,6 +246,11 @@ class Client:
             self._channel
         )
         _wrap_deprecated_experimental_methods(self.experimental)
+        self.materialize = (
+            roaringlookupresources_pb2_grpc.RoaringLookupResourcesServiceStub(
+                self._channel
+            )
+        )
 
     async def close(self):
         await self._channel.close()

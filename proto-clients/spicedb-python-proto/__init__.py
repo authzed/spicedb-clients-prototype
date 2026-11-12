@@ -1,5 +1,9 @@
 """SpiceDB Python proto client."""
 
+from authzed.api.materialize.v0.roaringlookupresources_pb2 import (
+    ExperimentalRoaringLookupResourcesRequest,
+    ExperimentalRoaringLookupResourcesResponse,
+)
 from authzed.api.v1.core_pb2 import (
     AlgebraicSubjectSet,
     ContextualizedCaveat,
@@ -129,4 +133,7 @@ __all__ = [
     # Watch service
     "WatchRequest",
     "WatchResponse",
+    # Materialize roaring lookup resources service
+    "ExperimentalRoaringLookupResourcesRequest",
+    "ExperimentalRoaringLookupResourcesResponse",
 ]

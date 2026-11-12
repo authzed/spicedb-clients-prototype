@@ -1280,9 +1280,9 @@ async fn check_bulk_round_trips_the_servers_response() {
         checked_at: token("rev-1"),
         pairs: vec![],
     };
-    for i in 0..3 {
+    for (i, pair) in got.pairs.iter().enumerate().take(3) {
         let mut item = spicedb::protoconv::check_request_to_proto(&question()).unwrap();
-        item.context = got.pairs[i].request.as_ref().unwrap().context.clone();
+        item.context = pair.request.as_ref().unwrap().context.clone();
         assert!(item.context.is_some(), "call context is merged into items");
         want.pairs.push(proto::CheckBulkPermissionsPair {
             request: Some(item),

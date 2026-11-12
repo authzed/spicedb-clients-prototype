@@ -692,6 +692,7 @@ export interface LookupResourcesRequest {
     readonly permissionshipFilter?: LookupPermissionshipFilter;
     // (undocumented)
     readonly resourceType: string;
+    readonly responseBatchSize?: number;
     // (undocumented)
     readonly subject: SubjectRef;
 }

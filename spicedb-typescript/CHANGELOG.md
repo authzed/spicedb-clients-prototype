@@ -337,6 +337,18 @@
 
 ### Added
 
+- **2026-11-12: `lookupResources` accepts `responseBatchSize`, unlocked by proto regen
+  adding `LookupResourcesRequest.optionalResponseBatchSize` and
+  `LookupResourcesResponse.batched`.** The server can now group multiple results into
+  one streamed response message instead of one message per result, trading
+  time-to-first-result for overall throughput on large result sets. The client unpacks
+  a batched message transparently: callers still get one `LookupResource` per `yield`,
+  every item in a batch shares that batch's `afterResultCursor` (mirroring how
+  `exportRelationships` already shares one cursor per export batch), and a server that
+  predates batching is unaffected since the option defaults to off (one result per
+  message). No breaking change — `responseBatchSize` is a new optional field on
+  `LookupResourcesRequest`.
+
 - Generated clients expose all native capabilities directly, including
   `deleteAllRelationshipsNonAtomic`, `watch`, bulk checks, schema, import/export,
   counters and materialize. Existing typed lookup/read methods forward all options.

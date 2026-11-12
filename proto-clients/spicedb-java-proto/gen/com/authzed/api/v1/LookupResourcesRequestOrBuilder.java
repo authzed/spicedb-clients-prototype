@@ -179,4 +179,28 @@ public interface LookupResourcesRequestOrBuilder extends
    * @return The withDebug.
    */
   boolean getWithDebug();
+
+  /**
+   * <pre>
+   * optional_response_batch_size, if non-zero, requests that the server return
+   * multiple resources per response message (up to this many) in
+   * LookupResourcesResponse.batched, instead of a single resource per message.
+   * Zero (the default) preserves one-resource-per-message streaming for
+   * backward compatibility.
+   *
+   * The batch size trades time-to-first-result against overall throughput: a
+   * larger batch size increases throughput (fewer, larger messages, less
+   * per-message overhead) but delays the first results, since the server
+   * accumulates more of them before sending a message; a smaller batch size
+   * returns initial results sooner. A value around 1000 is a good default.
+   *
+   * The maximum batch size is bounded by a server-side configuration flag;
+   * requesting more than the server allows is clamped to that maximum rather
+   * than rejected.
+   * </pre>
+   *
+   * <code>uint32 optional_response_batch_size = 9 [json_name = "optionalResponseBatchSize"];</code>
+   * @return The optionalResponseBatchSize.
+   */
+  int getOptionalResponseBatchSize();
 }

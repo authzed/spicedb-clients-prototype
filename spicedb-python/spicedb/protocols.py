@@ -285,6 +285,7 @@ class ClientProtocol(Protocol):
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> Stream[LookupResource]:
@@ -604,6 +605,7 @@ class AsyncClientProtocol(Protocol):
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> AsyncStream[LookupResource]:

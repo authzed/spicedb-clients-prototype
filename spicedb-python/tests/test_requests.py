@@ -138,6 +138,25 @@ def test_lookup_resources_request_carries_at_least_as_fresh_token():
     assert r.consistency.at_least_as_fresh.token == "cafebabe"
 
 
+def test_lookup_resources_request_defaults_response_batch_size_to_zero():
+    """Zero preserves one-resource-per-message streaming for backward
+    compatibility when the caller does not ask for server-side batching."""
+    subj_ref = req.subject_reference(_subject("user:alice", ""))
+    r = req.lookup_resources_request(
+        "document", "view", subj_ref, None, full(), req.DEFAULT_PAGE_SIZE, None,
+    )
+    assert r.optional_response_batch_size == 0
+
+
+def test_lookup_resources_request_carries_response_batch_size():
+    subj_ref = req.subject_reference(_subject("user:alice", ""))
+    r = req.lookup_resources_request(
+        "document", "view", subj_ref, None, full(), req.DEFAULT_PAGE_SIZE, None,
+        response_batch_size=500,
+    )
+    assert r.optional_response_batch_size == 500
+
+
 def test_read_relationships_request_sets_limit_and_cursor():
     f = Filter(resource_type="document")
     r = req.read_relationships_request(f, full(), req.DEFAULT_PAGE_SIZE, None)

@@ -1171,6 +1171,7 @@ class InMemoryClient:
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> Stream[LookupResource]:
@@ -1181,12 +1182,15 @@ class InMemoryClient:
         ``permissionship_filter``, ``limit`` and ``cursor`` behave as on the
         real client; each item's cursor is the decimal count of granted
         resources up to and including it (see :func:`cursor_after`).
+        ``response_batch_size`` is accepted and recorded for parity with the
+        real client; the double has no wire messages to pack, so it has no
+        effect on the yielded items.
         """
         call, call_error = self._store.begin(Operation.LOOKUP_RESOURCES, None, {
             "resource_type": resource_type, "permission": permission, "subject": subject,
             "consistency": consistency, "context": context, "permissionship_filter": permissionship_filter,
             "limit": limit, "page_size": page_size, "debug": debug, "cursor": cursor, "paging": paging,
-            "timeout": timeout, "call_options": call_options,
+            "response_batch_size": response_batch_size, "timeout": timeout, "call_options": call_options,
         })
         _option(paging, Paging)
         _option(permissionship_filter, LookupPermissionshipFilter)
@@ -1195,6 +1199,8 @@ class InMemoryClient:
         _positive(page_size, "page_size")
         if limit is not None:
             _positive(limit, "limit")
+        if response_batch_size is not None:
+            _positive(response_batch_size, "response_batch_size")
         _call_options(call_options)
         if not isinstance(subject, SubjectRef):
             raise LocalValidationError("subject: expected SubjectRef")
@@ -1718,6 +1724,7 @@ class AsyncInMemoryClient:
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> AsyncStream[LookupResource]:
@@ -1725,7 +1732,8 @@ class AsyncInMemoryClient:
         return _async_stream(self._sync.lookup_resources(
             resource_type=resource_type, permission=permission, subject=subject, consistency=consistency,
             context=context, permissionship_filter=permissionship_filter, limit=limit, page_size=page_size,
-            debug=debug, cursor=cursor, paging=paging, timeout=timeout, call_options=call_options,
+            debug=debug, cursor=cursor, paging=paging, response_batch_size=response_batch_size,
+            timeout=timeout, call_options=call_options,
         ))
 
     def lookup_subjects(

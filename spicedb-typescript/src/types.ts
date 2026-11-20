@@ -199,6 +199,14 @@ export interface LookupResourcesRequest {
     readonly cursor?: string;
     /** `Paging.SingleRequest` sends exactly one request, as the raw API does. Defaults to `Paging.Automatic`. */
     readonly paging?: Paging;
+    /**
+     * When set, requests that the server batch up to this many resources into
+     * each stream message instead of one resource per message. A larger value
+     * trades time-to-first-result for throughput; omitting it preserves
+     * one-resource-per-message streaming. The server bounds the maximum batch
+     * size and rejects a larger request.
+     */
+    readonly responseBatchSize?: number;
 }
 export interface LookupSubjectsRequest {
     readonly resource: ObjectRef;
@@ -1203,17 +1211,26 @@ export function resolvedSubjectFromProto(v?: ProtoResolvedSubject): ResolvedSubj
     };
 }
 /**
+ * Builds a native `LookupResource` from the fields shared by the singular and
+ * batched lookup-resources wire forms: the batched form shares its parent
+ * response's `lookedUpAt` and carries one cursor for the whole batch.
+ * @internal
+ */
+export function lookupResourceFromFields(resourceObjectId: string, permissionship: LookupPermissionship, partialCaveatInfo: ProtoPartialCaveatInfo | undefined, lookedUpAtToken: string | undefined, cursor?: string): LookupResource {
+    return {
+        resourceId: resourceObjectId,
+        ...(cursor ? { afterResultCursor: cursor } : {}),
+        permissionship: permissionshipFromProto(permissionship),
+        partialCaveat: partialCaveatFromProto(partialCaveatInfo),
+        lookedUpAt: serverToken(lookedUpAtToken),
+    };
+}
+/**
  * Maps a proto `LookupResourcesResponse` to its native equivalent.
  * @internal
  */
 export function fromProtoLookupResource(resp: ProtoLookupResourcesResponse, cursor = resp.afterResultCursor?.token): LookupResource {
-    return {
-        resourceId: resp.resourceObjectId,
-        ...(cursor ? { afterResultCursor: cursor } : {}),
-        permissionship: permissionshipFromProto(resp.permissionship),
-        partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
-        lookedUpAt: serverToken(resp.lookedUpAt?.token),
-    };
+    return lookupResourceFromFields(resp.resourceObjectId, resp.permissionship, resp.partialCaveatInfo, resp.lookedUpAt?.token, cursor);
 }
 /**
  * Maps a proto `LookupSubjectsResponse` to its native equivalent, falling

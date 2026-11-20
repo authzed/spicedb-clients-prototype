@@ -83,4 +83,28 @@ public class LookupResourcesTest
         Assert.Equal(3, limited.Count);
         Assert.NotNull(limited[2].AfterResultCursor);
     }
+
+    // Requests that the server batch multiple resources per response message
+    // (LookupOptions.ResponseBatchSize). Results are still yielded one at a time
+    // regardless of server-side grouping, and a server that does not understand the
+    // option simply ignores it and streams one result per message as before.
+    [Fact]
+    public async Task LookupResources_ResponseBatchSizeStillYieldsEveryResult()
+    {
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+        await client.WriteSchemaAsync(Schema, null, default);
+        var txn = new Transaction();
+        for (var i = 0; i < 5; i++) txn.Touch(Relationship.FromTuple($"document:batched{i}#viewer@user:batchreader"));
+        var written = await client.WriteAsync(txn, null, default);
+        var reader = SubjectRef.Direct(new ObjectRef("user", "batchreader"));
+
+        var resourceIDs = new HashSet<string>();
+        await foreach (var result in client.LookupResourcesAsync(AtLeast(written.Revision), "document", "view", reader, new LookupOptions { ResponseBatchSize = 1000 }, default))
+        {
+            Assert.Equal(Permissionship.HasPermission, result.Permissionship);
+            resourceIDs.Add(result.ResourceId);
+        }
+
+        Assert.Equal(5, resourceIDs.Count);
+    }
 }

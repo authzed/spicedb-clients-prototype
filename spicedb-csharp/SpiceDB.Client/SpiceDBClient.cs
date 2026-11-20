@@ -565,13 +565,28 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         if (options?.SubjectRelation is not null) throw new InvalidArgumentException("LookupResources uses the supplied SubjectRef relation.");
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var single = options?.Paging == Paging.SingleRequest;
-        var request = new LookupResourcesRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), ResourceObjectType = Native.Required(resourceType, nameof(resourceType)), Permission = Native.Required(permission, nameof(permission)), Subject = Native.Required(subject, nameof(subject)).ToProto(), Context = Native.Struct(options?.Context), WithDebug = options?.Debug == LookupDebug.Enabled, OptionalLimit = PageRequestLimit(single, size, options?.Limit), OptionalCursor = StartCursor(options?.ResumeCursor) };
+        uint responseBatchSize = options?.ResponseBatchSize is { } batchSize ? (uint)Positive(batchSize, nameof(LookupOptions.ResponseBatchSize)) : 0;
+        var request = new LookupResourcesRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), ResourceObjectType = Native.Required(resourceType, nameof(resourceType)), Permission = Native.Required(permission, nameof(permission)), Subject = Native.Required(subject, nameof(subject)).ToProto(), Context = Native.Struct(options?.Context), WithDebug = options?.Debug == LookupDebug.Enabled, OptionalLimit = PageRequestLimit(single, size, options?.Limit), OptionalCursor = StartCursor(options?.ResumeCursor), OptionalResponseBatchSize = responseBatchSize };
         var sent = options?.ResumeCursor;
         while (true)
         {
             int count = 0;
             await foreach (var response in Stream(budget, o => _permissions.LookupResources(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: single))
             {
+                if (response.Batched is { } batch)
+                {
+                    foreach (var result in batch.Results)
+                    {
+                        count++;
+                        var batchedPermissionship = Response.LookupPermissionship(result.Permissionship, "LookupResources");
+                        if (options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly && result.Permissionship != LookupPermissionship.HasPermission) continue;
+                        remaining--;
+                        yield return new() { ResourceId = Response.Id(result.ResourceObjectId, "LookupResources", "resource object id"), Permissionship = batchedPermissionship, PartialCaveat = ToPartialCaveatInfo(result.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = batch.AfterCursor?.Token };
+                        if (remaining == 0) yield break;
+                    }
+                    request.OptionalCursor = batch.AfterCursor;
+                    continue;
+                }
                 request.OptionalCursor = response.AfterResultCursor; count++;
                 var permissionship = Response.LookupPermissionship(response.Permissionship, "LookupResources");
                 if (options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly && response.Permissionship != LookupPermissionship.HasPermission) continue;

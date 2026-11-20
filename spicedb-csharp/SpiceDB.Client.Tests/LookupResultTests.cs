@@ -403,4 +403,95 @@ public class LookupResultTests
         captured.Should().NotBeNull();
         captured!.WithDebug.Should().BeTrue();
     }
+
+    // ── ResponseBatchSize: server-side batched LookupResources responses ───
+
+    [Fact]
+    public async Task LookupResourcesAsync_ResponseBatchSize_SetsRequestFieldAndUnpacksBatch()
+    {
+        LookupResourcesRequest? captured = null;
+        var resp = new LookupResourcesResponse
+        {
+            LookedUpAt = new Authzed.Api.V1.ZedToken { Token = "revision" },
+            Batched = new LookupResourcesBatch
+            {
+                Results =
+                {
+                    new LookupResourcesResult { ResourceObjectId = "doc1", Permissionship = LookupPermissionship.HasPermission },
+                    new LookupResourcesResult { ResourceObjectId = "doc2", Permissionship = LookupPermissionship.ConditionalPermission, PartialCaveatInfo = new Authzed.Api.V1.PartialCaveatInfo { MissingRequiredContext = { "ip" } } },
+                },
+                AfterCursor = new Cursor { Token = "batch-cursor" },
+            },
+        };
+
+        var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        mockPermissions
+            .Setup(c => c.LookupResources(It.IsAny<LookupResourcesRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Callback<LookupResourcesRequest, Metadata, DateTime?, CancellationToken>((req, _, _, _) => captured = req)
+            .Returns(MakeServerStreamingCall(new FakeStreamReader<LookupResourcesResponse>([resp])));
+
+        await using var client = new SpiceDBClient(mockPermissions.Object, new Mock<SchemaService.SchemaServiceClient>().Object, new Mock<WatchService.WatchServiceClient>().Object, new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
+
+        var results = new List<LookupResource>();
+        await foreach (var result in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), new LookupOptions { ResponseBatchSize = 1000 }))
+            results.Add(result);
+
+        captured.Should().NotBeNull();
+        captured!.OptionalResponseBatchSize.Should().Be(1000u);
+
+        results.Should().HaveCount(2);
+        results[0].ResourceId.Should().Be("doc1");
+        results[0].Permissionship.Should().Be(Permissionship.HasPermission);
+        results[0].LookedUpAt!.Value.Should().Be("revision");
+        results[0].AfterResultCursor.Should().Be("batch-cursor");
+        results[1].ResourceId.Should().Be("doc2");
+        results[1].Permissionship.Should().Be(Permissionship.ConditionalPermission);
+        results[1].PartialCaveat!.MissingRequiredContext.Should().Equal("ip");
+        // Every item from one batched response shares its single resume cursor.
+        results[1].AfterResultCursor.Should().Be("batch-cursor");
+    }
+
+    [Fact]
+    public async Task LookupResourcesAsync_ResponseBatchSize_HonorsPermissionshipFilterPerItem()
+    {
+        var resp = new LookupResourcesResponse
+        {
+            Batched = new LookupResourcesBatch
+            {
+                Results =
+                {
+                    new LookupResourcesResult { ResourceObjectId = "doc1", Permissionship = LookupPermissionship.HasPermission },
+                    new LookupResourcesResult { ResourceObjectId = "doc2", Permissionship = LookupPermissionship.ConditionalPermission },
+                },
+                AfterCursor = new Cursor { Token = "batch-cursor" },
+            },
+        };
+        var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        mockPermissions
+            .Setup(c => c.LookupResources(It.IsAny<LookupResourcesRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Returns(MakeServerStreamingCall(new FakeStreamReader<LookupResourcesResponse>([resp])));
+        await using var client = new SpiceDBClient(mockPermissions.Object, new Mock<SchemaService.SchemaServiceClient>().Object, new Mock<WatchService.WatchServiceClient>().Object, new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
+
+        var results = new List<LookupResource>();
+        await foreach (var result in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), new LookupOptions { ResponseBatchSize = 1000, PermissionshipFilter = LookupPermissionshipFilter.HasPermissionOnly }))
+            results.Add(result);
+
+        results.Should().ContainSingle().Which.ResourceId.Should().Be("doc1");
+    }
+
+    [Fact]
+    public void LookupResourcesAsync_ResponseBatchSize_RejectsNonPositiveValue()
+    {
+        Action invalid = () => new LookupOptions { ResponseBatchSize = 0 };
+        // ResponseBatchSize validates lazily (per call, not at construction) like other plain options.
+        invalid.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task LookupResourcesAsync_ResponseBatchSize_ZeroIsRejectedAtCallTime()
+    {
+        await using var client = new SpiceDBClient(new Mock<PermissionsService.PermissionsServiceClient>().Object, new Mock<SchemaService.SchemaServiceClient>().Object, new Mock<WatchService.WatchServiceClient>().Object, new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
+        Func<Task> act = async () => { await foreach (var _ in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), new LookupOptions { ResponseBatchSize = 0 })) { } };
+        await act.Should().ThrowAsync<InvalidArgumentException>();
+    }
 }

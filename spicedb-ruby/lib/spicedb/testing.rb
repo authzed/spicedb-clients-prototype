@@ -91,11 +91,16 @@ module SpiceDB
     # subject, in insertion order) and return those check resolution grants,
     # conditional ones as :conditional_permission. They honor
     # +permissionship_filter:+, +limit:+ and +cursor:+ (Store.cursor_after)
-    # and report no excluded subjects. #reflect_schema returns the result registered with
+    # and report no excluded subjects. #lookup_resources also pages and
+    # batches its results as a batching SpiceDB would for the client's
+    # requests (+page_size:+, +paging:+, +response_batch_size:+ and
+    # +batching:+), so only the last item of each batch carries a cursor.
+    # #reflect_schema returns the result registered with
     # #set_reflect_schema_result. Read and export cursors and limits, the
     # export filter, and +call_options:+ response metadata (filled from
-    # #set_response_metadata) are honored. Consistency, timeouts, paging and
-    # retry policies are accepted and otherwise ignored, except that a
+    # #set_response_metadata) are honored. Consistency, timeouts, paging
+    # (outside #lookup_resources) and retry policies are accepted and
+    # otherwise ignored, except that a
     # +retry_policy:+ on a non-idempotent mutation is rejected as the client
     # rejects it. Every option is a plain keyword argument, so a test that
     # needs one can inspect it directly. It is safe for concurrent use.
@@ -430,21 +435,32 @@ module SpiceDB
 
       # The objects of +resource_type+ in the stored relationships that check
       # resolution grants +permission+ to +subject+ (see the class
-      # documentation). The n-th granted object carries the cursor
+      # documentation). The cursor after the n-th granted object is
       # Store.cursor_after(n); results skipped by +permissionship_filter:
       # HAS_PERMISSION_ONLY+ still advance it, and +limit:+ counts yielded
       # results.
+      #
+      # Results are grouped into pages and response batches as a batching
+      # SpiceDB would group them for the client's requests, and, as with the
+      # client, only the last item yielded from a batch carries its cursor
+      # (the items before it carry nil). With the defaults a lookup of up to
+      # 1000 results is one batch, so only its last item has a cursor; a
+      # +limit:+ always ends on one, and +batching: LookupBatching::DISABLED+
+      # puts one on every item. +paging: Paging::SINGLE_REQUEST+ with a
+      # +limit:+ serves the first +limit+ granted results, then filters them.
       def lookup_resources(resource_type:, permission:, subject:, consistency:, context: nil, limit: nil, # rubocop:disable Metrics/ParameterLists
                            page_size: 1000, timeout: nil, permissionship_filter: LookupPermissionshipFilter::ALL, cursor: nil,
-                           call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, &)
+                           call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, response_batch_size: nil,
+                           batching: LookupBatching::AUTOMATIC, &)
         call = begin_call(:lookup_resources, nil, binding)
         resource_type = Values.name(resource_type, 'resource_type')
         permission = Values.name(permission, 'permission')
         raise LocalValidationError, "subject: expected SubjectRef, got #{Values.received(subject)}" unless subject.is_a?(SubjectRef)
 
         LookupPermissionshipFilter.validate(permissionship_filter)
-        Paging.validate(paging)
         validate_paging(page_size, limit, retry_policy)
+        single = Paging.validate(paging) == Paging::SINGLE_REQUEST
+        batch_size = LookupBatches.batch_size(batching, response_batch_size, page_size: page_size, limit: limit, single: single)
         state = operation(call_options) { snapshot.merge(start: cursor_start(cursor)) }
         granted = candidates(state, resource_type).filter_map do |id|
           check = PermissionCheck.new(resource: ObjectRef.new(object_type: resource_type, object_id: id), permission: permission,
@@ -452,12 +468,12 @@ module SpiceDB
           result = resolve_check(check, state)
           [id, result] if GRANTING.include?(result.permissionship)
         end
-        items = granted.each_with_index.map do |(id, result), index|
+        results = granted.map do |id, result|
           LookupResource.new(resource_id: id, permissionship: result.permissionship, partial_caveat: partial_caveat(result),
-                             looked_up_at: state[:revision], cursor: Store.cursor_after(index + 1))
-        end.drop(state[:start])
-        items = items.select { |item| item.permissionship == :has_permission } if permissionship_filter == LookupPermissionshipFilter::HAS_PERMISSION_ONLY
-        items = items.first(limit) if limit
+                             looked_up_at: state[:revision])
+        end
+        items = batched_lookup(results, state[:start], batch_size, page_size: page_size, limit: limit, single: single,
+                                                                   has_permission_only: permissionship_filter == LookupPermissionshipFilter::HAS_PERMISSION_ONLY)
         stream = item_stream(call, items)
         block_given? ? stream.each(&) : stream
       end
@@ -645,6 +661,34 @@ module SpiceDB
         matching = @relationships.values.select(&)
         items = matching.each_with_index.map { |relationship, index| [relationship, Store.cursor_after(index + 1)] }.drop(start)
         limit ? items.first(limit) : items
+      end
+
+      # The items a client would yield for +results+ (every granted result,
+      # in order) after the first +start+: each page request asks for the
+      # batch size the client would (LookupBatches.page_batch_size), a
+      # page is cut into batches of that size (0: one result per response),
+      # and only the last item yielded from a batch carries the cursor after
+      # the batch.
+      def batched_lookup(results, start, batch_size, page_size:, limit:, single:, has_permission_only:)
+        items = []
+        position = start
+        loop do
+          size = LookupBatches.page_batch_size(batch_size, page_size: page_size, limit: limit, delivered: items.length, single: single,
+                                                           has_permission_only: has_permission_only)
+          page = results[position, single ? (limit || results.length) : page_size] || []
+          page.each_slice(size.zero? ? 1 : size) do |batch|
+            position += batch.length
+            kept = has_permission_only ? batch.select { |item| item.permissionship == :has_permission } : batch.dup
+            next if kept.empty?
+
+            room = limit && (limit - items.length)
+            kept[-1] = kept.last.with(cursor: Store.cursor_after(position)) unless room && kept.length > room
+            items.concat(room ? kept.first(room) : kept)
+            break if limit && items.length >= limit
+          end
+          break if single || page.length < page_size || (limit && items.length >= limit)
+        end
+        items
       end
 
       def validate_paging(page_size, limit, retry_policy)

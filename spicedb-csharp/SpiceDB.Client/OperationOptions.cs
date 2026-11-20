@@ -223,8 +223,9 @@ public enum Paging
     Automatic,
     /// <summary>
     /// Sends exactly one request, as the raw API does: its limit is <c>Limit</c> (unbounded
-    /// when null), <c>PageSize</c> is ignored, and no follow-up page is requested. Each item
-    /// still carries its after-result cursor.
+    /// when null), <c>PageSize</c> is ignored, and no follow-up page is requested. Each
+    /// relationship still carries its after-result cursor; a resource lookup's batches still
+    /// end on one.
     /// </summary>
     SingleRequest,
 }

@@ -348,6 +348,42 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - A named single-request mode sends exactly one request, as the raw API does:
     its limit is the total limit or unbounded, and no follow-up page is fetched.
 
+- **Batch resource lookups on the wire without changing what callers iterate.**
+  - `LookupResources` asks the server for batched responses by default and
+    still yields one resource at a time. The requested batch size defaults to
+    the page size, capped at 1,000 (in single-request mode: the total limit,
+    capped at 1,000, or 1,000 without one). An option sets a positive batch
+    size, sent as given: the server rejects one above its maximum, and the
+    client does not clamp it. A named mode disables batching; it wins over a
+    batch size given with it, as single-request mode ignores the page size.
+  - Every response is read in whichever form it arrives: a batch expands to
+    its results in order, and a one-resource response is handled as before, so
+    servers that predate batching (or ignore it) need no configuration. Each
+    result in a batch is validated like a one-resource response, and a page is
+    complete when its result count, not its message count, reaches the page
+    size.
+  - A batch carries one cursor, which resumes after its last result. Only the
+    last item yielded from a batch carries an after-result cursor; the items
+    before it carry none, and never a cursor that would skip the rest of the
+    batch. When the permissionship filter drops a batch's trailing results,
+    the last item it keeps carries the cursor, since resuming there skips only
+    dropped results. Without batching every item carries its cursor. Each
+    client's docs say that an absent cursor means "not a resume point", and
+    that callers checkpointing a long lookup keep the latest cursor they saw.
+  - A total limit must end on a resume point, so the last item of a limited
+    call always carries a cursor. When fewer results remain than a page holds,
+    that page's batch size is the remaining count if smaller than the batch
+    size, unchanged if it divides the remaining count, and otherwise batching
+    is off for that page. A limit combined with the unconditional-only filter
+    disables batching, because the filter makes batch boundaries
+    unpredictable. The batch size is not part of the cursor's request hash, so
+    it may differ between pages and between a call and its resumption.
+  - Where a client resolves options into a snapshot, it reports the batch size
+    a call would request (none when disabled). The test double batches the
+    same way, using the same rules, so a test that resumes from a mid-batch
+    item fails in the double as it would against a server. Generated facades
+    forward both options.
+
 ## Filters and deletion
 
 - **Expose full relationship filters on every watch API.**

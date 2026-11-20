@@ -934,6 +934,10 @@ public final class SpiceDBClient implements SpiceDBApi {
     var protoSubject = subjectProto(subject);
     boolean single = options.paging() == Paging.SINGLE_REQUEST;
     int requestLimit = pageRequestLimit(single, options.pageSize(), options.limit());
+    // Results yielded so far: a limited call sizes each page's batches by what is left to yield.
+    long[] yielded = {0};
+    boolean grantedOnly =
+        options.permissionshipFilter() == LookupPermissionshipFilter.HAS_PERMISSION_ONLY;
     return pagedStream(
         cursor -> {
           var b =
@@ -946,10 +950,17 @@ public final class SpiceDBClient implements SpiceDBApi {
                   .setWithDebug(options.debug() == LookupDebug.ENABLED);
           if (cursor != null) b.setOptionalCursor(cursor);
           if (options.context() != null) b.setContext(toProtoStruct(options.context()));
-          return stub(permissionsStub, options.transport()).lookupResources(b.build());
+          int batchSize = options.responseBatchSizeForPage(yielded[0]);
+          if (batchSize > 0) b.setOptionalResponseBatchSize(batchSize);
+          return unbatched(
+              stub(permissionsStub, options.transport()).lookupResources(b.build()), grantedOnly);
         },
         LookupResourcesResponse::getAfterResultCursor,
-        ProtoConv::fromProto,
+        response -> {
+          var resource = ProtoConv.fromProto(response);
+          yielded[0]++;
+          return resource;
+        },
         "lookup",
         options.cursor(),
         response -> {
@@ -958,7 +969,7 @@ public final class SpiceDBClient implements SpiceDBApi {
           if (response.getPermissionship()
               == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
             throw malformed("looked-up resource: permissionship is unset");
-          return options.permissionshipFilter() == LookupPermissionshipFilter.ALL
+          return !grantedOnly
               || response.getPermissionship()
                   == LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION;
         },
@@ -986,9 +997,10 @@ public final class SpiceDBClient implements SpiceDBApi {
       throw new LocalValidationException("lookupSubjects does not support permissionshipFilter");
     if (options.debug() == LookupDebug.ENABLED
         || options.pageSize() != 512
-        || options.paging() != Paging.AUTOMATIC)
+        || options.paging() != Paging.AUTOMATIC
+        || !defaultResponseBatching(options))
       throw new LocalValidationException(
-          "lookupSubjects does not support debug, pageSize or paging");
+          "lookupSubjects does not support debug, pageSize, paging or response batching");
     var builder =
         LookupSubjectsRequest.newBuilder()
             .setConsistency(consistency.toProto())
@@ -1681,9 +1693,11 @@ public final class SpiceDBClient implements SpiceDBApi {
         || options.debug() == LookupDebug.ENABLED
         || options.limit() != 0
         || options.pageSize() != 512
-        || options.paging() != Paging.AUTOMATIC)
+        || options.paging() != Paging.AUTOMATIC
+        || !defaultResponseBatching(options))
       throw new LocalValidationException(
-          "roaring lookup does not support context, debug, limit, pageSize or paging");
+          "roaring lookup does not support context, debug, limit, pageSize, paging or response"
+              + " batching");
     var deadline = deadlineFor(options.timeout());
     var request =
         com.authzed.api.materialize.v0.ExperimentalRoaringLookupResourcesRequest.newBuilder()
@@ -2620,6 +2634,58 @@ public final class SpiceDBClient implements SpiceDBApi {
   }
 
   /**
+   * Reads lookupResources responses in either wire form as one response per resource, so paging
+   * counts and validates results rather than messages. A batch's one cursor resumes after its last
+   * result, so only that result keeps it for paging, and so does the last result the caller will be
+   * given ({@code grantedOnly} drops the others): resuming there skips only dropped results. No
+   * earlier result carries a cursor. An empty batch yields nothing.
+   */
+  private static Iterator<LookupResourcesResponse> unbatched(
+      Iterator<LookupResourcesResponse> source, boolean grantedOnly) {
+    return new Iterator<LookupResourcesResponse>() {
+      Iterator<LookupResourcesResponse> batch = Collections.emptyIterator();
+
+      public boolean hasNext() {
+        while (!batch.hasNext()) {
+          if (!source.hasNext()) return false;
+          var response = source.next();
+          batch = response.hasBatched() ? expand(response) : List.of(response).iterator();
+        }
+        return true;
+      }
+
+      public LookupResourcesResponse next() {
+        if (!hasNext()) throw new NoSuchElementException();
+        return batch.next();
+      }
+
+      private Iterator<LookupResourcesResponse> expand(LookupResourcesResponse response) {
+        var results = response.getBatched().getResultsList();
+        int last = results.size() - 1;
+        int lastKept = last;
+        if (grantedOnly)
+          while (lastKept >= 0
+              && results.get(lastKept).getPermissionship()
+                  != LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION) lastKept--;
+        var out = new ArrayList<LookupResourcesResponse>(results.size());
+        for (int i = 0; i <= last; i++) {
+          var result = results.get(i);
+          var b =
+              LookupResourcesResponse.newBuilder()
+                  .setResourceObjectId(result.getResourceObjectId())
+                  .setPermissionshipValue(result.getPermissionshipValue());
+          if (result.hasPartialCaveatInfo()) b.setPartialCaveatInfo(result.getPartialCaveatInfo());
+          if (response.hasLookedUpAt()) b.setLookedUpAt(response.getLookedUpAt());
+          if ((i == last || i == lastKept) && response.getBatched().hasAfterCursor())
+            b.setAfterResultCursor(response.getBatched().getAfterCursor());
+          out.add(b.build());
+        }
+        return out.iterator();
+      }
+    };
+  }
+
+  /**
    * The limit every request of a paged read sends: the page size (fixed for the whole call, since
    * SpiceDB rejects a cursor sent with a different limit), or in single-request mode the total
    * limit alone (0 meaning unbounded).
@@ -2627,6 +2693,14 @@ public final class SpiceDBClient implements SpiceDBApi {
   private static int pageRequestLimit(boolean singleRequest, int pageSize, long limit) {
     if (singleRequest) return (int) Math.min(limit, 0xFFFFFFFFL);
     return pageSize;
+  }
+
+  /**
+   * Whether the lookupResources-only batching options are at their defaults, given the default page
+   * size and paging the other lookups already require.
+   */
+  private static boolean defaultResponseBatching(LookupOptions options) {
+    return options.batching() == LookupBatching.AUTOMATIC && options.responseBatchSize() == 512;
   }
 
   private static CheckBulkPermissionsRequestItem checkItem(

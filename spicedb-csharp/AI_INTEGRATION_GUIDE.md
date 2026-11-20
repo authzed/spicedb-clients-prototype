@@ -196,8 +196,28 @@ await foreach (var item in client.ReadRelationshipsAsync(Consistency.MinLatency(
 
 Each item also carries `item.ReadAt`. To resume, pass
 `new ReadOptions { PageSize = 500, ResumeCursor = cursor }` with the **same request,
-consistency and page size**. `LookupResourcesAsync` and `ExportRelationshipsAsync` work
-the same way. To send exactly one request like the raw API (limit = `Limit` or unbounded,
+consistency and page size**. `ExportRelationshipsAsync` works the same way.
+
+`LookupResourcesAsync` pages the same way, but the server batches its responses and a batch
+has one cursor, so `AfterResultCursor` is null on every item except the last one yielded
+from each batch. Null means "not a resume point": keep the latest non-null cursor, never
+overwrite it with null.
+
+```csharp
+var documents = new List<string>();
+string? checkpoint = null;
+await foreach (var item in client.LookupResourcesAsync(Consistency.MinLatency(), "document", "view",
+    new ObjectRef("user", userId), new LookupOptions { PageSize = 500 }, ct))
+{
+    documents.Add(item.ResourceId);
+    if (item.AfterResultCursor is not null) checkpoint = item.AfterResultCursor; // covers every item so far
+}
+```
+
+The last item of a call with a `Limit` always carries a cursor. `ResponseBatchSize` sets the
+batch size (default: the page size, capped at 1,000; the server rejects a size above its
+maximum), and `Batching = LookupBatching.Disabled` asks for one resource per response, which
+puts a cursor on every item. Both are LookupResources-only. To send exactly one request like the raw API (limit = `Limit` or unbounded,
 no follow-up page), set `Paging = Paging.SingleRequest` on `ReadOptions` or
 `LookupOptions`.
 
@@ -333,7 +353,9 @@ client. A check resolves to a registered result or error, then the resolver (nul
 then a stored relationship whose relation is the permission's name and whose subject matches
 exactly or by wildcard (conditional if caveated), then `NoPermission`; it never evaluates a
 schema. `LookupResourcesAsync` and `LookupSubjectsAsync` yield the known objects of the type
-that this resolution grants. `ReflectSchemaAsync` returns what
+that this resolution grants; resource lookups batch as the real client's requests make a
+server batch, so only the last item of each batch has a cursor
+(`Batching = LookupBatching.Disabled` gives every item one). `ReflectSchemaAsync` returns what
 `SetReflectSchemaResult` registered. Build expected errors with
 `SpiceDBException.Create(code, message)` or `InMemorySpiceDBClient.ServerError(code, message, reason)`.
 Every call is recorded (`Calls`, `CallsOf`), and fault hooks run before each call, import

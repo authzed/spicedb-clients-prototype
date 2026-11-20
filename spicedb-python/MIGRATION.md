@@ -180,6 +180,8 @@ dataclasses. Where a protobuf member has a different name or shape:
 | `ReadRelationshipsResponse.after_result_cursor.token` | `ReadRelationship.after_result_cursor` |
 | `LookupResourcesRequest.resource_object_type`, `optional_limit`, `optional_cursor` | `lookup_resources(resource_type=, page_size=/limit=, cursor=)` |
 | `LookupResourcesResponse.resource_object_id`, `partial_caveat_info` | `LookupResource.resource_id`, `partial_caveat` |
+| `LookupResourcesRequest.optional_response_batch_size`, `LookupResourcesResponse.batched` | requested and expanded for you; `lookup_resources(response_batch_size=, batching=LookupBatching.DISABLED)` |
+| `LookupResourcesResponse.after_result_cursor.token`, `batched.after_cursor.token` | `LookupResource.after_result_cursor` (`None` unless the item ends a batch) |
 | `LookupSubjectsRequest.subject_object_type`, `optional_subject_relation`, `optional_concrete_limit`, `wildcard_option` | `lookup_subjects(subject_type=, subject_relation=, page_size=/limit=, wildcards=)` |
 | `LookupSubjectsResponse.subject.subject_object_id` (or deprecated `subject_object_id`) | `LookupSubject.subject.subject_id` |
 | `ExpandPermissionTreeResponse.tree_root`, `expanded_at` | `ExpandResult.tree`, `revision` |
@@ -259,6 +261,11 @@ with client.read_relationships(filter, consistency=full()) as stream:
 ```
 
 To resume, pass `cursor=` with the same filter, consistency and `page_size`.
+`lookup_resources` asks the server to batch its responses and still yields one
+resource at a time, but only the last item of each batch carries
+`after_result_cursor`; the others have `None`. Keep the latest non-`None`
+cursor rather than each item's, or pass `batching=LookupBatching.DISABLED` to
+get one resource per message and a cursor on every item, as authzed-py did.
 A raw `ReadRelationships`/`LookupResources` call without a limit is one
 unbounded request; this client pages by default. To reproduce the raw call
 (and its final cursor), pass `paging=Paging.SINGLE_REQUEST`: exactly one

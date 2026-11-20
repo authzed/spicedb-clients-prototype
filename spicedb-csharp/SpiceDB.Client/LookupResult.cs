@@ -77,7 +77,12 @@ public sealed record LookupResource
 
     /// <summary>
     /// Resumes the lookup after this item through <see cref="LookupOptions.ResumeCursor"/>,
-    /// repeating the request and page size. Distinct from revision tokens.
+    /// repeating the request and page size. Distinct from revision tokens. Null means this
+    /// item is not a resume point: the server batches results and a batch has one cursor,
+    /// carried by the last item yielded from it. To checkpoint a long lookup keep the latest
+    /// non-null cursor; the last item of a call with a <see cref="LookupOptions.Limit"/>
+    /// under automatic paging always has one. <see cref="LookupBatching.Disabled"/> puts a
+    /// cursor on every item.
     /// </summary>
     public string? AfterResultCursor { get; init; }
 }

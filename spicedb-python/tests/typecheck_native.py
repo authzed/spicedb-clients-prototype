@@ -1,5 +1,5 @@
 """Positive and negative examples checked by mypy with warn-unused-ignores."""
-from spicedb import DeleteResult, WriteResult, Transaction, LookupPermissionshipFilter, Tracing, ZedToken, at_least, TransportSecurity, RemoteCredentials
+from spicedb import DeleteResult, WriteResult, Transaction, LookupBatching, LookupPermissionshipFilter, Tracing, ZedToken, at_least, TransportSecurity, RemoteCredentials
 
 from spicedb import (
     BulkItemErrors,
@@ -143,6 +143,9 @@ def adoption_option_types(client: SpiceDBClient, aio: AioClient) -> None:
     client.read_relationships(Filter("document"), consistency=full(), cursor=cursor)
     client.import_relationships([relationship], batch_size=10)
     aio.lookup_resources(resource_type="document", permission="view", subject=subject, consistency=full(), cursor="c")
+    client.lookup_resources(resource_type="document", permission="view", subject=subject, consistency=full(), response_batch_size=100, batching=LookupBatching.DISABLED)
+    aio.lookup_resources(resource_type="document", permission="view", subject=subject, consistency=full(), batching=LookupBatching.AUTOMATIC)
+    client.lookup_resources(resource_type="document", permission="view", subject=subject, consistency=full(), batching=False)  # type: ignore[arg-type]
 
 
 def full_surface_protocol_types(client: SpiceDBClient, aio: AioClient) -> None:

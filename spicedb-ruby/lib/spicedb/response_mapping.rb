@@ -94,7 +94,9 @@ module SpiceDB
       )
     end
 
-    def lookup_resource_from_proto(resp, cursor = nil)
+    # +resp+ is a one-resource LookupResourcesResponse or one
+    # LookupResourcesResult of a batch, whose response carries +looked_up_at+.
+    def lookup_resource_from_proto(resp, cursor = nil, looked_up_at = resp.looked_up_at)
       raise malformed_response('lookup_resources: resource_object_id is missing') if resp.resource_object_id.empty?
 
       required_permissionship!(resp.permissionship, 'lookup_resources')
@@ -103,7 +105,7 @@ module SpiceDB
         resource_id: resp.resource_object_id,
         permissionship: permissionship_from_proto(resp.permissionship),
         partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info),
-        looked_up_at: ZedToken.from_proto(resp.looked_up_at),
+        looked_up_at: ZedToken.from_proto(looked_up_at),
         cursor: cursor
       )
     end

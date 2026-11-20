@@ -10,10 +10,11 @@ place so both flavors cannot disagree about them.
 from __future__ import annotations
 from spicedb.token import ZedToken
 
+from dataclasses import replace
 from datetime import timezone
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
-from authzed.api.v1 import permission_service_pb2, watch_service_pb2
+from authzed.api.v1 import core_pb2, permission_service_pb2, watch_service_pb2
 
 from spicedb import _wire
 from spicedb.errors import error_from_status_proto
@@ -177,6 +178,51 @@ def lookup_resource(
         if resp.HasField("after_result_cursor")
         else None,
     )
+
+
+def lookup_resources(
+    resp: permission_service_pb2.LookupResourcesResponse,
+    keep: Callable[[LookupResource], bool] | None = None,
+) -> list[LookupResource]:
+    """Every result of one response, in order: a batch's results, or the one
+    resource of a one-resource response.
+
+    A batch has one cursor, after its last result. It goes on the last item
+    ``keep`` accepts (resuming there skips only dropped results); the items
+    before it carry none. Every item is returned, kept or not, so callers
+    count results.
+    """
+    if not resp.HasField("batched"):
+        return [lookup_resource(resp)]
+    looked_up_at = _wire.token(resp, "looked_up_at", "LookupResourcesResponse")
+    items = [
+        LookupResource(
+            resource_id=_wire.text(
+                result.resource_object_id, "LookupResourcesResponse.batched.results.resource_object_id"
+            ),
+            permissionship=_lookup_permissionship(result.permissionship, "LookupResourcesResponse.batched.results"),
+            partial_caveat=_partial_caveat_from_proto(result),
+            looked_up_at=looked_up_at,
+        )
+        for result in resp.batched.results
+    ]
+    after = resp.batched.after_cursor.token if resp.batched.HasField("after_cursor") else ""
+    if after:
+        for i in range(len(items) - 1, -1, -1):
+            if keep is None or keep(items[i]):
+                items[i] = replace(items[i], after_result_cursor=after)
+                break
+    return items
+
+
+def page_cursor(response) -> core_pb2.Cursor | None:
+    """The cursor after everything in one streamed response: a lookup batch's
+    ``after_cursor``, else the response's own ``after_result_cursor``."""
+    if hasattr(response, "batched") and response.HasField("batched"):
+        return response.batched.after_cursor if response.batched.HasField("after_cursor") else None
+    if hasattr(response, "after_result_cursor") and response.HasField("after_result_cursor"):
+        return response.after_result_cursor
+    return None
 
 
 def lookup_subject(

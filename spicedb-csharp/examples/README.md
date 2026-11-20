@@ -80,7 +80,7 @@ executed by CI and must be able to fail".
 | `CheckPermission/` | Singular permission checks, conditional results, request context and populated debug tracing |
 | `WriteRelationships/` | Writing relationships with transactions |
 | `ReadRelationships/` | Reading relationships with async enumerables, across several pages, resuming from an item's cursor |
-| `LookupResources/` | Resource lookup, paged with a limit and resumed from a cursor |
+| `LookupResources/` | Resource lookup, paged with a limit and resumed from a cursor; checkpointing a batched lookup with the latest cursor |
 | `LookupSubjects/` | Subject lookup |
 | `CallDeadlines/` | `ClientOptions.DefaultTimeout`, per-operation `Timeout`, and confirming bulk import isn't bounded by the unary default |
 | `EndpointForms/` | A real call over `host:port`, `http://`, `dns:///` and `unix:` endpoints, and `ConnectAsync` failing fast on an unreachable one |

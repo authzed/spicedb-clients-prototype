@@ -239,6 +239,14 @@ Reads, exports and resource lookups page internally, and each item carries its
 request and page size with `WithReadRelationshipsCursor` (or the export/lookup
 equivalent); SpiceDB rejects a cursor sent with different arguments.
 
+`LookupResources` asks SpiceDB for batched responses by default, and a batch
+has one cursor: only the last item of each batch carries `AfterResultCursor`,
+and the others carry the empty string. Keep the latest non-empty cursor while
+iterating instead of each item's. The last item of a call that stops at its
+limit carries one. To get a cursor on every item, as the raw one-resource
+responses give, pass `client.WithLookupResourcesBatching(client.BatchingDisabled)`;
+`client.WithLookupResourcesResponseBatchSize(n)` sets the batch size.
+
 Anything at the transport level (server version headers, trailers that SpiceDB
 versions before 1.30 used for debug traces) is available on every operation:
 

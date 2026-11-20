@@ -195,14 +195,27 @@ futures::pin_mut!(stream);
 while let Some(item) = stream.next().await {
     let item = item?;
     admins.push(item.relationship.subject_id().to_string());
-    last_cursor = item.after_result_cursor; // item.read_at is the revision
+    // Keep the latest cursor seen; item.read_at is the revision.
+    if item.after_result_cursor.is_some() {
+        last_cursor = item.after_result_cursor;
+    }
 }
 ```
 
 To resume, repeat the **same request and page size** with
 `ReadRelationshipsOptions::new().with_cursor(cursor)`. Lookups
 (`LookupResource::after_result_cursor`) and exports
-(`ExportedRelationship::after_result_cursor`) work the same way. Reads and
+(`ExportedRelationship::after_result_cursor`) resume the same way.
+
+A cursor of `None` means "not a resume point", so checkpoint the latest
+`Some` cursor rather than each item's. `lookup_resources` asks the server for
+batched responses by default (still yielding one resource at a time), and a
+batch has one cursor, which only the last item yielded from it carries. The
+last item of a call with `with_limit` always carries one.
+`LookupResourcesOptions::new().with_batching(LookupBatching::Disabled)` puts a
+cursor on every item at the cost of one response message per resource;
+`with_response_batch_size` sets the batch size (default: the page size, capped
+at 1,000; the server rejects a size above its maximum). Reads and
 resource lookups page automatically; `with_paging(Paging::SingleRequest)` sends
 exactly one request like the raw API (limit = `with_limit` or unbounded).
 
@@ -342,8 +355,10 @@ the stored relationships (a relationship whose relation is the permission's
 name, with the subject or a `type:*` wildcard, grants; a caveated one only
 conditionally; expired ones never), then `NoPermission`. `lookup_resources`
 and `lookup_subjects` return the stored objects of the requested type that
-check resolution grants, honoring the permissionship filter, limits and
-cursors. Errors come through the real client, so they have its codes and
+check resolution grants, honoring the permissionship filter, limits,
+cursors and response batching (as against SpiceDB, only the last item of a
+batch carries a cursor, so a test that resumes from a mid-batch item fails).
+Errors come through the real client, so they have its codes and
 messages, and every option is honored as sent on the wire. Build expected errors with
 `SpiceDBError::new(tonic::Code::FailedPrecondition, "...")`.
 
@@ -377,8 +392,9 @@ use spicedb::testing::{cursor_after, SchemaRevision};
 // An import-batch fault sees that batch's relationships.
 fake.set_fault_hook(|f| (f.stage == FaultStage::ImportBatch && f.batch.len() > 100)
     .then(|| server_error(tonic::Code::ResourceExhausted, "batch too large")));
-// Resume a read or export after its first 2 matching relationships; the
-// format (the decimal count) is stable for tests.
+// Resume a read or export after its first 2 matching relationships (or a
+// lookup after its first 2 granted resources); the format (the decimal
+// count) is stable for tests.
 let options = ReadRelationshipsOptions::new().with_cursor(cursor_after(2));
 // Emulate a server whose schema reads report no revision (empty ZedToken).
 fake.set_read_schema_revision(SchemaRevision::Omitted);

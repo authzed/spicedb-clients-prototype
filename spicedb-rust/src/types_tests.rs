@@ -457,3 +457,79 @@ fn explicitly_empty_filter_constraints_never_widen() {
         .validate()
         .is_err());
 }
+
+fn lookup_batch_options() -> LookupResourcesOptions {
+    LookupResourcesOptions::new()
+        .with_page_size(std::num::NonZeroU32::new(100).unwrap())
+        .with_response_batch_size(std::num::NonZeroU32::new(30).unwrap())
+}
+
+#[test]
+fn test_lookup_default_response_batch_size() {
+    let size = |o: LookupResourcesOptions| o.response_batch_size().map(|n| n.get());
+    let page = |n| std::num::NonZeroU32::new(n).unwrap();
+    assert_eq!(size(LookupResourcesOptions::new()), Some(512));
+    assert_eq!(
+        size(LookupResourcesOptions::new().with_page_size(page(50))),
+        Some(50)
+    );
+    assert_eq!(
+        size(LookupResourcesOptions::new().with_page_size(page(5000))),
+        Some(1000)
+    );
+    // A single request has no page size: the limit, or the cap without one.
+    let single = || LookupResourcesOptions::new().with_paging(crate::Paging::SingleRequest);
+    assert_eq!(size(single()), Some(1000));
+    assert_eq!(size(single().with_limit(20)), Some(20));
+    assert_eq!(size(single().with_limit(5000)), Some(1000));
+    // An explicit size is used as given, never clamped.
+    assert_eq!(
+        size(LookupResourcesOptions::new().with_response_batch_size(page(4000))),
+        Some(4000)
+    );
+    assert_eq!(
+        size(lookup_batch_options().with_batching(crate::LookupBatching::Disabled)),
+        None
+    );
+}
+
+#[test]
+fn test_lookup_page_response_batch_size_aligns_batches_with_the_limit() {
+    // No limit: the batch size, whatever remains.
+    assert_eq!(
+        lookup_batch_options().page_response_batch_size(u32::MAX),
+        30
+    );
+    let limited = lookup_batch_options().with_limit(1000);
+    // A full page remains: the limit cannot be reached mid-page.
+    assert_eq!(limited.page_response_batch_size(100), 30);
+    assert_eq!(limited.page_response_batch_size(250), 30);
+    // Fewer than a batch remain: one batch of exactly that many.
+    assert_eq!(limited.page_response_batch_size(7), 7);
+    // A multiple of the batch size remains: batches end on the limit.
+    assert_eq!(limited.page_response_batch_size(60), 30);
+    assert_eq!(limited.page_response_batch_size(30), 30);
+    // Neither: the limit would fall mid-batch, so no batching.
+    assert_eq!(limited.page_response_batch_size(70), 0);
+    // The unconditional-only filter makes batch boundaries unpredictable.
+    let filtered = lookup_batch_options()
+        .with_limit(1000)
+        .with_permissionship_filter(LookupPermissionshipFilter::HasPermissionOnly);
+    assert_eq!(filtered.page_response_batch_size(1000), 0);
+    assert_eq!(
+        lookup_batch_options()
+            .with_permissionship_filter(LookupPermissionshipFilter::HasPermissionOnly)
+            .page_response_batch_size(u32::MAX),
+        30
+    );
+    // A single request sends the limit itself, so the server ends on it.
+    let single = lookup_batch_options()
+        .with_limit(70)
+        .with_paging(crate::Paging::SingleRequest);
+    assert_eq!(single.page_response_batch_size(70), 30);
+    // Disabled batching never requests a batch.
+    let disabled = lookup_batch_options()
+        .with_limit(7)
+        .with_batching(crate::LookupBatching::Disabled);
+    assert_eq!(disabled.page_response_batch_size(7), 0);
+}

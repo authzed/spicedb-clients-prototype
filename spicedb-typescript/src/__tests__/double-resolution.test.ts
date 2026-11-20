@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { Code } from "@connectrpc/connect";
 import {
-    InMemorySpiceDB, FaultStage, LookupPermissionshipFilter, BulkItemErrors, Transaction, Wildcards, NotFoundError, InvalidArgumentError, full, relationship, relationshipFromTuple,
+    InMemorySpiceDB, FaultStage, LookupPermissionshipFilter, LookupBatching, BulkItemErrors, Transaction, Wildcards, NotFoundError, InvalidArgumentError, full, relationship, relationshipFromTuple,
     type CheckRequest, type SubjectRef,
 } from "../index.js";
 
@@ -110,10 +110,12 @@ describe("InMemorySpiceDB lookupResources", () => {
     const lookup = (extra: object = {}) => ({ resourceType: "document", permission: "viewer", subject: user("alice"), consistency: full(), ...extra });
 
     it("yields known objects the check resolution grants, in ID order, with conditional results", async () => {
-        const results = await drain(store().lookupResources(lookup()));
+        const results = await drain(store().lookupResources(lookup({ batching: LookupBatching.Disabled })));
         expect(results.map(r => [r.resourceId, r.permissionship, r.afterResultCursor])).toEqual([
             ["d1", "hasPermission", "1"], ["d3", "conditionalPermission", "2"], ["d4", "hasPermission", "3"],
         ]);
+        // Batched by default: the three results are one batch, and only its last item carries the cursor.
+        expect((await drain(store().lookupResources(lookup()))).map(r => r.afterResultCursor)).toEqual([undefined, undefined, "3"]);
     });
 
     it("reports conditional results with partial-caveat info, as the real client does", async () => {

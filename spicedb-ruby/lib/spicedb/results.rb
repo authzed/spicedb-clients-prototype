@@ -42,7 +42,12 @@ module SpiceDB
 
   PartialCaveatInfo = Values.record(:missing_required_context)
   # +cursor+ resumes the lookup after this item (pass it as +cursor:+ with the
-  # same request and page size).
+  # same request and page size). It is nil when the item is not a resume
+  # point: the server packs resources into batches with one cursor each, so
+  # only the last item yielded from a batch carries it. To checkpoint a long
+  # lookup, keep the latest non-nil cursor seen. The last item of a call with
+  # +limit:+ always carries one, and +batching: LookupBatching::DISABLED+
+  # puts one on every item.
   LookupResource = Values.record(:resource_id, :permissionship, :partial_caveat, :looked_up_at, :cursor) do
     def initialize(resource_id:, permissionship:, partial_caveat:, looked_up_at:, cursor: nil)
       super(**Values.token_fields(Values.snapshot({ resource_id: resource_id, permissionship: permissionship, partial_caveat: partial_caveat,

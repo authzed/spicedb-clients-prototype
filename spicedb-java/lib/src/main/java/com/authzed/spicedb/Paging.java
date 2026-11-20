@@ -9,8 +9,8 @@ public enum Paging {
   AUTOMATIC,
   /**
    * Send exactly one request, as the raw API does: its limit is the options' {@code limit} (or
-   * unbounded without one), the page size is ignored, and no follow-up page is requested. Each item
-   * still carries its after-result cursor.
+   * unbounded without one), the page size is ignored, and no follow-up page is requested. Items
+   * still carry after-result cursors.
    */
   SINGLE_REQUEST
 }

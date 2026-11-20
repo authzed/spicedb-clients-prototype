@@ -197,6 +197,26 @@ To resume, pass `cursor: rel.afterResultCursor` with the same filter,
 consistency and `pageSize`. `lookupResources`, `lookupSubjects`,
 `exportRelationships` and `watch` work the same way.
 
+`lookupResources` differs in one respect. It asks SpiceDB to batch its
+responses (`responseBatchSize`, default the page size, at most 1,000) and
+still yields one resource at a time, but a batch has a single cursor: only
+the last item of each batch has `afterResultCursor`, and it is `undefined` on
+the rest. Code that stored each item's cursor must keep the latest one it saw
+instead:
+
+```ts
+let resumeAt: string | undefined;
+for await (const item of client.lookupResources(request)) {
+    use(item);
+    resumeAt = item.afterResultCursor ?? resumeAt;
+}
+```
+
+A lookup that stops at `limit` always ends on an item with a cursor. For a
+cursor on every item, as the raw API gives without batching, pass
+`batching: LookupBatching.Disabled`. Servers that predate batching
+answer one resource per message and need no configuration.
+
 A read that fails part-way (with retries off, or once they are spent) carries
 the cursor to resume from on the error, so you need not track it yourself:
 
@@ -211,7 +231,7 @@ try {
 ```
 
 `resumeCursor` is set on errors from `readRelationships`, `lookupResources`
-and `exportRelationships` (after the last fully delivered export batch). It
+and `exportRelationships` (after the last fully delivered lookup or export batch). It
 is the request's own `cursor` when nothing was delivered, and absent when the
 read should start over. `lookupSubjects` has no cursor (SpiceDB does not page
 it). Faults injected into `InMemorySpiceDB` carry the same `resumeCursor`.
@@ -309,6 +329,8 @@ keep their protobuf name (`resource`, `permission`, `subject`, `consistency`,
 | `LookupResourcesRequest.resourceObjectType` | `resourceType` |
 | `LookupResourcesRequest.optionalLimit` | `limit` (total) and `pageSize` (per request) |
 | `LookupResourcesRequest.optionalCursor.token` | `cursor` (string) |
+| `LookupResourcesRequest.optionalResponseBatchSize` | `responseBatchSize` (set by default; `batching: LookupBatching.Disabled` for none) |
+| `LookupResourcesResponse.batched` | expanded: one `LookupResource` per result, the batch cursor on the last |
 | `LookupResourcesResponse.resourceObjectId` | `LookupResource.resourceId` |
 | `LookupSubjectsRequest.subjectObjectType` | `subjectType` |
 | `LookupSubjectsRequest.optionalSubjectRelation` | `subjectRelation` |

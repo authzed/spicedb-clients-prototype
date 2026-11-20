@@ -36,6 +36,8 @@ type operationOptions struct {
 	disallowPartialDeletion     bool
 	deleteProgress              func(DeleteResult)
 	singleRequest               bool
+	responseBatchSize           uint32
+	batchingDisabled            bool
 	err                         error
 }
 

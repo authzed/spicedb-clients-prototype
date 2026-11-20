@@ -243,9 +243,12 @@ with tc.read_relationships(min_latency(), Organization(org_id).admin_filter()) a
 ```
 
 To resume, call again with `cursor=cursor` and the **same filter,
-consistency and `page_size`**. `lookup_resources` items carry
-`after_result_cursor` too; `export_relationships` items carry a cursor and no
-revision. `paging=Paging.SINGLE_REQUEST` (reads and resource lookups) sends
+consistency and `page_size`**. `export_relationships` items carry a cursor and
+no revision. `lookup_resources` responses are batched, so only the last item
+of each batch carries `after_result_cursor` and the others have `None`: keep
+the latest non-`None` cursor (`cursor = item.after_result_cursor or cursor`).
+The last item of a call with `limit=` always has one, and
+`batching=LookupBatching.DISABLED` puts one on every item. `paging=Paging.SINGLE_REQUEST` (reads and resource lookups) sends
 exactly one request, as the raw API does.
 
 ## Schema-agnostic code (native tier)
@@ -392,7 +395,8 @@ print(last_read.request, last_read.options["cursor"])
 
 `FaultStage` is `CALL`, `IMPORT_BATCH` (`f.batch` holds that batch's
 relationships), `IMPORT_COMMIT` or `ITEM` (before each read, export or lookup item).
-`cursor_after(n)` builds the double's resume cursor after `n` items, and
+`cursor_after(n)` builds the double's resume cursor after `n` items (the
+double batches lookups like a server, so only batch-end items carry one), and
 `fake.set_read_schema_revision(SchemaRevision.OMITTED)` makes `read_schema`
 report no revision. The doubles implement every client method; the ones
 without in-memory semantics (expand, watch, ...) are recorded and

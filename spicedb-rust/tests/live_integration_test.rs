@@ -294,7 +294,7 @@ async fn paged_reads_and_lookups_cross_pages_and_resume() {
         spicedb::LookupResourcesRequest::new("doc", "view", "user:alice".parse().unwrap(), cs);
     let found: Vec<_> = client
         .lookup_resources(
-            lookup.with_options(
+            lookup.clone().with_options(
                 spicedb::LookupResourcesOptions::new()
                     .with_page_size(page)
                     .with_limit(5),
@@ -304,7 +304,37 @@ async fn paged_reads_and_lookups_cross_pages_and_resume() {
         .collect()
         .await;
     assert_eq!(found.len(), 5);
-    assert!(found.iter().all(|f| f.after_result_cursor.is_some()));
+    // Responses may be batched, so only a batch's last item carries a cursor;
+    // a limited call always ends on one.
+    let cursor = found[4]
+        .after_result_cursor
+        .clone()
+        .expect("the last item of a limited lookup carries a cursor");
+    let resumed: Vec<_> = client
+        .lookup_resources(
+            lookup.clone().with_options(
+                spicedb::LookupResourcesOptions::new()
+                    .with_page_size(page)
+                    .with_cursor(cursor),
+            ),
+        )
+        .map(|r| r.expect("lookup resume must be accepted"))
+        .collect()
+        .await;
+    assert_eq!(resumed.len(), 2, "the two resources after the fifth");
+    let unbatched: Vec<_> = client
+        .lookup_resources(
+            lookup.with_options(
+                spicedb::LookupResourcesOptions::new()
+                    .with_page_size(page)
+                    .with_batching(spicedb::LookupBatching::Disabled),
+            ),
+        )
+        .map(|r| r.expect("unbatched lookup"))
+        .collect()
+        .await;
+    assert_eq!(unbatched.len(), 7);
+    assert!(unbatched.iter().all(|f| f.after_result_cursor.is_some()));
     cleanup(&client).await;
 }
 

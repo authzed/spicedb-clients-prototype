@@ -23,8 +23,8 @@
 // returns the result registered with SetReflectSchemaResult.
 //
 // Options are honored where they change results: read, export and lookup
-// cursors and limits, the export filter, the lookup permissionship filter,
-// check context, and WithResponseMetadata targets (filled from
+// cursors and limits, the export filter, the lookup permissionship filter and
+// response batching, check context, and WithResponseMetadata targets (filled from
 // SetResponseMetadata). Other options are accepted and ignored; inspect them
 // with client.ResolveOptions if a test needs to.
 //
@@ -49,6 +49,7 @@ import (
 
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
+	"github.com/authzed/spicedb-clients/spicedb-go/internal/lookupbatch"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
@@ -914,9 +915,15 @@ func emit[T any](s *Store, call Call, err error, items []T) iter.Seq2[T, error] 
 // grants to the subject, in order of first appearance. Conditional results
 // are yielded as conditional, with the resolved missing context, unless
 // WithLookupResourcesPermissionshipFilter(LookupHasPermissionOnly) drops them.
-// Each result's cursor is CursorAfter(n), where n counts granted results up
-// to it (filtered ones included, as the server's cursor advances past them);
+// A cursor is CursorAfter(n), where n counts granted results up to it
+// (filtered ones included, as the server's cursor advances past them);
 // limits count yielded results.
+//
+// Results are grouped into pages and response batches as SpiceDB would group
+// them for the real client's requests, so only the last yielded item of each
+// batch carries a cursor, including the last item of a call that stops at its
+// limit. With WithLookupResourcesBatching(BatchingDisabled) every item
+// carries its cursor.
 func (s *Store) LookupResources(_ context.Context, request client.LookupResourcesRequest, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {
 	r := client.ResolveOptions(opts...)
 	call, err := s.begin(OpLookupResources, request, r)
@@ -935,7 +942,7 @@ func (s *Store) LookupResources(_ context.Context, request client.LookupResource
 		s.mu.Lock()
 		s.respond(r)
 		at := s.token()
-		pos := 0
+		var found []client.LookupResource
 		for _, id := range s.objectIDs(request.ResourceType) {
 			if id == "*" {
 				continue
@@ -945,19 +952,63 @@ func (s *Store) LookupResources(_ context.Context, request client.LookupResource
 			if !granted(result) {
 				continue
 			}
-			pos++
-			if pos <= start || (r.LookupPermissionshipFilter == client.LookupHasPermissionOnly && !result.HasPermission()) {
-				continue
-			}
-			if r.Limit > 0 && uint64(len(out)) >= r.Limit {
-				break
-			}
-			out = append(out, client.LookupResource{ResourceID: id, Permissionship: result.Permissionship,
-				PartialCaveat: partialCaveat(result), LookedUpAt: at, AfterResultCursor: CursorAfter(pos)})
+			found = append(found, client.LookupResource{ResourceID: id, Permissionship: result.Permissionship,
+				PartialCaveat: partialCaveat(result), LookedUpAt: at})
 		}
 		s.mu.Unlock()
+		out = lookupPages(found, min(start, len(found)), r)
 	}
 	return emit(s, call, err, out)
+}
+
+// lookupPages returns what the real client would yield from found, the
+// granted resources in order, when resuming after the first start of them:
+// it pages and batches them as a server answering the client's requests
+// would, drops what the permissionship filter drops, stops at the limit, and
+// puts each batch's cursor on the last item kept from it.
+func lookupPages(found []client.LookupResource, start int, r client.ResolvedOptions) []client.LookupResource {
+	single := r.Paging == client.PagingSingleRequest
+	filtered := r.LookupPermissionshipFilter == client.LookupHasPermissionOnly
+	var out []client.LookupResource
+	for pos := start; ; {
+		// One page request: its limit is the page size, or in single-request
+		// mode the total limit (everything without one).
+		page := len(found) - pos
+		if single && r.Limit > 0 {
+			page = int(min(uint64(page), r.Limit))
+		} else if !single {
+			page = min(page, int(r.PageSize))
+		}
+		// The server ends a batch every batch-size results and at the end of
+		// the page; unbatched, every result is its own response.
+		batch := max(int(lookupbatch.ForPage(r.ResponseBatchSize, r.PageSize, r.Limit, uint64(len(out)), single, filtered)), 1)
+		for end := pos + page; pos < end; {
+			batchEnd := min(pos+batch, end)
+			kept := func(i int) bool {
+				return !filtered || found[i].Permissionship == client.PermissionshipHasPermission
+			}
+			lastKept := batchEnd - 1
+			for lastKept >= pos && !kept(lastKept) {
+				lastKept--
+			}
+			for ; pos < batchEnd; pos++ {
+				if !kept(pos) {
+					continue
+				}
+				item := found[pos]
+				if pos == lastKept {
+					item.AfterResultCursor = CursorAfter(batchEnd)
+				}
+				out = append(out, item)
+				if r.Limit > 0 && uint64(len(out)) >= r.Limit {
+					return out
+				}
+			}
+		}
+		if single || page < int(r.PageSize) {
+			return out
+		}
+	}
 }
 
 // LookupSubjects yields the objects of the requested subject type that appear

@@ -19,6 +19,7 @@ from spicedb import (
     Caveat,
     CheckResult,
     InvalidArgumentError,
+    LookupBatching,
     LookupPermissionshipFilter,
     ObjectRef,
     Operation,
@@ -202,7 +203,10 @@ def test_lookup_resources_filters_known_objects_by_check_resolution():
         ("e", Permissionship.CONDITIONAL_PERMISSION),
     ]
     assert items[2].partial_caveat is not None
-    assert [i.after_result_cursor for i in items] == ["1", "2", "3"]
+    # One response batch: only its last item is a resume point.
+    assert [i.after_result_cursor for i in items] == [None, None, "3"]
+    unbatched = _lookup(client, batching=LookupBatching.DISABLED)
+    assert [i.after_result_cursor for i in unbatched] == ["1", "2", "3"]
     assert {i.looked_up_at for i in items} == {ZedToken("0")}
 
     # Objects that appear only as subjects are enumerated too; a resolver can grant them.
@@ -223,6 +227,8 @@ def test_lookup_resources_honours_filter_limit_and_cursor():
     assert [i.resource_id for i in only] == ["a", "c"]
     assert [i.resource_id for i in _lookup(client, limit=2)] == ["a", "c"]
     resumed = _lookup(client, cursor=cursor_after(1))
+    assert [(i.resource_id, i.after_result_cursor) for i in resumed] == [("c", None), ("e", "3")]
+    resumed = _lookup(client, cursor=cursor_after(1), batching=LookupBatching.DISABLED)
     assert [(i.resource_id, i.after_result_cursor) for i in resumed] == [("c", "2"), ("e", "3")]
     # Results skipped by the permissionship filter still advance the cursor.
     client2 = InMemoryClient([

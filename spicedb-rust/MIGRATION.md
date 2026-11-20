@@ -149,7 +149,7 @@ whose constructors validate before any RPC.
 | `RelationshipFilter { resource_type, optional_relation, .. }` | `Filter::new(resource_type).with_relation(..)` and the other `with_*` methods |
 | `delete_relationships(DeleteRelationshipsRequest { relationship_filter, .. })` | `client.delete_relationships(DeleteRequest::new(filter, limit))`, or `delete_all_relationships_non_atomic` to delete everything matching |
 | `read_relationships` stream of `ReadRelationshipsResponse` | `client.read_relationships(ReadRelationshipsRequest::new(filter, consistency))`, paged for you |
-| `lookup_resources` stream of `LookupResourcesResponse { resource_object_id, .. }` | `client.lookup_resources(LookupResourcesRequest::new(type, permission, subject, consistency))` yielding `LookupResource { resource_id, permissionship, .. }` |
+| `lookup_resources` stream of `LookupResourcesResponse { resource_object_id, .. }` | `client.lookup_resources(LookupResourcesRequest::new(type, permission, subject, consistency))` yielding `LookupResource { resource_id, permissionship, .. }`; responses are batched on the wire by default, so resume from the latest `Some` `after_result_cursor` (only a batch's last item carries one) |
 | `lookup_subjects` stream | `client.lookup_subjects(LookupSubjectsRequest::new(resource, permission, subject_type, consistency))` |
 | `ReadSchemaResponse.schema_text` | `client.read_schema(ReadSchemaRequest::new()).await?.schema_text` |
 | `tonic::Status` errors | `SpiceDBError`: `code()`, `server_message()`, `reason()`; `tonic::Status::from(err)` converts back |
@@ -231,7 +231,9 @@ fake.fail_next(Operation::Check, server_error(tonic::Code::Unavailable, "down"))
 - `lookup_resources` and `lookup_subjects` return the stored objects of the
   requested type that check resolution grants, so a list endpoint that
   filters rows through a lookup works on the double: store a relationship
-  that mentions the resource (or subject) and grant it.
+  that mentions the resource (or subject) and grant it. Resource lookups are
+  batched as against SpiceDB, so only the last item of a batch carries an
+  `after_result_cursor`.
 - Every RPC is recorded (`calls`, `calls_of(Operation::Check)`) with its
   protocol request and metadata; `set_fault_hook` fails an RPC before it runs,
   before each import batch or commit, or before any streamed item.

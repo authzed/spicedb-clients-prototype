@@ -5,8 +5,8 @@
  *
  *   - a client over a caller-owned Connect transport (`fromTransport`),
  *   - per-call headers and response header/trailer capture,
- *   - paged reads and lookups that cross several pages, with per-item cursors,
- *     read-at revisions and resume, and a single-request mode like the raw API,
+ *   - paged reads and lookups that cross several pages, with cursors,
+ *     read-at revisions and resume (lookups are batched on the wire), and a single-request mode like the raw API,
  *   - empty writes sent to the server, and per-call retry opt-in for
  *     idempotent writes,
  *   - imports that report the server's ALREADY_EXISTS on a duplicate, with a
@@ -24,7 +24,7 @@ import { createGrpcTransport } from "@connectrpc/connect-node";
 import {
     SpiceDBClient, createSpiceDBClient, TransportSecurity, Transaction, relationship, relationshipFromTuple, relationshipToString,
     full, atLeast, Code, errorCode, toConnectError, AlreadyExistsError, InvalidArgumentError, BulkItemErrors, DeletePartial, WatchContent,
-    DefaultDeadline, Retries, Paging, FailedPreconditionError, DEFAULT_RETRY_POLICY, protoconv, type DeleteResult,
+    DefaultDeadline, Retries, Paging, LookupBatching, FailedPreconditionError, DEFAULT_RETRY_POLICY, protoconv, type DeleteResult,
 } from "../../src/index.js";
 
 function assert(condition: boolean, message: string): void {
@@ -131,10 +131,24 @@ for (const consistency of [full(), atLeast(revision)]) {
         resumed.push(item.resource.objectId);
     assert(resumed.length === 4 && !resumed.includes(items[2].resource.objectId), `resume from a read cursor: ${resumed}`);
 
+    const lookup = { resourceType: "document", permission: "view", subject: { object: { objectType: "user", objectId: "pager" } }, consistency, pageSize: 2 };
     const ids: string[] = [];
-    for await (const r of client.lookupResources({ resourceType: "document", permission: "view", subject: { object: { objectType: "user", objectId: "pager" } }, consistency, pageSize: 2, limit: 5 }))
+    // The server may answer in batches, and only the last item of a batch is
+    // a resume point: keep the latest cursor seen, not every item's.
+    let lookupCursor: string | undefined;
+    for await (const r of client.lookupResources({ ...lookup, limit: 5 })) {
         ids.push(r.resourceId);
+        lookupCursor = r.afterResultCursor ?? lookupCursor;
+        assert(r.lookedUpAt.toString() !== "", "lookup items carry looked-up-at");
+    }
     assert(ids.length === 5, `lookup limit 5 across pages of 2 (${consistency}) got ${ids.length}`);
+    // A limited lookup always ends on a resume point, so the rest follows exactly.
+    for await (const r of client.lookupResources({ ...lookup, cursor: lookupCursor }))
+        ids.push(r.resourceId);
+    assert(new Set(ids).size === 7 && ids.length === 7, `resume from a lookup cursor: ${ids}`);
+    // One resource per response message puts a cursor on every item.
+    for await (const r of client.lookupResources({ ...lookup, batching: LookupBatching.Disabled }))
+        assert(r.afterResultCursor !== undefined, "an unbatched lookup item carries its cursor");
 }
 console.log("paging: reads and lookups crossed pages with full and at-least consistency");
 

@@ -49,8 +49,9 @@ public class LookupResourcesTest
     }
 
     // Looks up across several pages with a limit that is not a multiple of the page size,
-    // then resumes from an item's cursor. Every page repeats the caller's consistency and
-    // page size, which SpiceDB requires for the cursor to be accepted.
+    // then resumes from the cursor of the limited call's last item, which always carries one.
+    // Every page repeats the caller's consistency and page size, which SpiceDB requires for
+    // the cursor to be accepted.
     [Fact]
     public async Task LookupResources_PagesAndResumesFromCursor()
     {
@@ -82,5 +83,43 @@ public class LookupResourcesTest
         await foreach (var r in client.LookupResourcesAsync(AtLeast(written.Revision), "document", "view", pager, new LookupOptions { Paging = Paging.SingleRequest, Limit = 3 }, default)) limited.Add(r);
         Assert.Equal(3, limited.Count);
         Assert.NotNull(limited[2].AfterResultCursor);
+    }
+
+    // The client asks the server to batch responses and still yields one resource at a time.
+    // A batch has one cursor, carried by the last item yielded from it, so an item's
+    // AfterResultCursor may be null: to checkpoint a long lookup, keep the latest non-null
+    // cursor. A server that does not batch puts a cursor on every item, and the same code works.
+    [Fact]
+    public async Task LookupResources_CheckpointsWithTheLatestCursor()
+    {
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+        await client.WriteSchemaAsync(Schema, null, default);
+        var txn = new Transaction();
+        for (var i = 0; i < 7; i++) txn.Touch(Relationship.FromTuple($"document:lb{i}#viewer@user:batcher"));
+        await client.WriteAsync(txn, null, default);
+        var batcher = SubjectRef.Direct(new ObjectRef("user", "batcher"));
+
+        // Stop after five items, as an interrupted job would, remembering the latest cursor and
+        // how many items it covers.
+        string? checkpoint = null;
+        var seen = new List<string>();
+        var covered = 0;
+        await foreach (var r in client.LookupResourcesAsync(Full(), "document", "view", batcher, new LookupOptions { PageSize = 4, ResponseBatchSize = 3 }, default))
+        {
+            seen.Add(r.ResourceId);
+            if (r.AfterResultCursor is not null) { checkpoint = r.AfterResultCursor; covered = seen.Count; }
+            if (seen.Count == 5) break;
+        }
+        Assert.NotNull(checkpoint);
+
+        // Resuming repeats the request and page size and returns everything after the checkpoint.
+        var resumed = new List<string>();
+        await foreach (var r in client.LookupResourcesAsync(Full(), "document", "view", batcher, new LookupOptions { PageSize = 4, ResumeCursor = checkpoint }, default)) resumed.Add(r.ResourceId);
+        Assert.Equal(7, covered + resumed.Count);
+        Assert.Equal(7, seen.Take(covered).Concat(resumed).Distinct().Count());
+
+        // LookupBatching.Disabled asks for one resource per response, so every item has a cursor.
+        await foreach (var r in client.LookupResourcesAsync(Full(), "document", "view", batcher, new LookupOptions { Batching = LookupBatching.Disabled }, default))
+            Assert.NotNull(r.AfterResultCursor);
     }
 }

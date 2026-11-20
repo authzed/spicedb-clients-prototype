@@ -16,6 +16,7 @@ from spicedb.options import (
     BulkItemErrors,
     DeletePartial,
     Paging,
+    LookupBatching,
     CallOptions,
     DEFAULT_RETRY_POLICY,
     Operation,
@@ -795,10 +796,13 @@ class SpiceDBClient(ClientConfig):
         single_request=False,
         operation=None,
         deadline=None,
+        batch_size=None,
     ):
         """Stream ``mapper``'s items over one or more requests.
 
         ``deadline`` is PAGE, MESSAGE or None; see ``spicedb._client_base``.
+        ``batch_size``, for lookup_resources, maps the items yielded so far
+        to the response batch size the next page requests (0: none).
         """
         # Validate options before any transport work.
         kwargs = self._call_kwargs(call_options)
@@ -823,6 +827,10 @@ class SpiceDBClient(ClientConfig):
                     # unbounded) and no follow-up page is fetched.
                     page_start = cursor
                     request = request_factory(cursor, (limit or 0) if single_request else page_size)
+                    if batch_size is not None:
+                        page_batch = batch_size(delivered)
+                        if page_batch:
+                            request.optional_response_batch_size = page_batch
                     attempt = 0
                     while True:
                         # Count per attempt: a retry re-reads the page from
@@ -862,12 +870,7 @@ class SpiceDBClient(ClientConfig):
                                 except TimeoutError as error:
                                     raise stalled_error(page_default, per_page) from error
                                 budget.remaining()
-                                page_cursor = (
-                                    response.after_result_cursor
-                                    if hasattr(response, "after_result_cursor")
-                                    and response.HasField("after_result_cursor")
-                                    else None
-                                )
+                                page_cursor = _mapping.page_cursor(response)
                                 for item in mapper(response):
                                     if owner._closed:
                                         return
@@ -971,6 +974,8 @@ class SpiceDBClient(ClientConfig):
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
+        batching: LookupBatching = LookupBatching.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> AsyncStream[LookupResource]:
@@ -982,8 +987,19 @@ class SpiceDBClient(ClientConfig):
         same request and page size. ``paging=Paging.SINGLE_REQUEST`` sends
         exactly one request, as the raw API does: its limit is ``limit``
         (unbounded without one) and ``page_size`` is ignored.
+
+        The server is asked to batch its responses; items are still yielded
+        one at a time, but only the last item of each batch carries an
+        ``after_result_cursor`` (None on the others), so keep the latest
+        non-None cursor to checkpoint. The last item of a call with ``limit``
+        always carries one. ``response_batch_size`` sets the resources per
+        response message (default: the page size, capped at 1,000) and is
+        sent as given; the server rejects one above its maximum.
+        ``batching=LookupBatching.DISABLED`` requests one resource per
+        message, so every item carries its cursor.
         """
         single = _option(paging, Paging) == "single_request"
+        unbatched = _option(batching, LookupBatching) == "disabled"
         _option(permissionship_filter, LookupPermissionshipFilter)
         _option(debug, LookupDebug)
         _requests.require_lookup_resources_args(resource_type, permission, subject)
@@ -991,9 +1007,14 @@ class SpiceDBClient(ClientConfig):
         _positive(page_size, "page_size")
         if limit is not None:
             _positive(limit, "limit")
+        if response_batch_size is not None:
+            _positive(response_batch_size, "response_batch_size")
         subj = subject._to_proto()
         ctx = _requests.context_struct(context)
         start = _cursor(cursor, "cursor")
+        has_only = permissionship_filter is LookupPermissionshipFilter.HAS_PERMISSION_ONLY
+        include = (lambda result: result.permissionship is Permissionship.HAS_PERMISSION) if has_only else None
+        batch = _requests.lookup_response_batch_size(response_batch_size, unbatched, page_size, limit, single)
 
         def request(cursor, size):
             """Request."""
@@ -1006,17 +1027,19 @@ class SpiceDBClient(ClientConfig):
         return self._stream(
             lambda: self._permissions.LookupResources,
             request,
-            lambda response: [_mapping.lookup_resource(response)],
+            lambda response: _mapping.lookup_resources(response, include),
             budget,
             page_size,
             limit,
-            include=(lambda result: result.permissionship is Permissionship.HAS_PERMISSION)
-            if permissionship_filter is LookupPermissionshipFilter.HAS_PERMISSION_ONLY else None,
+            include=include,
             call_options=call_options,
             start_cursor=start,
             single_request=single,
             operation=Operation.LOOKUP_RESOURCES,
             deadline=MESSAGE if single else PAGE,
+            batch_size=lambda yielded: _requests.lookup_page_batch_size(
+                batch, page_size, limit, yielded, single, has_only
+            ),
         )
 
     def lookup_subjects(

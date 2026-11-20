@@ -113,8 +113,9 @@ async fn main() {
     );
 
     // Single-request mode sends exactly one request, as the raw API does:
-    // without a limit it is unbounded, and its last item's cursor is the
-    // raw call's final cursor.
+    // without a limit it is unbounded. An unbounded request is not a
+    // resumable one: the server may issue no cursor for it at all, so set a
+    // limit when a resume point is needed.
     let single = client.lookup_resources(
         spicedb::LookupResourcesRequest::new(
             "document",
@@ -131,13 +132,61 @@ async fn main() {
     let mut single_ids = Vec::new();
     while let Some(result) = single.next().await {
         let result = result.expect("single-request lookup failed");
-        assert!(
-            result.after_result_cursor.is_some(),
-            "each item carries its cursor"
-        );
         single_ids.push(result.resource_id);
     }
     single_ids.sort();
     assert_eq!(single_ids, vec!["firstdoc", "seconddoc"]);
     println!("single request: {single_ids:?}");
+
+    // A limited call always ends on a resume point: repeat the request with
+    // the last item's cursor to get the rest.
+    let request = spicedb::LookupResourcesRequest::new(
+        "document",
+        "view",
+        spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None).unwrap(),
+        consistency::full(),
+    );
+    let first: Vec<_> = client
+        .lookup_resources(
+            request
+                .clone()
+                .with_options(spicedb::LookupResourcesOptions::new().with_limit(1)),
+        )
+        .map(|r| r.expect("limited lookup failed"))
+        .collect()
+        .await;
+    assert_eq!(first.len(), 1);
+    let cursor = first[0]
+        .after_result_cursor
+        .clone()
+        .expect("the last item of a limited lookup carries a cursor");
+    let rest: Vec<_> = client
+        .lookup_resources(
+            request
+                .clone()
+                .with_options(spicedb::LookupResourcesOptions::new().with_cursor(cursor)),
+        )
+        .map(|r| r.expect("resumed lookup failed").resource_id)
+        .collect()
+        .await;
+    assert_eq!(rest.len(), 1, "resume returns exactly the rest");
+    assert_ne!(rest[0], first[0].resource_id);
+    println!("limited: {}, resumed: {rest:?}", first[0].resource_id);
+
+    // Batching can be turned off (one resource per response message), which
+    // puts a cursor on every item; a batch size can be set instead with
+    // `with_response_batch_size`.
+    let unbatched: Vec<_> = client
+        .lookup_resources(request.with_options(
+            spicedb::LookupResourcesOptions::new().with_batching(spicedb::LookupBatching::Disabled),
+        ))
+        .map(|r| r.expect("unbatched lookup failed"))
+        .collect()
+        .await;
+    assert_eq!(unbatched.len(), 2);
+    assert!(
+        unbatched.iter().all(|r| r.after_result_cursor.is_some()),
+        "without batching each item carries its cursor"
+    );
+    println!("unbatched: every item carries a cursor");
 }

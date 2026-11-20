@@ -197,7 +197,7 @@ that changed name or shape:
 | `Relationship.OptionalCaveat.CaveatName` / `.Context` | `Relationship.CaveatName` / `.CaveatContext` |
 | `Relationship.OptionalExpiresAt` | `Relationship.Expiration` |
 | `LookupResourcesResponse.ResourceObjectId` | `LookupResource.ResourceId` |
-| `LookupResourcesResponse.LookedUpAt.Token` / `.AfterResultCursor.Token` | `LookupResource.LookedUpAt.Value` / `.AfterResultCursor` |
+| `LookupResourcesResponse.LookedUpAt.Token` / `.AfterResultCursor.Token` | `LookupResource.LookedUpAt.Value` / `.AfterResultCursor` (null inside a batch) |
 | `LookupResourcesResponse.PartialCaveatInfo` | `LookupResource.PartialCaveat` |
 | `LookupSubjectsResponse.Subject.SubjectObjectId` | `LookupSubject.Subject.SubjectId` |
 | `LookupSubjectsResponse.ExcludedSubjects[i].SubjectObjectId` | `LookupSubject.ExcludedSubjects[i].SubjectId` |
@@ -328,6 +328,11 @@ await foreach (var item in client.ReadRelationshipsAsync(SpiceDB.Client.Consiste
   and `ToString()` use SpiceDB's tuple syntax.
 - To resume, pass an item's `AfterResultCursor` as `ReadOptions.ResumeCursor` with the
   same request and page size.
+- `LookupResourcesAsync` asks the server for batched responses and still yields one
+  resource at a time. A batch has one cursor, so `LookupResource.AfterResultCursor` is null
+  except on the last item yielded from each batch: keep the latest non-null cursor and pass
+  it as `LookupOptions.ResumeCursor`. Code that needs a cursor on every item, as each raw
+  response had, sets `Batching = LookupBatching.Disabled`.
 - Raw `ReadRelationships`/`LookupResources` calls without a limit are one unbounded
   request; this client pages by default. To reproduce the raw call (and its final cursor),
   set `Paging = Paging.SingleRequest` on `ReadOptions` or `LookupOptions`.

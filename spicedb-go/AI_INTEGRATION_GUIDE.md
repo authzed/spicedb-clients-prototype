@@ -193,6 +193,14 @@ Each page request gets the client default deadline (30s) for waiting on the
 server; time your loop body spends on an item does not count. A stalled page fails
 with `client.ErrDeadlineExceeded`. Bound the whole read with the context.
 
+`LookupResources` items carry `AfterResultCursor` too, but only on the last
+item of each response batch (the client asks the server for batched responses);
+the other items have an empty cursor. To resume, keep the latest non-empty
+cursor, not every item's, and pass it to `client.WithLookupResourcesCursor`
+with the same request and page size. The last item of a call that stops at
+`client.WithLookupResourcesLimit` always has one. For a cursor on every item,
+pass `client.WithLookupResourcesBatching(client.BatchingDisabled)`.
+
 ## Schema-agnostic code (native tier)
 
 ```go

@@ -451,6 +451,30 @@
 
 ### Added
 
+- **2026-11-20: `lookup_resources` asks the server for batched responses.**
+  The call still yields one resource at a time, but with a SpiceDB that
+  batches, only the last item yielded from each response batch carries an
+  `after_result_cursor`; the items before it have `None`, which means "not a
+  resume point". Code that checkpoints a long lookup should keep the latest
+  non-`None` cursor it saw rather than the cursor of every item. The last item
+  of a call with `limit` always carries a cursor, and with
+  `LookupPermissionshipFilter.HAS_PERMISSION_ONLY` the last item kept from a
+  batch does. Two new keyword arguments control it:
+  `response_batch_size=` sets the resources per response message (default: the
+  page size, capped at 1,000; in single-request mode the limit, capped at
+  1,000; sent as given, so the server rejects one above its maximum), and
+  `batching=LookupBatching.DISABLED` requests one resource per message, which
+  puts a cursor back on every item. Servers that predate batching answer one
+  resource per message and need no configuration. The `spicedb.testing`
+  doubles batch the same way, so a test that reads a mid-batch cursor from a
+  double now sees `None`. The doubles also treat `paging=Paging.SINGLE_REQUEST`
+  as the one request it is: with `limit` and
+  `LookupPermissionshipFilter.HAS_PERMISSION_ONLY` the request ends after
+  `limit` granted resources and the filter applies to those, so fewer than
+  `limit` items may be yielded, as with the real client (the doubles used to
+  count `limit` against kept items in that mode). Automatic paging is
+  unchanged: its limit counts yielded items.
+
 - Complete native Materialize coverage: count-by-filter, roaring lookup,
   permission-set watch/lookup with closeable streams and lossless native cursors,
   and permission-set download URLs/timestamps/revisions. All five nondeprecated

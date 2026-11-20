@@ -482,16 +482,22 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     /// resolution grants <paramref name="permission"/> to <paramref name="subject"/>; conditional
     /// grants are reported as conditional. Honors <see cref="LookupOptions.PermissionshipFilter"/>,
     /// <see cref="LookupOptions.Limit"/> (counting yielded results) and
-    /// <see cref="LookupOptions.ResumeCursor"/>: item n (counting granted results from 1, whether or
-    /// not the filter yields them) carries <see cref="CursorAfter"/>(n). A registered check error
-    /// for a candidate fails the lookup.
+    /// <see cref="LookupOptions.ResumeCursor"/>, and batches as the real client's requests would
+    /// make a server batch (<see cref="LookupOptions.ResponseBatchSize"/>,
+    /// <see cref="LookupOptions.Batching"/>): only the last item yielded from a batch carries a
+    /// cursor, <see cref="CursorAfter"/>(n) where n is the position of the batch's last granted
+    /// result (counting from 1, whether or not the filter yields it). With
+    /// <see cref="LookupBatching.Disabled"/> every item n carries <see cref="CursorAfter"/>(n).
+    /// A registered check error for a candidate fails the lookup.
     /// </summary>
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var call = Begin(SpiceDBOperation.LookupResources, options, options?.RetryPolicy, cancellationToken, consistency, resourceType, permission, subject);
         if (options?.SubjectRelation is not null) throw new InvalidArgumentException("LookupResources uses the supplied SubjectRef relation.");
-        Positive(options?.PageSize ?? 512, "PageSize");
+        var size = Positive(options?.PageSize ?? 512, "PageSize");
         var limit = Positive(options?.Limit ?? int.MaxValue, "Limit");
+        var single = options?.Paging == Paging.SingleRequest;
+        var batchSize = LookupBatch.Size(options, single, size);
         Native.Required(consistency, nameof(consistency));
         Native.Required(resourceType, nameof(resourceType));
         Native.Required(permission, nameof(permission));
@@ -506,21 +512,40 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
         }
         var onlyGrants = options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly;
         var yielded = 0;
-        for (var i = Start(options?.ResumeCursor); i < granted.Length && yielded < limit; i++)
+        // Pages and batches are cut as a server given the client's requests would cut them: each
+        // page request carries the page size (or, in single-request mode, the limit) and the
+        // batch size the client computes for it, and a batch's one cursor resumes after its last
+        // result, kept by the filter or not.
+        for (var page = Start(options?.ResumeCursor); page < granted.Length;)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (onlyGrants && granted[i].Result.Permissionship != Permissionship.HasPermission) continue;
-            await Task.Yield();
-            Inject(call, FaultStage.Item, yielded);
-            yielded++;
-            yield return new LookupResource
+            var batch = LookupBatch.ForPage(batchSize, single, size, options?.Limit is null ? null : limit - yielded, onlyGrants);
+            var pageEnd = (int)Math.Min(granted.Length, page + (long)(single ? limit : size));
+            for (var start = page; start < pageEnd;)
             {
-                ResourceId = granted[i].Id,
-                Permissionship = granted[i].Result.Permissionship,
-                PartialCaveat = PartialCaveat(granted[i].Result),
-                LookedUpAt = at,
-                AfterResultCursor = CursorAfter(i + 1),
-            };
+                var end = batch == 0 ? start + 1 : Math.Min(pageEnd, start + batch);
+                var last = end - 1;
+                while (onlyGrants && last >= start && granted[last].Result.Permissionship != Permissionship.HasPermission) last--;
+                for (var i = start; i < end; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (onlyGrants && granted[i].Result.Permissionship != Permissionship.HasPermission) continue;
+                    await Task.Yield();
+                    Inject(call, FaultStage.Item, yielded);
+                    yielded++;
+                    yield return new LookupResource
+                    {
+                        ResourceId = granted[i].Id,
+                        Permissionship = granted[i].Result.Permissionship,
+                        PartialCaveat = PartialCaveat(granted[i].Result),
+                        LookedUpAt = at,
+                        AfterResultCursor = i == last ? CursorAfter(end) : null,
+                    };
+                    if (yielded == limit) yield break;
+                }
+                start = end;
+            }
+            if (single || pageEnd - page < size) yield break;
+            page = pageEnd;
         }
     }
 
@@ -537,7 +562,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
     {
         var call = Begin(SpiceDBOperation.LookupSubjects, options, options?.RetryPolicy, cancellationToken, consistency, resource, permission, subjectType);
         if (options is not null && options.PermissionshipFilter != LookupPermissionshipFilter.All) throw new InvalidArgumentException("LookupSubjects does not support PermissionshipFilter.");
-        if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null || options?.Paging is Paging.SingleRequest) throw new InvalidArgumentException("LookupSubjects does not support Debug, PageSize or Paging; upstream concrete pagination is unimplemented.");
+        if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null || options?.Paging is Paging.SingleRequest || options?.ResponseBatchSize is not null || options?.Batching is LookupBatching.Disabled) throw new InvalidArgumentException("LookupSubjects does not support Debug, PageSize, Paging, ResponseBatchSize or Batching; upstream concrete pagination is unimplemented.");
         var limit = Positive(options?.Limit ?? int.MaxValue, "Limit");
         Native.Required(consistency, nameof(consistency));
         Native.Required(resource, nameof(resource));

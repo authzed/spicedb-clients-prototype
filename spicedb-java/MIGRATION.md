@@ -70,7 +70,9 @@ members a migration touches most:
 | `LookupResourcesResponse.getResourceObjectId()` | `LookupResult.LookupResource.resourceId()` |
 | `LookupResourcesResponse.getPermissionship()` | `LookupResource.permissionship()` |
 | `LookupResourcesResponse.getLookedUpAt()` | `LookupResource.lookedUpAt()` |
-| `LookupResourcesResponse.getAfterResultCursor().getToken()` | `LookupResource.afterResultCursor()` |
+| `LookupResourcesResponse.getAfterResultCursor().getToken()` | `LookupResource.afterResultCursor()` (`null` when the item is not the last of its batch) |
+| `LookupResourcesRequest.setOptionalResponseBatchSize(n)` | `LookupOptions.builder().responseBatchSize(n)` (batching is on by default; `batching(LookupBatching.DISABLED)` turns it off) |
+| `LookupResourcesResponse.getBatched()` | expanded for you: one `LookupResource` per result |
 | `LookupSubjectsResponse.getSubject().getSubjectObjectId()` | `LookupResult.LookupSubject.subject().subjectId()` |
 | `LookupSubjectsResponse.getExcludedSubjectsList()` | `LookupSubject.excludedSubjects()` |
 | `ReadSchemaResponse.getSchemaText()` | `SchemaResult.schema()` |
@@ -238,7 +240,12 @@ try (var rels = client.readRelationships(Consistency.full(), Filter.of("document
 
   Each item carries `afterResultCursor()` and `readAt()`; resume with
   `ReadOptions.builder().cursor(c)` and the same filter, consistency and page
-  size. Exports and resource lookups work the same way.
+  size. Exports and resource lookups work the same way, except that
+  `lookupResources` asks the server to batch its responses, so only the last
+  item of each batch carries a cursor and the others return `null`: keep the
+  latest non-null cursor, or pass
+  `LookupOptions.builder().batching(LookupBatching.DISABLED)` for a
+  cursor on every item.
 - Accessor paths shorten: `rel.getSubject().getObject().getObjectId()` becomes
   `rel.subjectId()` (also `resourceType()`, `resourceId()`, `subjectType()`,
   `subjectRelation()`); the nested `resource()`/`subject()` records remain.

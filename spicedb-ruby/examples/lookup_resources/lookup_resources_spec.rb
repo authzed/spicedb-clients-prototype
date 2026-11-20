@@ -119,17 +119,60 @@ RSpec.describe 'LookupResources' do
     client.write(txn)
 
     # Without a limit, the one request is unbounded: page_size is ignored, so
-    # a page size of 1 still returns every match from a single request, and
-    # each item keeps its cursor (the last one is the raw call's final cursor).
+    # a page size of 1 still returns every match from a single request. An
+    # unbounded request is not a resumable one: the server may issue no cursor
+    # for it at all, so set a limit when a resume point is needed.
     results = client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
                                       page_size: 1, paging: SpiceDB::Paging::SINGLE_REQUEST).to_a
     expect(results.map(&:resource_id)).to include('sr1', 'sr2', 'sr3')
-    expect(results.map(&:cursor)).to all(be_a(String))
+    expect(results.map(&:cursor)).to all(be_nil.or(be_a(String)))
 
     # With a limit, that limit is the request's limit and no further page follows.
     limited = client.read_relationships(SpiceDB::Filter.new(resource_type: 'document'), consistency: SpiceDB::Consistency.full,
                                                                                         limit: 2, paging: SpiceDB::Paging::SINGLE_REQUEST).to_a
     expect(limited.length).to eq(2)
+  ensure
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
+  end
+
+  it 'batches responses on the wire while yielding one resource at a time' do
+    client.write_schema(TEST_SCHEMA)
+    alice = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'))
+    ids = %w[br1 br2 br3 br4 br5]
+    txn = SpiceDB::Transaction.new
+    ids.each do |id|
+      txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: id), relation: 'viewer', subject: alice))
+    end
+    client.write(txn)
+    lookup = lambda do |**options|
+      client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
+                              page_size: 2, **options).to_a
+    end
+
+    # By default the server is asked to pack a page's resources into one
+    # response message; the stream still yields them one at a time. A batch
+    # has one cursor, so only the last item yielded from it is a resume point
+    # (a server that does not batch puts a cursor on every item). To
+    # checkpoint a long lookup, keep the latest non-nil cursor.
+    all = lookup.call
+    expect(all.map(&:resource_id)).to match_array(ids)
+    expect(all.map(&:cursor)).to all(be_nil.or(be_a(String)))
+    expect(all.last.cursor).to be_a(String)
+
+    # A limited call always ends on a resume point: its last item's cursor
+    # resumes the lookup (same request, consistency and page size).
+    first = lookup.call(limit: 3)
+    expect(first.length).to eq(3)
+    expect(first.last.cursor).to be_a(String)
+    rest = lookup.call(cursor: first.last.cursor)
+    expect((first + rest).map(&:resource_id)).to match_array(ids)
+
+    # The batch size can be set (the server rejects one above its maximum),
+    # and batching can be turned off to get a cursor on every item.
+    expect(lookup.call(response_batch_size: 1).map(&:resource_id)).to match_array(ids)
+    unbatched = lookup.call(batching: SpiceDB::LookupBatching::DISABLED)
+    expect(unbatched.map(&:resource_id)).to match_array(ids)
+    expect(unbatched.map(&:cursor)).to all(be_a(String))
   ensure
     client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
   end

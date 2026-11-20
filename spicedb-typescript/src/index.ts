@@ -20,4 +20,4 @@ export { DEFAULT_RETRY_POLICY, type RetryPolicy, type RetryEvent } from "./retry
 export * as protoconv from "./protoconv.js";
 export { InMemorySpiceDB, FaultStage, SchemaRevision, type CheckRegistration, type CheckResolver, type InMemoryOperation, type InMemoryCallArguments, type RecordedCall, type Fault, type FaultHook } from "./testing.js";
 
-export { SubjectRelationKind, Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, DeletePartial, Paging } from "./modes.js";
+export { SubjectRelationKind, Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, DeletePartial, Paging, LookupBatching } from "./modes.js";

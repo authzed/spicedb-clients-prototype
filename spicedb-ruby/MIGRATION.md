@@ -44,6 +44,8 @@ as follows (requests now take keyword arguments on the client method):
 | `SubjectFilter(optional_subject_id:, optional_relation:)` | `SubjectFilter(subject_id:, relation: SubjectRelationFilter.direct / .named(name))` |
 | `LookupResourcesRequest(resource_object_type:, ...)` | `client.lookup_resources(resource_type:, permission:, subject:, consistency:)` |
 | `LookupResourcesResponse#resource_object_id` | `LookupResource#resource_id` |
+| `LookupResourcesRequest(optional_response_batch_size:)` | `response_batch_size:` (requested by default; `batching: LookupBatching::DISABLED` turns it off) |
+| `LookupResourcesResponse#batched.results` / `#batched.after_cursor.token` | one `LookupResource` per result; `#cursor` on the last one of the batch |
 | `LookupSubjectsRequest(subject_object_type:, optional_subject_relation:)` | `client.lookup_subjects(subject_type:, subject_relation:)` |
 | `LookupSubjectsResponse#subject.subject_object_id` | `LookupSubject#subject.subject_id` |
 | `ReadSchemaResponse#schema_text` / `#read_at` | `SchemaResult#schema` / `#revision` |
@@ -269,6 +271,16 @@ iterate it (or call `to_a`). Read items carry `cursor` and `read_at`; resume
 with `cursor:` and the same filter, consistency and `page_size:`. Raw calls
 without a limit are one unbounded request; to reproduce one (and its final
 cursor), pass `paging: SpiceDB::Paging::SINGLE_REQUEST`.
+
+`lookup_resources` asks the server for batched responses
+(`optional_response_batch_size`) by default and still yields one
+`LookupResource` at a time, whichever form the server answers in. A batch has
+one cursor, so `LookupResource#cursor` is `nil` except on the last item
+yielded from a batch: code that stored each item's `after_result_cursor`
+should keep the latest non-nil `cursor` instead. The last item of a call with
+`limit:` always carries one. To get the raw one-resource-per-message
+behavior, with a cursor on every item, pass
+`batching: SpiceDB::LookupBatching::DISABLED`.
 
 An empty `Transaction` is sent to SpiceDB like a raw empty write: its
 preconditions are checked and the current revision is returned.

@@ -50,7 +50,9 @@ public final class LookupResult {
    *     a single {@code lookupResources} call — it is a property of the call, not of the individual
    *     resource
    * @param afterResultCursor the cursor to resume after this result ({@link
-   *     LookupOptions.Builder#cursor}); {@code null} if the server sent none
+   *     LookupOptions.Builder#cursor}); {@code null} if the server sent none. With {@link
+   *     LookupOptions.Builder#responseBatchSize}, every result from one batched response message
+   *     shares that message's cursor, coarser than the one-per-result cursor of the default form.
    */
   public record LookupResource(
       String resourceId,

@@ -2,9 +2,12 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.authzed.api.v1.Cursor;
 import com.authzed.api.v1.LookupPermissionship;
+import com.authzed.api.v1.LookupResourcesBatch;
 import com.authzed.api.v1.LookupResourcesRequest;
 import com.authzed.api.v1.LookupResourcesResponse;
+import com.authzed.api.v1.LookupResourcesResult;
 import com.authzed.api.v1.LookupSubjectsRequest;
 import com.authzed.api.v1.LookupSubjectsResponse;
 import com.authzed.api.v1.PartialCaveatInfo;
@@ -265,6 +268,179 @@ class LookupResultsTest {
       assertEquals(Permissionship.CONDITIONAL_PERMISSION, result.permissionship());
       assertNotNull(result.partialCaveat());
       assertEquals(List.of("region"), result.partialCaveat().missingRequiredContext());
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // lookupResources — server-side response batching (optional_response_batch_size)
+  // ---------------------------------------------------------------------
+
+  @Test
+  void lookupResourcesUnpacksBatchedResponses() throws IOException {
+    var captured = new ArrayList<LookupResourcesRequest>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest request,
+              StreamObserver<LookupResourcesResponse> responseObserver) {
+            captured.add(request);
+            responseObserver.onNext(
+                LookupResourcesResponse.newBuilder()
+                    .setLookedUpAt(ZedToken.newBuilder().setToken("rev"))
+                    .setBatched(
+                        LookupResourcesBatch.newBuilder()
+                            .addResults(
+                                LookupResourcesResult.newBuilder()
+                                    .setResourceObjectId("doc1")
+                                    .setPermissionship(
+                                        LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION))
+                            .addResults(
+                                LookupResourcesResult.newBuilder()
+                                    .setResourceObjectId("doc2")
+                                    .setPermissionship(
+                                        LookupPermissionship
+                                            .LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION)
+                                    .setPartialCaveatInfo(
+                                        PartialCaveatInfo.newBuilder()
+                                            .addMissingRequiredContext("region")))
+                            .setAfterCursor(Cursor.newBuilder().setToken("batch-1")))
+                    .build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (var servers = TestServers.start(service)) {
+      List<LookupResult.LookupResource> results;
+      try (var stream =
+          servers
+              .client()
+              .lookupResources(
+                  Consistency.full(),
+                  "document",
+                  "view",
+                  SubjectRef.direct(new ObjectRef("user", "alice")),
+                  LookupOptions.builder().responseBatchSize(500).build())) {
+        results = stream.toList();
+      }
+
+      assertEquals(500, captured.get(0).getOptionalResponseBatchSize());
+      assertEquals(2, results.size());
+      assertEquals("doc1", results.get(0).resourceId());
+      assertEquals(Permissionship.HAS_PERMISSION, results.get(0).permissionship());
+      assertEquals("rev", results.get(0).lookedUpAt().value());
+      assertEquals("batch-1", results.get(0).afterResultCursor());
+      assertEquals("doc2", results.get(1).resourceId());
+      assertEquals(Permissionship.CONDITIONAL_PERMISSION, results.get(1).permissionship());
+      assertEquals(List.of("region"), results.get(1).partialCaveat().missingRequiredContext());
+      // Every result from the same batch shares its one cursor.
+      assertEquals("batch-1", results.get(1).afterResultCursor());
+    }
+  }
+
+  @Test
+  void lookupResourcesDefaultsResponseBatchSizeUnset() throws IOException {
+    var captured = new ArrayList<LookupResourcesRequest>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest request,
+              StreamObserver<LookupResourcesResponse> responseObserver) {
+            captured.add(request);
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (var servers = TestServers.start(service)) {
+      try (var stream =
+          servers
+              .client()
+              .lookupResources(
+                  Consistency.full(),
+                  "document",
+                  "view",
+                  SubjectRef.direct(new ObjectRef("user", "alice")))) {
+        stream.toList();
+      }
+
+      assertEquals(0, captured.get(0).getOptionalResponseBatchSize());
+    }
+  }
+
+  @Test
+  void lookupResourcesPagesPastAFullBatchedPage() throws IOException {
+    // pageSize 3: a batched page whose single message carries exactly 3 results is a full page
+    // (counted by result, not by message), so the client fetches another; a batched page whose
+    // message carries fewer stops. A message-count-based check would see "1 message" and stop
+    // after the first page, silently dropping doc4.
+    var requests = new ArrayList<LookupResourcesRequest>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest request,
+              StreamObserver<LookupResourcesResponse> responseObserver) {
+            requests.add(request);
+            boolean firstPage = !request.hasOptionalCursor();
+            var batch = LookupResourcesBatch.newBuilder();
+            int count = firstPage ? 3 : 1;
+            for (int i = 0; i < count; i++) {
+              int n = firstPage ? i : 3;
+              batch.addResults(
+                  LookupResourcesResult.newBuilder()
+                      .setResourceObjectId("doc" + n)
+                      .setPermissionship(
+                          LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION));
+            }
+            batch.setAfterCursor(Cursor.newBuilder().setToken(firstPage ? "page2" : "page3"));
+            responseObserver.onNext(LookupResourcesResponse.newBuilder().setBatched(batch).build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (var servers = TestServers.start(service)) {
+      List<String> resourceIds;
+      try (var stream =
+          servers
+              .client()
+              .lookupResources(
+                  Consistency.full(),
+                  "document",
+                  "view",
+                  SubjectRef.direct(new ObjectRef("user", "alice")),
+                  LookupOptions.builder().pageSize(3).build())) {
+        resourceIds = stream.map(LookupResult.LookupResource::resourceId).toList();
+      }
+
+      assertEquals(List.of("doc0", "doc1", "doc2", "doc3"), resourceIds);
+      assertEquals(2, requests.size());
+      assertEquals("page2", requests.get(1).getOptionalCursor().getToken());
+    }
+  }
+
+  @Test
+  void lookupResourcesRejectsNegativeResponseBatchSize() {
+    assertThrows(
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () -> LookupOptions.builder().responseBatchSize(-1).build());
+  }
+
+  @Test
+  void lookupSubjectsRejectsResponseBatchSize() throws IOException {
+    var service = new PermissionsServiceGrpc.PermissionsServiceImplBase() {};
+    try (var servers = TestServers.start(service)) {
+      assertThrows(
+          com.authzed.spicedb.errors.InvalidArgumentException.class,
+          () ->
+              servers
+                  .client()
+                  .lookupSubjects(
+                      Consistency.full(),
+                      new ObjectRef("document", "one"),
+                      "view",
+                      "user",
+                      LookupOptions.builder().responseBatchSize(10).build()));
     }
   }
 

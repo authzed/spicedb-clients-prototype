@@ -120,4 +120,29 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
         .containsExactlyInAnyOrder("firstdoc", "seconddoc");
     assertThat(results).allSatisfy(r -> assertThat(r.afterResultCursor()).isNotEmpty());
   }
+
+  @Test
+  void response_batch_size_still_yields_every_result_individually() {
+    // LookupOptions.Builder#responseBatchSize asks the server to pack several resources into one
+    // response message instead of one; a server that doesn't support it just ignores the option.
+    // Either way results are unpacked and yielded one at a time, so a caller's loop body never
+    // needs to know whether batching happened.
+    List<LookupResult.LookupResource> results;
+    try (var stream =
+        client.lookupResources(
+            full(),
+            "document",
+            "view",
+            SubjectRef.direct(new ObjectRef("user", "alice")),
+            LookupOptions.builder()
+                .responseBatchSize(1000)
+                .permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+                .build())) {
+      results = stream.toList();
+    }
+
+    List<String> resourceIDs =
+        results.stream().map(LookupResult.LookupResource::resourceId).toList();
+    assertThat(resourceIDs).containsExactlyInAnyOrder("firstdoc", "seconddoc");
+  }
 }

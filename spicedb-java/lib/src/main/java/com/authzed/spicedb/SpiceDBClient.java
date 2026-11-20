@@ -727,10 +727,10 @@ public final class SpiceDBClient implements SpiceDBApi {
           return stub(permissionsStub, options.transport()).readRelationships(b.build());
         },
         ReadRelationshipsResponse::getAfterResultCursor,
-        ProtoConv::fromProto,
+        r -> List.of(ProtoConv.fromProto(r)),
         "read",
         options.cursor(),
-        response -> true,
+        item -> true,
         requestLimit,
         single,
         options.limit(),
@@ -946,22 +946,19 @@ public final class SpiceDBClient implements SpiceDBApi {
                   .setWithDebug(options.debug() == LookupDebug.ENABLED);
           if (cursor != null) b.setOptionalCursor(cursor);
           if (options.context() != null) b.setContext(toProtoStruct(options.context()));
+          if (options.responseBatchSize() > 0)
+            b.setOptionalResponseBatchSize(options.responseBatchSize());
           return stub(permissionsStub, options.transport()).lookupResources(b.build());
         },
-        LookupResourcesResponse::getAfterResultCursor,
+        r -> r.hasBatched() ? r.getBatched().getAfterCursor() : r.getAfterResultCursor(),
         ProtoConv::fromProto,
         "lookup",
         options.cursor(),
-        response -> {
-          // Checked before the filter, so an unset permissionship fails the read rather than being
-          // skipped as "not HAS_PERMISSION".
-          if (response.getPermissionship()
-              == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
-            throw malformed("looked-up resource: permissionship is unset");
-          return options.permissionshipFilter() == LookupPermissionshipFilter.ALL
-              || response.getPermissionship()
-                  == LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION;
-        },
+        // An unset permissionship already failed the read inside ProtoConv.fromProto, so this
+        // only decides the filter: a result reaching here always has a real permissionship.
+        item ->
+            options.permissionshipFilter() == LookupPermissionshipFilter.ALL
+                || item.permissionship() == Permissionship.HAS_PERMISSION,
         requestLimit,
         single,
         options.limit(),
@@ -986,9 +983,10 @@ public final class SpiceDBClient implements SpiceDBApi {
       throw new LocalValidationException("lookupSubjects does not support permissionshipFilter");
     if (options.debug() == LookupDebug.ENABLED
         || options.pageSize() != 512
-        || options.paging() != Paging.AUTOMATIC)
+        || options.paging() != Paging.AUTOMATIC
+        || options.responseBatchSize() != 0)
       throw new LocalValidationException(
-          "lookupSubjects does not support debug, pageSize or paging");
+          "lookupSubjects does not support debug, pageSize, paging or responseBatchSize");
     var builder =
         LookupSubjectsRequest.newBuilder()
             .setConsistency(consistency.toProto())
@@ -2484,13 +2482,19 @@ public final class SpiceDBClient implements SpiceDBApi {
         limit);
   }
 
+  /**
+   * {@code convert} yields every item one response carries (one for every operation but {@link
+   * #lookupResources}, which may batch several per message); {@code count} and the full-page check
+   * below are measured in items, not messages, so a batched page is detected as full the same way
+   * an unbatched one is.
+   */
   private <P, T> Stream<T> pagedStream(
       java.util.function.Function<Cursor, Iterator<P>> open,
       java.util.function.Function<P, Cursor> cursorOf,
-      java.util.function.Function<P, T> convert,
+      java.util.function.Function<P, List<T>> convert,
       String what,
       String startCursor,
-      java.util.function.Predicate<P> include,
+      java.util.function.Predicate<T> include,
       int pageSize,
       boolean singleRequest,
       long limit,
@@ -2499,7 +2503,7 @@ public final class SpiceDBClient implements SpiceDBApi {
     return managedStream(
         () ->
             new Iterator<T>() {
-              P pending;
+              Iterator<T> pendingItems = Collections.emptyIterator();
               Iterator<P> page = Collections.emptyIterator();
               Cursor cursor =
                   startCursor == null || startCursor.isEmpty()
@@ -2513,18 +2517,17 @@ public final class SpiceDBClient implements SpiceDBApi {
               boolean opened, done;
 
               public boolean hasNext() {
-                if (pending != null) return true;
+                if (pendingItems.hasNext()) return true;
                 while (!done) {
                   while (page.hasNext()) {
                     var response = page.next();
-                    count++;
+                    var items = convert.apply(response);
+                    count += items.size();
                     var next = cursorOf.apply(response);
                     lastToken = next == null ? "" : next.getToken();
                     if (!lastToken.isEmpty()) cursor = next;
-                    if (include.test(response)) {
-                      pending = response;
-                      return true;
-                    }
+                    pendingItems = items.stream().filter(include).iterator();
+                    if (pendingItems.hasNext()) return true;
                   }
                   if (opened && (singleRequest || count < pageSize)) {
                     done = true;
@@ -2548,9 +2551,7 @@ public final class SpiceDBClient implements SpiceDBApi {
 
               public T next() {
                 if (!hasNext()) throw new NoSuchElementException();
-                var response = pending;
-                pending = null;
-                return convert.apply(response);
+                return pendingItems.next();
               }
             },
         timeout,

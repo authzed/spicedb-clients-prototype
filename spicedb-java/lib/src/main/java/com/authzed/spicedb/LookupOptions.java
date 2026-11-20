@@ -16,6 +16,7 @@ public final class LookupOptions {
   private final int pageSize;
   private final long limit;
   private final String subjectRelation;
+  private final int responseBatchSize;
 
   private LookupOptions(Builder b) {
     this.cursor = b.cursor;
@@ -43,6 +44,9 @@ public final class LookupOptions {
     if (pageSize <= 0) throw new LocalValidationException("pageSize must be positive");
     this.limit = b.limit;
     if (limit < 0) throw new LocalValidationException("limit must not be negative");
+    this.responseBatchSize = b.responseBatchSize;
+    if (responseBatchSize < 0)
+      throw new LocalValidationException("responseBatchSize must not be negative");
   }
 
   public String subjectRelation() {
@@ -58,6 +62,7 @@ public final class LookupOptions {
         .pageSize(pageSize)
         .limit(limit)
         .subjectRelation(subjectRelation)
+        .responseBatchSize(responseBatchSize)
         .cursor(cursor)
         .paging(paging)
         .retryPolicy(retryPolicy)
@@ -90,6 +95,15 @@ public final class LookupOptions {
 
   public long limit() {
     return limit;
+  }
+
+  /**
+   * {@code lookupResources} only: 0 (the default) streams one resource per response message; a
+   * positive value requests that the server pack up to that many into each message instead. See
+   * {@link Builder#responseBatchSize}.
+   */
+  public int responseBatchSize() {
+    return responseBatchSize;
   }
 
   /** Automatic paging (the default) or a single request; see {@link Paging}. */
@@ -211,6 +225,21 @@ public final class LookupOptions {
 
     public Builder limit(long value) {
       this.limit = value;
+      return this;
+    }
+
+    private int responseBatchSize = 0;
+
+    /**
+     * {@code lookupResources} only: if positive, requests that the server pack up to this many
+     * resources into each response message instead of one, trading time-to-first-result for
+     * throughput on large result sets. Every result from one batched message shares that message's
+     * {@link LookupResult.LookupResource#afterResultCursor}, coarser than the one-per-result cursor
+     * of the default (0) form. The server bounds the maximum and rejects a request that exceeds it.
+     * {@code lookupSubjects} rejects a nonzero value.
+     */
+    public Builder responseBatchSize(int value) {
+      this.responseBatchSize = value;
       return this;
     }
 

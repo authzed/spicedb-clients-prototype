@@ -99,7 +99,7 @@ class ProtoConvTest {
     var lr =
         new LookupResult.LookupResource(
             "d", Permissionship.HAS_PERMISSION, null, new ZedToken("r"), "cur");
-    assertEquals(lr, ProtoConv.fromProto(ProtoConv.toProto(lr)));
+    assertEquals(List.of(lr), ProtoConv.fromProto(ProtoConv.toProto(lr)));
     var ls =
         new LookupResult.LookupSubject(
             new LookupResult.ResolvedSubject("*", Permissionship.HAS_PERMISSION, null),

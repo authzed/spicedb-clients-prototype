@@ -356,6 +356,30 @@
 
 ### Added
 
+- **2026-11-20: proto client regenerated — `lookupResources` can request server-side response
+  batching.** `LookupResourcesRequest` gained `optional_response_batch_size`, and
+  `LookupResourcesResponse` gained an optional `batched` (`LookupResourcesBatch`, holding repeated
+  `LookupResourcesResult`) alternative to its one-resource-per-message singular fields.
+  `LookupOptions.Builder#responseBatchSize(int)` wraps the new field: a positive value asks the
+  server to pack up to that many resources into each response message instead of one, trading
+  time-to-first-result for throughput on large result sets. `lookupResources` unpacks a batched
+  message transparently, so it keeps yielding one `LookupResult.LookupResource` at a time either
+  way, and automatic paging (`LookupOptions.Builder#pageSize`) still counts results rather than
+  messages when deciding whether a page was full. The only visible difference: every result from
+  one batched message shares that message's `afterResultCursor`, coarser than the one-per-result
+  cursor of the default (0) form. `lookupSubjects` rejects a nonzero `responseBatchSize`, matching
+  its existing rejection of `debug`, `pageSize` and `paging`. Omitting the option (the default)
+  preserves the existing one-resource-per-message wire behavior, including against a server that
+  predates this option and never sets `batched`. New tests in `LookupResultsTest`
+  (`lookupResourcesUnpacksBatchedResponses`, `lookupResourcesDefaultsResponseBatchSizeUnset`,
+  `lookupResourcesPagesPastAFullBatchedPage`, `lookupResourcesRejectsNegativeResponseBatchSize`,
+  `lookupSubjectsRejectsResponseBatchSize`) and a new `LookupResourcesTest` example
+  (`response_batch_size_still_yields_every_result_individually`).
+
+  The rest of the regen (`LookupSubjectsResponse`'s shifted `@deprecated ... l=NNN` line numbers,
+  `PermissionService.java`'s descriptor bytes) is line-number churn from the new messages landing
+  earlier in `permission_service.proto` — no other behavior change.
+
 - Add a fluent `PermissionCheck` builder with required-field validation and immutable context snapshots.
 
 - Native experimental wrappers cover roaring lookup, filter counts, permission-set

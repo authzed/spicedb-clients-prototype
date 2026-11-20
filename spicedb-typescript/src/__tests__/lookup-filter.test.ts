@@ -60,3 +60,44 @@ describe("lookup permissionship filtering", () => {
         } finally { client.close(); }
     });
 });
+describe("lookup resources batched responses", () => {
+    // One response message packs a whole page's results into `batched`, sharing one cursor -- the
+    // shape a server sends when the request opts in with `responseBatchSize`.
+    function setupBatched() {
+        const client = new SpiceDBClient({ endpoint: "localhost:1", token: "secret", transportSecurity: TransportSecurity.Plaintext });
+        const rpc = vi.spyOn(client.raw().permissions, "lookupResources").mockImplementation(async function* (wire) {
+            const start = Number(wire.optionalCursor?.token ?? 0);
+            const end = Math.min(states.length, start + (wire.optionalLimit ?? states.length));
+            yield create(LookupResourcesResponseSchema, {
+                batched: {
+                    results: Array.from({ length: end - start }, (_, i) => ({ resourceObjectId: String(start + i), permissionship: states[start + i] })),
+                    afterCursor: { token: String(end) }
+                }
+            });
+        });
+        return { client, rpc };
+    }
+    it("forwards responseBatchSize and unpacks every batched result", async () => {
+        const { client, rpc } = setupBatched();
+        try {
+            expect(await ids(client.lookupResources({ ...request, responseBatchSize: 1000 }))).toEqual(["0", "1", "2", "3", "4"]);
+            expect(rpc.mock.calls[0][0].optionalResponseBatchSize).toBe(1000);
+        } finally { client.close(); }
+    });
+    it("shares one cursor across a batch's results for paging and resumption", async () => {
+        const { client, rpc } = setupBatched();
+        try {
+            expect(await ids(client.lookupResources({ ...request, pageSize: 2, responseBatchSize: 1000 }))).toEqual(["0", "1", "2", "3", "4"]);
+            expect(rpc.mock.calls.map(([r]) => r.optionalCursor?.token)).toEqual([undefined, "2", "4"]);
+        } finally { client.close(); }
+    });
+    it("fails a batch item with no resource ID as malformed", async () => {
+        const client = new SpiceDBClient({ endpoint: "localhost:1", token: "secret", transportSecurity: TransportSecurity.Plaintext });
+        vi.spyOn(client.raw().permissions, "lookupResources").mockImplementation(async function* () {
+            yield create(LookupResourcesResponseSchema, { batched: { results: [{ permissionship: LookupPermissionship.HAS_PERMISSION }] } });
+        });
+        try {
+            await expect(ids(client.lookupResources({ ...request, responseBatchSize: 1000 }))).rejects.toThrow(/no resource ID/);
+        } finally { client.close(); }
+    });
+});

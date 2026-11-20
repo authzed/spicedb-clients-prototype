@@ -36,6 +36,7 @@
   - `LookupPermissionshipFilter::ALL` is the default, preserving conditional results and missing context.
   - `LookupPermissionshipFilter::HAS_PERMISSION_ONLY` filters client-side to exact unconditional grants before yielding; unknown permissionship values never count as grants.
   - Limits count yielded matches. Skipped results advance cursors and further pages are fetched as needed.
+  - `lookup_resources(response_batch_size:)` asks the server to pack several results into one response message instead of one, trading time-to-first-result for throughput; it never changes the yielded `LookupResource` sequence, only message packing. Every result from one batched message shares that message's `looked_up_at` and `cursor`, coarser than the one-per-result cursor of the unbatched form (the same tradeoff `ExportedRelationship`'s batch cursor already makes). Omitting it preserves one-result-per-message streaming, including against a server that predates batching.
 
 - **Return explicit relationship write results.**
   - Transaction writes return immutable `WriteResult` values; access `result.revision` for the native `ZedToken` used by consistency and watch inputs.

@@ -20,6 +20,7 @@ type operationOptions struct {
 	metadata                    map[string]any
 	timeout                     time.Duration
 	pageSize                    uint32
+	responseBatchSize           uint32
 	limit                       uint64
 	cursor                      string
 	checkContext                map[string]any
@@ -278,6 +279,24 @@ func WithLookupResourcesPageSize(n uint32) LookupResourcesOption {
 			return
 		}
 		o.pageSize = n
+	}
+}
+
+// WithLookupResourcesResponseBatchSize requests up to n results per response
+// message instead of one, trading time-to-first-result for throughput on
+// large result sets. Results are unaffected: they are flattened into the same
+// LookupResource sequence either way, but every result from one batched
+// message shares that message's AfterResultCursor (like
+// ExportedRelationship's batch cursor), coarser than the one-per-result
+// cursor of the default, unbatched form. The server bounds the maximum batch
+// size and rejects a request that exceeds it.
+func WithLookupResourcesResponseBatchSize(n uint32) LookupResourcesOption {
+	return func(o *operationOptions) {
+		if n == 0 {
+			o.err = invalid("response batch size must be positive")
+			return
+		}
+		o.responseBatchSize = n
 	}
 }
 func WithExportRelationshipsPageSize(n uint32) ExportRelationshipsOption {

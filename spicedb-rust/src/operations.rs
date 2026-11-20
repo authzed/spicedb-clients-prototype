@@ -225,6 +225,27 @@ fn page_request_limit(
     }
 }
 
+/// A response's found resources and the cursor that resumes the stream after
+/// all of them, whether the response used the singular, one-resource-per-message
+/// form or (with [`LookupResourcesOptions::with_response_batch_size`]) the
+/// batched form. Every result in a batch shares the batch's one cursor, like
+/// `ExportedRelationship`'s batch cursor.
+fn lookup_resources_results(
+    response: proto::LookupResourcesResponse,
+) -> (Vec<proto::LookupResourcesResult>, Option<proto::Cursor>) {
+    match response.batched {
+        Some(batch) => (batch.results, batch.after_cursor),
+        None => (
+            vec![proto::LookupResourcesResult {
+                resource_object_id: response.resource_object_id,
+                permissionship: response.permissionship,
+                partial_caveat_info: response.partial_caveat_info,
+            }],
+            response.after_result_cursor,
+        ),
+    }
+}
+
 /// Fails a paged operation whose full page ended with a cursor that is
 /// missing, empty, or equal to the one sent: requesting the next page with it
 /// would fetch the same page again, forever.
@@ -1165,6 +1186,11 @@ impl SpiceDBClient {
                                 with_debug: request.options.debug == DebugMode::Enabled,
                                 optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
+                                optional_response_batch_size: request
+                                    .options
+                                    .response_batch_size
+                                    .map(|n| n.get())
+                                    .unwrap_or(0),
                             }, page_end))
                             .await
                     }))
@@ -1172,31 +1198,35 @@ impl SpiceDBClient {
                     let mut stream = response.into_inner();
                     let mut count = 0;
                     let (page, failure) = receive_page(page_end, &mut stream).await;
-                    for response in page {
+                    'page: for response in page {
                         let revision: ZedToken = response
                             .looked_up_at
-                            .map(|t| t.token.into())
+                            .as_ref()
+                            .map(|t| t.token.clone().into())
                             .unwrap_or_default();
-                        cursor = response.after_result_cursor.clone();
-                        count += 1;
-                        if response.resource_object_id.is_empty() {
-                            Err(missing_in_response("resource object ID"))?;
-                        }
-                        require_permissionship(response.permissionship, "lookup resources result")?;
-                        if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
-                            && response.permissionship != proto::LookupPermissionship::HasPermission as i32 {
-                            continue;
-                        }
-                        remaining -= 1;
-                        yield LookupResource {
-                            resource_id: response.resource_object_id,
-                            permissionship: permissionship_from_proto(response.permissionship),
-                            partial_caveat: partial_caveat_from_proto(response.partial_caveat_info.as_ref()),
-                            looked_up_at: revision,
-                            after_result_cursor: response.after_result_cursor.map(|c| c.token),
-                        };
-                        if remaining == 0 {
-                            break;
+                        let (results, after_cursor) = lookup_resources_results(response);
+                        cursor = after_cursor;
+                        count += results.len() as u32;
+                        for result in results {
+                            if result.resource_object_id.is_empty() {
+                                Err(missing_in_response("resource object ID"))?;
+                            }
+                            require_permissionship(result.permissionship, "lookup resources result")?;
+                            if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
+                                && result.permissionship != proto::LookupPermissionship::HasPermission as i32 {
+                                continue;
+                            }
+                            remaining -= 1;
+                            yield LookupResource {
+                                resource_id: result.resource_object_id,
+                                permissionship: permissionship_from_proto(result.permissionship),
+                                partial_caveat: partial_caveat_from_proto(result.partial_caveat_info.as_ref()),
+                                looked_up_at: revision.clone(),
+                                after_result_cursor: cursor.clone().map(|c| c.token),
+                            };
+                            if remaining == 0 {
+                                break 'page;
+                            }
                         }
                     }
                     if let Some(e) = failure.filter(|_| remaining > 0) {

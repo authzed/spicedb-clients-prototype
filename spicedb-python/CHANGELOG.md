@@ -451,6 +451,20 @@
 
 ### Added
 
+- **2026-11-20: `lookup_resources(..., response_batch_size=...)`, unlocked by the proto
+  regeneration bringing `LookupResourcesRequest.optional_response_batch_size` and
+  `LookupResourcesResponse.batched` into this client.** Previously every matching
+  resource arrived in its own stream message; a caller scanning a huge result set paid
+  per-message overhead for each one. Passing `response_batch_size=N` asks the server to
+  pack up to `N` results into each message instead, trading a longer wait for the first
+  result for higher overall throughput. Opt-in and backward compatible: omitting it (or
+  the server ignoring it) preserves today's one-result-per-message streaming, and every
+  result still arrives exactly once either way. Every `LookupResource` in one batch
+  shares that batch's `after_result_cursor` and `looked_up_at`, the same way every
+  relationship in one `export_relationships` response shares that response's cursor.
+  Internal pagination (the cursor fed to the next page request) also follows the
+  batch's shared cursor when present.
+
 - Complete native Materialize coverage: count-by-filter, roaring lookup,
   permission-set watch/lookup with closeable streams and lossless native cursors,
   and permission-set download URLs/timestamps/revisions. All five nondeprecated

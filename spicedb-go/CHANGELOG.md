@@ -252,6 +252,16 @@
 
 ### Added
 
+- **2026-11-20: `LookupResources` gains a `WithLookupResourcesResponseBatchSize` option**, wrapping
+  the proto's new `LookupResourcesRequest.optional_response_batch_size` field and
+  `LookupResourcesResponse.batched`/`LookupResourcesBatch`/`LookupResourcesResult` messages. Setting
+  it asks the server to pack up to that many results into one response message instead of one,
+  trading time-to-first-result for throughput on large result sets; the call still yields the same
+  flattened `LookupResource` sequence either way. The only observable difference is coarser
+  resumption: every result from one batched message shares that message's `AfterResultCursor`,
+  the same tradeoff `ExportedRelationship`'s batch cursor already makes. Without the option,
+  behavior is unchanged -- the server keeps sending one resource per message.
+
 - **2026-10-26:** `CheckResult.Expiration` preserves singular response expiration
   independently of whether tracing is enabled.
 

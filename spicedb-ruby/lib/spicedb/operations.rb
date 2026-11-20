@@ -192,10 +192,18 @@ module SpiceDB
     # page size is ignored, and no follow-up page is requested.
     #
     # The per-page default deadline never counts the caller's processing
-    # time. An automatic page (at most +page_size+ responses) is received
+    # time. An automatic page (at most +page_size+ results) is received
     # whole under its page deadline (Budget#page) and only then yielded. A
     # single request has no size bound, so it is not buffered: the default
     # bounds each wait for the next response instead (PageWatchdog).
+    #
+    # +mapper+ converts one result entry (+response_entries+) into a native
+    # value, given the entry, its parent response (for fields a batched entry
+    # does not carry on its own, such as a revision) and the response's
+    # shared cursor; it may raise for a malformed entry, after any earlier
+    # entries in the same response have already been yielded. A response
+    # carrying several entries (a batched LookupResources message) counts as
+    # that many results toward +page_size+, not one.
     def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, paging: Paging::AUTOMATIC, &)
       positive(page_size, 'page_size')
       positive(limit, 'limit') if limit
@@ -208,14 +216,17 @@ module SpiceDB
           request.optional_cursor = cursor_proto(cursor)
           previous = cursor
           deliver = lambda do |response|
-            cursor = response.after_result_cursor&.token
-            count += 1
-            result = mapper.call(response, cursor)
-            next false if include_result && !include_result.call(result)
+            cursor = response_cursor(response)
+            response_entries(response).each do |entry|
+              count += 1
+              result = mapper.call(entry, response, cursor)
+              next if include_result && !include_result.call(result)
 
-            delivered += 1
-            out << result
-            limit && delivered >= limit
+              delivered += 1
+              out << result
+              return true if limit && delivered >= limit
+            end
+            false
           end
           if single
             consume_rpc(owner, service, operation, request, budget, page_timeout: budget.page_timeout) do |response|

@@ -23398,7 +23398,17 @@ com.google.protobuf.Value defaultValue) {
      * value of MUST be a number,
      * </pre>
      *
-     * <code>double maximum = 11 [json_name = "maximum"];</code>
+     * <code>optional double maximum = 11 [json_name = "maximum"];</code>
+     * @return Whether the maximum field is set.
+     */
+    boolean hasMaximum();
+    /**
+     * <pre>
+     * Maximum represents an inclusive upper limit for a numeric instance. The
+     * value of MUST be a number,
+     * </pre>
+     *
+     * <code>optional double maximum = 11 [json_name = "maximum"];</code>
      * @return The maximum.
      */
     double getMaximum();
@@ -23415,7 +23425,17 @@ com.google.protobuf.Value defaultValue) {
      * value of MUST be a number,
      * </pre>
      *
-     * <code>double minimum = 13 [json_name = "minimum"];</code>
+     * <code>optional double minimum = 13 [json_name = "minimum"];</code>
+     * @return Whether the minimum field is set.
+     */
+    boolean hasMinimum();
+    /**
+     * <pre>
+     * minimum represents an inclusive lower limit for a numeric instance. The
+     * value of MUST be a number,
+     * </pre>
+     *
+     * <code>optional double minimum = 13 [json_name = "minimum"];</code>
      * @return The minimum.
      */
     double getMinimum();
@@ -24944,7 +24964,20 @@ com.google.protobuf.Value defaultValue);
      * value of MUST be a number,
      * </pre>
      *
-     * <code>double maximum = 11 [json_name = "maximum"];</code>
+     * <code>optional double maximum = 11 [json_name = "maximum"];</code>
+     * @return Whether the maximum field is set.
+     */
+    @java.lang.Override
+    public boolean hasMaximum() {
+      return ((bitField0_ & 0x00000001) != 0);
+    }
+    /**
+     * <pre>
+     * Maximum represents an inclusive upper limit for a numeric instance. The
+     * value of MUST be a number,
+     * </pre>
+     *
+     * <code>optional double maximum = 11 [json_name = "maximum"];</code>
      * @return The maximum.
      */
     @java.lang.Override
@@ -24971,7 +25004,20 @@ com.google.protobuf.Value defaultValue);
      * value of MUST be a number,
      * </pre>
      *
-     * <code>double minimum = 13 [json_name = "minimum"];</code>
+     * <code>optional double minimum = 13 [json_name = "minimum"];</code>
+     * @return Whether the minimum field is set.
+     */
+    @java.lang.Override
+    public boolean hasMinimum() {
+      return ((bitField0_ & 0x00000002) != 0);
+    }
+    /**
+     * <pre>
+     * minimum represents an inclusive lower limit for a numeric instance. The
+     * value of MUST be a number,
+     * </pre>
+     *
+     * <code>optional double minimum = 13 [json_name = "minimum"];</code>
      * @return The minimum.
      */
     @java.lang.Override
@@ -25367,7 +25413,7 @@ com.google.protobuf.Value defaultValue);
      */
     @java.lang.Override
     public boolean hasFieldConfiguration() {
-      return ((bitField0_ & 0x00000001) != 0);
+      return ((bitField0_ & 0x00000004) != 0);
     }
     /**
      * <pre>
@@ -25532,13 +25578,13 @@ com.google.protobuf.Value defaultValue) {
       if (java.lang.Double.doubleToRawLongBits(multipleOf_) != 0) {
         output.writeDouble(10, multipleOf_);
       }
-      if (java.lang.Double.doubleToRawLongBits(maximum_) != 0) {
+      if (((bitField0_ & 0x00000001) != 0)) {
         output.writeDouble(11, maximum_);
       }
       if (exclusiveMaximum_ != false) {
         output.writeBool(12, exclusiveMaximum_);
       }
-      if (java.lang.Double.doubleToRawLongBits(minimum_) != 0) {
+      if (((bitField0_ & 0x00000002) != 0)) {
         output.writeDouble(13, minimum_);
       }
       if (exclusiveMinimum_ != false) {
@@ -25593,7 +25639,7 @@ com.google.protobuf.Value defaultValue) {
           internalGetExtensions(),
           ExtensionsDefaultEntryHolder.defaultEntry,
           48);
-      if (((bitField0_ & 0x00000001) != 0)) {
+      if (((bitField0_ & 0x00000004) != 0)) {
         output.writeMessage(1001, getFieldConfiguration());
       }
       getUnknownFields().writeTo(output);
@@ -25628,7 +25674,7 @@ com.google.protobuf.Value defaultValue) {
         size += com.google.protobuf.CodedOutputStream
           .computeDoubleSize(10, multipleOf_);
       }
-      if (java.lang.Double.doubleToRawLongBits(maximum_) != 0) {
+      if (((bitField0_ & 0x00000001) != 0)) {
         size += com.google.protobuf.CodedOutputStream
           .computeDoubleSize(11, maximum_);
       }
@@ -25636,7 +25682,7 @@ com.google.protobuf.Value defaultValue) {
         size += com.google.protobuf.CodedOutputStream
           .computeBoolSize(12, exclusiveMaximum_);
       }
-      if (java.lang.Double.doubleToRawLongBits(minimum_) != 0) {
+      if (((bitField0_ & 0x00000002) != 0)) {
         size += com.google.protobuf.CodedOutputStream
           .computeDoubleSize(13, minimum_);
       }
@@ -25724,7 +25770,7 @@ com.google.protobuf.Value defaultValue) {
         size += com.google.protobuf.CodedOutputStream
             .computeMessageSize(48, extensions__);
       }
-      if (((bitField0_ & 0x00000001) != 0)) {
+      if (((bitField0_ & 0x00000004) != 0)) {
         size += com.google.protobuf.CodedOutputStream
           .computeMessageSize(1001, getFieldConfiguration());
       }
@@ -25758,14 +25804,20 @@ com.google.protobuf.Value defaultValue) {
       if (java.lang.Double.doubleToLongBits(getMultipleOf())
           != java.lang.Double.doubleToLongBits(
               other.getMultipleOf())) return false;
-      if (java.lang.Double.doubleToLongBits(getMaximum())
-          != java.lang.Double.doubleToLongBits(
-              other.getMaximum())) return false;
+      if (hasMaximum() != other.hasMaximum()) return false;
+      if (hasMaximum()) {
+        if (java.lang.Double.doubleToLongBits(getMaximum())
+            != java.lang.Double.doubleToLongBits(
+                other.getMaximum())) return false;
+      }
       if (getExclusiveMaximum()
           != other.getExclusiveMaximum()) return false;
-      if (java.lang.Double.doubleToLongBits(getMinimum())
-          != java.lang.Double.doubleToLongBits(
-              other.getMinimum())) return false;
+      if (hasMinimum() != other.hasMinimum()) return false;
+      if (hasMinimum()) {
+        if (java.lang.Double.doubleToLongBits(getMinimum())
+            != java.lang.Double.doubleToLongBits(
+                other.getMinimum())) return false;
+      }
       if (getExclusiveMinimum()
           != other.getExclusiveMinimum()) return false;
       if (getMaxLength()
@@ -25827,15 +25879,19 @@ com.google.protobuf.Value defaultValue) {
       hash = (37 * hash) + MULTIPLE_OF_FIELD_NUMBER;
       hash = (53 * hash) + com.google.protobuf.Internal.hashLong(
           java.lang.Double.doubleToLongBits(getMultipleOf()));
-      hash = (37 * hash) + MAXIMUM_FIELD_NUMBER;
-      hash = (53 * hash) + com.google.protobuf.Internal.hashLong(
-          java.lang.Double.doubleToLongBits(getMaximum()));
+      if (hasMaximum()) {
+        hash = (37 * hash) + MAXIMUM_FIELD_NUMBER;
+        hash = (53 * hash) + com.google.protobuf.Internal.hashLong(
+            java.lang.Double.doubleToLongBits(getMaximum()));
+      }
       hash = (37 * hash) + EXCLUSIVE_MAXIMUM_FIELD_NUMBER;
       hash = (53 * hash) + com.google.protobuf.Internal.hashBoolean(
           getExclusiveMaximum());
-      hash = (37 * hash) + MINIMUM_FIELD_NUMBER;
-      hash = (53 * hash) + com.google.protobuf.Internal.hashLong(
-          java.lang.Double.doubleToLongBits(getMinimum()));
+      if (hasMinimum()) {
+        hash = (37 * hash) + MINIMUM_FIELD_NUMBER;
+        hash = (53 * hash) + com.google.protobuf.Internal.hashLong(
+            java.lang.Double.doubleToLongBits(getMinimum()));
+      }
       hash = (37 * hash) + EXCLUSIVE_MINIMUM_FIELD_NUMBER;
       hash = (53 * hash) + com.google.protobuf.Internal.hashBoolean(
           getExclusiveMinimum());
@@ -26164,14 +26220,17 @@ com.google.protobuf.Value defaultValue) {
         if (((from_bitField0_ & 0x00000040) != 0)) {
           result.multipleOf_ = multipleOf_;
         }
+        int to_bitField0_ = 0;
         if (((from_bitField0_ & 0x00000080) != 0)) {
           result.maximum_ = maximum_;
+          to_bitField0_ |= 0x00000001;
         }
         if (((from_bitField0_ & 0x00000100) != 0)) {
           result.exclusiveMaximum_ = exclusiveMaximum_;
         }
         if (((from_bitField0_ & 0x00000200) != 0)) {
           result.minimum_ = minimum_;
+          to_bitField0_ |= 0x00000002;
         }
         if (((from_bitField0_ & 0x00000400) != 0)) {
           result.exclusiveMinimum_ = exclusiveMinimum_;
@@ -26219,12 +26278,11 @@ com.google.protobuf.Value defaultValue) {
           enum_.makeImmutable();
           result.enum_ = enum_;
         }
-        int to_bitField0_ = 0;
         if (((from_bitField0_ & 0x01000000) != 0)) {
           result.fieldConfiguration_ = fieldConfigurationBuilder_ == null
               ? fieldConfiguration_
               : fieldConfigurationBuilder_.build();
-          to_bitField0_ |= 0x00000001;
+          to_bitField0_ |= 0x00000004;
         }
         if (((from_bitField0_ & 0x02000000) != 0)) {
           result.extensions_ = internalGetExtensions().build(ExtensionsDefaultEntryHolder.defaultEntry);
@@ -26275,13 +26333,13 @@ com.google.protobuf.Value defaultValue) {
         if (java.lang.Double.doubleToRawLongBits(other.getMultipleOf()) != 0) {
           setMultipleOf(other.getMultipleOf());
         }
-        if (java.lang.Double.doubleToRawLongBits(other.getMaximum()) != 0) {
+        if (other.hasMaximum()) {
           setMaximum(other.getMaximum());
         }
         if (other.getExclusiveMaximum() != false) {
           setExclusiveMaximum(other.getExclusiveMaximum());
         }
-        if (java.lang.Double.doubleToRawLongBits(other.getMinimum()) != 0) {
+        if (other.hasMinimum()) {
           setMinimum(other.getMinimum());
         }
         if (other.getExclusiveMinimum() != false) {
@@ -27104,7 +27162,20 @@ com.google.protobuf.Value defaultValue) {
        * value of MUST be a number,
        * </pre>
        *
-       * <code>double maximum = 11 [json_name = "maximum"];</code>
+       * <code>optional double maximum = 11 [json_name = "maximum"];</code>
+       * @return Whether the maximum field is set.
+       */
+      @java.lang.Override
+      public boolean hasMaximum() {
+        return ((bitField0_ & 0x00000080) != 0);
+      }
+      /**
+       * <pre>
+       * Maximum represents an inclusive upper limit for a numeric instance. The
+       * value of MUST be a number,
+       * </pre>
+       *
+       * <code>optional double maximum = 11 [json_name = "maximum"];</code>
        * @return The maximum.
        */
       @java.lang.Override
@@ -27117,7 +27188,7 @@ com.google.protobuf.Value defaultValue) {
        * value of MUST be a number,
        * </pre>
        *
-       * <code>double maximum = 11 [json_name = "maximum"];</code>
+       * <code>optional double maximum = 11 [json_name = "maximum"];</code>
        * @param value The maximum to set.
        * @return This builder for chaining.
        */
@@ -27134,7 +27205,7 @@ com.google.protobuf.Value defaultValue) {
        * value of MUST be a number,
        * </pre>
        *
-       * <code>double maximum = 11 [json_name = "maximum"];</code>
+       * <code>optional double maximum = 11 [json_name = "maximum"];</code>
        * @return This builder for chaining.
        */
       public Builder clearMaximum() {
@@ -27183,7 +27254,20 @@ com.google.protobuf.Value defaultValue) {
        * value of MUST be a number,
        * </pre>
        *
-       * <code>double minimum = 13 [json_name = "minimum"];</code>
+       * <code>optional double minimum = 13 [json_name = "minimum"];</code>
+       * @return Whether the minimum field is set.
+       */
+      @java.lang.Override
+      public boolean hasMinimum() {
+        return ((bitField0_ & 0x00000200) != 0);
+      }
+      /**
+       * <pre>
+       * minimum represents an inclusive lower limit for a numeric instance. The
+       * value of MUST be a number,
+       * </pre>
+       *
+       * <code>optional double minimum = 13 [json_name = "minimum"];</code>
        * @return The minimum.
        */
       @java.lang.Override
@@ -27196,7 +27280,7 @@ com.google.protobuf.Value defaultValue) {
        * value of MUST be a number,
        * </pre>
        *
-       * <code>double minimum = 13 [json_name = "minimum"];</code>
+       * <code>optional double minimum = 13 [json_name = "minimum"];</code>
        * @param value The minimum to set.
        * @return This builder for chaining.
        */
@@ -27213,7 +27297,7 @@ com.google.protobuf.Value defaultValue) {
        * value of MUST be a number,
        * </pre>
        *
-       * <code>double minimum = 13 [json_name = "minimum"];</code>
+       * <code>optional double minimum = 13 [json_name = "minimum"];</code>
        * @return This builder for chaining.
        */
       public Builder clearMinimum() {
@@ -36171,96 +36255,97 @@ java.lang.String defaultValue) {
       ".EnumSchema.ExtensionsEntryR\nextensions\032" +
       "U\n\017ExtensionsEntry\022\020\n\003key\030\001 \001(\tR\003key\022,\n\005" +
       "value\030\002 \001(\0132\026.google.protobuf.ValueR\005val" +
-      "ue:\0028\001\"\367\n\n\nJSONSchema\022\020\n\003ref\030\003 \001(\tR\003ref\022" +
+      "ue:\0028\001\"\231\013\n\nJSONSchema\022\020\n\003ref\030\003 \001(\tR\003ref\022" +
       "\024\n\005title\030\005 \001(\tR\005title\022 \n\013description\030\006 \001" +
       "(\tR\013description\022\030\n\007default\030\007 \001(\tR\007defaul" +
       "t\022\033\n\tread_only\030\010 \001(\010R\010readOnly\022\030\n\007exampl" +
       "e\030\t \001(\tR\007example\022\037\n\013multiple_of\030\n \001(\001R\nm" +
-      "ultipleOf\022\030\n\007maximum\030\013 \001(\001R\007maximum\022+\n\021e" +
-      "xclusive_maximum\030\014 \001(\010R\020exclusiveMaximum" +
-      "\022\030\n\007minimum\030\r \001(\001R\007minimum\022+\n\021exclusive_" +
-      "minimum\030\016 \001(\010R\020exclusiveMinimum\022\035\n\nmax_l" +
-      "ength\030\017 \001(\004R\tmaxLength\022\035\n\nmin_length\030\020 \001" +
-      "(\004R\tminLength\022\030\n\007pattern\030\021 \001(\tR\007pattern\022" +
-      "\033\n\tmax_items\030\024 \001(\004R\010maxItems\022\033\n\tmin_item" +
-      "s\030\025 \001(\004R\010minItems\022!\n\014unique_items\030\026 \001(\010R" +
-      "\013uniqueItems\022%\n\016max_properties\030\030 \001(\004R\rma" +
-      "xProperties\022%\n\016min_properties\030\031 \001(\004R\rmin" +
-      "Properties\022\032\n\010required\030\032 \003(\tR\010required\022\024" +
-      "\n\005array\030\" \003(\tR\005array\022_\n\004type\030# \003(\0162K.grp" +
-      "c.gateway.protoc_gen_openapiv2.options.J" +
-      "SONSchema.JSONSchemaSimpleTypesR\004type\022\026\n" +
-      "\006format\030$ \001(\tR\006format\022\022\n\004enum\030. \003(\tR\004enu" +
-      "m\022z\n\023field_configuration\030\351\007 \001(\0132H.grpc.g" +
-      "ateway.protoc_gen_openapiv2.options.JSON" +
-      "Schema.FieldConfigurationR\022fieldConfigur" +
-      "ation\022e\n\nextensions\0300 \003(\0132E.grpc.gateway" +
-      ".protoc_gen_openapiv2.options.JSONSchema" +
-      ".ExtensionsEntryR\nextensions\032\\\n\022FieldCon" +
-      "figuration\022&\n\017path_param_name\030/ \001(\tR\rpat" +
-      "hParamName\022\036\n\ndeprecated\0301 \001(\010R\ndeprecat" +
-      "ed\032U\n\017ExtensionsEntry\022\020\n\003key\030\001 \001(\tR\003key\022" +
-      ",\n\005value\030\002 \001(\0132\026.google.protobuf.ValueR\005" +
-      "value:\0028\001\"w\n\025JSONSchemaSimpleTypes\022\013\n\007UN" +
-      "KNOWN\020\000\022\t\n\005ARRAY\020\001\022\013\n\007BOOLEAN\020\002\022\013\n\007INTEG" +
-      "ER\020\003\022\010\n\004NULL\020\004\022\n\n\006NUMBER\020\005\022\n\n\006OBJECT\020\006\022\n" +
-      "\n\006STRING\020\007J\004\010\001\020\002J\004\010\002\020\003J\004\010\004\020\005J\004\010\022\020\023J\004\010\023\020\024" +
-      "J\004\010\027\020\030J\004\010\033\020\034J\004\010\034\020\035J\004\010\035\020\036J\004\010\036\020\"J\004\010%\020*J\004\010*" +
-      "\020+J\004\010+\020.\"\331\002\n\003Tag\022\022\n\004name\030\001 \001(\tR\004name\022 \n\013" +
-      "description\030\002 \001(\tR\013description\022e\n\rextern" +
-      "al_docs\030\003 \001(\0132@.grpc.gateway.protoc_gen_" +
-      "openapiv2.options.ExternalDocumentationR" +
-      "\014externalDocs\022^\n\nextensions\030\004 \003(\0132>.grpc" +
-      ".gateway.protoc_gen_openapiv2.options.Ta" +
-      "g.ExtensionsEntryR\nextensions\032U\n\017Extensi" +
-      "onsEntry\022\020\n\003key\030\001 \001(\tR\003key\022,\n\005value\030\002 \001(" +
-      "\0132\026.google.protobuf.ValueR\005value:\0028\001\"\367\001\n" +
-      "\023SecurityDefinitions\022h\n\010security\030\001 \003(\0132L" +
-      ".grpc.gateway.protoc_gen_openapiv2.optio" +
-      "ns.SecurityDefinitions.SecurityEntryR\010se" +
-      "curity\032v\n\rSecurityEntry\022\020\n\003key\030\001 \001(\tR\003ke" +
-      "y\022O\n\005value\030\002 \001(\01329.grpc.gateway.protoc_g" +
-      "en_openapiv2.options.SecuritySchemeR\005val" +
-      "ue:\0028\001\"\377\006\n\016SecurityScheme\022R\n\004type\030\001 \001(\0162" +
-      ">.grpc.gateway.protoc_gen_openapiv2.opti" +
-      "ons.SecurityScheme.TypeR\004type\022 \n\013descrip" +
-      "tion\030\002 \001(\tR\013description\022\022\n\004name\030\003 \001(\tR\004n" +
-      "ame\022L\n\002in\030\004 \001(\0162<.grpc.gateway.protoc_ge" +
-      "n_openapiv2.options.SecurityScheme.InR\002i" +
-      "n\022R\n\004flow\030\005 \001(\0162>.grpc.gateway.protoc_ge" +
-      "n_openapiv2.options.SecurityScheme.FlowR" +
-      "\004flow\022+\n\021authorization_url\030\006 \001(\tR\020author" +
-      "izationUrl\022\033\n\ttoken_url\030\007 \001(\tR\010tokenUrl\022" +
-      "I\n\006scopes\030\010 \001(\01321.grpc.gateway.protoc_ge" +
-      "n_openapiv2.options.ScopesR\006scopes\022i\n\nex" +
-      "tensions\030\t \003(\0132I.grpc.gateway.protoc_gen" +
-      "_openapiv2.options.SecurityScheme.Extens" +
-      "ionsEntryR\nextensions\032U\n\017ExtensionsEntry" +
-      "\022\020\n\003key\030\001 \001(\tR\003key\022,\n\005value\030\002 \001(\0132\026.goog" +
-      "le.protobuf.ValueR\005value:\0028\001\"K\n\004Type\022\020\n\014" +
-      "TYPE_INVALID\020\000\022\016\n\nTYPE_BASIC\020\001\022\020\n\014TYPE_A" +
-      "PI_KEY\020\002\022\017\n\013TYPE_OAUTH2\020\003\"1\n\002In\022\016\n\nIN_IN" +
-      "VALID\020\000\022\014\n\010IN_QUERY\020\001\022\r\n\tIN_HEADER\020\002\"j\n\004" +
-      "Flow\022\020\n\014FLOW_INVALID\020\000\022\021\n\rFLOW_IMPLICIT\020" +
-      "\001\022\021\n\rFLOW_PASSWORD\020\002\022\024\n\020FLOW_APPLICATION" +
-      "\020\003\022\024\n\020FLOW_ACCESS_CODE\020\004\"\366\002\n\023SecurityReq" +
-      "uirement\022\212\001\n\024security_requirement\030\001 \003(\0132" +
-      "W.grpc.gateway.protoc_gen_openapiv2.opti" +
-      "ons.SecurityRequirement.SecurityRequirem" +
-      "entEntryR\023securityRequirement\0320\n\030Securit" +
-      "yRequirementValue\022\024\n\005scope\030\001 \003(\tR\005scope\032" +
-      "\237\001\n\030SecurityRequirementEntry\022\020\n\003key\030\001 \001(" +
-      "\tR\003key\022m\n\005value\030\002 \001(\0132W.grpc.gateway.pro" +
-      "toc_gen_openapiv2.options.SecurityRequir" +
-      "ement.SecurityRequirementValueR\005value:\0028" +
-      "\001\"\226\001\n\006Scopes\022R\n\005scope\030\001 \003(\0132<.grpc.gatew" +
-      "ay.protoc_gen_openapiv2.options.Scopes.S" +
-      "copeEntryR\005scope\0328\n\nScopeEntry\022\020\n\003key\030\001 " +
-      "\001(\tR\003key\022\024\n\005value\030\002 \001(\tR\005value:\0028\001*;\n\006Sc" +
-      "heme\022\013\n\007UNKNOWN\020\000\022\010\n\004HTTP\020\001\022\t\n\005HTTPS\020\002\022\006" +
-      "\n\002WS\020\003\022\007\n\003WSS\020\004BHZFgithub.com/grpc-ecosy" +
-      "stem/grpc-gateway/v2/protoc-gen-openapiv" +
-      "2/optionsb\006proto3"
+      "ultipleOf\022\035\n\007maximum\030\013 \001(\001H\000R\007maximum\210\001\001" +
+      "\022+\n\021exclusive_maximum\030\014 \001(\010R\020exclusiveMa" +
+      "ximum\022\035\n\007minimum\030\r \001(\001H\001R\007minimum\210\001\001\022+\n\021" +
+      "exclusive_minimum\030\016 \001(\010R\020exclusiveMinimu" +
+      "m\022\035\n\nmax_length\030\017 \001(\004R\tmaxLength\022\035\n\nmin_" +
+      "length\030\020 \001(\004R\tminLength\022\030\n\007pattern\030\021 \001(\t" +
+      "R\007pattern\022\033\n\tmax_items\030\024 \001(\004R\010maxItems\022\033" +
+      "\n\tmin_items\030\025 \001(\004R\010minItems\022!\n\014unique_it" +
+      "ems\030\026 \001(\010R\013uniqueItems\022%\n\016max_properties" +
+      "\030\030 \001(\004R\rmaxProperties\022%\n\016min_properties\030" +
+      "\031 \001(\004R\rminProperties\022\032\n\010required\030\032 \003(\tR\010" +
+      "required\022\024\n\005array\030\" \003(\tR\005array\022_\n\004type\030#" +
+      " \003(\0162K.grpc.gateway.protoc_gen_openapiv2" +
+      ".options.JSONSchema.JSONSchemaSimpleType" +
+      "sR\004type\022\026\n\006format\030$ \001(\tR\006format\022\022\n\004enum\030" +
+      ". \003(\tR\004enum\022z\n\023field_configuration\030\351\007 \001(" +
+      "\0132H.grpc.gateway.protoc_gen_openapiv2.op" +
+      "tions.JSONSchema.FieldConfigurationR\022fie" +
+      "ldConfiguration\022e\n\nextensions\0300 \003(\0132E.gr" +
+      "pc.gateway.protoc_gen_openapiv2.options." +
+      "JSONSchema.ExtensionsEntryR\nextensions\032\\" +
+      "\n\022FieldConfiguration\022&\n\017path_param_name\030" +
+      "/ \001(\tR\rpathParamName\022\036\n\ndeprecated\0301 \001(\010" +
+      "R\ndeprecated\032U\n\017ExtensionsEntry\022\020\n\003key\030\001" +
+      " \001(\tR\003key\022,\n\005value\030\002 \001(\0132\026.google.protob" +
+      "uf.ValueR\005value:\0028\001\"w\n\025JSONSchemaSimpleT" +
+      "ypes\022\013\n\007UNKNOWN\020\000\022\t\n\005ARRAY\020\001\022\013\n\007BOOLEAN\020" +
+      "\002\022\013\n\007INTEGER\020\003\022\010\n\004NULL\020\004\022\n\n\006NUMBER\020\005\022\n\n\006" +
+      "OBJECT\020\006\022\n\n\006STRING\020\007B\n\n\010_maximumB\n\n\010_min" +
+      "imumJ\004\010\001\020\002J\004\010\002\020\003J\004\010\004\020\005J\004\010\022\020\023J\004\010\023\020\024J\004\010\027\020\030" +
+      "J\004\010\033\020\034J\004\010\034\020\035J\004\010\035\020\036J\004\010\036\020\"J\004\010%\020*J\004\010*\020+J\004\010+" +
+      "\020.\"\331\002\n\003Tag\022\022\n\004name\030\001 \001(\tR\004name\022 \n\013descri" +
+      "ption\030\002 \001(\tR\013description\022e\n\rexternal_doc" +
+      "s\030\003 \001(\0132@.grpc.gateway.protoc_gen_openap" +
+      "iv2.options.ExternalDocumentationR\014exter" +
+      "nalDocs\022^\n\nextensions\030\004 \003(\0132>.grpc.gatew" +
+      "ay.protoc_gen_openapiv2.options.Tag.Exte" +
+      "nsionsEntryR\nextensions\032U\n\017ExtensionsEnt" +
+      "ry\022\020\n\003key\030\001 \001(\tR\003key\022,\n\005value\030\002 \001(\0132\026.go" +
+      "ogle.protobuf.ValueR\005value:\0028\001\"\367\001\n\023Secur" +
+      "ityDefinitions\022h\n\010security\030\001 \003(\0132L.grpc." +
+      "gateway.protoc_gen_openapiv2.options.Sec" +
+      "urityDefinitions.SecurityEntryR\010security" +
+      "\032v\n\rSecurityEntry\022\020\n\003key\030\001 \001(\tR\003key\022O\n\005v" +
+      "alue\030\002 \001(\01329.grpc.gateway.protoc_gen_ope" +
+      "napiv2.options.SecuritySchemeR\005value:\0028\001" +
+      "\"\377\006\n\016SecurityScheme\022R\n\004type\030\001 \001(\0162>.grpc" +
+      ".gateway.protoc_gen_openapiv2.options.Se" +
+      "curityScheme.TypeR\004type\022 \n\013description\030\002" +
+      " \001(\tR\013description\022\022\n\004name\030\003 \001(\tR\004name\022L\n" +
+      "\002in\030\004 \001(\0162<.grpc.gateway.protoc_gen_open" +
+      "apiv2.options.SecurityScheme.InR\002in\022R\n\004f" +
+      "low\030\005 \001(\0162>.grpc.gateway.protoc_gen_open" +
+      "apiv2.options.SecurityScheme.FlowR\004flow\022" +
+      "+\n\021authorization_url\030\006 \001(\tR\020authorizatio" +
+      "nUrl\022\033\n\ttoken_url\030\007 \001(\tR\010tokenUrl\022I\n\006sco" +
+      "pes\030\010 \001(\01321.grpc.gateway.protoc_gen_open" +
+      "apiv2.options.ScopesR\006scopes\022i\n\nextensio" +
+      "ns\030\t \003(\0132I.grpc.gateway.protoc_gen_opena" +
+      "piv2.options.SecurityScheme.ExtensionsEn" +
+      "tryR\nextensions\032U\n\017ExtensionsEntry\022\020\n\003ke" +
+      "y\030\001 \001(\tR\003key\022,\n\005value\030\002 \001(\0132\026.google.pro" +
+      "tobuf.ValueR\005value:\0028\001\"K\n\004Type\022\020\n\014TYPE_I" +
+      "NVALID\020\000\022\016\n\nTYPE_BASIC\020\001\022\020\n\014TYPE_API_KEY" +
+      "\020\002\022\017\n\013TYPE_OAUTH2\020\003\"1\n\002In\022\016\n\nIN_INVALID\020" +
+      "\000\022\014\n\010IN_QUERY\020\001\022\r\n\tIN_HEADER\020\002\"j\n\004Flow\022\020" +
+      "\n\014FLOW_INVALID\020\000\022\021\n\rFLOW_IMPLICIT\020\001\022\021\n\rF" +
+      "LOW_PASSWORD\020\002\022\024\n\020FLOW_APPLICATION\020\003\022\024\n\020" +
+      "FLOW_ACCESS_CODE\020\004\"\366\002\n\023SecurityRequireme" +
+      "nt\022\212\001\n\024security_requirement\030\001 \003(\0132W.grpc" +
+      ".gateway.protoc_gen_openapiv2.options.Se" +
+      "curityRequirement.SecurityRequirementEnt" +
+      "ryR\023securityRequirement\0320\n\030SecurityRequi" +
+      "rementValue\022\024\n\005scope\030\001 \003(\tR\005scope\032\237\001\n\030Se" +
+      "curityRequirementEntry\022\020\n\003key\030\001 \001(\tR\003key" +
+      "\022m\n\005value\030\002 \001(\0132W.grpc.gateway.protoc_ge" +
+      "n_openapiv2.options.SecurityRequirement." +
+      "SecurityRequirementValueR\005value:\0028\001\"\226\001\n\006" +
+      "Scopes\022R\n\005scope\030\001 \003(\0132<.grpc.gateway.pro" +
+      "toc_gen_openapiv2.options.Scopes.ScopeEn" +
+      "tryR\005scope\0328\n\nScopeEntry\022\020\n\003key\030\001 \001(\tR\003k" +
+      "ey\022\024\n\005value\030\002 \001(\tR\005value:\0028\001*;\n\006Scheme\022\013" +
+      "\n\007UNKNOWN\020\000\022\010\n\004HTTP\020\001\022\t\n\005HTTPS\020\002\022\006\n\002WS\020\003" +
+      "\022\007\n\003WSS\020\004BHZFgithub.com/grpc-ecosystem/g" +
+      "rpc-gateway/v2/protoc-gen-openapiv2/opti" +
+      "onsb\006proto3"
     };
     descriptor = com.google.protobuf.Descriptors.FileDescriptor
       .internalBuildGeneratedFileFrom(descriptorData,

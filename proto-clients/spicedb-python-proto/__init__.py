@@ -64,6 +64,10 @@ from authzed.api.v1.watch_service_pb2 import (
     WatchRequest,
     WatchResponse,
 )
+from authzed.api.materialize.v0.roaringlookupresources_pb2 import (
+    ExperimentalRoaringLookupResourcesRequest,
+    ExperimentalRoaringLookupResourcesResponse,
+)
 
 from client import Client
 
@@ -129,4 +133,7 @@ __all__ = [
     # Watch service
     "WatchRequest",
     "WatchResponse",
+    # Materialize service
+    "ExperimentalRoaringLookupResourcesRequest",
+    "ExperimentalRoaringLookupResourcesResponse",
 ]

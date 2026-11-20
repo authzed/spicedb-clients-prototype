@@ -362,6 +362,16 @@
 
 - Add a fluent `PermissionCheck` builder with required-field validation and immutable context snapshots.
 
+- **2026-11-20: `LookupOptions.ResponseBatchSize`**, mapping the proto client regen's new
+  `LookupResourcesRequest.optional_response_batch_size` field and the `LookupResourcesResponse.batched`
+  (`LookupResourcesBatch`/`LookupResourcesResult`) messages. Setting it asks the server to group up to
+  that many resources into one response message instead of one per message, trading time-to-first-result
+  for overall throughput on large result sets; `LookupResourcesAsync` unpacks a batched response
+  transparently, so callers still see one `LookupResource` per `await foreach` iteration, with every
+  item from the same batch sharing that response's `LookedUpAt` and `AfterResultCursor`. Leaving it
+  null (the default) keeps the existing one-resource-per-message behavior, including against a server
+  that predates this option and never sets `batched`.
+
 - **2026-09-24: `ExperimentalRoaringLookupResourcesAsync` and `RoaringLookupResourcesResult`**,
   wrapping the proto client regen's new `authzed.api.materialize.v0.RoaringLookupResourcesService`
   (`Roaringlookupresources.cs`/`RoaringlookupresourcesGrpc.cs`) — a bitmap-shaped alternative to

@@ -1509,7 +1509,12 @@ class LookupResource:
     partial_caveat: PartialCaveatInfo | None = None
     looked_up_at: ZedToken = ZedToken("")
     after_result_cursor: str | None = None
-    """Pass as ``lookup_resources(cursor=...)`` with the same request and page size to resume after this item."""
+    """Pass as ``lookup_resources(cursor=...)`` with the same request and page size to resume after this item.
+
+    With ``response_batch_size`` set, every result in one batch shares the
+    batch's one cursor, the same way every item of one ``export_relationships``
+    response shares that response's cursor.
+    """
 
     def __post_init__(self) -> None:
         _freeze(self)

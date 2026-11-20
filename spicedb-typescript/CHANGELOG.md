@@ -1319,6 +1319,17 @@
   const cs = full(); // opaque Consistency; pass directly to client calls
   ```
 
+- **2026-11-20: `lookupResources` can request server-side response batching
+  for higher throughput.** `LookupResourcesRequest.responseBatchSize`, when
+  set, asks the server to pack up to that many resources into each stream
+  message (`LookupResourcesResponse.batched`) instead of one resource per
+  message, trading time-to-first-result for fewer, larger messages. The
+  client unpacks batched messages transparently — `lookupResources` still
+  yields one `LookupResource` per resource, each carrying the batch's shared
+  `afterResultCursor`, so paging, resumption and the `permissionshipFilter`
+  behave exactly as with one-resource-per-message streaming. Omitting the
+  option preserves the existing wire behavior.
+
 ## 0.1.0 (2026-03-16)
 
 Initial release of the idiomatic TypeScript SpiceDB client.

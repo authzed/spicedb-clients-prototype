@@ -77,7 +77,9 @@ public sealed record LookupResource
 
     /// <summary>
     /// Resumes the lookup after this item through <see cref="LookupOptions.ResumeCursor"/>,
-    /// repeating the request and page size. Distinct from revision tokens.
+    /// repeating the request and page size. Distinct from revision tokens. When the server
+    /// batched multiple results into one response (<see cref="LookupOptions.ResponseBatchSize"/>),
+    /// every item from that response shares its one cursor.
     /// </summary>
     public string? AfterResultCursor { get; init; }
 }

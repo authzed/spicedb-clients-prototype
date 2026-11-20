@@ -22,6 +22,13 @@ public sealed class LookupOptions
     public int? PageSize { get; init; }
     public int? Limit { get; init; }
     public string? SubjectRelation { get; init; }
+    /// <summary>
+    /// LookupResources only: if set, requests that the server return up to this many
+    /// resources per response message instead of one, trading time-to-first-result for
+    /// overall throughput. Results are yielded individually regardless; the server rejects
+    /// a value above its own configured maximum. Null preserves one-resource-per-message streaming.
+    /// </summary>
+    public int? ResponseBatchSize { get; init; }
     private Paging _paging;
     /// <summary>LookupResources only: <see cref="Client.Paging.SingleRequest"/> sends one request like the raw API, with <see cref="Limit"/> (or no limit) and no follow-up page.</summary>
     public Paging Paging { get => _paging; init => _paging = BehaviorOptions.Defined(value, nameof(Paging)); }

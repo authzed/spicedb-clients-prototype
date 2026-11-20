@@ -459,19 +459,57 @@ public final class ProtoConv {
         .build();
   }
 
-  public static LookupResult.LookupResource fromProto(LookupResourcesResponse resp) {
-    if (resp.getResourceObjectId().isEmpty()) throw malformed("looked-up resource has no ID");
+  private static LookupResult.LookupResource lookupResource(
+      String resourceObjectId,
+      LookupPermissionship permissionshipProto,
+      boolean hasPartialCaveatInfo,
+      PartialCaveatInfo partialCaveatInfo,
+      ZedToken lookedUpAt,
+      String afterResultCursor) {
+    if (resourceObjectId.isEmpty()) throw malformed("looked-up resource has no ID");
     // Only an unset permissionship is malformed; a newer value maps to UNSPECIFIED and never
     // grants.
-    if (resp.getPermissionship() == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
+    if (permissionshipProto == LookupPermissionship.LOOKUP_PERMISSIONSHIP_UNSPECIFIED)
       throw malformed("looked-up resource: permissionship is unset");
-    var permissionship = fromProto(resp.getPermissionship());
     return new LookupResult.LookupResource(
-        resp.getResourceObjectId(),
-        permissionship,
-        resp.hasPartialCaveatInfo() ? partialFromProto(resp.getPartialCaveatInfo()) : null,
-        tokenOrNull(resp.hasLookedUpAt(), resp.getLookedUpAt()),
-        resp.hasAfterResultCursor() ? resp.getAfterResultCursor().getToken() : null);
+        resourceObjectId,
+        fromProto(permissionshipProto),
+        hasPartialCaveatInfo ? partialFromProto(partialCaveatInfo) : null,
+        lookedUpAt,
+        afterResultCursor);
+  }
+
+  /**
+   * Flattens one lookupResources response into its found resources: the batched form's results
+   * (every one sharing the batch's single cursor, like {@code
+   * fromProto(ExportBulkRelationshipsResponse)}) or, for the singular one-resource-per-message
+   * form, the response itself.
+   */
+  public static List<LookupResult.LookupResource> fromProto(LookupResourcesResponse resp) {
+    var lookedUpAt = tokenOrNull(resp.hasLookedUpAt(), resp.getLookedUpAt());
+    if (resp.hasBatched()) {
+      var batch = resp.getBatched();
+      var cursor = batch.hasAfterCursor() ? batch.getAfterCursor().getToken() : null;
+      return batch.getResultsList().stream()
+          .map(
+              r ->
+                  lookupResource(
+                      r.getResourceObjectId(),
+                      r.getPermissionship(),
+                      r.hasPartialCaveatInfo(),
+                      r.getPartialCaveatInfo(),
+                      lookedUpAt,
+                      cursor))
+          .toList();
+    }
+    return List.of(
+        lookupResource(
+            resp.getResourceObjectId(),
+            resp.getPermissionship(),
+            resp.hasPartialCaveatInfo(),
+            resp.getPartialCaveatInfo(),
+            lookedUpAt,
+            resp.hasAfterResultCursor() ? resp.getAfterResultCursor().getToken() : null));
   }
 
   public static LookupResourcesResponse toProto(LookupResult.LookupResource r) {

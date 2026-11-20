@@ -491,6 +491,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBClient
         var call = Begin(SpiceDBOperation.LookupResources, options, options?.RetryPolicy, cancellationToken, consistency, resourceType, permission, subject);
         if (options?.SubjectRelation is not null) throw new InvalidArgumentException("LookupResources uses the supplied SubjectRef relation.");
         Positive(options?.PageSize ?? 512, "PageSize");
+        if (options?.ResponseBatchSize is { } responseBatchSize) Positive(responseBatchSize, nameof(LookupOptions.ResponseBatchSize));
         var limit = Positive(options?.Limit ?? int.MaxValue, "Limit");
         Native.Required(consistency, nameof(consistency));
         Native.Required(resourceType, nameof(resourceType));

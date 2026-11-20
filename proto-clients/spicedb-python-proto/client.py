@@ -5,6 +5,7 @@ import warnings
 import grpc
 import grpc.aio
 
+from authzed.api.materialize.v0 import roaringlookupresources_pb2_grpc
 from authzed.api.v1 import experimental_service_pb2_grpc
 from authzed.api.v1 import permission_service_pb2_grpc
 from authzed.api.v1 import schema_service_pb2_grpc
@@ -202,6 +203,9 @@ class Client:
             self._channel
         )
         _wrap_deprecated_experimental_methods(self.experimental)
+        self.materialize = roaringlookupresources_pb2_grpc.RoaringLookupResourcesServiceStub(
+            self._channel
+        )
 
     async def close(self):
         await self._channel.close()

@@ -35,6 +35,22 @@ def _positive(value, field):
     return value
 
 
+def _page_cursor(response):
+    """The cursor that resumes this paged stream after ``response``.
+
+    LookupResourcesResponse carries ``batched`` instead of the singular
+    ``after_result_cursor`` when the caller requested server-side batching
+    (many results sharing one cursor); every other paged response keeps the
+    singular field.
+    """
+    if hasattr(response, "batched") and response.HasField("batched"):
+        batch = response.batched
+        return batch.after_cursor if batch.HasField("after_cursor") else None
+    if hasattr(response, "after_result_cursor") and response.HasField("after_result_cursor"):
+        return response.after_result_cursor
+    return None
+
+
 def _method_name(rpc) -> str:
     method = getattr(rpc, "_method", b"")
     if isinstance(method, bytes):

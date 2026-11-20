@@ -72,6 +72,30 @@ for await (const resource of client.lookupResources({
 }
 assert(found.has("readme"), "expected readme in results");
 assert(found.has("design"), "expected design in results (editor implies view)");
+// `responseBatchSize` asks the server to pack multiple resources into each
+// stream message instead of one per message -- a throughput/latency trade-off
+// that does not change which resources are returned, only how they're framed
+// on the wire. The client unpacks batched messages transparently.
+console.log("Documents user:jimmy can view (batched responses):");
+const foundBatched = new Set<string>();
+for await (const resource of client.lookupResources({
+    resourceType: "document",
+    permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly,
+    permission: "view",
+    subject: {
+        object: {
+            objectType: "user",
+            objectId: "jimmy"
+        }
+    },
+    consistency: full(),
+    responseBatchSize: 1000
+})) {
+    console.log(`  document:${resource.resourceId} (permissionship=${resource.permissionship})`);
+    foundBatched.add(resource.resourceId);
+}
+assert(foundBatched.has("readme"), "expected readme in batched results");
+assert(foundBatched.has("design"), "expected design in batched results (editor implies view)");
 // Clean up so later examples that write a narrower schema aren't blocked by
 // leftover relationships (examples run in sequence against one shared
 // SpiceDB instance).

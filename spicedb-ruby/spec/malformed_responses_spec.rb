@@ -246,3 +246,46 @@ RSpec.describe 'malformed responses' do
     expect { client.read_schema }.to raise_error(SpiceDB::FailedPreconditionError, /client is closed/)
   end
 end
+
+# A response_batch_size batch is just several lookup_resources results packed
+# into one message; a malformed one among them fails the whole call the same
+# way a malformed singular response would, never silently skipped.
+RSpec.describe 'malformed responses within a response_batch_size batch' do
+  let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'token') }
+  let(:alice) { SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice')) }
+  let(:cursor) { Authzed::Api::V1::Cursor.new(token: 'c1') }
+
+  def serve(responses)
+    calls = [0]
+    service = double('permissions')
+    allow(service).to receive(:lookup_resources) do |*|
+      calls[0] += 1
+      FixtureOperation.new(responses)
+    end
+    client.instance_variable_set(:@proto_client, double('proto', permissions: service))
+    calls
+  end
+
+  it 'fails a malformed result within a batch, after yielding the good one before it' do
+    calls = serve([
+                    Authzed::Api::V1::LookupResourcesResponse.new(
+                      batched: Authzed::Api::V1::LookupResourcesBatch.new(
+                        results: [
+                          Authzed::Api::V1::LookupResourcesResult.new(resource_object_id: 'a', permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION),
+                          Authzed::Api::V1::LookupResourcesResult.new(resource_object_id: 'b')
+                        ],
+                        after_cursor: cursor
+                      )
+                    )
+                  ])
+    seen = []
+    expect do
+      client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
+                              response_batch_size: 1000).each { |item| seen << item }
+    end.to raise_error(SpiceDB::Error, /client detected malformed response from server: lookup_resources: permissionship is unset/) do |e|
+      expect(e.code).to eq(GRPC::Core::StatusCodes::INTERNAL)
+    end
+    expect(calls[0]).to eq(1), 'a malformed response is not retried'
+    expect(seen.map(&:resource_id)).to eq(%w[a])
+  end
+end

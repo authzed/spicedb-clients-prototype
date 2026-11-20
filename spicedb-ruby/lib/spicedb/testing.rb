@@ -433,10 +433,12 @@ module SpiceDB
       # documentation). The n-th granted object carries the cursor
       # Store.cursor_after(n); results skipped by +permissionship_filter:
       # HAS_PERMISSION_ONLY+ still advance it, and +limit:+ counts yielded
-      # results.
+      # results. +response_batch_size:+ is accepted and validated for parity
+      # with the real client; the double has no wire messages to pack, so it
+      # has no effect on the yielded items.
       def lookup_resources(resource_type:, permission:, subject:, consistency:, context: nil, limit: nil, # rubocop:disable Metrics/ParameterLists
                            page_size: 1000, timeout: nil, permissionship_filter: LookupPermissionshipFilter::ALL, cursor: nil,
-                           call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, &)
+                           call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, response_batch_size: nil, &)
         call = begin_call(:lookup_resources, nil, binding)
         resource_type = Values.name(resource_type, 'resource_type')
         permission = Values.name(permission, 'permission')
@@ -445,6 +447,7 @@ module SpiceDB
         LookupPermissionshipFilter.validate(permissionship_filter)
         Paging.validate(paging)
         validate_paging(page_size, limit, retry_policy)
+        positive(response_batch_size, 'response_batch_size') if response_batch_size
         state = operation(call_options) { snapshot.merge(start: cursor_start(cursor)) }
         granted = candidates(state, resource_type).filter_map do |id|
           check = PermissionCheck.new(resource: ObjectRef.new(object_type: resource_type, object_id: id), permission: permission,

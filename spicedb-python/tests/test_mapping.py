@@ -269,6 +269,52 @@ def test_lookup_resource_carries_looked_up_at():
     assert got.looked_up_at == ZedToken("deadbeef")
 
 
+def test_lookup_resource_results_falls_back_to_singular_fields():
+    """A response with no `batched` field behaves exactly like `lookup_resource`."""
+    resp = psp.LookupResourcesResponse(
+        looked_up_at=core_pb2.ZedToken(token="t"),
+        resource_object_id="doc1",
+        permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+        after_result_cursor=core_pb2.Cursor(token="c1"),
+    )
+    got = mapping.lookup_resource_results(resp)
+    assert got == [mapping.lookup_resource(resp)]
+
+
+def test_lookup_resource_results_expands_a_batch():
+    """Every result in a batch shares the batch's resume cursor and the
+    parent response's `looked_up_at`, the same way `export_relationships`
+    results share their response's cursor."""
+    resp = psp.LookupResourcesResponse(
+        looked_up_at=core_pb2.ZedToken(token="deadbeef"),
+        batched=psp.LookupResourcesBatch(
+            results=[
+                psp.LookupResourcesResult(
+                    resource_object_id="doc1",
+                    permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+                ),
+                psp.LookupResourcesResult(
+                    resource_object_id="doc2",
+                    permissionship=psp.LookupPermissionship.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+                    partial_caveat_info=core_pb2.PartialCaveatInfo(
+                        missing_required_context=["ip_address"]
+                    ),
+                ),
+            ],
+            after_cursor=core_pb2.Cursor(token="batch-cursor"),
+        )
+    )
+    got = mapping.lookup_resource_results(resp)
+    assert [r.resource_id for r in got] == ["doc1", "doc2"]
+    assert got[0].permissionship == Permissionship.HAS_PERMISSION
+    assert got[0].after_result_cursor == "batch-cursor"
+    assert got[0].looked_up_at == ZedToken("deadbeef")
+    assert got[1].permissionship == Permissionship.CONDITIONAL_PERMISSION
+    assert got[1].partial_caveat.missing_required_context == ("ip_address",)
+    assert got[1].after_result_cursor == "batch-cursor"
+    assert got[1].looked_up_at == ZedToken("deadbeef")
+
+
 def test_lookup_subject_carries_looked_up_at():
     resp = psp.LookupSubjectsResponse(
         subject=psp.ResolvedSubject(

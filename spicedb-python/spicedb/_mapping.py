@@ -179,6 +179,39 @@ def lookup_resource(
     )
 
 
+def lookup_resource_results(
+    resp: permission_service_pb2.LookupResourcesResponse,
+) -> list[LookupResource]:
+    """One response's resources: the singular fields, or every result packed
+    into ``batched`` when the caller requested ``response_batch_size`` (the
+    server sets one or the other, never both). A batch's results all share
+    the parent message's ``looked_up_at`` and its one resume cursor, the same
+    way every relationship in one ``export_relationships`` response shares
+    that response's cursor.
+    """
+    if not resp.HasField("batched"):
+        return [lookup_resource(resp)]
+    looked_up_at = _wire.token(resp, "looked_up_at", "LookupResourcesResponse")
+    batch = resp.batched
+    cursor = (
+        batch.after_cursor.token or None
+        if batch.HasField("after_cursor")
+        else None
+    )
+    return [
+        LookupResource(
+            resource_id=_wire.text(
+                item.resource_object_id, "LookupResourcesResult.resource_object_id"
+            ),
+            permissionship=_lookup_permissionship(item.permissionship, "LookupResourcesResult"),
+            partial_caveat=_partial_caveat_from_proto(item),
+            looked_up_at=looked_up_at,
+            after_result_cursor=cursor,
+        )
+        for item in batch.results
+    ]
+
+
 def lookup_subject(
     resp: permission_service_pb2.LookupSubjectsResponse,
 ) -> LookupSubject:

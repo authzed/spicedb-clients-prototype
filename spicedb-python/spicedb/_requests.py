@@ -173,6 +173,7 @@ def lookup_resources_request(
     consistency: Consistency,
     limit: int,
     cursor: core_pb2.Cursor | None,
+    response_batch_size: int = 0,
 ) -> permission_service_pb2.LookupResourcesRequest:
     _require_str(resource_type, "resource_type")
     _require_str(permission, "permission")
@@ -184,6 +185,7 @@ def lookup_resources_request(
         context=ctx_struct,
         optional_limit=limit,
         optional_cursor=cursor,
+        optional_response_batch_size=response_batch_size,
     )
 
 

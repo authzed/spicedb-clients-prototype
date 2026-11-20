@@ -152,6 +152,12 @@
     unbounded, page size ignored, no follow-up page); LookupSubjects and roaring lookup
     reject it. Cursors are strings, never `ZedToken`. Permission-set lookup is one bounded
     page with `PermissionSetLookupOptions.ResumeCursor` for continuation.
+  - `LookupOptions.ResponseBatchSize` requests that the server group multiple resources into
+    one response message (up to a server-enforced maximum) instead of one per message, trading
+    time-to-first-result for throughput. `LookupResourcesAsync` unpacks a batched response into
+    its individual `LookupResource` items transparently; every item from one batched response
+    shares that response's single `LookedUpAt` and `AfterResultCursor`. Null preserves
+    one-resource-per-message streaming, including against a server that does not support batching.
   - `Transaction` collects create/touch/delete operations and match/nonmatch
     preconditions, snapshotting them for writes. Metadata remains native JSON.
     `Count` reports the update count without copying; `Updates` (`RelationshipUpdate`) and

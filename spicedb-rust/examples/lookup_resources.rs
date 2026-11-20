@@ -140,4 +140,32 @@ async fn main() {
     single_ids.sort();
     assert_eq!(single_ids, vec!["firstdoc", "seconddoc"]);
     println!("single request: {single_ids:?}");
+
+    // `with_response_batch_size` asks the server to pack multiple results
+    // into one response message, trading time-to-first-result for
+    // throughput. The yielded `LookupResource` sequence is the same either
+    // way; only every result's `after_result_cursor` changes, since it now
+    // names the end of the whole batch rather than one result.
+    let batched = client.lookup_resources(
+        spicedb::LookupResourcesRequest::new(
+            "document",
+            "view",
+            spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None)
+                .unwrap(),
+            consistency::full(),
+        )
+        .with_options(
+            spicedb::LookupResourcesOptions::new()
+                .with_response_batch_size(std::num::NonZeroU32::new(1000).unwrap()),
+        ),
+    );
+    tokio::pin!(batched);
+    let mut batched_ids = Vec::new();
+    while let Some(result) = batched.next().await {
+        let result = result.expect("batched lookup failed");
+        batched_ids.push(result.resource_id);
+    }
+    batched_ids.sort();
+    assert_eq!(batched_ids, vec!["firstdoc", "seconddoc"]);
+    println!("response batch size 1000: {batched_ids:?}");
 }

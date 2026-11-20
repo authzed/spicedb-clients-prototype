@@ -382,6 +382,18 @@
 
 ### Added
 
+- **2026-11-20: `LookupResourcesOptions::with_response_batch_size`**, wrapping the proto regen's
+  new `LookupResourcesRequest.optional_response_batch_size` field and the
+  `LookupResourcesResponse.batched`/`LookupResourcesBatch`/`LookupResourcesResult` messages.
+  Setting it asks the server to pack up to that many results into one response message instead of
+  one, trading time-to-first-result for throughput on large result sets; `lookup_resources` still
+  yields the same flattened `LookupResource` sequence either way. The only observable difference
+  is a coarser `after_result_cursor`: every result from one batched message shares that message's
+  cursor, the same tradeoff `ExportedRelationship`'s batch cursor already makes. Left unset (the
+  default), the server keeps sending one resource per message, unchanged from before. A malformed
+  result inside a batch (for example a missing resource object ID) fails the whole call exactly
+  like a malformed singular response would.
+
 - **2026-09-24: `experimental_roaring_lookup_resources`/`_with_timeout`**, wrapping the proto
   regen's new `authzed.api.materialize.v0.RoaringLookupResourcesService`
   (`ExperimentalRoaringLookupResources` RPC). Returns a `RoaringLookupResourcesResult`

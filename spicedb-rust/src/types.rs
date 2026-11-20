@@ -1769,6 +1769,7 @@ pub struct LookupResourcesOptions {
     pub(crate) paging: crate::options::Paging,
     pub(crate) context: Option<Context>,
     pub(crate) debug: DebugMode,
+    pub(crate) response_batch_size: Option<std::num::NonZeroU32>,
 }
 impl Default for LookupResourcesOptions {
     fn default() -> Self {
@@ -1782,6 +1783,7 @@ impl Default for LookupResourcesOptions {
             paging: crate::options::Paging::Automatic,
             context: None,
             debug: DebugMode::Disabled,
+            response_batch_size: None,
         }
     }
 }
@@ -1830,6 +1832,19 @@ impl LookupResourcesOptions {
     }
     pub fn with_debug(mut self, value: DebugMode) -> Self {
         self.debug = value;
+        self
+    }
+    /// Requests that the server pack up to this many results into one
+    /// response message instead of one, trading time-to-first-result for
+    /// throughput on large result sets. The yielded `LookupResource` sequence
+    /// is unaffected: results are flattened the same way either way, but
+    /// every result from one batched message shares that message's
+    /// `after_result_cursor`, coarser than the one-per-result cursor of the
+    /// default, unbatched form. The server bounds the maximum batch size and
+    /// rejects a request that exceeds it. Unset (the default) preserves
+    /// one-resource-per-message streaming.
+    pub fn with_response_batch_size(mut self, value: std::num::NonZeroU32) -> Self {
+        self.response_batch_size = Some(value);
         self
     }
 }

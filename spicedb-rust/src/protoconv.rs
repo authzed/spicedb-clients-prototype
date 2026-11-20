@@ -409,6 +409,7 @@ pub fn lookup_resource_to_proto(r: &LookupResource) -> proto::LookupResourcesRes
             .after_result_cursor
             .clone()
             .map(|token| proto::Cursor { token }),
+        batched: None,
     }
 }
 

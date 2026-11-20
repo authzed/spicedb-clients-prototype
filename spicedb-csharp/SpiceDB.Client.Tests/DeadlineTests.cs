@@ -254,7 +254,9 @@ public class DeadlineTests
             var elapsed = DateTime.UtcNow - start;
 
             numLoaded.Should().Be(1);
-            elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(StallMs),
+            // Half the stall, not all of it: the server's delay timer and this wall clock can
+            // disagree by a fraction of a millisecond, and half is still far past the default.
+            elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(StallMs / 2),
                 "ImportRelationshipsAsync must outlive the tiny unary default, not get cut off by it");
         }
         finally

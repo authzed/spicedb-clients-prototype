@@ -47,10 +47,11 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 		// Every page repeats the caller's consistency and one page size:
 		// SpiceDB rejects a cursor sent with different arguments, and the
 		// cursor pins later pages to the first page's revision. The total
-		// limit is enforced here.
+		// limit is enforced here. The response batch size is not part of the
+		// cursor, so it may change from page to page.
 		size := o.pageRequestLimit()
 		for {
-			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug}
+			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug, OptionalResponseBatchSize: o.pageBatchSize(total)}
 			// The page's clock pauses while the caller holds an item.
 			pageCtx, clock, pageCancel := c.serverClock(ctx, true)
 			count := uint32(0)
@@ -65,33 +66,48 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 					yield(LookupResource{}, e)
 					return
 				}
-				count++
-				cur = resp.GetAfterResultCursor()
 				exposed = true
-				if resp.GetResourceObjectId() == "" {
-					pageCancel()
-					yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
-					return
+				// A response is either one resource with its own cursor or a
+				// batch with a single cursor after its last result. Pages
+				// count results, not messages.
+				results, last := lookupResults(resp, o.lookupPermissionshipFilter)
+				if resp.GetBatched() == nil || len(results) > 0 || resp.GetBatched().GetAfterCursor() != nil {
+					cur = lookupCursor(resp)
 				}
-				if resp.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
-					pageCancel()
-					yield(LookupResource{}, malformed("lookup resources", "permissionship is unset"))
-					return
+				lookedUpAt := consistency.NewZedToken(resp.GetLookedUpAt().GetToken())
+				for i, result := range results {
+					count++
+					if result.GetResourceObjectId() == "" {
+						pageCancel()
+						yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
+						return
+					}
+					if result.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
+						pageCancel()
+						yield(LookupResource{}, malformed("lookup resources", "permissionship is unset"))
+						return
+					}
+					if !lookupKept(result, o.lookupPermissionshipFilter) {
+						continue
+					}
+					total++
+					r := LookupResource{ResourceID: result.GetResourceObjectId(), Permissionship: permissionshipFromProto(result.GetPermissionship()), PartialCaveat: partialCaveatFromProto(result.GetPartialCaveatInfo()), LookedUpAt: lookedUpAt}
+					if i == last {
+						r.AfterResultCursor = cur.GetToken()
+					}
+					clock.hold()
+					if !yield(r, nil) {
+						pageCancel()
+						return
+					}
+					clock.wait()
+					if o.limit > 0 && total >= o.limit {
+						pageCancel()
+						return
+					}
 				}
-				if o.lookupPermissionshipFilter == LookupHasPermissionOnly && resp.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
-					continue
-				}
-				total++
-				r := LookupResource{ResourceID: resp.GetResourceObjectId(), Permissionship: permissionshipFromProto(resp.GetPermissionship()), PartialCaveat: partialCaveatFromProto(resp.GetPartialCaveatInfo()), LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken()), AfterResultCursor: cur.GetToken()}
-				if !yield(r, nil) {
-					pageCancel()
-					return
-				}
+				// A response that yielded nothing still waits on the server next.
 				clock.wait()
-				if o.limit > 0 && total >= o.limit {
-					pageCancel()
-					return
-				}
 			}
 			pageCancel()
 			if o.singleRequest || count < size {
@@ -103,6 +119,47 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 			}
 		}
 	}
+}
+
+// lookupResult is the part of a looked-up resource that both wire forms
+// carry: a one-resource response and a result inside a batch.
+type lookupResult interface {
+	GetResourceObjectId() string
+	GetPermissionship() v1.LookupPermissionship
+	GetPartialCaveatInfo() *v1.PartialCaveatInfo
+}
+
+// lookupResults returns a response's results in order, whichever form it
+// arrived in, and the index of the one that carries the response's cursor:
+// the last result the filter keeps, or -1 when it keeps none. An empty batch
+// has no results.
+func lookupResults(resp *v1.LookupResourcesResponse, filter LookupPermissionshipFilter) ([]lookupResult, int) {
+	results := []lookupResult{resp}
+	if batch := resp.GetBatched(); batch != nil {
+		results = make([]lookupResult, len(batch.GetResults()))
+		for i, r := range batch.GetResults() {
+			results[i] = r
+		}
+	}
+	for i := len(results) - 1; i >= 0; i-- {
+		if lookupKept(results[i], filter) {
+			return results, i
+		}
+	}
+	return results, -1
+}
+
+// lookupCursor is the cursor after a response's last result.
+func lookupCursor(resp *v1.LookupResourcesResponse) *v1.Cursor {
+	if batch := resp.GetBatched(); batch != nil {
+		return batch.GetAfterCursor()
+	}
+	return resp.GetAfterResultCursor()
+}
+
+// lookupKept reports whether the permissionship filter yields a result.
+func lookupKept(r lookupResult, filter LookupPermissionshipFilter) bool {
+	return filter != LookupHasPermissionOnly || r.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION
 }
 
 type LookupSubjectsRequest struct {

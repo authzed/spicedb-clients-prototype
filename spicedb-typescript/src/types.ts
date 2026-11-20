@@ -10,9 +10,9 @@ export interface JSONObject {
 }
 export { ZedToken } from "./token.js";
 import { ZedToken, serverToken } from "./token.js";
-import type { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, BulkItemErrors, Paging } from "./modes.js";
+import type { Tracing, LookupDebug, Wildcards, WatchContent, BulkItemErrors } from "./modes.js";
 import type { RetryPolicy } from "./retry.js";
-import { DeletePartial } from "./modes.js";
+import { DeletePartial, LookupPermissionshipFilter, Paging, LookupBatching } from "./modes.js";
 import type { SpiceDBError } from "./errors.js";
 export interface ObjectRef {
     readonly objectType: string;
@@ -196,9 +196,30 @@ export interface LookupResourcesRequest {
     readonly limit?: number;
     readonly pageSize?: number;
     readonly debug?: LookupDebug;
+    /**
+     * Resume after the item whose `afterResultCursor` this is: the latest
+     * cursor an earlier call yielded (not every item carries one). SpiceDB
+     * accepts a cursor only for an identical call: repeat the request and
+     * page size. The response batch size may differ.
+     */
     readonly cursor?: string;
     /** `Paging.SingleRequest` sends exactly one request, as the raw API does. Defaults to `Paging.Automatic`. */
     readonly paging?: Paging;
+    /**
+     * Resources the server packs into each response message. Defaults to the
+     * page size, capped at 1,000 (with `Paging.SingleRequest`: `limit`, capped
+     * at 1,000, or 1,000 without one). Sent as given: SpiceDB rejects a size
+     * above its configured maximum (1,000 by default). Iteration still yields
+     * one resource at a time; only the last item of each batch carries an
+     * `afterResultCursor`. Ignored (after validation) with `LookupBatching.Disabled`.
+     */
+    readonly responseBatchSize?: number;
+    /**
+     * `LookupBatching.Disabled` requests one resource per response message,
+     * so every item carries its `afterResultCursor`. Defaults to
+     * `LookupBatching.Automatic`.
+     */
+    readonly batching?: LookupBatching;
 }
 export interface LookupSubjectsRequest {
     readonly resource: ObjectRef;
@@ -402,7 +423,13 @@ export interface PartialCaveatInfo {
 }
 export interface LookupResource {
     readonly resourceId: string;
-    /** Resume after this item by passing it as the request `cursor` (repeat the request and page size). */
+    /**
+     * Resume after this item by passing it as the request `cursor` (repeat
+     * the request and page size). Absent means "not a resume point": the
+     * server answers in batches, and only the last item yielded from a batch
+     * carries a cursor. To checkpoint a long lookup, keep the latest cursor
+     * seen; `batching: LookupBatching.Disabled` puts one on every item.
+     */
     readonly afterResultCursor?: string;
     readonly permissionship: Permissionship;
     readonly partialCaveat?: PartialCaveatInfo;
@@ -866,6 +893,61 @@ export function positiveLimit(value: number, field: string): number {
         throw new InvalidArgumentError(`${field} must be a positive uint32 integer`);
     return value;
 }
+/** The largest response batch requested by default: SpiceDB's default maximum. */
+const DEFAULT_MAX_RESPONSE_BATCH_SIZE = 1000;
+/**
+ * @internal The validated paging and batching options of one `lookupResources` call.
+ * `pageSize` is the wire limit of each request: 0 (unbounded) in
+ * single-request mode without a limit. `batchSize` is the response batch
+ * size the call asks for, 0 when batching is disabled.
+ */
+export interface LookupResourcesPaging {
+    readonly single: boolean;
+    readonly pageSize: number;
+    readonly limit: number | undefined;
+    readonly batchSize: number;
+    readonly hasPermissionOnly: boolean;
+}
+/** @internal Validates a lookup's paging and batching options, as the client and the test double both must. */
+export function lookupResourcesPaging(request: LookupResourcesRequest): LookupResourcesPaging {
+    const hasPermissionOnly = mode(request.permissionshipFilter, LookupPermissionshipFilter, LookupPermissionshipFilter.All, "permissionshipFilter") === LookupPermissionshipFilter.HasPermissionOnly;
+    const single = mode(request.paging, Paging, Paging.Automatic, "paging") === Paging.SingleRequest;
+    const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
+    // Single-request mode sends the total limit (0: unbounded) and ignores pageSize.
+    const pageSize = single ? limit ?? 0 : positiveLimit(request.pageSize ?? 1000, "pageSize");
+    const batching = mode(request.batching, LookupBatching, LookupBatching.Automatic, "batching");
+    // Validated even when batching is disabled, which then ignores it.
+    const configured = request.responseBatchSize === undefined ? undefined : positiveLimit(request.responseBatchSize, "responseBatchSize");
+    const batchSize = batching === LookupBatching.Disabled ? 0
+        : configured ?? Math.min(pageSize || DEFAULT_MAX_RESPONSE_BATCH_SIZE, DEFAULT_MAX_RESPONSE_BATCH_SIZE);
+    return { single, pageSize, limit, batchSize, hasPermissionOnly };
+}
+/**
+ * @internal The response batch size to request for the next page of a lookup
+ * that has yielded `yielded` results so far (0: none, one resource per message).
+ *
+ * A batch has one cursor, after its last result, so a call that stops inside
+ * a batch ends on an item with no cursor. A total limit must end on a resume
+ * point, so the page on which the limit runs out is batched only when the
+ * remaining count falls on a batch boundary: the batch shrinks to the
+ * remaining count when that is smaller, and batching is off for the page when
+ * the remaining count is not a multiple of the batch size. The
+ * has-permission-only filter drops results client-side, which makes the
+ * boundary the limit lands on unpredictable, so a limit with that filter is
+ * never batched. The wire limit is never changed (SpiceDB hashes it into the
+ * cursor); the batch size is not hashed and may differ from page to page.
+ */
+export function lookupPageBatchSize(paging: LookupResourcesPaging, yielded: number): number {
+    const { batchSize, limit } = paging;
+    if (batchSize === 0 || limit === undefined || paging.single)
+        return batchSize;
+    if (paging.hasPermissionOnly)
+        return 0;
+    const remaining = limit - yielded;
+    if (remaining >= paging.pageSize || remaining % batchSize === 0)
+        return batchSize;
+    return remaining < batchSize ? remaining : 0;
+}
 /** @internal */
 export function toProtoDeleteRelationshipsRequest(filter: RelationshipFilter, options: DeleteOptions) {
     if (!options)
@@ -1203,15 +1285,18 @@ export function resolvedSubjectFromProto(v?: ProtoResolvedSubject): ResolvedSubj
     };
 }
 /**
- * Maps a proto `LookupResourcesResponse` to its native equivalent.
+ * Maps a proto `LookupResourcesResponse` to its native equivalent. `result`
+ * is the resource to map: the response itself (its one-resource form) or one
+ * `LookupResourcesResult` of its batch, which shares the response's
+ * `lookedUpAt` and carries `cursor` only where the caller passes one.
  * @internal
  */
-export function fromProtoLookupResource(resp: ProtoLookupResourcesResponse, cursor = resp.afterResultCursor?.token): LookupResource {
+export function fromProtoLookupResource(resp: ProtoLookupResourcesResponse, result: Pick<ProtoLookupResourcesResponse, "resourceObjectId" | "permissionship" | "partialCaveatInfo"> = resp, cursor = resp.afterResultCursor?.token): LookupResource {
     return {
-        resourceId: resp.resourceObjectId,
+        resourceId: result.resourceObjectId,
         ...(cursor ? { afterResultCursor: cursor } : {}),
-        permissionship: permissionshipFromProto(resp.permissionship),
-        partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
+        permissionship: permissionshipFromProto(result.permissionship),
+        partialCaveat: partialCaveatFromProto(result.partialCaveatInfo),
         lookedUpAt: serverToken(resp.lookedUpAt?.token),
     };
 }

@@ -92,14 +92,41 @@ class ToolingEscapeHatchesTest extends SpiceDBIntegrationTest {
               all.subList(2, 5).stream().map(r -> r.relationship().resourceId()).toList());
     }
 
-    // Resource lookups page the same way.
+    // Resource lookups page the same way, but ask the server to batch its responses, and only
+    // the last item of a batch carries a cursor: an item without one is not a resume point. The
+    // last item of a limited call always carries one.
+    var alice = SubjectRef.direct(new ObjectRef("user", "alice"));
+    var twoPerLookupPage = LookupOptions.builder().pageSize(2);
+    List<LookupResult.LookupResource> firstThree;
+    try (var s =
+        client.lookupResources(
+            consistency, "tooling_doc", "view", alice, twoPerLookupPage.limit(3).build())) {
+      firstThree = s.toList();
+    }
+    assertThat(firstThree).hasSize(3);
+    var resumeAt = firstThree.get(2).afterResultCursor();
+    assertThat(resumeAt).isNotEmpty();
     try (var s =
         client.lookupResources(
             consistency,
             "tooling_doc",
             "view",
-            SubjectRef.direct(new ObjectRef("user", "alice")),
-            LookupOptions.builder().pageSize(2).build())) {
+            alice,
+            LookupOptions.builder().pageSize(2).cursor(resumeAt).build())) {
+      var found = new ArrayList<>(s.map(LookupResult.LookupResource::resourceId).toList());
+      assertThat(found).hasSize(2);
+      firstThree.forEach(r -> found.add(r.resourceId()));
+      assertThat(found).containsExactlyInAnyOrder("doc0", "doc1", "doc2", "doc3", "doc4");
+    }
+
+    // LookupBatching.DISABLED asks for one resource per response: every item carries its cursor.
+    try (var s =
+        client.lookupResources(
+            consistency,
+            "tooling_doc",
+            "view",
+            alice,
+            LookupOptions.builder().pageSize(2).batching(LookupBatching.DISABLED).build())) {
       var found = s.toList();
       assertThat(found).hasSize(5);
       assertThat(found).allSatisfy(r -> assertThat(r.afterResultCursor()).isNotEmpty());

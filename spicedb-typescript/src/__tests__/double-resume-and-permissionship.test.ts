@@ -12,7 +12,7 @@ import {
     ResolvedSubjectSchema, LookupPermissionship,
 } from "@spicedb/proto";
 import {
-    SpiceDBClient, InMemorySpiceDB, FaultStage, Retries, SpiceDBError, InvalidArgumentError, BulkItemErrors, LookupPermissionshipFilter,
+    SpiceDBClient, InMemorySpiceDB, FaultStage, Retries, SpiceDBError, InvalidArgumentError, BulkItemErrors, LookupPermissionshipFilter, LookupBatching,
     errorCode, full, relationship, type CheckRequest,
 } from "../index.js";
 
@@ -39,7 +39,8 @@ describe("InMemorySpiceDB faults on resumable reads carry resumeCursor", () => {
     const reads = {
         readRelationships: (db: InMemorySpiceDB, cursor?: string) => db.readRelationships({ filter: { resourceType: "document" }, consistency: full(), ...(cursor === undefined ? {} : { cursor }) }),
         exportRelationships: (db: InMemorySpiceDB, cursor?: string) => db.exportRelationships({ consistency: full(), ...(cursor === undefined ? {} : { cursor }) }),
-        lookupResources: (db: InMemorySpiceDB, cursor?: string) => db.lookupResources({ ...lookupReq, ...(cursor === undefined ? {} : { cursor }) }),
+        // One resource per message, so every item carries a cursor (a batched lookup's fault is covered in lookup-batching.test.ts).
+        lookupResources: (db: InMemorySpiceDB, cursor?: string) => db.lookupResources({ ...lookupReq, batching: LookupBatching.Disabled, ...(cursor === undefined ? {} : { cursor }) }),
     };
     it.each(Object.entries(reads))("%s: a fault partway through reports the last delivered item's cursor, and resuming from it finishes the read", async (_, read) => {
         const db = new InMemorySpiceDB(docs(5));

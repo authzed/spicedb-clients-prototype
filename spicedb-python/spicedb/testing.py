@@ -65,7 +65,9 @@ batch's relationships (:attr:`Fault.batch`).
 
 Read and export cursors are the decimal count of matching relationships
 already yielded, and lookup cursors that of granted resources; :func:`cursor_after` builds one, and the format is stable
-for tests. :meth:`InMemoryClient.set_read_schema_revision` makes
+for tests. ``lookup_resources`` batches as the real client and a batching
+server would: only the last item yielded from each batch carries a cursor,
+unless the call passes ``batching=LookupBatching.DISABLED``. :meth:`InMemoryClient.set_read_schema_revision` makes
 ``read_schema`` report no revision, as some servers do.
 """
 
@@ -73,6 +75,7 @@ from __future__ import annotations
 
 import enum
 import inspect
+import itertools
 import threading
 from datetime import datetime, timezone
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
@@ -92,6 +95,7 @@ from spicedb.options import (
     BulkItemErrors,
     CallOptions,
     DeletePartial,
+    LookupBatching,
     LookupDebug,
     LookupPermissionshipFilter,
     Operation,
@@ -221,7 +225,9 @@ def cursor_after(n: int) -> str:
     ``export_relationships`` after the first ``n`` matching relationships (in
     insertion order), or its ``lookup_resources`` after the first ``n``
     resources the check resolution grants (counting those a permissionship
-    filter skips): the same cursor the double puts on the ``n``-th item.
+    filter skips): the same cursor the double puts on the ``n``-th item
+    (for ``lookup_resources``, when that item ends a response batch or
+    batching is disabled; other lookup items carry no cursor).
 
     The format, the decimal count ``n``, is stable for tests. It is not a
     SpiceDB cursor; never send it to a real server.
@@ -1171,6 +1177,8 @@ class InMemoryClient:
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
+        batching: LookupBatching = LookupBatching.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> Stream[LookupResource]:
@@ -1179,25 +1187,38 @@ class InMemoryClient:
         the check resolution grants, conditional ones as CONDITIONAL_PERMISSION.
 
         ``permissionship_filter``, ``limit`` and ``cursor`` behave as on the
-        real client; each item's cursor is the decimal count of granted
-        resources up to and including it (see :func:`cursor_after`).
+        real client, and so do pages and response batches: results are
+        grouped as a batching server would group them for the real client's
+        requests, and only the last item yielded from each batch carries a
+        cursor, the decimal count of granted resources up to and including
+        the batch's last one (see :func:`cursor_after`). With
+        ``batching=LookupBatching.DISABLED`` every item carries its cursor.
+        ``limit`` counts yielded items, except with
+        ``paging=Paging.SINGLE_REQUEST``, where it is the one request's limit:
+        the first ``limit`` granted resources are read and the permissionship
+        filter applies to those, so fewer than ``limit`` may be yielded.
         """
         call, call_error = self._store.begin(Operation.LOOKUP_RESOURCES, None, {
             "resource_type": resource_type, "permission": permission, "subject": subject,
             "consistency": consistency, "context": context, "permissionship_filter": permissionship_filter,
             "limit": limit, "page_size": page_size, "debug": debug, "cursor": cursor, "paging": paging,
+            "response_batch_size": response_batch_size, "batching": batching,
             "timeout": timeout, "call_options": call_options,
         })
-        _option(paging, Paging)
+        single = _option(paging, Paging) == "single_request"
+        unbatched = _option(batching, LookupBatching) == "disabled"
         _option(permissionship_filter, LookupPermissionshipFilter)
         _option(debug, LookupDebug)
         Budget(timeout)
         _positive(page_size, "page_size")
         if limit is not None:
             _positive(limit, "limit")
+        if response_batch_size is not None:
+            _positive(response_batch_size, "response_batch_size")
         _call_options(call_options)
         if not isinstance(subject, SubjectRef):
             raise LocalValidationError("subject: expected SubjectRef")
+        batch = _requests.lookup_response_batch_size(response_batch_size, unbatched, page_size, limit, single)
         _requests.lookup_resources_request(
             resource_type, permission, subject._to_proto(), _requests.context_struct(context), consistency,
             page_size, None,
@@ -1213,23 +1234,50 @@ class InMemoryClient:
             start = _cursor_start(cursor, "lookup resources")
             store.respond(call_options)
             token = store.token()
-            position = yielded = 0
-            for obj in store.known_objects(resource_type):
-                if obj.object_id == "*":
-                    continue
-                granted = store.granted(PermissionCheck(obj, permission, subject), context)
-                if granted is None:
-                    continue
-                position += 1
-                if position <= start or (has_only and granted[0] is not Permissionship.HAS_PERMISSION):
-                    continue
-                if limit is not None and yielded >= limit:
+
+            def results():
+                """Every granted resource after the cursor, with its position."""
+                position = 0
+                for obj in store.known_objects(resource_type):
+                    if obj.object_id == "*":
+                        continue
+                    granted = store.granted(PermissionCheck(obj, permission, subject), context)
+                    if granted is None:
+                        continue
+                    position += 1
+                    if position > start:
+                        yield position, obj.object_id, granted
+
+            remaining = results()
+            yielded = 0
+            while True:
+                # One page, as the real client would request it: page_size
+                # results, cut into the batches a server would send for that
+                # page's batch size. Single-request mode is one page whose
+                # wire limit is the total limit (everything without one), so
+                # it ends after ``limit`` granted results and the
+                # permissionship filter applies to those afterwards.
+                size = _requests.lookup_page_batch_size(batch, page_size, limit, yielded, single, has_only) or 1
+                page = list(itertools.islice(remaining, (limit if single else page_size)))
+                for offset in range(0, len(page), size):
+                    chunk = page[offset:offset + size]
+                    kept = [
+                        entry for entry in chunk
+                        if not has_only or entry[2][0] is Permissionship.HAS_PERMISSION
+                    ]
+                    for _, object_id, granted in kept:
+                        if limit is not None and not single and yielded >= limit:
+                            return
+                        error = store.fault(call, FaultStage.ITEM, yielded)
+                        if error is not None:
+                            raise error
+                        yielded += 1
+                        # The batch's cursor resumes after its last result,
+                        # and only the last kept item carries it.
+                        after = str(chunk[-1][0]) if object_id == kept[-1][1] else None
+                        yield LookupResource(object_id, granted[0], granted[1], token, after)
+                if single or len(page) < page_size:
                     return
-                error = store.fault(call, FaultStage.ITEM, yielded)
-                if error is not None:
-                    raise error
-                yielded += 1
-                yield LookupResource(obj.object_id, granted[0], granted[1], token, str(position))
 
         return Stream(factory)
 
@@ -1718,6 +1766,8 @@ class AsyncInMemoryClient:
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
+        batching: LookupBatching = LookupBatching.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> AsyncStream[LookupResource]:
@@ -1725,7 +1775,8 @@ class AsyncInMemoryClient:
         return _async_stream(self._sync.lookup_resources(
             resource_type=resource_type, permission=permission, subject=subject, consistency=consistency,
             context=context, permissionship_filter=permissionship_filter, limit=limit, page_size=page_size,
-            debug=debug, cursor=cursor, paging=paging, timeout=timeout, call_options=call_options,
+            debug=debug, cursor=cursor, paging=paging, response_batch_size=response_batch_size,
+            batching=batching, timeout=timeout, call_options=call_options,
         ))
 
     def lookup_subjects(

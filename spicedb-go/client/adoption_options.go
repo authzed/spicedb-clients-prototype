@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
+	"github.com/authzed/spicedb-clients/spicedb-go/internal/lookupbatch"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
@@ -168,7 +169,10 @@ func WithExportRelationshipsCursor(cursor string) ExportRelationshipsOption {
 }
 
 // WithLookupResourcesCursor resumes a lookup after the item whose
-// AfterResultCursor is cursor. Repeat the request and its page size.
+// AfterResultCursor is cursor. Repeat the request and its page size. With
+// batched responses only the last item of each batch carries a cursor, so
+// keep the latest non-empty one while iterating; the batch size may differ
+// between the call and its resumption.
 func WithLookupResourcesCursor(cursor string) LookupResourcesOption {
 	return func(o *operationOptions) { o.cursor = cursor }
 }
@@ -441,8 +445,8 @@ const (
 	PagingAutomatic Paging = iota
 	// PagingSingleRequest sends exactly one request, as the raw API does: its
 	// limit is the limit option (or unbounded without one), the page-size
-	// option is ignored, and no follow-up page is requested. Each item still
-	// carries its after-result cursor.
+	// option is ignored, and no follow-up page is requested. Items still
+	// carry after-result cursors.
 	PagingSingleRequest
 )
 
@@ -462,6 +466,68 @@ func WithReadRelationshipsPaging(mode Paging) ReadRelationshipsOption {
 // WithLookupResourcesPaging selects automatic paging or a single request.
 func WithLookupResourcesPaging(mode Paging) LookupResourcesOption {
 	return func(o *operationOptions) { pagingOption(o, mode) }
+}
+
+// LookupBatching selects whether LookupResources asks the server for batched
+// responses. Either way the call yields one resource at a time.
+type LookupBatching uint8
+
+const (
+	// BatchingAutomatic asks the server to pack several resources into each
+	// response (see WithLookupResourcesResponseBatchSize for the size). Only
+	// the last item of each batch carries an AfterResultCursor. A server that
+	// does not batch is read as before. This is the default.
+	BatchingAutomatic LookupBatching = iota
+	// BatchingDisabled asks for one resource per response, so every item
+	// carries its AfterResultCursor.
+	BatchingDisabled
+)
+
+// WithLookupResourcesBatching enables or disables batched responses.
+func WithLookupResourcesBatching(mode LookupBatching) LookupResourcesOption {
+	return func(o *operationOptions) {
+		if mode != BatchingAutomatic && mode != BatchingDisabled {
+			o.err = invalid("unknown lookup batching mode")
+			return
+		}
+		o.batchingDisabled = mode == BatchingDisabled
+	}
+}
+
+// WithLookupResourcesResponseBatchSize sets how many resources the server may
+// pack into one response. The default is the page size capped at 1,000 (in
+// single-request mode the total limit capped at 1,000, or 1,000 without one).
+// The size is sent as given: SpiceDB rejects one above its configured maximum
+// (1,000 by default). It may differ between a call and its resumption. With a
+// total limit, the page that reaches the limit may ask for a smaller size, or
+// for unbatched responses, so that the call's last item carries a cursor.
+func WithLookupResourcesResponseBatchSize(n uint32) LookupResourcesOption {
+	return func(o *operationOptions) {
+		if n == 0 {
+			o.err = invalid("response batch size must be positive")
+			return
+		}
+		o.responseBatchSize = n
+	}
+}
+
+// lookupBatchSize is the response batch size a LookupResources call asks for
+// before any limit alignment: the configured size, else the default, and 0
+// when batching is disabled.
+func (o operationOptions) lookupBatchSize() uint32 {
+	if o.batchingDisabled {
+		return 0
+	}
+	if o.responseBatchSize > 0 {
+		return o.responseBatchSize
+	}
+	return lookupbatch.Default(o.pageSize, o.limit, o.singleRequest)
+}
+
+// pageBatchSize is the OptionalResponseBatchSize of the page request sent
+// after the call has yielded that many results; see lookupbatch.ForPage.
+func (o operationOptions) pageBatchSize(yielded uint64) uint32 {
+	return lookupbatch.ForPage(o.lookupBatchSize(), o.pageSize, o.limit, yielded, o.singleRequest, o.lookupPermissionshipFilter == LookupHasPermissionOnly)
 }
 
 // pageRequestLimit is the OptionalLimit every request of a paged read sends:
@@ -488,9 +554,15 @@ type ResolvedOptions struct {
 	// defaults are applied.
 	PageSize uint32
 	// Limit is the total result limit; 0 means none.
-	Limit                      uint64
-	Cursor                     string
-	Paging                     Paging
+	Limit  uint64
+	Cursor string
+	Paging Paging
+	// LookupBatching and ResponseBatchSize describe LookupResources response
+	// batching: the size is the one the call asks for (the option's value or
+	// the default), and 0 when batching is disabled or for other operations.
+	// With a total limit, the page that reaches it may ask for less.
+	LookupBatching             LookupBatching
+	ResponseBatchSize          uint32
 	CallOptions                []grpc.CallOption
 	RetryPolicy                *RetryPolicy
 	CheckContext               map[string]any
@@ -562,6 +634,12 @@ func ResolveOptions[O OperationOption](opts ...O) ResolvedOptions {
 	}
 	if o.singleRequest {
 		r.Paging = PagingSingleRequest
+	}
+	if _, ok := any(opts).([]LookupResourcesOption); ok {
+		r.ResponseBatchSize = o.lookupBatchSize()
+		if o.batchingDisabled {
+			r.LookupBatching = BatchingDisabled
+		}
 	}
 	if o.tracing {
 		r.Tracing = TracingEnabled

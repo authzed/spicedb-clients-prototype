@@ -1125,7 +1125,16 @@ impl SpiceDBClient {
     }
     /// Looks up resources, paging internally with the caller's consistency and
     /// page size on every page (see [`read_relationships`](Self::read_relationships)).
-    /// Each item carries its after-result cursor and looked-up-at revision.
+    /// Each item carries its looked-up-at revision.
+    ///
+    /// The server is asked for batched responses by default
+    /// ([`LookupResourcesOptions::with_response_batch_size`]); the stream
+    /// still yields one resource at a time. A batch has one cursor, so only
+    /// the last item yielded from it carries an after-result cursor: to
+    /// checkpoint, keep the latest `Some` cursor seen. The last item of a
+    /// limited call always carries one, and
+    /// [`LookupBatching::Disabled`](crate::LookupBatching::Disabled) puts one
+    /// on every item.
     pub fn lookup_resources(
         &self,
         request: LookupResourcesRequest,
@@ -1148,10 +1157,12 @@ impl SpiceDBClient {
                 let consistency = request.consistency.to_proto();
                 let single = request.options.paging == crate::options::Paging::SingleRequest;
                 let page_size = page_request_limit(&request.options.paging, request.options.page_size, request.options.limit);
-                let mut cursor = request.options.cursor.map(|token| proto::Cursor { token });
+                let exact_only = request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly;
+                let mut cursor = request.options.cursor.clone().map(|token| proto::Cursor { token });
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
                     let previous_cursor = cursor.clone();
+                    let batch_size = request.options.page_response_batch_size(remaining);
                     let page_end = page_deadline(page_timeout);
                     let response = within_page(page_end, open_stream(|| async {
                         permissions
@@ -1165,38 +1176,68 @@ impl SpiceDBClient {
                                 with_debug: request.options.debug == DebugMode::Enabled,
                                 optional_limit: page_size,
                                 optional_cursor: cursor.clone(),
+                                optional_response_batch_size: batch_size,
                             }, page_end))
                             .await
                     }))
                     .await?;
                     let mut stream = response.into_inner();
-                    let mut count = 0;
+                    // Counts results, not messages: a batch holds many.
+                    let mut count: u32 = 0;
                     let (page, failure) = receive_page(page_end, &mut stream).await;
-                    for response in page {
+                    'page: for response in page {
                         let revision: ZedToken = response
                             .looked_up_at
                             .map(|t| t.token.into())
                             .unwrap_or_default();
-                        cursor = response.after_result_cursor.clone();
-                        count += 1;
-                        if response.resource_object_id.is_empty() {
-                            Err(missing_in_response("resource object ID"))?;
-                        }
-                        require_permissionship(response.permissionship, "lookup resources result")?;
-                        if request.options.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly
-                            && response.permissionship != proto::LookupPermissionship::HasPermission as i32 {
+                        // Either form: a batch's results share one cursor,
+                        // after its last result; a one-resource response is a
+                        // batch of one.
+                        let (results, after) = match response.batched {
+                            Some(batch) => (batch.results, batch.after_cursor),
+                            None => (
+                                vec![proto::LookupResourcesResult {
+                                    resource_object_id: response.resource_object_id,
+                                    permissionship: response.permissionship,
+                                    partial_caveat_info: response.partial_caveat_info,
+                                }],
+                                response.after_result_cursor,
+                            ),
+                        };
+                        if results.is_empty() {
                             continue;
                         }
-                        remaining -= 1;
-                        yield LookupResource {
-                            resource_id: response.resource_object_id,
-                            permissionship: permissionship_from_proto(response.permissionship),
-                            partial_caveat: partial_caveat_from_proto(response.partial_caveat_info.as_ref()),
-                            looked_up_at: revision,
-                            after_result_cursor: response.after_result_cursor.map(|c| c.token),
+                        cursor = after.clone();
+                        // The cursor goes on the last result the filter
+                        // keeps: resuming there skips only dropped results.
+                        let keeps = |r: &proto::LookupResourcesResult| {
+                            !exact_only || r.permissionship == proto::LookupPermissionship::HasPermission as i32
                         };
-                        if remaining == 0 {
-                            break;
+                        let last_kept = results.iter().rposition(keeps);
+                        for (i, result) in results.into_iter().enumerate() {
+                            count = count.saturating_add(1);
+                            if result.resource_object_id.is_empty() {
+                                Err(missing_in_response("resource object ID"))?;
+                            }
+                            require_permissionship(result.permissionship, "lookup resources result")?;
+                            if !keeps(&result) {
+                                continue;
+                            }
+                            remaining -= 1;
+                            yield LookupResource {
+                                resource_id: result.resource_object_id,
+                                permissionship: permissionship_from_proto(result.permissionship),
+                                partial_caveat: partial_caveat_from_proto(result.partial_caveat_info.as_ref()),
+                                looked_up_at: revision.clone(),
+                                after_result_cursor: if Some(i) == last_kept {
+                                    after.clone().map(|c| c.token)
+                                } else {
+                                    None
+                                },
+                            };
+                            if remaining == 0 {
+                                break 'page;
+                            }
                         }
                     }
                     if let Some(e) = failure.filter(|_| remaining > 0) {

@@ -252,6 +252,26 @@
 
 ### Added
 
+- **2026-11-20: `LookupResources` asks the server for batched responses by default.**
+  SpiceDB can now pack many resources into each response message, which makes
+  large lookups cheaper. The call still yields one `LookupResource` at a time
+  and needs no change to read results, and servers that do not batch are read
+  as before. What changes for a caller is resumption: only the last item of
+  each batch carries `AfterResultCursor`, and the items before it carry the
+  empty string, so code that stored every item's cursor must keep the latest
+  non-empty one instead. The last item of a call that stops at its
+  `WithLookupResourcesLimit` still carries a cursor. The batch size defaults
+  to the page size capped at 1,000 (in single-request mode, the limit capped
+  at 1,000, or 1,000 without one); `WithLookupResourcesResponseBatchSize(n)`
+  sets it, sent as given, and SpiceDB rejects a size above its configured
+  maximum (1,000 by default). `WithLookupResourcesBatching(client.BatchingDisabled)`
+  asks for one resource per response and gives every item its cursor again.
+  `ResolvedOptions` reports both as `ResponseBatchSize` and `LookupBatching`,
+  and `clienttest.Store` batches its lookup results the same way, so its
+  mid-batch items have no cursor either. A response that yields nothing (a
+  filtered-out result or an empty batch) no longer leaves the per-page
+  deadline paused while the client waits for the next one.
+
 - **2026-10-26:** `CheckResult.Expiration` preserves singular response expiration
   independently of whether tracing is enabled.
 

@@ -79,12 +79,29 @@ class Paging(Enum):
     AUTOMATIC (default) fetches page after page of ``page_size`` until the
     results (or ``limit``) run out. SINGLE_REQUEST sends exactly one request,
     as the raw API does: its limit is ``limit`` (unbounded without one),
-    ``page_size`` is ignored, and no follow-up page is requested. Each item
-    still carries its ``after_result_cursor``.
+    ``page_size`` is ignored, and no follow-up page is requested. Items still
+    carry ``after_result_cursor`` (for ``lookup_resources``, see
+    ``LookupBatching``).
     """
 
     AUTOMATIC = "automatic"
     SINGLE_REQUEST = "single_request"
+
+
+class LookupBatching(Enum):
+    """Whether ``lookup_resources`` asks the server to batch its responses.
+
+    AUTOMATIC (default) requests up to ``response_batch_size`` resources per
+    response message (by default the page size, capped at 1,000) and still
+    yields one resource at a time; only the last item yielded from each batch
+    carries an ``after_result_cursor``. DISABLED requests one resource per
+    message, so every item carries its cursor; ``response_batch_size`` is
+    then ignored. Servers that predate batching answer one resource per
+    message either way.
+    """
+
+    AUTOMATIC = "automatic"
+    DISABLED = "disabled"
 
 
 class BulkItemErrors(Enum):

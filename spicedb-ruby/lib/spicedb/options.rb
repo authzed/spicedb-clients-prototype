@@ -69,9 +69,21 @@ module SpiceDB
   # default) pages until results or the limit run out; SINGLE_REQUEST sends
   # exactly one request, as the raw API does: its limit is +limit:+ (or
   # unbounded without one), +page_size:+ is ignored and no follow-up page is
-  # requested. Items still carry their cursors.
+  # requested. Items still carry their cursors (in lookup_resources, the last
+  # item of each response batch; see LookupBatching).
   class Paging < Option
     cases :AUTOMATIC, :SINGLE_REQUEST
+  end
+
+  # Whether lookup_resources asks the server to pack several resources into
+  # each response message. AUTOMATIC (the default) requests batches of
+  # +response_batch_size:+ (by default the page size, at most 1000) and still
+  # yields one resource at a time; only the last item yielded from a batch
+  # then carries a cursor. DISABLED requests one resource per message, so
+  # every item carries its cursor. Either way a server may answer in either
+  # form, and both are read.
+  class LookupBatching < Option
+    cases :AUTOMATIC, :DISABLED
   end
 
   # How check_bulk reports a per-item failure: RAISED fails the call with the

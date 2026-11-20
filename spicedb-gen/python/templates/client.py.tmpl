@@ -20,6 +20,7 @@ from spicedb import (
     ExportedRelationship,
     Filter,
     JSONObject,
+    LookupBatching,
     LookupDebug,
     LookupPermissionshipFilter,
     LookupResource,
@@ -390,6 +391,8 @@ class TypedClient:
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
+        batching: LookupBatching = LookupBatching.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupResource]: ...
@@ -409,6 +412,8 @@ class TypedClient:
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
+        batching: LookupBatching = LookupBatching.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupResource]:
@@ -424,6 +429,8 @@ class TypedClient:
             debug=debug,
             cursor=cursor,
             paging=paging,
+            response_batch_size=response_batch_size,
+            batching=batching,
             timeout=timeout,
             call_options=call_options,
         )
@@ -444,6 +451,8 @@ class TypedClient:
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
         paging: Paging = Paging.AUTOMATIC,
+        response_batch_size: int | None = None,
+        batching: LookupBatching = LookupBatching.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupResource]:
@@ -475,6 +484,8 @@ class TypedClient:
             debug=debug,
             cursor=cursor,
             paging=paging,
+            response_batch_size=response_batch_size,
+            batching=batching,
             timeout=timeout,
             call_options=call_options,
         )

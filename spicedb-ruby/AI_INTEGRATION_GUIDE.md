@@ -107,6 +107,17 @@ ids = client.lookup_resources(resource_type: 'organization', permission: 'view',
 
 Omit the filter only if you handle `:conditional_permission` results explicitly.
 
+Results arrive in server-side batches but are yielded one at a time. A batch
+has one cursor, so `item.cursor` is `nil` except on the last item yielded
+from a batch: to checkpoint a long lookup, **keep the latest non-nil cursor**
+(`checkpoint = item.cursor if item.cursor`), never "the cursor of the last
+item processed". Resume with `cursor: checkpoint` and the same request,
+consistency and page size. The last item of a call with `limit:` always has a
+cursor. `batching: SpiceDB::LookupBatching::DISABLED` puts a cursor on every
+item (one resource per response message); `response_batch_size:` sets the
+batch size (default: the page size, at most 1000; the server rejects one
+above its maximum).
+
 ## Write atomically
 
 ```ruby
@@ -144,6 +155,7 @@ admin_ids = client.read_relationships(admins, consistency: SpiceDB::Consistency.
 
 Each item also carries `item.cursor` and `item.read_at`. To resume, pass
 `cursor: item.cursor` with the **same filter, consistency and page size**.
+(Every read item has a cursor; a `lookup_resources` item may not, see above.)
 Results stream: iterate with a block or `each`; `break` releases the RPC.
 `paging: SpiceDB::Paging::SINGLE_REQUEST` (reads and resource lookups) sends
 exactly one request like the raw API: its limit is `limit:` (unbounded
@@ -260,7 +272,11 @@ fails one call, and `store.fault_hook = ->(fault) { ... }` can fail an import ba
 `fault.batch`) or a read/export after some items (`FaultStage::ITEM`); return
 `SpiceDB::Testing::Store.server_error(GRPC::Core::StatusCodes::UNAVAILABLE, 'down')`
 from the hook. Resume a read or export with
-`cursor: SpiceDB::Testing::Store.cursor_after(n)`, and set
+`cursor: SpiceDB::Testing::Store.cursor_after(n)`. The double batches
+`lookup_resources` results as SpiceDB does, so there too only the last item of
+a batch has a cursor (with the defaults, the last item of a lookup under 1000
+results); code that resumes from any other item fails in the double as it
+would against a server. Set
 `store.read_schema_revision = SpiceDB::Testing::SchemaRevision::OMITTED` to test
 code that handles schema reads without a revision. For integration tests, run
 `authzed/spicedb serve-testing` and assert both granted and denied cases.

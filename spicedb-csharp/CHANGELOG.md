@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **2026-11-20: `LookupResourcesAsync` requests batched responses by default.**
+  The server packs up to `LookupOptions.ResponseBatchSize` resources into each response
+  message (default: the page size, capped at 1,000; under `Paging.SingleRequest` the
+  `Limit`, capped at 1,000, or 1,000) and the client still yields one `LookupResource` at a
+  time, so a large lookup costs far fewer messages with no change to the loop that reads
+  it. **Behavior change:** a batch has one cursor, so only the last item yielded from a
+  batch carries `AfterResultCursor`; the items before it now have null, which means "not a
+  resume point". Code that checkpoints a lookup must keep the latest non-null cursor
+  instead of every item's. The last item of a call with a `Limit` always carries a cursor
+  (the client sizes the final batch to end on it), and
+  `Batching = LookupBatching.Disabled` asks for one resource per response and puts a cursor
+  on every item again. A batch size is sent as given: the server rejects one above its
+  maximum (1,000 by default), and zero or negative is an `InvalidArgumentException`.
+  Servers that do not batch keep working unchanged, with a cursor on every item.
+  LookupSubjects and roaring lookup reject both options. `InMemorySpiceDBClient` batches
+  the same way, so a test that resumes from a mid-batch item fails as it would against a
+  server; under `Paging.SingleRequest` its `Limit` now bounds the results examined, as the
+  server's does.
 - Tests: the deadline tests against a real Kestrel server (`DeadlineTests`, `PageDeadlineTests`, `SlowConsumerPageDeadlineTests`) warm the connection with an untimed call before timing anything, so a short allowance never has to cover connection setup, and `DeadlineTests`' stall and `PageDeadlineTests`' per-page default are wider (3 s, 1 s). Two of them each failed about once in 36 solution runs on a busy machine.
 - Docs: the CS0104 note in the AI guide and migration guide now lists every type name `SpiceDB.Client` shares with `Grpc.Core` (`CallOptions`, `WriteOptions`) and with `Authzed.Api.V1` (`Relationship`, `Consistency`, `ZedToken`, `Precondition`, `RelationshipUpdate`, `ResolvedSubject`, `PartialCaveatInfo`, `DebugInformation`, `CheckDebugTrace`), with one alias block for a file importing all three. It covered only `CallOptions`. `NamespaceCollisionTests` finds the shared names by reflection and fails on a new one; `CallOptionsAliasTests` compiles the documented block.
 - `Consistency` is observable: `ToString()` returns `Full`, `MinLatency`, `AtLeast(<token>)` or `Snapshot(<token>)` (it printed `Consistency { }`), and `System.Text.Json` writes `{"strategy":"atLeast","token":"<token>"}` (no token for `full` and `minLatency`) and reads that form back (it wrote `{}` for every strategy). `AtLeastOrFull` and `AtLeastOrMinLatency` show as the strategy they chose.

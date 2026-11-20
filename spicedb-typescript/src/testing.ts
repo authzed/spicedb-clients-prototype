@@ -1,14 +1,14 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { Consistency } from "./consistency.js";
 import { InvalidArgumentError, SpiceDBError, type SpiceDBErrorOptions } from "./errors.js";
-import { DeletePartial, LookupDebug, LookupPermissionshipFilter, Paging, Wildcards, mode } from "./modes.js";
+import { DeletePartial, LookupDebug, Wildcards, mode } from "./modes.js";
 import { OperationAbortError } from "./operation.js";
 import { mutationRetry, validRetryPolicy } from "./retry.js";
 import { ZedToken } from "./token.js";
 import { diffSchemas } from "./schemadiff.js";
 import type { SpiceDBClientInterface, SpiceDBProtoClient } from "./client.js";
 import {
-    CheckResult, Transaction, filterMatches, immutableSnapshot, jsonSnapshot, nativeRelationshipFields, objectRefToString, positiveLimit, preconditionToString, relationshipToFilter,
+    CheckResult, Transaction, filterMatches, immutableSnapshot, jsonSnapshot, nativeRelationshipFields, objectRefToString, positiveLimit, lookupResourcesPaging, lookupPageBatchSize, type LookupResourcesPaging, preconditionToString, relationshipToFilter,
     relationshipToString, subjectRefToString, toProtoRelationship, toProtoRelationshipFilter, protoObject, protoSubject, requireString, optionalString, requireObject, requireObjectArray, requireIterable,
     type CallOptions, type CheckOptions, type CheckRequest, type DeleteAllOptions, type DeleteOptions, type DeleteResult, type ExportedRelationship,
     type ExportRelationshipsRequest, type ImportOptions, type ObjectRef, type Permissionship, type Precondition, type ReadRelationship,
@@ -181,7 +181,10 @@ export type CheckResolver = (check: CheckRequest) => Permissionship | undefined;
  * permissionship filter, wildcard option, `limit` and `cursor` (the decimal
  * count of granted objects before the resume point, including those the
  * permissionship filter drops, as {@link InMemorySpiceDB.cursorAfter}
- * builds); a stored wildcard subject is returned as `*`. `writeSchema` stores the text
+ * builds); a stored wildcard subject is returned as `*`. `lookupResources`
+ * batches its results as a server answering the real client's requests would,
+ * so only the last item of each batch carries `afterResultCursor`
+ * (`LookupBatching.Disabled` puts one on every item). `writeSchema` stores the text
  * without compiling it, and `reflectSchema` returns the result registered
  * with {@link InMemorySpiceDB.setReflectSchemaResult}.
  *
@@ -237,7 +240,7 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
      * The cursor that resumes a read or export after the first `n` matching
      * relationships (in identity order), or a lookup after the first `n`
      * granted objects (in order of first appearance): the `afterResultCursor` the double puts on
-     * the `n`-th item. The format, the decimal count `n`, is stable for tests.
+     * the `n`-th item (for a batched lookup, when that item ends a batch). The format, the decimal count `n`, is stable for tests.
      */
     static cursorAfter(n: number): string {
         if (!Number.isSafeInteger(n) || n < 0)
@@ -524,7 +527,10 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
      * Yields the objects of `resourceType` known to the store (as resource or
      * subject of a live relationship) that the check resolution grants
      * `subject`, in order of first appearance, honoring the permissionship filter, `limit` and
-     * `cursor`; each carries its `afterResultCursor`.
+     * `cursor`. Results are grouped into pages and response batches as the
+     * real client and a batching server would group them, so only the last
+     * item kept from each batch carries its `afterResultCursor`; with
+     * `LookupBatching.Disabled` every item does.
      */
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource> {
         const call = this.#record("lookupResources", request, options);
@@ -532,27 +538,23 @@ export class InMemorySpiceDB implements SpiceDBClientInterface {
         const fault = this.#faultAt(call, FaultStage.Call, 0);
         if (fault !== undefined)
             return failedStream(withResumeCursor(fault, request.cursor));
-        const filter = mode(request.permissionshipFilter, LookupPermissionshipFilter, LookupPermissionshipFilter.All, "permissionshipFilter");
-        const single = mode(request.paging, Paging, Paging.Automatic, "paging") === Paging.SingleRequest;
+        const paging = lookupResourcesPaging(request);
         mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug");
         requireString(request.resourceType, "resourceType");
         requireString(request.permission, "permission");
         protoSubject(request.subject);
         if (request.cursor !== undefined)
             requireString(request.cursor, "cursor");
-        const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
-        if (!single)
-            positiveLimit(request.pageSize ?? 1000, "pageSize");
         requireConsistency(request.consistency);
         if (request.context !== undefined)
             jsonSnapshot(request.context);
         this.#begin(options);
         const lookedUpAt = new ZedToken(String(this.#revision));
         const context = request.context === undefined ? {} : { context: request.context };
-        return streamOf(() => this.#lookup(request.resourceType, request.cursor, limit,
+        return streamOf(() => batchedLookup(paging, this.#lookup(request.resourceType, request.cursor, undefined,
             id => this.#resolve({ resource: { objectType: request.resourceType, objectId: id }, permission: request.permission, subject: request.subject, consistency: request.consistency, ...context }),
-            permissionship => filter === LookupPermissionshipFilter.All || permissionship === "hasPermission")
-            .map(([resourceId, permissionship, afterResultCursor]) => immutableSnapshot({ resourceId, afterResultCursor, permissionship, ...partialCaveat(permissionship), lookedUpAt }) as LookupResource),
+            () => true))
+            .map(([resourceId, permissionship, afterResultCursor]) => immutableSnapshot({ resourceId, ...(afterResultCursor === undefined ? {} : { afterResultCursor }), permissionship, ...partialCaveat(permissionship), lookedUpAt }) as LookupResource),
         index => this.#faultAt(call, FaultStage.Item, index), { cursor: request.cursor });
     }
 
@@ -891,6 +893,35 @@ function streamOf<T>(items: () => T[], fault: (index: number) => Error | undefin
                 cursor = after;
         }
     })();
+}
+/**
+ * Pages and batches the granted objects of a lookup as the real client's
+ * requests and a batching server's answers would: each page asks for the
+ * batch size {@link lookupPageBatchSize} gives, the server flushes a batch
+ * every that many results and at the end of the page, and a batch's cursor
+ * (the position of its last result) goes on the last item the permissionship
+ * filter keeps from it.
+ */
+function batchedLookup(paging: LookupResourcesPaging, granted: [string, Permissionship, string][]): [string, Permissionship, string | undefined][] {
+    const out: [string, Permissionship, string | undefined][] = [];
+    for (let offset = 0; offset < granted.length;) {
+        const page = granted.slice(offset, paging.pageSize === 0 ? undefined : offset + paging.pageSize);
+        const batchSize = lookupPageBatchSize(paging, out.length) || 1;
+        for (let start = 0; start < page.length; start += batchSize) {
+            const batch = page.slice(start, start + batchSize);
+            const cursor = batch[batch.length - 1]![2];
+            const kept = batch.filter(([, permissionship]) => !paging.hasPermissionOnly || permissionship === "hasPermission");
+            for (const [index, [id, permissionship]] of kept.entries()) {
+                out.push([id, permissionship, index === kept.length - 1 ? cursor : undefined]);
+                if (paging.limit !== undefined && out.length >= paging.limit)
+                    return out;
+            }
+        }
+        if (paging.single)
+            break;
+        offset += page.length;
+    }
+    return out;
 }
 function snapshot(rel: Relationship): Relationship { return immutableSnapshot(nativeRelationshipFields(rel)); }
 function identity(rel: Relationship): string { return JSON.stringify(relationshipToFilter(rel)); }

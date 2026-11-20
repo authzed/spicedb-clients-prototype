@@ -28,6 +28,7 @@ module SpiceDB
     include Retrying
     include Transport
     include Operations
+    include LookupBatches
     include Materialize
     include DebugMapping
     include WatchMapping
@@ -38,6 +39,8 @@ module SpiceDB
 
     DEFAULT_READ_PAGE_SIZE = 1000
     DEFAULT_LOOKUP_PAGE_SIZE = 1000
+    # The largest response batch size lookup_resources requests by default.
+    DEFAULT_LOOKUP_RESPONSE_BATCH_SIZE = 1000
     DEFAULT_EXPORT_PAGE_SIZE = 1000
     DEFAULT_DELETE_PAGE_SIZE = 1000
     DEFAULT_IMPORT_BATCH_SIZE = 1000
@@ -306,18 +309,46 @@ module SpiceDB
                    cursor, mapper, paging: paging, &)
     end
 
+    # Yields LookupResource items one at a time. The server is asked to pack
+    # up to +response_batch_size:+ resources into each response message (by
+    # default the page size, at most DEFAULT_LOOKUP_RESPONSE_BATCH_SIZE; with
+    # +paging: Paging::SINGLE_REQUEST+ the limit, at most that, or that
+    # without one). It must be a positive Integer and is sent as given: the
+    # server rejects one above its maximum. +batching:
+    # LookupBatching::DISABLED+ requests one resource per message instead
+    # (+response_batch_size:+ is then unused). Servers that predate batching
+    # answer one resource per message and need no configuration.
+    #
+    # A batch has one cursor, which resumes after its last resource, so only
+    # the last item yielded from a batch carries +cursor+ and the items
+    # before it carry nil. To resume, pass the latest non-nil cursor seen as
+    # +cursor:+ with the same request, consistency and page size (the batch
+    # size may differ). The last item of a call with +limit:+ always carries
+    # a cursor; without batching every item does.
     def lookup_resources(resource_type:, permission:, subject:, consistency:, context: nil, limit: nil, # rubocop:disable Metrics/ParameterLists
                          page_size: 1000, timeout: nil, permissionship_filter: LookupPermissionshipFilter::ALL, cursor: nil,
-                         call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, &)
+                         call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, response_batch_size: nil,
+                         batching: LookupBatching::AUTOMATIC, &)
       retry_policy = operation_retry_policy(:lookup_resources, retry_policy)
       LookupPermissionshipFilter.validate(permissionship_filter)
+      positive(page_size, 'page_size')
+      positive(limit, 'limit') if limit
+      single = Paging.validate(paging) == Paging::SINGLE_REQUEST
+      configured = LookupBatches.batch_size(batching, response_batch_size, page_size: page_size, limit: limit, single: single)
+      has_permission_only = permissionship_filter == LookupPermissionshipFilter::HAS_PERMISSION_ONLY
+      batch_size = lambda do |delivered|
+        LookupBatches.page_batch_size(configured, page_size: page_size, limit: limit, delivered: delivered, single: single,
+                                                  has_permission_only: has_permission_only)
+      end
       request = Authzed::Api::V1::LookupResourcesRequest.new(consistency: build_consistency(consistency),
                                                              resource_object_type: Values.name(resource_type, 'resource_type'),
                                                              permission: Values.name(permission, 'permission'), subject: subject_to_proto(subject),
                                                              context: check_context_to_struct(Values.context(context)))
-      include_result = (->(result) { result.permissionship == :has_permission } if permissionship_filter == LookupPermissionshipFilter::HAS_PERMISSION_ONLY)
+      include_result = (->(result) { result.permissionship == :has_permission } if has_permission_only)
+      # +result+ is a one-resource response or one result of +response+'s batch.
+      mapper = ->(result, after, response = result) { lookup_resource_from_proto(result, after, response.looked_up_at) }
       paged_stream(:permissions, :lookup_resources, request, page_size, limit, paged_budget(timeout, call_options, retry_policy: retry_policy),
-                   cursor, method(:lookup_resource_from_proto), include_result: include_result, paging: paging, &)
+                   cursor, mapper, include_result: include_result, paging: paging, batch_size: batch_size, &)
     end
 
     def lookup_subjects(resource:, permission:, subject_type:, consistency:, subject_relation: nil,

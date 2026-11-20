@@ -185,15 +185,35 @@ and its generated schema facade.
     `readRelationships` yields `ReadRelationship` (the relationship's fields plus
     `afterResultCursor` and `readAt`), `exportRelationships` yields
     `ExportedRelationship` (plus its batch's `afterResultCursor`; exports carry no
-    read-at), and `LookupResource` carries `afterResultCursor` and `lookedUpAt`.
+    read-at), and `LookupResource` carries `lookedUpAt` and, on resume points,
+    `afterResultCursor`.
     Resume by passing a cursor as the request's `cursor` with the same request and
     page size. An error thrown mid-read by `readRelationships`,
     `lookupResources` or `exportRelationships` carries `resumeCursor`: the cursor
-    after the last delivered item (or fully delivered export batch), or the
+    after the last delivered item (or fully delivered export or lookup batch), or the
     request's cursor when nothing was delivered. Returned data is immutable. `paging: Paging.SingleRequest` on
     `readRelationships`/`lookupResources` sends exactly one request like the
     raw API: its limit is `limit` (or unbounded), `pageSize` is ignored, and no
     follow-up page is fetched.
+  - `lookupResources` asks for batched responses by default and still yields
+    one resource at a time. `responseBatchSize` (a positive uint32, sent as
+    given, never clamped) defaults to the page size capped at 1,000, or in
+    single-request mode to `limit` capped at 1,000, else 1,000;
+    `batching: LookupBatching.Disabled` requests one resource per
+    message and wins over a size, which is still validated and then ignored
+    (as `pageSize` is in single-request mode). Each
+    response is read in whichever form it arrives, every batch result is
+    validated like a one-resource response, and paging counts results, not
+    messages. Only the last item yielded from a batch carries
+    `afterResultCursor` (the last one the permissionship filter keeps; none
+    when it drops the whole batch, though paging and `resumeCursor` still
+    advance); on the others the property is absent, meaning "not a resume
+    point", so callers checkpointing a lookup keep the latest cursor seen.
+    `lookupPageBatchSize` picks each page's batch size so a `limit` ends on a
+    resume point: the remaining count when it is smaller than the batch, no
+    batching for that page when it is not a multiple of the batch size, and no
+    batching at all for a limit with `HasPermissionOnly`. The wire limit is
+    never changed.
 
 - **Keep filtering and deletion scope exact.**
   - Subject relation selectors distinguish Any, Direct and Named via a
@@ -336,7 +356,13 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   They honor the permissionship filter, wildcard option (`*` is left out only
   under `Wildcards.Exclude`), `limit` and `cursor` (the decimal count of
   granted candidates, including those the filter drops, so a filtered
-  lookup's cursor resumes past skipped results). Expired relationships never
+  lookup's cursor resumes past skipped results). `lookupResources` groups its
+  results into pages and response batches with the client's own
+  `lookupPageBatchSize`, as a batching server answering the client's requests
+  would, so only the last item kept from each batch carries
+  `afterResultCursor` and a test that resumes from a mid-batch item fails as
+  it would against a server; `LookupBatching.Disabled` puts a cursor on every
+  item. Expired relationships never
   grant. Its errors have
   the real client's classes, codes and message shape (server failures carry
   Connect's `[code]` prefix and `serverMessage`; local validation does not),
@@ -361,7 +387,7 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   `Item` fires before each read, export and lookup item. An error injected
   into (or raised from iterating) `readRelationships`, `exportRelationships`
   or `lookupResources` carries `resumeCursor` as the real client's does: the
-  last delivered item's `afterResultCursor`, else the request's cursor, else
+  latest `afterResultCursor` delivered, else the request's cursor, else
   none. The double never answers with an `"unspecified"` permissionship:
   `setCheckResult` rejects it and a resolver returning it fails the call with
   `InvalidArgumentError`.

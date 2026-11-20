@@ -32,6 +32,15 @@ export enum DeletePartial { Allowed = "allowed", Disallowed = "disallowed" }
  * follow-up page is requested. Items still carry their `afterResultCursor`.
  */
 export enum Paging { Automatic = "automatic", SingleRequest = "singleRequest" }
+/**
+ * Whether `lookupResources` asks the server to pack several resources into
+ * each response message. `Automatic` (default) requests batches of
+ * `responseBatchSize` (default: the page size, capped at 1,000) and still
+ * yields one resource at a time; only the last item yielded from a batch
+ * carries an `afterResultCursor`. `Disabled` requests one resource per
+ * message, so every item carries its cursor.
+ */
+export enum LookupBatching { Automatic = "automatic", Disabled = "disabled" }
 
 /** @internal Validate JavaScript callers and future unknown mode values. */
 export function mode<T extends string>(value: T | undefined, choices: Record<string, T>, fallback: T, field: string): T {

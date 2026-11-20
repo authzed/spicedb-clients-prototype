@@ -1,6 +1,6 @@
 import { serverToken, tokenString, requestToken } from "./token.js";
 import { requireParseableTls, requireUsableToken } from "./credentials.js";
-import { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, Paging, mode } from "./modes.js";
+import { Tracing, LookupDebug, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, Paging, mode } from "./modes.js";
 import { Code, type Transport } from "@connectrpc/connect";
 import { SpiceDBProtoClient as ProtoClient } from "@spicedb/proto";
 import { DEFAULT_RETRY_POLICY, validRetryPolicy, retryable, backoffMs, mutationRetry, type RetryPolicy } from "./retry.js";
@@ -9,7 +9,7 @@ import { createSpiceDBClient as createProtoClient, endpointScheme, InsecureRemot
 import { ExperimentalCountRelationshipsByFilterRequestSchema, MaterializePermissionSetsProtocol as PermissionSets } from "@spicedb/proto";
 import type { WatchPermissionSetsRequest, PermissionSetEvent, LookupPermissionSetsRequest, LookupPermissionSet, DownloadPermissionSetsRequest, DownloadPermissionSetsResult, PermissionSetCursor, PermissionSetChange, PermissionSetReference } from "./types.js";
 import { Consistency } from "./consistency.js";
-import { type Relationship, type RelationshipFilter, type CheckRequest, type CheckOptions, CheckResult, type CallOptions, type DeleteOptions, type DeleteAllOptions, type DeleteResult, type WriteResult, type ReadRelationshipsRequest, type LookupResourcesRequest, type LookupSubjectsRequest, type LookupResource, type LookupSubject, type ExpandPermissionTreeRequest, type ExpandResult, type ExportRelationshipsRequest, type WatchRequest, type WatchEvent, type WatchChange, type ReflectSchemaRequest, type ReflectSchemaResult, type ComputablePermissionsRequest, type DependentRelationsRequest, type RelationsResult, type DiffSchemaRequest, type SchemaDiffResult, type SchemaResult, type RelationshipCountResult, type RoaringLookupResourcesRequest, type RoaringLookupResourcesResult, type ZedToken, type ReadRelationship, type ExportedRelationship, type ImportOptions, Transaction, toProtoRelationship, checkedRelationship, toProtoRelationshipFilter, toProtoDeleteRelationshipsRequest, fromProtoPermissionTree, fromProtoSchemaDefinition, fromProtoSchemaCaveat, fromProtoRelationReference, fromProtoSchemaDiff, fromProtoLookupResource, fromProtoLookupSubject, checkResultFromProto, checkResultFromBulkItem, mergeCheckContext, immutableSnapshot, jsonSnapshot, protoSubject, protoObject, requireString, requireObject, requireObjectArray, requireIterable, optionalString, positiveLimit, } from "./types.js";
+import { type Relationship, type RelationshipFilter, type CheckRequest, type CheckOptions, CheckResult, type CallOptions, type DeleteOptions, type DeleteAllOptions, type DeleteResult, type WriteResult, type ReadRelationshipsRequest, type LookupResourcesRequest, type LookupSubjectsRequest, type LookupResource, type LookupSubject, type ExpandPermissionTreeRequest, type ExpandResult, type ExportRelationshipsRequest, type WatchRequest, type WatchEvent, type WatchChange, type ReflectSchemaRequest, type ReflectSchemaResult, type ComputablePermissionsRequest, type DependentRelationsRequest, type RelationsResult, type DiffSchemaRequest, type SchemaDiffResult, type SchemaResult, type RelationshipCountResult, type RoaringLookupResourcesRequest, type RoaringLookupResourcesResult, type ZedToken, type ReadRelationship, type ExportedRelationship, type ImportOptions, Transaction, toProtoRelationship, checkedRelationship, toProtoRelationshipFilter, toProtoDeleteRelationshipsRequest, fromProtoPermissionTree, fromProtoSchemaDefinition, fromProtoSchemaCaveat, fromProtoRelationReference, fromProtoSchemaDiff, fromProtoLookupResource, fromProtoLookupSubject, checkResultFromProto, checkResultFromBulkItem, mergeCheckContext, immutableSnapshot, jsonSnapshot, protoSubject, protoObject, requireString, requireObject, requireObjectArray, requireIterable, optionalString, positiveLimit, lookupResourcesPaging, lookupPageBatchSize, } from "./types.js";
 import { InvalidArgumentError, SpiceDBError, toSpiceDBError, toSpiceDBErrorFromStatus, malformedResponse } from "./errors.js";
 import { Operation, pageOf, withDeleteProgress, withResumeCursor, type PageProgress } from "./operation.js";
 export type { SpiceDBProtoClient, TlsOptions };
@@ -501,43 +501,60 @@ export class SpiceDBClient implements SpiceDBClientInterface {
             op.dispose();
         }
     }
+    /**
+     * Streams the resources `subject` has `permission` on, fetching pages
+     * automatically and yielding one resource at a time. By default the
+     * server is asked to pack several resources into each response message
+     * (`responseBatchSize`); a batch has one cursor, so only the last item
+     * yielded from a batch carries an `afterResultCursor`. Keep the latest
+     * cursor seen to checkpoint, or pass
+     * `batching: LookupBatching.Disabled` for a cursor on every item.
+     * The last item of a call that stops at `limit` always carries one.
+     */
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource> {
         requireObject(request, "lookupResources request");
-        const filter = mode(request.permissionshipFilter, LookupPermissionshipFilter, LookupPermissionshipFilter.All, "permissionshipFilter");
-        const single = mode(request.paging, Paging, Paging.Automatic, "paging") === Paging.SingleRequest;
-        if (request.limit !== undefined)
-            positiveLimit(request.limit, "limit");
-        // Single-request mode sends the total limit (0: unbounded) and ignores pageSize.
-        const size = single ? request.limit ?? 0 : positiveLimit(request.pageSize ?? 1000, "pageSize");
-        const wire = create(LookupResourcesRequestSchema, { resourceObjectType: requireString(request.resourceType, "resourceType"), permission: requireString(request.permission, "permission"), subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalLimit: size, withDebug: mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug") === LookupDebug.Enabled, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: requireString(request.cursor, "cursor") }) });
+        const paging = lookupResourcesPaging(request);
+        const wire = create(LookupResourcesRequestSchema, { resourceObjectType: requireString(request.resourceType, "resourceType"), permission: requireString(request.permission, "permission"), subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalLimit: paging.pageSize, withDebug: mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug") === LookupDebug.Enabled, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: requireString(request.cursor, "cursor") }) });
         const self = this;
-        const limit = request.limit;
+        const { limit, single } = paging;
         return this.stream("lookupResources", options, async function* (op, progress) {
             let total = 0;
             for (;;) {
                 op.check();
+                // Results, not messages: a batched response carries several.
                 let count = 0;
                 let cursor: string | undefined;
+                wire.optionalResponseBatchSize = lookupPageBatchSize(paging, total);
                 for await (const resp of pageOf(op, self.proto.permissions.lookupResources(clone(LookupResourcesRequestSchema, wire), op.callOptions()))) {
                     op.check();
-                    if (!resp.resourceObjectId)
-                        throw malformedResponse("lookup resources response has no resource ID");
-                    cursor = resp.afterResultCursor?.token;
-                    count++;
-                    requireSpecified(resp.permissionship, `lookup resources result ${resp.resourceObjectId}`);
-                    const result = fromProtoLookupResource(resp, cursor);
-                    if (filter === LookupPermissionshipFilter.HasPermissionOnly && result.permissionship !== "hasPermission") {
-                        // Paging advances through skipped results, and so does resumption.
-                        if (cursor)
-                            progress.cursor = cursor;
-                        continue;
+                    // A response is either one resource or a batch, whatever was requested:
+                    // servers that predate batching answer one resource per message.
+                    const results = resp.batched ? resp.batched.results : [resp];
+                    const after = (resp.batched ? resp.batched.afterCursor : resp.afterResultCursor)?.token;
+                    cursor = after;
+                    const kept: (typeof results)[number][] = [];
+                    for (const result of results) {
+                        if (!result.resourceObjectId)
+                            throw malformedResponse("lookup resources response has no resource ID");
+                        requireSpecified(result.permissionship, `lookup resources result ${result.resourceObjectId}`);
+                        if (!paging.hasPermissionOnly || result.permissionship === LookupPermissionship.HAS_PERMISSION)
+                            kept.push(result);
                     }
-                    total++;
-                    yield result;
-                    if (cursor)
-                        progress.cursor = cursor;
-                    if (limit !== undefined && total >= limit)
-                        return;
+                    count += results.length;
+                    for (const [index, result] of kept.entries()) {
+                        // The message's cursor resumes after its last result, so only the last
+                        // kept item may carry it: resuming there skips only dropped results.
+                        const last = index === kept.length - 1;
+                        total++;
+                        yield fromProtoLookupResource(resp, result, last ? after : undefined);
+                        if (last && after)
+                            progress.cursor = after;
+                        if (limit !== undefined && total >= limit)
+                            return;
+                    }
+                    // Paging advances through skipped results, and so does resumption.
+                    if (kept.length === 0 && after)
+                        progress.cursor = after;
                 }
                 if (single || count < wire.optionalLimit || !cursor)
                     return;

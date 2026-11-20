@@ -205,7 +205,7 @@ private static final long serialVersionUID = 0L;
   /**
    * <pre>
    * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-   * result.
+   * result. Used only for the singular, one-resource-per-message form.
    * </pre>
    *
    * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -218,7 +218,7 @@ private static final long serialVersionUID = 0L;
   /**
    * <pre>
    * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-   * result.
+   * result. Used only for the singular, one-resource-per-message form.
    * </pre>
    *
    * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -231,7 +231,7 @@ private static final long serialVersionUID = 0L;
   /**
    * <pre>
    * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-   * result.
+   * result. Used only for the singular, one-resource-per-message form.
    * </pre>
    *
    * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -239,6 +239,56 @@ private static final long serialVersionUID = 0L;
   @java.lang.Override
   public com.authzed.api.v1.CursorOrBuilder getAfterResultCursorOrBuilder() {
     return afterResultCursor_ == null ? com.authzed.api.v1.Cursor.getDefaultInstance() : afterResultCursor_;
+  }
+
+  public static final int BATCHED_FIELD_NUMBER = 6;
+  private com.authzed.api.v1.LookupResourcesBatch batched_;
+  /**
+   * <pre>
+   * batched, when set, holds multiple found resources in a single response
+   * message along with a single resume cursor for the batch. It is populated
+   * instead of the singular fields above when the request set
+   * optional_response_batch_size &gt; 0. A response message uses either the
+   * singular fields or batched, never both.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+   * @return Whether the batched field is set.
+   */
+  @java.lang.Override
+  public boolean hasBatched() {
+    return ((bitField0_ & 0x00000008) != 0);
+  }
+  /**
+   * <pre>
+   * batched, when set, holds multiple found resources in a single response
+   * message along with a single resume cursor for the batch. It is populated
+   * instead of the singular fields above when the request set
+   * optional_response_batch_size &gt; 0. A response message uses either the
+   * singular fields or batched, never both.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+   * @return The batched.
+   */
+  @java.lang.Override
+  public com.authzed.api.v1.LookupResourcesBatch getBatched() {
+    return batched_ == null ? com.authzed.api.v1.LookupResourcesBatch.getDefaultInstance() : batched_;
+  }
+  /**
+   * <pre>
+   * batched, when set, holds multiple found resources in a single response
+   * message along with a single resume cursor for the batch. It is populated
+   * instead of the singular fields above when the request set
+   * optional_response_batch_size &gt; 0. A response message uses either the
+   * singular fields or batched, never both.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+   */
+  @java.lang.Override
+  public com.authzed.api.v1.LookupResourcesBatchOrBuilder getBatchedOrBuilder() {
+    return batched_ == null ? com.authzed.api.v1.LookupResourcesBatch.getDefaultInstance() : batched_;
   }
 
   private byte memoizedIsInitialized = -1;
@@ -270,6 +320,9 @@ private static final long serialVersionUID = 0L;
     if (((bitField0_ & 0x00000004) != 0)) {
       output.writeMessage(5, getAfterResultCursor());
     }
+    if (((bitField0_ & 0x00000008) != 0)) {
+      output.writeMessage(6, getBatched());
+    }
     getUnknownFields().writeTo(output);
   }
 
@@ -297,6 +350,10 @@ private static final long serialVersionUID = 0L;
     if (((bitField0_ & 0x00000004) != 0)) {
       size += com.google.protobuf.CodedOutputStream
         .computeMessageSize(5, getAfterResultCursor());
+    }
+    if (((bitField0_ & 0x00000008) != 0)) {
+      size += com.google.protobuf.CodedOutputStream
+        .computeMessageSize(6, getBatched());
     }
     size += getUnknownFields().getSerializedSize();
     memoizedSize = size;
@@ -331,6 +388,11 @@ private static final long serialVersionUID = 0L;
       if (!getAfterResultCursor()
           .equals(other.getAfterResultCursor())) return false;
     }
+    if (hasBatched() != other.hasBatched()) return false;
+    if (hasBatched()) {
+      if (!getBatched()
+          .equals(other.getBatched())) return false;
+    }
     if (!getUnknownFields().equals(other.getUnknownFields())) return false;
     return true;
   }
@@ -357,6 +419,10 @@ private static final long serialVersionUID = 0L;
     if (hasAfterResultCursor()) {
       hash = (37 * hash) + AFTER_RESULT_CURSOR_FIELD_NUMBER;
       hash = (53 * hash) + getAfterResultCursor().hashCode();
+    }
+    if (hasBatched()) {
+      hash = (37 * hash) + BATCHED_FIELD_NUMBER;
+      hash = (53 * hash) + getBatched().hashCode();
     }
     hash = (29 * hash) + getUnknownFields().hashCode();
     memoizedHashCode = hash;
@@ -496,6 +562,7 @@ private static final long serialVersionUID = 0L;
         internalGetLookedUpAtFieldBuilder();
         internalGetPartialCaveatInfoFieldBuilder();
         internalGetAfterResultCursorFieldBuilder();
+        internalGetBatchedFieldBuilder();
       }
     }
     @java.lang.Override
@@ -518,6 +585,11 @@ private static final long serialVersionUID = 0L;
       if (afterResultCursorBuilder_ != null) {
         afterResultCursorBuilder_.dispose();
         afterResultCursorBuilder_ = null;
+      }
+      batched_ = null;
+      if (batchedBuilder_ != null) {
+        batchedBuilder_.dispose();
+        batchedBuilder_ = null;
       }
       return this;
     }
@@ -577,6 +649,12 @@ private static final long serialVersionUID = 0L;
             : afterResultCursorBuilder_.build();
         to_bitField0_ |= 0x00000004;
       }
+      if (((from_bitField0_ & 0x00000020) != 0)) {
+        result.batched_ = batchedBuilder_ == null
+            ? batched_
+            : batchedBuilder_.build();
+        to_bitField0_ |= 0x00000008;
+      }
       result.bitField0_ |= to_bitField0_;
     }
 
@@ -608,6 +686,9 @@ private static final long serialVersionUID = 0L;
       }
       if (other.hasAfterResultCursor()) {
         mergeAfterResultCursor(other.getAfterResultCursor());
+      }
+      if (other.hasBatched()) {
+        mergeBatched(other.getBatched());
       }
       this.mergeUnknownFields(other.getUnknownFields());
       onChanged();
@@ -666,6 +747,13 @@ private static final long serialVersionUID = 0L;
               bitField0_ |= 0x00000010;
               break;
             } // case 42
+            case 50: {
+              input.readMessage(
+                  internalGetBatchedFieldBuilder().getBuilder(),
+                  extensionRegistry);
+              bitField0_ |= 0x00000020;
+              break;
+            } // case 50
             default: {
               if (!super.parseUnknownField(input, extensionRegistry, tag)) {
                 done = true; // was an endgroup tag
@@ -1166,7 +1254,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1178,7 +1266,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1194,7 +1282,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1215,7 +1303,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1234,7 +1322,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1260,7 +1348,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1278,7 +1366,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1291,7 +1379,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1307,7 +1395,7 @@ private static final long serialVersionUID = 0L;
     /**
      * <pre>
      * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-     * result.
+     * result. Used only for the singular, one-resource-per-message form.
      * </pre>
      *
      * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -1324,6 +1412,199 @@ private static final long serialVersionUID = 0L;
         afterResultCursor_ = null;
       }
       return afterResultCursorBuilder_;
+    }
+
+    private com.authzed.api.v1.LookupResourcesBatch batched_;
+    private com.google.protobuf.SingleFieldBuilder<
+        com.authzed.api.v1.LookupResourcesBatch, com.authzed.api.v1.LookupResourcesBatch.Builder, com.authzed.api.v1.LookupResourcesBatchOrBuilder> batchedBuilder_;
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     * @return Whether the batched field is set.
+     */
+    public boolean hasBatched() {
+      return ((bitField0_ & 0x00000020) != 0);
+    }
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     * @return The batched.
+     */
+    public com.authzed.api.v1.LookupResourcesBatch getBatched() {
+      if (batchedBuilder_ == null) {
+        return batched_ == null ? com.authzed.api.v1.LookupResourcesBatch.getDefaultInstance() : batched_;
+      } else {
+        return batchedBuilder_.getMessage();
+      }
+    }
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     */
+    public Builder setBatched(com.authzed.api.v1.LookupResourcesBatch value) {
+      if (batchedBuilder_ == null) {
+        if (value == null) {
+          throw new NullPointerException();
+        }
+        batched_ = value;
+      } else {
+        batchedBuilder_.setMessage(value);
+      }
+      bitField0_ |= 0x00000020;
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     */
+    public Builder setBatched(
+        com.authzed.api.v1.LookupResourcesBatch.Builder builderForValue) {
+      if (batchedBuilder_ == null) {
+        batched_ = builderForValue.build();
+      } else {
+        batchedBuilder_.setMessage(builderForValue.build());
+      }
+      bitField0_ |= 0x00000020;
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     */
+    public Builder mergeBatched(com.authzed.api.v1.LookupResourcesBatch value) {
+      if (batchedBuilder_ == null) {
+        if (((bitField0_ & 0x00000020) != 0) &&
+          batched_ != null &&
+          batched_ != com.authzed.api.v1.LookupResourcesBatch.getDefaultInstance()) {
+          getBatchedBuilder().mergeFrom(value);
+        } else {
+          batched_ = value;
+        }
+      } else {
+        batchedBuilder_.mergeFrom(value);
+      }
+      if (batched_ != null) {
+        bitField0_ |= 0x00000020;
+        onChanged();
+      }
+      return this;
+    }
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     */
+    public Builder clearBatched() {
+      bitField0_ = (bitField0_ & ~0x00000020);
+      batched_ = null;
+      if (batchedBuilder_ != null) {
+        batchedBuilder_.dispose();
+        batchedBuilder_ = null;
+      }
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     */
+    public com.authzed.api.v1.LookupResourcesBatch.Builder getBatchedBuilder() {
+      bitField0_ |= 0x00000020;
+      onChanged();
+      return internalGetBatchedFieldBuilder().getBuilder();
+    }
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     */
+    public com.authzed.api.v1.LookupResourcesBatchOrBuilder getBatchedOrBuilder() {
+      if (batchedBuilder_ != null) {
+        return batchedBuilder_.getMessageOrBuilder();
+      } else {
+        return batched_ == null ?
+            com.authzed.api.v1.LookupResourcesBatch.getDefaultInstance() : batched_;
+      }
+    }
+    /**
+     * <pre>
+     * batched, when set, holds multiple found resources in a single response
+     * message along with a single resume cursor for the batch. It is populated
+     * instead of the singular fields above when the request set
+     * optional_response_batch_size &gt; 0. A response message uses either the
+     * singular fields or batched, never both.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+     */
+    private com.google.protobuf.SingleFieldBuilder<
+        com.authzed.api.v1.LookupResourcesBatch, com.authzed.api.v1.LookupResourcesBatch.Builder, com.authzed.api.v1.LookupResourcesBatchOrBuilder> 
+        internalGetBatchedFieldBuilder() {
+      if (batchedBuilder_ == null) {
+        batchedBuilder_ = new com.google.protobuf.SingleFieldBuilder<
+            com.authzed.api.v1.LookupResourcesBatch, com.authzed.api.v1.LookupResourcesBatch.Builder, com.authzed.api.v1.LookupResourcesBatchOrBuilder>(
+                getBatched(),
+                getParentForChildren(),
+                isClean());
+        batched_ = null;
+      }
+      return batchedBuilder_;
     }
 
     // @@protoc_insertion_point(builder_scope:authzed.api.v1.LookupResourcesResponse)

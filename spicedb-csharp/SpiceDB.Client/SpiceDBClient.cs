@@ -565,16 +565,40 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         if (options?.SubjectRelation is not null) throw new InvalidArgumentException("LookupResources uses the supplied SubjectRef relation.");
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var single = options?.Paging == Paging.SingleRequest;
+        var onlyGrants = options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly;
+        var batchSize = LookupBatch.Size(options, single, size);
         var request = new LookupResourcesRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), ResourceObjectType = Native.Required(resourceType, nameof(resourceType)), Permission = Native.Required(permission, nameof(permission)), Subject = Native.Required(subject, nameof(subject)).ToProto(), Context = Native.Struct(options?.Context), WithDebug = options?.Debug == LookupDebug.Enabled, OptionalLimit = PageRequestLimit(single, size, options?.Limit), OptionalCursor = StartCursor(options?.ResumeCursor) };
         var sent = options?.ResumeCursor;
         while (true)
         {
+            // count is results, not messages: a batched response carries several.
             int count = 0;
+            request.OptionalResponseBatchSize = (uint)LookupBatch.ForPage(batchSize, single, size, options?.Limit is null ? null : remaining, onlyGrants);
             await foreach (var response in Stream(budget, o => _permissions.LookupResources(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: single))
             {
+                if (response.Batched is { } batch)
+                {
+                    // The batch's one cursor resumes after its last result, so only the last
+                    // item yielded from it may carry that cursor.
+                    var results = batch.Results;
+                    if (results.Count == 0) continue;
+                    request.OptionalCursor = batch.AfterCursor; count += results.Count;
+                    var last = results.Count - 1;
+                    while (onlyGrants && last >= 0 && results[last].Permissionship != LookupPermissionship.HasPermission) last--;
+                    for (var i = 0; i < results.Count; i++)
+                    {
+                        var result = results[i];
+                        var batchedPermissionship = Response.LookupPermissionship(result.Permissionship, "LookupResources");
+                        if (onlyGrants && result.Permissionship != LookupPermissionship.HasPermission) continue;
+                        remaining--;
+                        yield return new() { ResourceId = Response.Id(result.ResourceObjectId, "LookupResources", "resource object id"), Permissionship = batchedPermissionship, PartialCaveat = ToPartialCaveatInfo(result.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = i == last ? batch.AfterCursor?.Token : null };
+                        if (remaining == 0) yield break;
+                    }
+                    continue;
+                }
                 request.OptionalCursor = response.AfterResultCursor; count++;
                 var permissionship = Response.LookupPermissionship(response.Permissionship, "LookupResources");
-                if (options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly && response.Permissionship != LookupPermissionship.HasPermission) continue;
+                if (onlyGrants && response.Permissionship != LookupPermissionship.HasPermission) continue;
                 remaining--;
                 yield return new() { ResourceId = Response.Id(response.ResourceObjectId, "LookupResources", "resource object id"), Permissionship = permissionship, PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
                 if (remaining == 0) yield break;
@@ -587,7 +611,7 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
     {
         using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy, paged: true);
         if (options is not null && options.PermissionshipFilter != LookupPermissionshipFilter.All) throw new InvalidArgumentException("LookupSubjects does not support PermissionshipFilter.");
-        if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null || options?.Paging is Paging.SingleRequest) throw new InvalidArgumentException("LookupSubjects does not support Debug, PageSize or Paging; upstream concrete pagination is unimplemented.");
+        if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null || options?.Paging is Paging.SingleRequest || options?.ResponseBatchSize is not null || options?.Batching is LookupBatching.Disabled) throw new InvalidArgumentException("LookupSubjects does not support Debug, PageSize, Paging, ResponseBatchSize or Batching; upstream concrete pagination is unimplemented.");
         int remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var request = new LookupSubjectsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), Resource = Native.Required(resource, nameof(resource)).ToProto(), Permission = Native.Required(permission, nameof(permission)), SubjectObjectType = Native.Required(subjectType, nameof(subjectType)), OptionalSubjectRelation = options?.SubjectRelation ?? "", Context = Native.Struct(options?.Context) };
         await foreach (var response in Stream(budget, o => _permissions.LookupSubjects(request, o.Headers, o.Deadline, o.CancellationToken), perMessage: true))
@@ -949,8 +973,8 @@ public sealed partial class SpiceDBClient : ISpiceDBClient
         using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
-        if (options is not null && (options.Debug == LookupDebug.Enabled || options.Context is not null || options.PageSize is not null || options.Limit is not null || options.SubjectRelation is not null || options.Paging != Paging.Automatic))
-            throw new InvalidArgumentException("Roaring lookup supports Timeout only; context, debug, limits and subject relation options are unsupported. Put a subject relation on SubjectRef.");
+        if (options is not null && (options.Debug == LookupDebug.Enabled || options.Context is not null || options.PageSize is not null || options.Limit is not null || options.SubjectRelation is not null || options.Paging != Paging.Automatic || options.ResponseBatchSize is not null || options.Batching != LookupBatching.Automatic))
+            throw new InvalidArgumentException("Roaring lookup supports Timeout only; context, debug, limits, batching and subject relation options are unsupported. Put a subject relation on SubjectRef.");
         var resp = await Unary(budget, o => _materialize.ExperimentalRoaringLookupResourcesAsync(new MaterializeV0.ExperimentalRoaringLookupResourcesRequest
         {
             Consistency = Native.Required(consistency, nameof(consistency)).ToProto(),

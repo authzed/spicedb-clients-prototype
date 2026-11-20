@@ -12,6 +12,7 @@ import io.grpc.Status;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -172,7 +173,9 @@ class InMemoryResolutionTest {
     assertEquals(Permissionship.CONDITIONAL_PERMISSION, conditional.permissionship());
     assertNotNull(conditional.partialCaveat());
     assertNull(all.get(0).partialCaveat());
-    assertEquals(InMemorySpiceDB.cursorAfter(1), all.get(0).afterResultCursor());
+    // One batch by default: only its last item is a resume point.
+    assertNull(all.get(0).afterResultCursor());
+    assertEquals(InMemorySpiceDB.cursorAfter(4), all.get(3).afterResultCursor());
     assertNotNull(all.get(0).lookedUpAt());
 
     var onlyFull =
@@ -182,6 +185,7 @@ class InMemoryResolutionTest {
             ALICE,
             LookupOptions.builder()
                 .permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+                .batching(LookupBatching.DISABLED)
                 .build());
     assertEquals(
         List.of("a", "c", "d"),
@@ -375,7 +379,12 @@ class InMemoryResolutionTest {
         "document:a#viewer@user:alice",
         "document:x#viewer@user:bob",
         "document:c#viewer@user:alice");
-    var found = resources(db, "document", ALICE, LookupOptions.builder().build());
+    var found =
+        resources(
+            db,
+            "document",
+            ALICE,
+            LookupOptions.builder().batching(LookupBatching.DISABLED).build());
     assertEquals(InMemorySpiceDB.cursorAfter(1), found.get(0).afterResultCursor());
     assertEquals(InMemorySpiceDB.cursorAfter(2), found.get(1).afterResultCursor());
     var rest =
@@ -385,6 +394,70 @@ class InMemoryResolutionTest {
             ALICE,
             LookupOptions.builder().cursor(InMemorySpiceDB.cursorAfter(1)).build());
     assertEquals("c", rest.get(0).resourceId());
+  }
+
+  @Test
+  void lookupBatchesResultsAsAServerWould() {
+    var db = new InMemorySpiceDB();
+    write(
+        db,
+        "document:a#viewer@user:alice",
+        "document:b#viewer@user:alice",
+        "document:c#viewer@user:alice[only_weekdays]",
+        "document:d#viewer@user:alice",
+        "document:e#viewer@user:alice");
+    java.util.function.Function<LookupOptions, List<String>> cursors =
+        options ->
+            resources(db, "document", ALICE, options).stream()
+                .map(LookupResult.LookupResource::afterResultCursor)
+                .toList();
+    var after = new String[6];
+    for (int n = 1; n <= 5; n++) after[n] = InMemorySpiceDB.cursorAfter(n);
+
+    // Only the last item of each batch carries a cursor; the final partial batch is flushed.
+    var batchesOfTwo = LookupOptions.builder().responseBatchSize(2).build();
+    assertEquals(
+        Arrays.asList(null, after[2], null, after[4], after[5]), cursors.apply(batchesOfTwo));
+    // A page ends its batch: pages of 3 with the default batch size (the page size).
+    assertEquals(
+        Arrays.asList(null, null, after[3], null, after[5]),
+        cursors.apply(LookupOptions.builder().pageSize(3).build()));
+    // Resuming from a batch-end cursor returns exactly the rest.
+    var rest = resources(db, "document", ALICE, batchesOfTwo.toBuilder().cursor(after[2]).build());
+    assertEquals(
+        List.of("c", "d", "e"),
+        rest.stream().map(LookupResult.LookupResource::resourceId).toList());
+
+    // The filter drops c, the end of its batch: d carries the next batch's cursor, and b the
+    // cursor after c.
+    var grantedOnly =
+        batchesOfTwo.toBuilder()
+            .responseBatchSize(3)
+            .permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+            .build();
+    assertEquals(Arrays.asList(null, after[3], null, after[5]), cursors.apply(grantedOnly));
+
+    // A limited call ends on a cursor: the last page's batches are sized to what is left, and a
+    // remainder the batch size does not divide is not batched.
+    assertEquals(
+        Arrays.asList(null, null, after[3]),
+        cursors.apply(LookupOptions.builder().limit(3).build()));
+    assertEquals(
+        List.of(after[1], after[2], after[3]),
+        cursors.apply(batchesOfTwo.toBuilder().limit(3).build()));
+    assertEquals(
+        Arrays.asList(null, null, after[3]),
+        cursors.apply(LookupOptions.builder().paging(Paging.SINGLE_REQUEST).limit(3).build()));
+
+    assertEquals(
+        List.of(after[1], after[2], after[3], after[4], after[5]),
+        cursors.apply(LookupOptions.builder().batching(LookupBatching.DISABLED).build()));
+
+    for (var options :
+        List.of(batchesOfTwo, LookupOptions.builder().batching(LookupBatching.DISABLED).build()))
+      assertThrows(
+          LocalValidationException.class,
+          () -> db.lookupSubjects(Consistency.full(), DOC, "viewer", "user", options));
   }
 
   /** A real server never sends an unset permissionship, so the double never produces one. */

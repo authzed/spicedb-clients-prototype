@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **2026-11-20: `lookup_resources` requests batched responses by default; only the last item of a batch carries a cursor.**
+  The client asks SpiceDB to pack several resources into each response
+  message (`optional_response_batch_size`, new in the v1.58.0 API) and still
+  yields one `LookupResource` at a time, so large lookups need far fewer
+  messages. A batch has one cursor, after its last result, so
+  `LookupResource::after_result_cursor` is now `None` on the items before the
+  last one yielded from a batch (the last one the permissionship filter
+  keeps): `None` means "not a resume point". Code that checkpoints a lookup
+  should keep the latest `Some` cursor instead of each item's. The last item
+  of a call with `with_limit` always carries a cursor. To get a cursor on
+  every item again, use the new
+  `LookupResourcesOptions::with_batching(LookupBatching::Disabled)`.
+  `LookupResourcesOptions::with_response_batch_size(NonZeroU32)` sets the
+  batch size, sent as given (SpiceDB rejects one above its maximum, 1,000 by
+  default); the default is the page size capped at 1,000 (with
+  `Paging::SingleRequest`: the limit capped at 1,000, or 1,000 without one).
+  Servers that predate batching ignore the request and answer one resource
+  per message, which is read as before with a cursor on every item. The
+  `testing` double batches the same way, so a test that resumes from a
+  mid-batch item now fails as it would against SpiceDB;
+  `protoconv::lookup_resource_to_proto` still produces the one-resource form.
+
 - Tests: the deadline, consumer-time and shared-budget tests against a real server build their clients with `ConnectMode::Eager`, so a short allowance never has to cover connection setup on a busy machine; the shared-budget tests use wider stalls and budgets, and the consumer-time tests a 500 ms per-page default (5 x 250 ms of caller work), since moving one 3 MiB message through a debug build once took over 200 ms.
 - `consistency::Strategy` implements `Display` (`full`, `min_latency`, `at_least(<token>)`, `snapshot(<token>)`) and, with the `serde` feature, `Serialize` as `{"strategy":"at_least","token":"<token>"}` (no token for `full` and `min_latency`), like the other native values. It had only `Debug`.
 - An `http://` endpoint without a port fails with its example once: the accepted-forms list after the reason no longer repeats `for example http://host:50051`.

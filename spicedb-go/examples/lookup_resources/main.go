@@ -89,6 +89,37 @@ definition document {
 		log.Fatalf("expected seconddoc in results")
 	}
 
+	// Resuming: the client asks the server for batched responses, and only
+	// the last item of each batch carries AfterResultCursor, so keep the
+	// latest non-empty cursor rather than every item's. The last item of a
+	// call that stops at its limit always carries one.
+	lookup := client.LookupResourcesRequest{Consistency: consistency.Full(), ResourceType: "document", Permission: "view", Subject: exampleutil.Subject(exampleutil.Object("user", "alice"), "")}
+	var first []string
+	resumeFrom := ""
+	for resource, err := range c.LookupResources(ctx, lookup, client.WithLookupResourcesLimit(1)) {
+		if err != nil {
+			log.Fatalf("limited lookup failed: %v", err)
+		}
+		first = append(first, resource.ResourceID)
+		if resource.AfterResultCursor != "" {
+			resumeFrom = resource.AfterResultCursor
+		}
+	}
+	if len(first) != 1 || resumeFrom == "" {
+		log.Fatalf("expected one resource with a cursor from the limited lookup, got %v (cursor %q)", first, resumeFrom)
+	}
+	var rest []string
+	for resource, err := range c.LookupResources(ctx, lookup, client.WithLookupResourcesCursor(resumeFrom)) {
+		if err != nil {
+			log.Fatalf("resumed lookup failed: %v", err)
+		}
+		rest = append(rest, resource.ResourceID)
+	}
+	if len(rest) != 1 || rest[0] == first[0] || !found[rest[0]] {
+		log.Fatalf("expected the resumed lookup to return the other document, got %v after %v", rest, first)
+	}
+	fmt.Printf("resumed after document:%s and found document:%s\n", first[0], rest[0])
+
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared
 	// SpiceDB instance).

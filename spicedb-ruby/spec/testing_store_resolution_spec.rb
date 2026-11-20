@@ -106,7 +106,10 @@ RSpec.describe SpiceDB::Testing::Store do
       expect(results.map(&:resource_id)).to eq(%w[a c d])
       expect(results.map(&:permissionship)).to eq(%i[has_permission has_permission conditional_permission])
       expect(results.last.partial_caveat).to be_a(SpiceDB::PartialCaveatInfo)
-      expect(results.map(&:cursor)).to eq(%w[1 2 3])
+      # One response batch, as a batching server answers: its last item
+      # carries the batch's cursor.
+      expect(results.map(&:cursor)).to eq([nil, nil, '3'])
+      expect(lookup(batching: SpiceDB::LookupBatching::DISABLED).map(&:cursor)).to eq(%w[1 2 3])
     end
 
     it 'honors the permissionship filter, limit and cursor' do
@@ -114,6 +117,67 @@ RSpec.describe SpiceDB::Testing::Store do
       expect(lookup(limit: 1).map(&:resource_id)).to eq(%w[a])
       expect(lookup(cursor: described_class.cursor_after(1)).map(&:resource_id)).to eq(%w[c d])
       expect { lookup(cursor: 'bogus').to_a }.to raise_error(SpiceDB::InvalidArgumentError, /decoding cursor/)
+    end
+
+    describe 'response batching' do
+      let(:store) { described_class.new(Array.new(7) { |index| rel("doc:d#{index}#viewer@user:alice") }) }
+      let(:disabled) { SpiceDB::LookupBatching::DISABLED }
+
+      it 'puts a cursor only on the last item of each batch' do
+        expect(lookup(response_batch_size: 3).map(&:cursor)).to eq([nil, nil, '3', nil, nil, '6', '7'])
+        # A page ends a batch: pages of 4 in batches of 3.
+        expect(lookup(page_size: 4, response_batch_size: 3).map(&:cursor)).to eq([nil, nil, '3', '4', nil, nil, '7'])
+        # By default a batch is a page.
+        expect(lookup(page_size: 2).map(&:cursor)).to eq([nil, '2', nil, '4', nil, '6', '7'])
+      end
+
+      it 'resumes from a batch-end cursor with exactly the rest' do
+        items = lookup(response_batch_size: 3).to_a
+        rest = lookup(response_batch_size: 3, cursor: items[2].cursor).to_a
+        expect(rest.map(&:resource_id)).to eq(%w[d3 d4 d5 d6])
+        expect(rest.map(&:cursor)).to eq([nil, nil, '6', '7'])
+      end
+
+      it 'gives every item its cursor when batching is disabled' do
+        expect(lookup(batching: disabled).map(&:cursor)).to eq(%w[1 2 3 4 5 6 7])
+        expect(lookup(batching: disabled, response_batch_size: 3, limit: 2).map(&:cursor)).to eq(%w[1 2])
+      end
+
+      it 'ends a limited call on a cursor, sizing the last page batch as the client does' do
+        expect(lookup(limit: 5).map(&:cursor)).to eq([nil, nil, nil, nil, '5'])
+        expect(lookup(limit: 6, response_batch_size: 3).map(&:cursor)).to eq([nil, nil, '3', nil, nil, '6'])
+        expect(lookup(limit: 5, response_batch_size: 3).map(&:cursor)).to eq(%w[1 2 3 4 5])
+        expect(lookup(limit: 6, page_size: 4).map(&:cursor)).to eq([nil, nil, nil, '4', nil, '6'])
+        limited = lookup(limit: 5).to_a
+        expect(lookup(cursor: limited.last.cursor).map(&:resource_id)).to eq(%w[d5 d6])
+      end
+
+      it 'batches a single request by its limit' do
+        mode = SpiceDB::Paging::SINGLE_REQUEST
+        expect(lookup(paging: mode, page_size: 2).map(&:cursor)).to eq([nil, nil, nil, nil, nil, nil, '7'])
+        expect(lookup(paging: mode, limit: 5, response_batch_size: 3).map(&:cursor)).to eq([nil, nil, '3', nil, '5'])
+      end
+
+      it 'moves a batch cursor to the last item the permissionship filter keeps' do
+        store = described_class.new([rel('doc:a#viewer@user:alice'), rel('doc:b#viewer@user:alice[only_weekdays]'), rel('doc:c#viewer@user:alice'),
+                                     rel('doc:d#viewer@user:alice[only_weekdays]'), rel('doc:e#viewer@user:alice[only_weekdays]'),
+                                     rel('doc:f#viewer@user:alice')])
+        only = SpiceDB::LookupPermissionshipFilter::HAS_PERMISSION_ONLY
+        found = store.lookup_resources(resource_type: 'doc', permission: :viewer, subject: alice, consistency: full, permissionship_filter: only,
+                                       response_batch_size: 2).to_a
+        # Batches: [a b] [c d] [e f]; b and d are dropped after batching.
+        expect(found.map(&:resource_id)).to eq(%w[a c f])
+        expect(found.map(&:cursor)).to eq(%w[2 4 6])
+        limited = store.lookup_resources(resource_type: 'doc', permission: :viewer, subject: alice, consistency: full, permissionship_filter: only,
+                                         limit: 2).to_a
+        expect(limited.map(&:resource_id)).to eq(%w[a c])
+        expect(limited.map(&:cursor)).to eq(%w[1 3])
+      end
+
+      it 'validates the options as the client does' do
+        expect { lookup(response_batch_size: 0) }.to raise_error(SpiceDB::LocalValidationError, /response_batch_size must be a positive integer/)
+        expect { lookup(batching: false) }.to raise_error(SpiceDB::LocalValidationError, /LookupBatching/)
+      end
     end
 
     it 'enumerates objects that appear only as subjects and resolves them through the resolver' do

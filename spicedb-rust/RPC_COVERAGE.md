@@ -39,7 +39,9 @@ source remains generated; the handwritten transport adds cloned authenticated
 handles for the Materialize Relationships and WatchPermissionSets services.
 
 Cursor paging pins response revisions for reads/lookups; export cursors carry
-server snapshot semantics. LookupSubjects has no invented cursor pagination.
+server snapshot semantics. LookupResources requests batched responses by
+default and yields one resource at a time; only a batch's last item carries a
+cursor. LookupSubjects has no invented cursor pagination.
 Permission-set lookup is an explicitly bounded page with the complete native
 cursor for caller-controlled resume. Deletion is non-atomic across pages and
 only acknowledged pages contribute to `DeleteProgress`; unacknowledged outcomes

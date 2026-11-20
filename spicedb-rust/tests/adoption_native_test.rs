@@ -181,6 +181,7 @@ impl PermissionsService for Mock {
                     after_result_cursor: Some(proto::Cursor {
                         token: (i + 1).to_string(),
                     }),
+                    batched: None,
                 })
             })
             .collect();

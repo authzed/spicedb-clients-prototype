@@ -180,6 +180,28 @@ try (var found =
 }
 ```
 
+Lookup responses are batched on the wire by default; results still arrive one at a
+time. Only the last item of each batch carries `afterResultCursor()`, and the rest
+return `null` (not a resume point). To checkpoint a long lookup keep the **latest
+non-null cursor**, not every item's:
+
+```java
+String checkpoint = null;
+try (var found =
+    tc.lookupResources(Consistency.minLatency(), Organization_View, User(userId))) {
+  for (var it = found.iterator(); it.hasNext(); ) {
+    var resource = it.next();
+    if (resource.afterResultCursor() != null) checkpoint = resource.afterResultCursor();
+  }
+}
+// Resume with LookupOptions.builder().cursor(checkpoint) and the same request and page size.
+```
+
+The last item of a call with a `limit` always carries a cursor.
+`LookupOptions.builder().batching(LookupBatching.DISABLED)` gives every item
+one; `responseBatchSize(n)` changes the batch size (default: the page size, at most
+1,000).
+
 Omit the filter only if you handle `CONDITIONAL_PERMISSION` results explicitly.
 Every stream belongs in try-with-resources.
 
@@ -347,7 +369,8 @@ both `SpiceDBClient` and `InMemorySpiceDB` implement both. `TypedClient` wraps e
 stored relationship whose relation is the permission's name (exact subject or `type:*`
 wildcard), else no permission; the double never evaluates the schema. `lookupResources`
 and `lookupSubjects` apply that resolution to every object of the requested type the
-stored relationships mention. Operations the double cannot run in memory (expand,
+stored relationships mention; resource lookups are batched as a server would batch
+them, so only batch-end items carry a cursor there too. Operations the double cannot run in memory (expand,
 watch, schema analysis, experimental calls) are recorded and throw `UNIMPLEMENTED` unless
 the fault hook fails them first. The double applies
 preconditions, `CREATE` conflicts and filter semantics like the server. It

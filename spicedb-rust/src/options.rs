@@ -468,7 +468,25 @@ pub enum Paging {
     Automatic,
     /// Send exactly one request, as the raw API does: its limit is the
     /// options' `with_limit` (or unbounded without one), the page size is
-    /// ignored, and no follow-up page is requested. Each item still carries
-    /// its after-result cursor.
+    /// ignored, and no follow-up page is requested. Each read item still
+    /// carries its after-result cursor; a lookup's items carry one as
+    /// [`LookupBatching`] describes.
     SingleRequest,
+}
+
+/// Whether [`lookup_resources`](crate::SpiceDBClient::lookup_resources) asks
+/// the server to pack several resources into each response message. Either
+/// way the stream yields one resource at a time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LookupBatching {
+    /// Request batched responses (size from the options'
+    /// `with_response_batch_size`, by default the page size capped at 1,000).
+    /// A batch has one cursor, so only the last item yielded from each batch
+    /// carries an after-result cursor.
+    #[default]
+    Automatic,
+    /// Request one resource per response message, so every item carries its
+    /// after-result cursor.
+    Disabled,
 }

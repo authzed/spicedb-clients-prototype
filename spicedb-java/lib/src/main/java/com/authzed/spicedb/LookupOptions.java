@@ -16,6 +16,8 @@ public final class LookupOptions {
   private final int pageSize;
   private final long limit;
   private final String subjectRelation;
+  private final Integer responseBatchSize;
+  private final LookupBatching batching;
 
   private LookupOptions(Builder b) {
     this.cursor = b.cursor;
@@ -43,6 +45,11 @@ public final class LookupOptions {
     if (pageSize <= 0) throw new LocalValidationException("pageSize must be positive");
     this.limit = b.limit;
     if (limit < 0) throw new LocalValidationException("limit must not be negative");
+    this.batching = b.batching;
+    if (batching == null) throw new LocalValidationException("batching must not be null");
+    this.responseBatchSize = b.responseBatchSize;
+    if (responseBatchSize != null && responseBatchSize <= 0)
+      throw new LocalValidationException("responseBatchSize must be positive");
   }
 
   public String subjectRelation() {
@@ -50,8 +57,9 @@ public final class LookupOptions {
   }
 
   public Builder toBuilder() {
-    return builder()
-        .permissionshipFilter(permissionshipFilter)
+    var b = builder().batching(batching);
+    b.responseBatchSize = responseBatchSize;
+    return b.permissionshipFilter(permissionshipFilter)
         .timeout(timeout)
         .context(context)
         .debug(debug)
@@ -92,6 +100,51 @@ public final class LookupOptions {
     return limit;
   }
 
+  /** Batched lookupResources responses (the default) or disabled; see {@link LookupBatching}. */
+  public LookupBatching batching() {
+    return batching;
+  }
+
+  /**
+   * The response batch size a lookupResources call with these options requests, or {@code null}
+   * when batching is {@link LookupBatching#DISABLED}: the size set with {@link
+   * Builder#responseBatchSize}, otherwise the page size capped at 1,000 (with {@link
+   * Paging#SINGLE_REQUEST}: the limit capped at 1,000, or 1,000 without one). A limited call may
+   * request a smaller size, or none, for a page; see {@link #responseBatchSizeForPage}.
+   */
+  public Integer responseBatchSize() {
+    if (batching == LookupBatching.DISABLED) return null;
+    if (responseBatchSize != null) return responseBatchSize;
+    if (paging != Paging.SINGLE_REQUEST) return Math.min(pageSize, MAX_DEFAULT_RESPONSE_BATCH_SIZE);
+    return limit > 0
+        ? (int) Math.min(limit, MAX_DEFAULT_RESPONSE_BATCH_SIZE)
+        : MAX_DEFAULT_RESPONSE_BATCH_SIZE;
+  }
+
+  // The server's default maximum response batch size; it rejects a larger one.
+  private static final int MAX_DEFAULT_RESPONSE_BATCH_SIZE = 1000;
+
+  /**
+   * The response batch size sent with a lookupResources page request once {@code yielded} results
+   * have been yielded; 0 requests no batching for that page.
+   *
+   * <p>Only the last result of a batch is a resume point, and a total limit must end on one. So
+   * when automatic paging has fewer results left to yield than a page holds, the page's batch size
+   * is the remaining count if that is smaller than the batch size, unchanged if it divides the
+   * remaining count, and otherwise the page is not batched. With {@link
+   * LookupPermissionshipFilter#HAS_PERMISSION_ONLY} the filter decides which results count toward
+   * the limit, so a limited call is not batched at all.
+   */
+  public int responseBatchSizeForPage(long yielded) {
+    var configured = responseBatchSize();
+    int size = configured == null ? 0 : configured;
+    if (size == 0 || limit == 0 || paging != Paging.AUTOMATIC) return size;
+    if (permissionshipFilter == LookupPermissionshipFilter.HAS_PERMISSION_ONLY) return 0;
+    long remaining = limit - yielded;
+    if (remaining >= pageSize || remaining % size == 0) return size;
+    return remaining < size ? (int) Math.max(remaining, 0) : 0;
+  }
+
   /** Automatic paging (the default) or a single request; see {@link Paging}. */
   public Paging paging() {
     return paging;
@@ -112,7 +165,7 @@ public final class LookupOptions {
 
   /**
    * Resume lookupResources after this after-result cursor. Repeat the original request and page
-   * size.
+   * size; the response batch size may differ.
    */
   public String cursor() {
     return cursor;
@@ -125,7 +178,7 @@ public final class LookupOptions {
 
     /**
      * Resume lookupResources after this after-result cursor. Repeat the original request and page
-     * size.
+     * size; the response batch size may differ.
      */
     public Builder cursor(String value) {
       this.cursor = value;
@@ -204,6 +257,34 @@ public final class LookupOptions {
 
     public Builder pageSize(int value) {
       this.pageSize = value;
+      return this;
+    }
+
+    private Integer responseBatchSize = null;
+
+    /**
+     * How many resources lookupResources asks the server to pack into each response message; must
+     * be positive. Sent as given: the server rejects a size above its maximum (1,000 by default).
+     * Unset, the size is the page size capped at 1,000; see {@link
+     * LookupOptions#responseBatchSize}.
+     *
+     * <p>Results are still yielded one at a time, but only the last one yielded from each batch
+     * carries an {@code afterResultCursor}. Ignored with {@link LookupBatching#DISABLED}.
+     * lookupResources only.
+     */
+    public Builder responseBatchSize(int value) {
+      this.responseBatchSize = value;
+      return this;
+    }
+
+    private LookupBatching batching = LookupBatching.AUTOMATIC;
+
+    /**
+     * Batched lookupResources responses (the default) or {@link LookupBatching#DISABLED}, which
+     * makes every item carry its after-result cursor. lookupResources only.
+     */
+    public Builder batching(LookupBatching value) {
+      this.batching = value;
       return this;
     }
 

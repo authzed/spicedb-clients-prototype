@@ -62,7 +62,10 @@ type LookupResource struct {
 	// property of the call, not of the individual resource.
 	LookedUpAt consistency.ZedToken
 	// AfterResultCursor resumes a lookup after this item, via
-	// WithLookupResourcesCursor.
+	// WithLookupResourcesCursor. It is empty for an item that is not the last
+	// of its response batch: to resume, keep the latest non-empty cursor.
+	// The last item of a call that stops at its limit carries one, and every
+	// item does with WithLookupResourcesBatching(BatchingDisabled).
 	AfterResultCursor string
 }
 

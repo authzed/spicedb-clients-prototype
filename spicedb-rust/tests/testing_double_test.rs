@@ -608,10 +608,12 @@ async fn schema_reads_can_omit_the_revision() {
 mod resolution_and_lookups {
     use super::*;
     use futures::TryStreamExt;
+    use spicedb::spicedb_proto::authzed::api::v1 as proto;
     use spicedb::testing::{grant_all, Resolution};
     use spicedb::{
-        CheckOptions, LookupPermissionshipFilter, LookupResourcesOptions, LookupResourcesRequest,
-        LookupSubjectsOptions, LookupSubjectsRequest, ObjectRef, SubjectRef, WildcardOption,
+        CheckOptions, LookupBatching, LookupPermissionshipFilter, LookupResourcesOptions,
+        LookupResourcesRequest, LookupSubjectsOptions, LookupSubjectsRequest, ObjectRef,
+        SubjectRef, WildcardOption,
     };
     use std::sync::{Arc, Mutex};
 
@@ -892,7 +894,20 @@ mod resolution_and_lookups {
         );
         assert!(all[2].partial_caveat.is_some());
         assert!(all[0].partial_caveat.is_none());
+        // The lookup is batched by default: one batch here, whose cursor
+        // only its last item carries.
         let cursors: Vec<_> = all.iter().map(|r| r.after_result_cursor.clone()).collect();
+        assert_eq!(cursors, [None, None, None, Some(cursor_after(4))]);
+        // Without batching every item carries its cursor.
+        let unbatched = lookup(
+            &fake,
+            LookupResourcesOptions::new().with_batching(LookupBatching::Disabled),
+        )
+        .await;
+        let cursors: Vec<_> = unbatched
+            .iter()
+            .map(|r| r.after_result_cursor.clone())
+            .collect();
         assert_eq!(
             cursors,
             (1..=4).map(|n| Some(cursor_after(n))).collect::<Vec<_>>()
@@ -929,6 +944,123 @@ mod resolution_and_lookups {
         assert_eq!(ids, ["d3", "d1", "d2"]);
         // Each page is its own recorded RPC.
         assert_eq!(fake.calls_of(Operation::LookupResources).len() - before, 2);
+        // A limited call ends on a resume point.
+        assert_eq!(limited[2].after_result_cursor, Some(cursor_after(3)));
+    }
+
+    fn documents(n: usize) -> InMemorySpiceDB {
+        InMemorySpiceDB::with_relationships(
+            (1..=n).map(|i| rel(&format!("document:d{i}#view@user:alice"))),
+        )
+    }
+
+    fn batch_sizes(fake: &InMemorySpiceDB) -> Vec<u32> {
+        fake.calls_of(Operation::LookupResources)
+            .iter()
+            .map(|c| {
+                c.request::<proto::LookupResourcesRequest>()
+                    .unwrap()
+                    .optional_response_batch_size
+            })
+            .collect()
+    }
+
+    /// The double batches as a server would: only the last item of each
+    /// batch carries a cursor, and resuming from it returns exactly the rest.
+    #[tokio::test]
+    async fn lookup_resources_batches_like_a_server() {
+        let fake = documents(7);
+        let options =
+            || LookupResourcesOptions::new().with_response_batch_size(NonZeroU32::new(3).unwrap());
+        let all = lookup(&fake, options()).await;
+        let cursors: Vec<_> = all.iter().map(|r| r.after_result_cursor.clone()).collect();
+        assert_eq!(
+            cursors,
+            [
+                None,
+                None,
+                Some(cursor_after(3)),
+                None,
+                None,
+                Some(cursor_after(6)),
+                Some(cursor_after(7)),
+            ]
+        );
+        assert!(all.iter().all(|r| !r.looked_up_at.as_ref().is_empty()));
+        assert_eq!(batch_sizes(&fake), [3]);
+
+        let resumed = lookup(
+            &fake,
+            options().with_cursor(all[2].after_result_cursor.clone().unwrap()),
+        )
+        .await;
+        let ids: Vec<_> = resumed.iter().map(|r| r.resource_id.as_str()).collect();
+        assert_eq!(ids, ["d4", "d5", "d6", "d7"]);
+    }
+
+    /// Pages and batches compose: each page is batched on its own, and a
+    /// limit that would end mid-batch shrinks the last page's batch so the
+    /// last item is a resume point.
+    #[tokio::test]
+    async fn lookup_resources_batches_each_page_and_aligns_the_limit() {
+        let fake = documents(9);
+        let limited = lookup(
+            &fake,
+            LookupResourcesOptions::new()
+                .with_page_size(NonZeroU32::new(4).unwrap())
+                .with_response_batch_size(NonZeroU32::new(3).unwrap())
+                .with_limit(6),
+        )
+        .await;
+        let cursors: Vec<_> = limited
+            .iter()
+            .map(|r| r.after_result_cursor.clone())
+            .collect();
+        assert_eq!(
+            cursors,
+            [
+                None,
+                None,
+                Some(cursor_after(3)),
+                Some(cursor_after(4)),
+                None,
+                Some(cursor_after(6)),
+            ]
+        );
+        // Page two has two results left, fewer than a batch.
+        assert_eq!(batch_sizes(&fake), [3, 2]);
+
+        let rest = lookup(
+            &fake,
+            LookupResourcesOptions::new()
+                .with_page_size(NonZeroU32::new(4).unwrap())
+                .with_cursor(limited[5].after_result_cursor.clone().unwrap()),
+        )
+        .await;
+        let ids: Vec<_> = rest.iter().map(|r| r.resource_id.as_str()).collect();
+        assert_eq!(ids, ["d7", "d8", "d9"]);
+    }
+
+    /// When the permissionship filter drops a batch's trailing results, the
+    /// last kept item carries the batch's cursor.
+    #[tokio::test]
+    async fn lookup_resources_filter_moves_the_batch_cursor_to_the_last_kept_item() {
+        let fake = InMemorySpiceDB::with_relationships([
+            rel("document:d1#view@user:alice"),
+            rel("document:d2#view@user:alice"),
+            rel("document:d3#view@user:alice[only_weekdays]"),
+        ]);
+        let granted = lookup(
+            &fake,
+            LookupResourcesOptions::new()
+                .with_permissionship_filter(LookupPermissionshipFilter::HasPermissionOnly),
+        )
+        .await;
+        let cursors: Vec<_> = granted
+            .iter()
+            .map(|r| r.after_result_cursor.clone())
+            .collect();
+        assert_eq!(cursors, [None, Some(cursor_after(3))]);
     }
 
     /// The item fault hook runs before each lookup result.

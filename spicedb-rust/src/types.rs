@@ -1058,6 +1058,15 @@ pub struct LookupResource {
     pub looked_up_at: ZedToken,
     /// Resumes the lookup after this item: repeat the request and page size
     /// with `LookupResourcesOptions::with_cursor`.
+    ///
+    /// `None` means this item is not a resume point. The server answers in
+    /// batches by default, and a batch has one cursor, which only the last
+    /// item yielded from it carries. To checkpoint a long lookup, keep the
+    /// latest `Some` cursor seen; resuming from it never skips a result.
+    /// The last item of a call with
+    /// [`with_limit`](LookupResourcesOptions::with_limit) always carries one,
+    /// and with [`LookupBatching::Disabled`](crate::LookupBatching::Disabled)
+    /// every item does.
     pub after_result_cursor: Option<String>,
 }
 
@@ -1767,6 +1776,8 @@ pub struct LookupResourcesOptions {
     pub(crate) limit: Option<u32>,
     pub(crate) cursor: Option<String>,
     pub(crate) paging: crate::options::Paging,
+    pub(crate) batching: crate::options::LookupBatching,
+    pub(crate) response_batch_size: Option<std::num::NonZeroU32>,
     pub(crate) context: Option<Context>,
     pub(crate) debug: DebugMode,
 }
@@ -1780,11 +1791,16 @@ impl Default for LookupResourcesOptions {
             limit: None,
             cursor: None,
             paging: crate::options::Paging::Automatic,
+            batching: crate::options::LookupBatching::Automatic,
+            response_batch_size: None,
             context: None,
             debug: DebugMode::Disabled,
         }
     }
 }
+/// The largest response batch size requested by default: SpiceDB's default
+/// maximum (`--max-lookup-resources-response-batch-size`).
+const DEFAULT_MAX_RESPONSE_BATCH_SIZE: u32 = 1000;
 impl LookupResourcesOptions {
     /// Per-call settings: request metadata, response header/trailer capture
     /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
@@ -1820,6 +1836,35 @@ impl LookupResourcesOptions {
         self.paging = mode;
         self
     }
+    /// How many resources the server is asked to pack into each response
+    /// message. The stream still yields one resource at a time; only the last
+    /// item yielded from a batch carries an
+    /// [`after_result_cursor`](LookupResource::after_result_cursor).
+    ///
+    /// The default is the page size capped at 1,000 (with
+    /// [`Paging::SingleRequest`](crate::Paging::SingleRequest): the limit
+    /// capped at 1,000, or 1,000 without one). The value is sent as given:
+    /// SpiceDB rejects one above its configured maximum (1,000 by default).
+    /// Servers that predate batching ignore it and answer one resource per
+    /// message, which is read the same way.
+    pub fn with_response_batch_size(mut self, value: std::num::NonZeroU32) -> Self {
+        self.response_batch_size = Some(value);
+        self
+    }
+    /// [`LookupBatching::Disabled`](crate::LookupBatching::Disabled) requests
+    /// one resource per response message, so every item carries its
+    /// after-result cursor; it overrides
+    /// [`with_response_batch_size`](Self::with_response_batch_size). The
+    /// default batches.
+    pub fn with_batching(mut self, mode: crate::options::LookupBatching) -> Self {
+        self.batching = mode;
+        self
+    }
+    /// Resumes after the item that carried this cursor
+    /// ([`LookupResource::after_result_cursor`]); repeat the same request and
+    /// page size. Items without a cursor are not resume points: resume from
+    /// the latest cursor seen. The response batch size may differ from the
+    /// original call's.
     pub fn with_cursor(mut self, value: impl Into<String>) -> Self {
         self.cursor = Some(value.into());
         self
@@ -1831,6 +1876,54 @@ impl LookupResourcesOptions {
     pub fn with_debug(mut self, value: DebugMode) -> Self {
         self.debug = value;
         self
+    }
+    /// The response batch size the call requests when nothing narrows it:
+    /// the configured size, else the wire limit capped at 1,000 (1,000 for an
+    /// unbounded single request); `None` when batching is disabled.
+    pub(crate) fn response_batch_size(&self) -> Option<std::num::NonZeroU32> {
+        if self.batching == crate::options::LookupBatching::Disabled {
+            return None;
+        }
+        self.response_batch_size.or_else(|| {
+            let wire_limit = match self.paging {
+                crate::options::Paging::SingleRequest => self.limit.unwrap_or(0),
+                _ => self.page_size.get(),
+            };
+            let capped = match wire_limit {
+                0 => DEFAULT_MAX_RESPONSE_BATCH_SIZE,
+                n => n.min(DEFAULT_MAX_RESPONSE_BATCH_SIZE),
+            };
+            std::num::NonZeroU32::new(capped)
+        })
+    }
+    /// The `optional_response_batch_size` for the next page request (0 leaves
+    /// it unset), given how many results the limit still allows.
+    ///
+    /// A batch has one cursor, after its last result, so a limit that stopped
+    /// mid-batch would end the call on an item that cannot be resumed from.
+    /// The page that can reach the limit therefore asks for batches that end
+    /// exactly on it: the remaining count when that is smaller than the batch
+    /// size, the batch size when it divides the remaining count, and no
+    /// batching otherwise. The wire limit stays the page size (SpiceDB hashes
+    /// it into the cursor; the batch size it does not). With the
+    /// unconditional-only filter the client cannot predict which results
+    /// count toward the limit, so a limited call does not batch. A single
+    /// request sends the limit itself, so the server ends on it.
+    pub(crate) fn page_response_batch_size(&self, remaining: u32) -> u32 {
+        let Some(batch) = self.response_batch_size() else {
+            return 0;
+        };
+        let batch = batch.get();
+        if self.limit.is_none() || self.paging == crate::options::Paging::SingleRequest {
+            return batch;
+        }
+        if self.permissionship_filter == LookupPermissionshipFilter::HasPermissionOnly {
+            return 0;
+        }
+        if remaining < self.page_size.get() && remaining % batch != 0 {
+            return if remaining < batch { remaining } else { 0 };
+        }
+        batch
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]

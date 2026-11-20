@@ -620,6 +620,14 @@ export interface JSONObject {
 // @public (undocumented)
 export type JSONValue = null | boolean | number | string | JSONObject | readonly JSONValue[];
 
+// @public
+export enum LookupBatching {
+    // (undocumented)
+    Automatic = "automatic",
+    // (undocumented)
+    Disabled = "disabled"
+}
+
 // @public (undocumented)
 export enum LookupDebug {
     // (undocumented)
@@ -674,11 +682,11 @@ function lookupResourceFromProto(response: LookupResourcesResponse): LookupResou
 
 // @public (undocumented)
 export interface LookupResourcesRequest {
+    readonly batching?: LookupBatching;
     // (undocumented)
     readonly consistency: Consistency;
     // (undocumented)
     readonly context?: JSONObject;
-    // (undocumented)
     readonly cursor?: string;
     // (undocumented)
     readonly debug?: LookupDebug;
@@ -692,6 +700,7 @@ export interface LookupResourcesRequest {
     readonly permissionshipFilter?: LookupPermissionshipFilter;
     // (undocumented)
     readonly resourceType: string;
+    readonly responseBatchSize?: number;
     // (undocumented)
     readonly subject: SubjectRef;
 }
@@ -1347,7 +1356,6 @@ export class SpiceDBClient implements SpiceDBClientInterface {
     exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
     static fromTransport(transport: Transport, options?: SpiceDBClientBehaviorOptions): SpiceDBClient;
     importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
-    // (undocumented)
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource>;
     // (undocumented)
     lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject>;

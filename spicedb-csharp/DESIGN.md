@@ -152,6 +152,22 @@
     unbounded, page size ignored, no follow-up page); LookupSubjects and roaring lookup
     reject it. Cursors are strings, never `ZedToken`. Permission-set lookup is one bounded
     page with `PermissionSetLookupOptions.ResumeCursor` for continuation.
+  - `LookupResourcesAsync` requests batched responses and still yields one `LookupResource`
+    at a time. `LookupOptions.ResponseBatchSize` (positive, sent as given, never clamped)
+    defaults to the page size capped at 1,000 (under `Paging.SingleRequest`: `Limit` capped
+    at 1,000, or 1,000); `LookupOptions.Batching = LookupBatching.Disabled` requests one
+    resource per response and ignores the size. LookupSubjects and roaring lookup reject
+    both. Each response is read in the form it arrives, a batch's results are validated like
+    single responses, and pages, limits and the non-advancing-cursor check count results.
+    Only the last item yielded from a batch carries `AfterResultCursor` (the last one
+    `PermissionshipFilter` keeps); the others have null, which means "not a resume point",
+    so callers checkpointing a lookup keep the latest non-null cursor. Without batching, or
+    against a server that does not batch, every item has one. The last item of a call with
+    a `Limit` under automatic paging always has one: `LookupBatch.ForPage` picks each page
+    request's batch size (the remaining count when smaller than the batch, unchanged when
+    it divides the remaining count, otherwise none for that page; none at all when a limit
+    is combined with `HasPermissionOnly`). `ProtoConvert.ToProto(LookupResource)` still
+    produces the one-resource form.
   - `Transaction` collects create/touch/delete operations and match/nonmatch
     preconditions, snapshotting them for writes. Metadata remains native JSON.
     `Count` reports the update count without copying; `Updates` (`RelationshipUpdate`) and
@@ -341,9 +357,14 @@
     appearance; resource lookups skip `*`, subject lookups report a stored wildcard as `*`)
     and yield those check resolution grants, conditional results as conditional with the
     resolved missing context in `PartialCaveat`. Resource lookups honor
-    `PermissionshipFilter`, `Limit` (counting yielded results) and `ResumeCursor`: item n's
-    `AfterResultCursor` is `CursorAfter(n)`, where n counts granted results including ones
-    the filter drops. Subject lookups take `SubjectRelation` (direct when null or `...`),
+    `PermissionshipFilter`, `Limit` (counting yielded results) and `ResumeCursor`, and cut
+    pages and batches with the client's own `LookupBatch` rules, as a server given the
+    client's requests would: only the last item yielded from a batch carries a cursor,
+    `CursorAfter(n)` for the batch's last granted result n (counting results the filter
+    drops), so a test that resumes from a mid-batch item fails as it would against a
+    server; with `LookupBatching.Disabled` item n's cursor is `CursorAfter(n)`. Under
+    `Paging.SingleRequest` a `Limit` bounds the results examined, as the server's limit
+    does. Subject lookups take `SubjectRelation` (direct when null or `...`),
     honor `Limit`, have no cursor (as the real client's have none) and reject the options
     the real client rejects. Both run the `Item` fault stage before each result; a
     registered check error for a candidate fails the lookup.

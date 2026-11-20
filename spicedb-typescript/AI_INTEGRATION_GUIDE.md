@@ -151,6 +151,17 @@ for await (const res of tc.lookupResources(minLatency(), Organization.view, User
 }
 ```
 
+Lookups page automatically and are batched on the wire: the server packs up
+to `responseBatchSize` resources (default: the page size, at most 1,000) into
+each response, and iteration still yields one at a time. A batch has one
+cursor, so `res.afterResultCursor` is set only on the last item of each batch
+and `undefined` on the others. To checkpoint a long lookup, keep the latest
+cursor you saw (`resumeAt = res.afterResultCursor ?? resumeAt`), never
+"the cursor of the last item handled". A lookup that stops at `limit` always
+ends on an item with a cursor. Pass
+`batching: LookupBatching.Disabled` to get a cursor on every item, at
+the cost of one response message per resource.
+
 Omit the filter only if you handle `conditionalPermission` results explicitly.
 
 ## Write atomically
@@ -195,8 +206,9 @@ for await (const rel of tc.readRelationships(minLatency(), Organization(orgId).a
 To resume, pass `cursor: resumeAt` with the **same filter, consistency and
 `pageSize`**. `limit` caps the total without changing page sizes. An error
 thrown part-way through `readRelationships`, `lookupResources` or
-`exportRelationships` carries `err.resumeCursor` (the cursor after the last
-delivered item), so a caller with retries off can continue with
+`exportRelationships` carries `err.resumeCursor` (the latest cursor
+delivered: after the last item of a read, or the last complete batch of a
+lookup or export), so a caller with retries off can continue with
 `{ ...request, cursor: err.resumeCursor }`. Each page request gets the client
 default deadline (30 s), so a stalled server fails the read rather than
 hanging it; a call's `timeoutMs` bounds the whole read.
@@ -296,7 +308,9 @@ and whose subject matches exactly or by wildcard (caveated:
 `conditionalPermission`); otherwise `noPermission`. `lookupResources` and
 `lookupSubjects` enumerate the objects of the requested type found in stored
 relationships and yield those that resolution grants, honoring the
-permissionship filter, wildcards, `limit` and `cursor`. The double also works
+permissionship filter, wildcards, `limit` and `cursor`; `lookupResources`
+batches as a server would, so only the last item of each batch carries
+`afterResultCursor` (every item with `LookupBatching.Disabled`). The double also works
 in memory for `write`, `readRelationships`, `deleteRelationships`,
 `deleteAllRelationshipsNonAtomic`, `importRelationships`,
 `exportRelationships`, `readSchema`, `writeSchema`, `reflectSchema` (register
@@ -320,7 +334,7 @@ one call; `db.setFaultHook(f => ...)` is consulted at `FaultStage.Call`,
 read, export or lookup item), and a failed write or import applies nothing.
 A fault injected into `readRelationships`, `exportRelationships` or
 `lookupResources` carries `resumeCursor` exactly as the real client's error
-does (the last delivered item's cursor, else the request's), so resume logic
+does (the latest cursor delivered, else the request's), so resume logic
 can be tested on the double. The double never answers with an `"unspecified"`
 permissionship: `setCheckResult` rejects it, and a resolver returning it fails
 the call with `InvalidArgumentError`.

@@ -139,6 +139,56 @@ func lookupIDs(t *testing.T, s *clienttest.Store, req client.LookupResourcesRequ
 	return ids, items
 }
 
+func TestLookupResourcesBatchesLikeTheClient(t *testing.T) {
+	var rels []rel.Relationship
+	for _, id := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		rels = append(rels, rel.MustFromTuple("doc:"+id+"#view@user:alice"))
+	}
+	s := clienttest.NewStore(rels...)
+	req := client.LookupResourcesRequest{ResourceType: "doc", Permission: "view", Subject: subject("user", "alice"), Consistency: consistency.Full()}
+	cursors := func(items []client.LookupResource) []string {
+		var out []string
+		for _, item := range items {
+			out = append(out, item.AfterResultCursor)
+		}
+		return out
+	}
+
+	// Only the last item of each response batch carries a cursor.
+	ids, items := lookupIDs(t, s, req, client.WithLookupResourcesResponseBatchSize(3))
+	require.Equal(t, []string{"a", "b", "c", "d", "e", "f", "g"}, ids)
+	require.Equal(t, []string{"", "", "3", "", "", "6", "7"}, cursors(items))
+
+	// Resuming from a batch-end cursor returns exactly the rest.
+	ids, _ = lookupIDs(t, s, req, client.WithLookupResourcesResponseBatchSize(3), client.WithLookupResourcesCursor(items[2].AfterResultCursor))
+	require.Equal(t, []string{"d", "e", "f", "g"}, ids)
+
+	// Batches end at page boundaries too.
+	_, items = lookupIDs(t, s, req, client.WithLookupResourcesPageSize(5), client.WithLookupResourcesResponseBatchSize(3))
+	require.Equal(t, []string{"", "", "3", "", "5", "", "7"}, cursors(items))
+
+	// By default one batch covers the page.
+	_, items = lookupIDs(t, s, req)
+	require.Equal(t, []string{"", "", "", "", "", "", "7"}, cursors(items))
+
+	// The last item of a limited call carries a cursor, as with the client.
+	ids, items = lookupIDs(t, s, req, client.WithLookupResourcesResponseBatchSize(3), client.WithLookupResourcesLimit(4))
+	require.Equal(t, []string{"a", "b", "c", "d"}, ids)
+	require.Equal(t, []string{"1", "2", "3", "4"}, cursors(items))
+	ids, items = lookupIDs(t, s, req, client.WithLookupResourcesLimit(4))
+	require.Equal(t, []string{"a", "b", "c", "d"}, ids)
+	require.Equal(t, []string{"", "", "", "4"}, cursors(items))
+
+	// Disabled, every item carries its cursor.
+	_, items = lookupIDs(t, s, req, client.WithLookupResourcesBatching(client.BatchingDisabled))
+	require.Equal(t, []string{"1", "2", "3", "4", "5", "6", "7"}, cursors(items))
+
+	// A single request is batched by the server up to its limit.
+	ids, items = lookupIDs(t, s, req, client.WithLookupResourcesPaging(client.PagingSingleRequest), client.WithLookupResourcesLimit(5), client.WithLookupResourcesResponseBatchSize(3))
+	require.Equal(t, []string{"a", "b", "c", "d", "e"}, ids)
+	require.Equal(t, []string{"", "", "3", "", "5"}, cursors(items))
+}
+
 func TestLookupResourcesUsesCheckResolution(t *testing.T) {
 	caveated, err := rel.MustFromTuple("doc:c#view@user:alice").WithCaveat("on_tuesday", nil)
 	require.NoError(t, err)
@@ -161,11 +211,13 @@ func TestLookupResourcesUsesCheckResolution(t *testing.T) {
 	require.NotEmpty(t, items[0].LookedUpAt.String())
 
 	// The filter drops conditional results; cursors still count them.
-	ids, items = lookupIDs(t, s, req, client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly))
+	// Unbatched, so that every item carries its cursor.
+	ids, items = lookupIDs(t, s, req, client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly), client.WithLookupResourcesBatching(client.BatchingDisabled))
 	require.Equal(t, []string{"a", "d", "e"}, ids)
 	require.Equal(t, clienttest.CursorAfter(3), items[1].AfterResultCursor)
 
-	// Limit and cursor page through the results.
+	// Limit and cursor page through the results: the last item of a limited
+	// call carries the cursor to resume from.
 	ids, items = lookupIDs(t, s, req, client.WithLookupResourcesLimit(2))
 	require.Equal(t, []string{"a", "c"}, ids)
 	ids, _ = lookupIDs(t, s, req, client.WithLookupResourcesCursor(items[1].AfterResultCursor))

@@ -104,7 +104,8 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
   @Test
   void a_single_request_returns_everything_in_one_call() {
     // Paging.SINGLE_REQUEST sends exactly one request, as the raw API does: unbounded without a
-    // limit, so a page size of 1 does not split it. Items still carry their cursors.
+    // limit, so a page size of 1 does not split it. An unbounded request is not a resumable one:
+    // the server may issue no cursor for it at all, so set a limit when a resume point is needed.
     List<LookupResult.LookupResource> results;
     try (var stream =
         client.lookupResources(
@@ -118,6 +119,5 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
     assertThat(results)
         .extracting(LookupResult.LookupResource::resourceId)
         .containsExactlyInAnyOrder("firstdoc", "seconddoc");
-    assertThat(results).allSatisfy(r -> assertThat(r.afterResultCursor()).isNotEmpty());
   }
 }

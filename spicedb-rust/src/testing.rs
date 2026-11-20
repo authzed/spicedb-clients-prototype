@@ -22,7 +22,10 @@
 //! subject, grants it; caveated ones only conditionally), and otherwise to
 //! `NoPermission`. `lookup_resources` and `lookup_subjects` return the objects
 //! of the requested type in the stored relationships that check resolution
-//! grants, with conditional results reported as conditional.
+//! grants, with conditional results reported as conditional. Resource
+//! lookups are answered in batches when the client asks for them (it does by
+//! default), so only the last item of a batch carries a cursor, as against
+//! SpiceDB.
 //! `reflect_schema` returns the result registered with
 //! [`InMemorySpiceDB::set_reflect_schema_result`]. `delete_all_relationships_non_atomic`
 //! and `check_bulk` work through the RPCs it models.
@@ -325,7 +328,10 @@ pub enum SchemaRevision {
 /// item `n` (1-based) as `after_result_cursor`. Pass it to the options'
 /// `with_cursor`. For `lookup_resources` it resumes after the first `n`
 /// granted resources (counting conditional ones a permissionship filter
-/// drops). The format, the decimal count `n`, is stable for tests.
+/// drops); lookups are batched as against SpiceDB, so the double puts it only
+/// on the last item of each batch (on every item with
+/// [`LookupBatching::Disabled`](crate::LookupBatching::Disabled)). The
+/// format, the decimal count `n`, is stable for tests.
 ///
 /// ```
 /// # #[tokio::main(flavor = "current_thread")]
@@ -1128,7 +1134,10 @@ impl PermissionsService for Service {
     /// resource or subject), in first-appearance order, that check
     /// resolution grants to the subject. Each result's cursor counts granted
     /// results up to it (the client's permissionship filter drops some after
-    /// they are counted); the limit counts results sent.
+    /// they are counted); the limit counts results sent. A request with a
+    /// response batch size is answered as SpiceDB answers it: batches of
+    /// that many results (the last one partial), each with the cursor after
+    /// its last result. Without one, each result is its own response.
     async fn lookup_resources(
         &self,
         request: Request<proto::LookupResourcesRequest>,
@@ -1151,10 +1160,10 @@ impl PermissionsService for Service {
                 state.headers.clone(),
             )
         };
-        let mut items = Vec::new();
+        let mut results = Vec::new();
         let mut position = 0;
         for id in ids {
-            if id == "*" || items.len() >= limit {
+            if id == "*" || results.len() >= limit {
                 continue;
             }
             let resource = proto::ObjectReference {
@@ -1176,17 +1185,86 @@ impl PermissionsService for Service {
             if position <= start {
                 continue;
             }
-            items.push(proto::LookupResourcesResponse {
-                looked_up_at: Some(at.clone()),
-                resource_object_id: id,
-                permissionship: lookup_permissionship_to_proto(&resolution.permissionship),
-                partial_caveat_info: resolution.partial_caveat(),
-                after_result_cursor: Some(proto::Cursor {
-                    token: cursor_after(position),
-                }),
-            });
+            results.push((
+                position,
+                proto::LookupResourcesResult {
+                    resource_object_id: id,
+                    permissionship: lookup_permissionship_to_proto(&resolution.permissionship),
+                    partial_caveat_info: resolution.partial_caveat(),
+                },
+            ));
         }
-        let mut response = Response::new(self.0.faulted_items(call, items));
+        let batch_size = request.optional_response_batch_size as usize;
+        let fake = self.0.clone();
+        let batch_response = move |at: &proto::ZedToken,
+                                   batch: &mut Vec<proto::LookupResourcesResult>,
+                                   end: usize| {
+            proto::LookupResourcesResponse {
+                looked_up_at: Some(at.clone()),
+                resource_object_id: String::new(),
+                permissionship: 0,
+                partial_caveat_info: None,
+                after_result_cursor: None,
+                batched: Some(proto::LookupResourcesBatch {
+                    results: std::mem::take(batch),
+                    after_cursor: Some(proto::Cursor {
+                        token: cursor_after(end),
+                    }),
+                }),
+            }
+        };
+        // Built lazily, so the item hook runs as each result is reached.
+        let mut results = results.into_iter().enumerate();
+        let mut batch: Vec<proto::LookupResourcesResult> = Vec::new();
+        let mut batch_end = 0;
+        let mut pending_error: Option<Status> = None;
+        let mut done = false;
+        let messages = std::iter::from_fn(move || {
+            if let Some(status) = pending_error.take() {
+                return Some(Err(status));
+            }
+            if done {
+                return None;
+            }
+            loop {
+                let Some((i, (position, result))) = results.next() else {
+                    done = true;
+                    if batch.is_empty() {
+                        return None;
+                    }
+                    return Some(Ok(batch_response(&at, &mut batch, batch_end)));
+                };
+                if let Err(status) = fake.fault(&call, FaultStage::Item, i) {
+                    done = true;
+                    // The results before the fault are sent, as they are
+                    // without batching, so the last one is a resume point.
+                    if batch.is_empty() {
+                        return Some(Err(status));
+                    }
+                    pending_error = Some(status);
+                    return Some(Ok(batch_response(&at, &mut batch, batch_end)));
+                }
+                if batch_size == 0 {
+                    return Some(Ok(proto::LookupResourcesResponse {
+                        looked_up_at: Some(at.clone()),
+                        resource_object_id: result.resource_object_id,
+                        permissionship: result.permissionship,
+                        partial_caveat_info: result.partial_caveat_info,
+                        after_result_cursor: Some(proto::Cursor {
+                            token: cursor_after(position),
+                        }),
+                        batched: None,
+                    }));
+                }
+                batch.push(result);
+                batch_end = position;
+                if batch.len() == batch_size {
+                    return Some(Ok(batch_response(&at, &mut batch, batch_end)));
+                }
+            }
+        });
+        let stream: Self::LookupResourcesStream = Box::pin(futures::stream::iter(messages));
+        let mut response = Response::new(stream);
         *response.metadata_mut() = headers;
         Ok(response)
     }

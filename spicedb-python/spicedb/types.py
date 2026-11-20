@@ -1509,7 +1509,13 @@ class LookupResource:
     partial_caveat: PartialCaveatInfo | None = None
     looked_up_at: ZedToken = ZedToken("")
     after_result_cursor: str | None = None
-    """Pass as ``lookup_resources(cursor=...)`` with the same request and page size to resume after this item."""
+    """Pass as ``lookup_resources(cursor=...)`` with the same request and page size to resume after this item.
+
+    None means "not a resume point": the server batches lookup responses, and
+    only the last item yielded from each batch carries a cursor. To checkpoint
+    a long lookup, keep the latest non-None cursor seen; the last item of a
+    call with ``limit`` always carries one. ``batching=LookupBatching.DISABLED``
+    puts a cursor on every item."""
 
     def __post_init__(self) -> None:
         _freeze(self)

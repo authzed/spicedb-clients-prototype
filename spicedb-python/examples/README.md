@@ -64,7 +64,7 @@ fail".
 | `write_relationships/` | Writing relationships with the transaction builder |
 | `read_relationships/` | Reading relationships with an async iterator |
 | `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
-| `lookup_resources/` | Resource lookup |
+| `lookup_resources/` | Resource lookup, checkpointing with the latest non-`None` cursor of a batched lookup, and `LookupBatching.DISABLED` for a cursor on every item |
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes with a bounded consumer: subscribe, write, consume until the expected update arrives, then `aclose()` the stream |
 | `startup_readiness/` | `ready(timeout=...)` at startup so an unreachable endpoint fails there, plus real calls over `dns:///host:port` and (with `SPICEDB_UNIX_SOCKET` set to a local SpiceDB's `--grpc-network unix` socket) `unix:` targets |

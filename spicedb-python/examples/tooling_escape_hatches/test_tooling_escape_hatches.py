@@ -90,6 +90,9 @@ async def test_paged_reads_expose_cursors_and_resume(client: SpiceDBClient):
         )
     ]
     assert len(looked_up) == 5
+    # Lookup responses may be batched, and only the last item of a batch is a
+    # resume point; the last item of a limited call always is one.
+    assert looked_up[-1].after_result_cursor
     rest = [
         r.resource_id
         async for r in client.lookup_resources(

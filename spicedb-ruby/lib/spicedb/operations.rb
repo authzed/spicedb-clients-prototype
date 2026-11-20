@@ -196,7 +196,13 @@ module SpiceDB
     # whole under its page deadline (Budget#page) and only then yielded. A
     # single request has no size bound, so it is not buffered: the default
     # bounds each wait for the next response instead (PageWatchdog).
-    def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, paging: Paging::AUTOMATIC, &)
+    #
+    # +batch_size:+ (lookup_resources only) is called with the results yielded
+    # so far and returns the response batch size for the next page request;
+    # each response is then read in whichever form it arrives (LookupBatches).
+    # Pages, limits and the cursor check count results, not messages.
+    def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, paging: Paging::AUTOMATIC, # rubocop:disable Metrics/ParameterLists
+                     batch_size: nil, &)
       positive(page_size, 'page_size')
       positive(limit, 'limit') if limit
       single = Paging.validate(paging) == Paging::SINGLE_REQUEST
@@ -206,15 +212,18 @@ module SpiceDB
           count = 0
           request.optional_limit = single ? [limit || 0, MAX_UINT32].min : page_size
           request.optional_cursor = cursor_proto(cursor)
+          request.optional_response_batch_size = batch_size.call(delivered) if batch_size
           previous = cursor
           deliver = lambda do |response|
-            cursor = response.after_result_cursor&.token
-            count += 1
-            result = mapper.call(response, cursor)
-            next false if include_result && !include_result.call(result)
-
-            delivered += 1
-            out << result
+            room = limit && (limit - delivered)
+            items, after, received = page_response_items(response, mapper, include_result, batched: !batch_size.nil?, room: room)
+            # An empty batch without a cursor leaves the paging cursor alone.
+            cursor = after if after || received.positive?
+            count += received
+            items.each do |item|
+              delivered += 1
+              out << item
+            end
             limit && delivered >= limit
           end
           if single

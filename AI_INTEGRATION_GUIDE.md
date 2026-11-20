@@ -95,6 +95,11 @@ type's own string conversion.
 - Reads, lookups and exports page internally. To resume later, keep the
   item's after-result cursor and repeat the **same request and page size**;
   SpiceDB rejects a cursor sent with different arguments.
+- Resource lookups are batched on the wire, and a batch has one cursor: only
+  the last item of each batch carries one. When checkpointing a long lookup,
+  keep the latest cursor seen instead of overwriting it with an absent one.
+  The last item of a limited lookup always carries a cursor. Disable batching
+  with the client's named mode if every item must be a resume point.
 - Close or exit every stream (native loop/scope cleanup). Don't leave an
   iterator half-consumed in a long-lived object.
 

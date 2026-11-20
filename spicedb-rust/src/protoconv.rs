@@ -396,6 +396,8 @@ fn check_trace_to_proto(t: &CheckDebugTrace) -> proto::CheckDebugTrace {
     }
 }
 
+/// Converts one lookup result to the one-resource response form (never a
+/// batch), whether or not the server sent it in one.
 pub fn lookup_resource_to_proto(r: &LookupResource) -> proto::LookupResourcesResponse {
     proto::LookupResourcesResponse {
         looked_up_at: token(&r.looked_up_at),
@@ -409,6 +411,7 @@ pub fn lookup_resource_to_proto(r: &LookupResource) -> proto::LookupResourcesRes
             .after_result_cursor
             .clone()
             .map(|token| proto::Cursor { token }),
+        batched: None,
     }
 }
 

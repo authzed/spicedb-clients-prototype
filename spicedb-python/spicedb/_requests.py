@@ -41,6 +41,10 @@ from spicedb.types import (
 DEFAULT_PAGE_SIZE = 1000
 IMPORT_BATCH_SIZE = 1000
 
+# Largest response batch size lookup_resources requests unless the caller sets
+# one: SpiceDB's default --max-lookup-resources-response-batch-size.
+MAX_DEFAULT_RESPONSE_BATCH_SIZE = 1000
+
 # Per-page size for delete_all_relationships_non_atomic, mirroring
 # spicedb-go's defaultDeletePageSize (client/relationships.go).
 DEFAULT_DELETE_PAGE_SIZE = 1000
@@ -185,6 +189,57 @@ def lookup_resources_request(
         optional_limit=limit,
         optional_cursor=cursor,
     )
+
+
+def lookup_response_batch_size(
+    response_batch_size: int | None,
+    batching_disabled: bool,
+    page_size: int,
+    limit: int | None,
+    single_request: bool,
+) -> int:
+    """The response batch size a lookup_resources call uses: the caller's,
+    sent as given, else the page size capped at 1,000 (single-request mode:
+    the total limit capped at 1,000, or 1,000 without one). Zero when
+    batching is disabled."""
+    if batching_disabled:
+        return 0
+    if response_batch_size is not None:
+        return response_batch_size
+    if single_request:
+        return min(limit or MAX_DEFAULT_RESPONSE_BATCH_SIZE, MAX_DEFAULT_RESPONSE_BATCH_SIZE)
+    return min(page_size, MAX_DEFAULT_RESPONSE_BATCH_SIZE)
+
+
+def lookup_page_batch_size(
+    batch_size: int,
+    page_size: int,
+    limit: int | None,
+    yielded: int,
+    single_request: bool,
+    unconditional_only: bool,
+) -> int:
+    """The batch size one lookup_resources page request carries (0: unset).
+
+    A batch has one cursor, after its last result, so a total limit must end
+    on a batch boundary for the last item of a limited call to carry a
+    cursor. Pages hold ``page_size`` results whatever the limit, so only the
+    page the limit ends in needs care: when fewer results remain than a page
+    holds, the batch size becomes the remaining count if that is smaller,
+    stays as it is if it divides the remaining count, and otherwise batching
+    is off for that page. The unconditional-only filter drops results
+    client-side, which makes batch boundaries unpredictable, so a limit with
+    that filter disables batching. Single-request mode sends the limit as
+    the wire limit, and the server ends its last batch there.
+    """
+    if batch_size == 0 or limit is None or single_request:
+        return batch_size
+    if unconditional_only:
+        return 0
+    remaining = limit - yielded
+    if remaining < page_size and remaining % batch_size != 0:
+        return remaining if remaining < batch_size else 0
+    return batch_size
 
 
 def lookup_subjects_request(

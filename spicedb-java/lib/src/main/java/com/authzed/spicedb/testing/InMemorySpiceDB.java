@@ -12,6 +12,7 @@ import com.authzed.spicedb.ExportOptions;
 import com.authzed.spicedb.ExportedRelationship;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.ImportOptions;
+import com.authzed.spicedb.LookupBatching;
 import com.authzed.spicedb.LookupDebug;
 import com.authzed.spicedb.LookupOptions;
 import com.authzed.spicedb.LookupPermissionshipFilter;
@@ -99,9 +100,10 @@ import java.util.stream.StreamSupport;
  *       type that appear in the stored relationships (as resource or subject, in first-appearance
  *       order) and return those check resolution grants, conditional results as conditional.
  *       Resource lookups honor the permissionship filter, limit and cursor (the format of {@link
- *       #cursorAfter}, counting granted results, including ones the filter drops); subject lookups
- *       honor the limit and the subject relation option, and return a stored wildcard subject as
- *       {@code *}.
+ *       #cursorAfter}, counting granted results, including ones the filter drops) and batch results
+ *       as a server would, so only the last item kept from each batch carries a cursor unless
+ *       batching is disabled; subject lookups honor the limit and the subject relation option, and
+ *       return a stored wildcard subject as {@code *}.
  *   <li>{@link #deleteAllRelationshipsNonAtomic} deletes every match in one step after checking its
  *       preconditions and reports progress once; {@link #close} does nothing and {@link
  *       #awaitReady} returns at once.
@@ -1001,8 +1003,11 @@ public final class InMemorySpiceDB implements SpiceDBApi {
   /**
    * The objects of {@code resourceType} in the stored relationships that check resolution grants
    * {@code subject}, conditional results as conditional. Honors the permissionship filter, limit
-   * and cursor; each item's cursor counts granted results ({@link #cursorAfter}), so results the
-   * filter drops still advance it. A registered check error for a candidate fails the stream there.
+   * and cursor. Results are batched as a server given the same options would batch them ({@link
+   * LookupOptions#responseBatchSizeForPage}), and only the last item kept from each batch carries a
+   * cursor; with {@link LookupBatching#DISABLED} every item does. A cursor counts granted results
+   * ({@link #cursorAfter}), so results the filter drops still advance it. A registered check error
+   * for a candidate fails the stream there.
    */
   @Override
   public synchronized Stream<LookupResult.LookupResource> lookupResources(
@@ -1031,8 +1036,17 @@ public final class InMemorySpiceDB implements SpiceDBApi {
     var out = new ArrayList<LookupResult.LookupResource>();
     RuntimeException failure = null;
     int granted = 0;
+    // Granted results are grouped as a server would send them: into pages (one, bounded by the
+    // limit alone, for a single request), and each page into batches of the size the client
+    // requests for it. A batch is flushed when full and when its page ends.
+    boolean single = options.paging() == Paging.SINGLE_REQUEST;
+    long pageLimit = single ? options.limit() : options.pageSize();
+    long inPage = 0;
+    int batchSize = 0;
+    var batch = new ArrayList<LookupResult.LookupResource>();
     for (var candidate : candidates) {
       if (options.limit() > 0 && out.size() >= options.limit()) break;
+      if (single && pageLimit > 0 && inPage >= pageLimit) break;
       if (candidate.objectId().equals("*")) continue;
       CheckResult r;
       try {
@@ -1054,14 +1068,46 @@ public final class InMemorySpiceDB implements SpiceDBApi {
       // The cursor counts granted results, including those the permissionship filter drops.
       granted++;
       if (granted <= start) continue;
-      if (p == Permissionship.CONDITIONAL_PERMISSION
-          && options.permissionshipFilter() == LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
-        continue;
-      out.add(
-          new LookupResult.LookupResource(
-              candidate.objectId(), p, partialCaveat(r), token(), cursorAfter(granted)));
+      if (inPage == 0) batchSize = options.responseBatchSizeForPage(out.size());
+      inPage++;
+      boolean kept =
+          p == Permissionship.HAS_PERMISSION
+              || options.permissionshipFilter() == LookupPermissionshipFilter.ALL;
+      if (kept)
+        batch.add(
+            new LookupResult.LookupResource(
+                candidate.objectId(),
+                p,
+                partialCaveat(r),
+                token(),
+                batchSize == 0 ? cursorAfter(granted) : null));
+      boolean pageEnded = pageLimit > 0 && inPage >= pageLimit;
+      if (batchSize == 0 || inPage % batchSize == 0 || pageEnded) flushBatch(batch, out, granted);
+      if (pageEnded && !single) inPage = 0;
     }
+    flushBatch(batch, out, granted);
     return faultingStream(call, out, failure);
+  }
+
+  /**
+   * Moves a batch's kept results to {@code out}. A batch has one cursor, after its last granted
+   * result (the {@code granted}-th), and only the last kept result carries it.
+   */
+  private static void flushBatch(
+      List<LookupResult.LookupResource> batch, List<LookupResult.LookupResource> out, int granted) {
+    if (batch.isEmpty()) return;
+    var last = batch.get(batch.size() - 1);
+    if (last.afterResultCursor() == null)
+      batch.set(
+          batch.size() - 1,
+          new LookupResult.LookupResource(
+              last.resourceId(),
+              last.permissionship(),
+              last.partialCaveat(),
+              last.lookedUpAt(),
+              cursorAfter(granted)));
+    out.addAll(batch);
+    batch.clear();
   }
 
   private static LookupResult.PartialCaveatInfo partialCaveat(CheckResult r) {
@@ -1099,9 +1145,11 @@ public final class InMemorySpiceDB implements SpiceDBApi {
       throw new LocalValidationException("lookupSubjects does not support permissionshipFilter");
     if (options.debug() == LookupDebug.ENABLED
         || options.pageSize() != 512
-        || options.paging() != Paging.AUTOMATIC)
+        || options.paging() != Paging.AUTOMATIC
+        || options.batching() != LookupBatching.AUTOMATIC
+        || options.responseBatchSize() != 512)
       throw new LocalValidationException(
-          "lookupSubjects does not support debug, pageSize or paging");
+          "lookupSubjects does not support debug, pageSize, paging or response batching");
     respond(options.transport());
     var out = new ArrayList<LookupResult.LookupSubject>();
     RuntimeException failure = null;

@@ -94,19 +94,43 @@ module SpiceDB
       )
     end
 
-    def lookup_resource_from_proto(resp, cursor = nil)
-      raise malformed_response('lookup_resources: resource_object_id is missing') if resp.resource_object_id.empty?
+    # A paged response's resume cursor: the shared cursor of its +batched+
+    # field (LookupResources with a response_batch_size) when present, else
+    # the response's own singular field. A response without batching (read
+    # relationships) never responds to +batched+, so it falls through.
+    def response_cursor(response)
+      return response.batched.after_cursor&.token if response.respond_to?(:batched) && response.batched
 
-      required_permissionship!(resp.permissionship, 'lookup_resources')
+      response.after_result_cursor&.token
+    end
+
+    # A paged response's result entries: the contents of +batched+ when
+    # present, else the response itself holds its one result's fields.
+    def response_entries(response)
+      return response.batched.results.to_a if response.respond_to?(:batched) && response.batched
+
+      [response]
+    end
+
+    # +entry+ is either the LookupResourcesResponse itself (the common,
+    # unbatched form) or one LookupResourcesResult from its +batched+ field;
+    # either way +looked_up_at+ comes from +parent+, the response, since a
+    # batched result carries no revision of its own.
+    def lookup_resource_entry_from_proto(entry, parent, cursor)
+      raise malformed_response('lookup_resources: resource_object_id is missing') if entry.resource_object_id.empty?
+
+      required_permissionship!(entry.permissionship, 'lookup_resources')
 
       LookupResource.new(
-        resource_id: resp.resource_object_id,
-        permissionship: permissionship_from_proto(resp.permissionship),
-        partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info),
-        looked_up_at: ZedToken.from_proto(resp.looked_up_at),
+        resource_id: entry.resource_object_id,
+        permissionship: permissionship_from_proto(entry.permissionship),
+        partial_caveat: partial_caveat_from_proto(entry.partial_caveat_info),
+        looked_up_at: ZedToken.from_proto(parent.looked_up_at),
         cursor: cursor
       )
     end
+
+    def lookup_resource_from_proto(resp, cursor = nil) = lookup_resource_entry_from_proto(resp, resp, cursor)
 
     def excluded_subjects_from_proto(resp)
       return resp.excluded_subjects.map { |e| resolved_subject_from_proto(e) } unless resp.excluded_subjects.empty?

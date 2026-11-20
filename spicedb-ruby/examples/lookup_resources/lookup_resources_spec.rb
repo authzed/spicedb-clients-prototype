@@ -133,4 +133,24 @@ RSpec.describe 'LookupResources' do
   ensure
     client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
   end
+
+  it 'asks the server to batch several results per response message with response_batch_size' do
+    client.write_schema(TEST_SCHEMA)
+    alice = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'))
+    txn = SpiceDB::Transaction.new
+    %w[one two three four five].each do |id|
+      txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: id), relation: 'viewer', subject: alice))
+    end
+    client.write(txn)
+
+    # response_batch_size never changes the yielded sequence -- every result
+    # still arrives exactly once -- whether or not the server actually honors
+    # the request to pack several results into one message.
+    results = client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
+                                      response_batch_size: 2).to_a
+
+    expect(results.map(&:resource_id)).to include('one', 'two', 'three', 'four', 'five')
+  ensure
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
+  end
 end

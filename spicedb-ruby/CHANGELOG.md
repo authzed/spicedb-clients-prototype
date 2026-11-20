@@ -554,6 +554,18 @@
 
 ### Added
 
+- **2026-11-20: `lookup_resources` gains a `response_batch_size:` option**, wrapping the
+  proto client regen's new `LookupResourcesRequest.optional_response_batch_size` field and
+  `LookupResourcesResponse.batched` (`LookupResourcesBatch`/`LookupResourcesResult`)
+  messages. Setting it asks the server to pack up to that many results into one response
+  message instead of one, trading time-to-first-result for throughput on large result
+  sets; the call still yields the same flattened `LookupResource` sequence either way. The
+  only observable difference is coarser resumption: every result from one batched message
+  shares that message's `cursor` and `looked_up_at`, the same tradeoff
+  `ExportedRelationship`'s batch cursor already makes. Omitting it (the default) keeps the
+  existing one-result-per-message behavior, including against a server that predates this
+  option and never sets `batched`.
+
 - **2026-09-24: `experimental_roaring_lookup_resources` wraps the new materialize-tier
   `RoaringLookupResourcesService`.** Returns a `SpiceDB::RoaringLookupResourcesResult`
   (`bitmap`, `cardinality`, `at_revision`) carrying a roaring64 bitmap

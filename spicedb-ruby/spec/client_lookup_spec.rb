@@ -273,3 +273,91 @@ RSpec.describe 'SpiceDB::Client lookup context' do
     end
   end
 end
+
+# response_batch_size asks the server to pack several LookupResources
+# results into one response message; the client must flatten LookupResourcesBatch
+# transparently into the same LookupResource sequence an unbatched call yields.
+RSpec.describe 'SpiceDB::Client lookup_resources response_batch_size' do
+  let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
+  let(:alice) { SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice')) }
+
+  def stub_lookup_resources(responses)
+    permissions_service = double('permissions_service')
+    allow(permissions_service).to receive(:lookup_resources).and_return(FixtureOperation.new(responses))
+    client.instance_variable_set(:@proto_client, double('proto_client', permissions: permissions_service))
+  end
+
+  def capture_request(responses)
+    captured = nil
+    permissions_service = double('permissions_service')
+    allow(permissions_service).to receive(:lookup_resources) do |req|
+      captured = req
+      FixtureOperation.new(responses)
+    end
+    client.instance_variable_set(:@proto_client, double('proto_client', permissions: permissions_service))
+    -> { captured }
+  end
+
+  it 'defaults optional_response_batch_size to 0 (one result per message)' do
+    captured = capture_request([])
+    client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full).to_a
+
+    expect(captured.call.optional_response_batch_size).to eq(0)
+  end
+
+  it 'sends response_batch_size as optional_response_batch_size on the request' do
+    captured = capture_request([])
+    client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
+                            response_batch_size: 500).to_a
+
+    expect(captured.call.optional_response_batch_size).to eq(500)
+  end
+
+  it 'rejects a non-positive response_batch_size' do
+    expect do
+      client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
+                              response_batch_size: 0).to_a
+    end.to raise_error(SpiceDB::LocalValidationError, /response_batch_size/)
+  end
+
+  it 'flattens a batched response into one LookupResource per result, sharing the cursor and looked_up_at' do
+    resp = Authzed::Api::V1::LookupResourcesResponse.new(
+      looked_up_at: Authzed::Api::V1::ZedToken.new(token: 'snapshot'),
+      batched: Authzed::Api::V1::LookupResourcesBatch.new(
+        results: [
+          Authzed::Api::V1::LookupResourcesResult.new(resource_object_id: 'doc1', permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION),
+          Authzed::Api::V1::LookupResourcesResult.new(
+            resource_object_id: 'doc2', permissionship: :LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+            partial_caveat_info: Authzed::Api::V1::PartialCaveatInfo.new(missing_required_context: ['ip_address'])
+          )
+        ],
+        after_cursor: Authzed::Api::V1::Cursor.new(token: 'batch-cursor')
+      )
+    )
+    stub_lookup_resources([resp])
+
+    results = client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
+                                      response_batch_size: 1000).to_a
+
+    expect(results.map(&:resource_id)).to eq(%w[doc1 doc2])
+    expect(results.map(&:permissionship)).to eq(%i[has_permission conditional_permission])
+    expect(results[1].partial_caveat.missing_required_context).to eq(['ip_address'])
+    expect(results.map(&:cursor)).to all(eq('batch-cursor'))
+    expect(results.map(&:looked_up_at)).to all(eq(SpiceDB::ZedToken.new('snapshot')))
+  end
+
+  it 'falls back to the singular fields when the response carries no batch' do
+    resp = Authzed::Api::V1::LookupResourcesResponse.new(
+      resource_object_id: 'doc1', permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+      after_result_cursor: Authzed::Api::V1::Cursor.new(token: 'cursor1')
+    )
+    stub_lookup_resources([resp])
+
+    results = client.lookup_resources(resource_type: 'document', permission: 'view', subject: alice, consistency: SpiceDB::Consistency.full,
+                                      response_batch_size: 1000).to_a
+
+    expect(results).to eq(
+      [SpiceDB::LookupResource.new(resource_id: 'doc1', permissionship: :has_permission, partial_caveat: nil, looked_up_at: nil, cursor: 'cursor1')]
+    )
+  end
+end

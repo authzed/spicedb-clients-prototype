@@ -298,26 +298,36 @@ module SpiceDB
                            retry_policy: nil, paging: Paging::AUTOMATIC, &)
       retry_policy = operation_retry_policy(:read_relationships, retry_policy)
       request = Authzed::Api::V1::ReadRelationshipsRequest.new(consistency: build_consistency(consistency), relationship_filter: filter_to_proto(filter))
-      mapper = lambda do |response, after|
-        ReadRelationship.new(relationship: relationship_from_proto(response.relationship), cursor: after,
-                             read_at: ZedToken.from_proto(response.read_at))
+      mapper = lambda do |entry, _parent, after|
+        ReadRelationship.new(relationship: relationship_from_proto(entry.relationship), cursor: after,
+                             read_at: ZedToken.from_proto(entry.read_at))
       end
       paged_stream(:permissions, :read_relationships, request, page_size, limit, paged_budget(timeout, call_options, retry_policy: retry_policy),
                    cursor, mapper, paging: paging, &)
     end
 
+    # +response_batch_size+, if given, asks the server to pack up to that many
+    # results into each response message instead of one per message, trading
+    # time-to-first-result for throughput on large result sets. It never
+    # changes the yielded LookupResource sequence, only how results arrive on
+    # the wire: every result from one batched message shares that message's
+    # +looked_up_at+ and +cursor+, coarser than the one-per-result cursor of
+    # the default, unbatched form. Omitting it preserves one-result-per-
+    # message streaming, including against a server that predates batching.
     def lookup_resources(resource_type:, permission:, subject:, consistency:, context: nil, limit: nil, # rubocop:disable Metrics/ParameterLists
                          page_size: 1000, timeout: nil, permissionship_filter: LookupPermissionshipFilter::ALL, cursor: nil,
-                         call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, &)
+                         call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, response_batch_size: nil, &)
       retry_policy = operation_retry_policy(:lookup_resources, retry_policy)
       LookupPermissionshipFilter.validate(permissionship_filter)
+      positive(response_batch_size, 'response_batch_size') if response_batch_size
       request = Authzed::Api::V1::LookupResourcesRequest.new(consistency: build_consistency(consistency),
                                                              resource_object_type: Values.name(resource_type, 'resource_type'),
                                                              permission: Values.name(permission, 'permission'), subject: subject_to_proto(subject),
-                                                             context: check_context_to_struct(Values.context(context)))
+                                                             context: check_context_to_struct(Values.context(context)),
+                                                             optional_response_batch_size: response_batch_size || 0)
       include_result = (->(result) { result.permissionship == :has_permission } if permissionship_filter == LookupPermissionshipFilter::HAS_PERMISSION_ONLY)
       paged_stream(:permissions, :lookup_resources, request, page_size, limit, paged_budget(timeout, call_options, retry_policy: retry_policy),
-                   cursor, method(:lookup_resource_from_proto), include_result: include_result, paging: paging, &)
+                   cursor, method(:lookup_resource_entry_from_proto), include_result: include_result, paging: paging, &)
     end
 
     def lookup_subjects(resource:, permission:, subject_type:, consistency:, subject_relation: nil,

@@ -137,6 +137,16 @@ public final class PermissionService extends com.google.protobuf.GeneratedFile {
     com.google.protobuf.GeneratedMessage.FieldAccessorTable
       internal_static_authzed_api_v1_LookupResourcesResponse_fieldAccessorTable;
   static final com.google.protobuf.Descriptors.Descriptor
+    internal_static_authzed_api_v1_LookupResourcesBatch_descriptor;
+  static final 
+    com.google.protobuf.GeneratedMessage.FieldAccessorTable
+      internal_static_authzed_api_v1_LookupResourcesBatch_fieldAccessorTable;
+  static final com.google.protobuf.Descriptors.Descriptor
+    internal_static_authzed_api_v1_LookupResourcesResult_descriptor;
+  static final 
+    com.google.protobuf.GeneratedMessage.FieldAccessorTable
+      internal_static_authzed_api_v1_LookupResourcesResult_fieldAccessorTable;
+  static final com.google.protobuf.Descriptors.Descriptor
     internal_static_authzed_api_v1_LookupSubjectsRequest_descriptor;
   static final 
     com.google.protobuf.GeneratedMessage.FieldAccessorTable
@@ -355,7 +365,7 @@ public final class PermissionService extends com.google.protobuf.GeneratedFile {
       "at\030\001 \001(\0132\030.authzed.api.v1.ZedTokenR\nexpa" +
       "ndedAt\022G\n\ttree_root\030\002 \001(\0132*.authzed.api." +
       "v1.PermissionRelationshipTreeR\010treeRoot\"" +
-      "\263\005\n\026LookupResourcesRequest\022=\n\013consistenc" +
+      "\364\005\n\026LookupResourcesRequest\022=\n\013consistenc" +
       "y\030\001 \001(\0132\033.authzed.api.v1.ConsistencyR\013co" +
       "nsistency\022\303\001\n\024resource_object_type\030\002 \001(\t" +
       "B\220\001\372BErC(\200\0012>^([a-z][a-z0-9_]{1,61}[a-z0" +
@@ -372,130 +382,144 @@ public final class PermissionService extends com.google.protobuf.GeneratedFile {
       "\030\006 \001(\rB\016\372B\004*\002(\000\272H\004*\002(\000R\roptionalLimit\022?\n" +
       "\017optional_cursor\030\007 \001(\0132\026.authzed.api.v1." +
       "CursorR\016optionalCursor\022\035\n\nwith_debug\030\010 \001" +
-      "(\010R\twithDebug\"\222\003\n\027LookupResourcesRespons" +
-      "e\022:\n\014looked_up_at\030\001 \001(\0132\030.authzed.api.v1" +
-      ".ZedTokenR\nlookedUpAt\022,\n\022resource_object" +
-      "_id\030\002 \001(\tR\020resourceObjectId\022b\n\016permissio" +
-      "nship\030\003 \001(\0162$.authzed.api.v1.LookupPermi" +
-      "ssionshipB\024\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permiss" +
-      "ionship\022a\n\023partial_caveat_info\030\004 \001(\0132!.a" +
-      "uthzed.api.v1.PartialCaveatInfoB\016\372B\005\212\001\002\020" +
-      "\000\272H\003\310\001\000R\021partialCaveatInfo\022F\n\023after_resu" +
-      "lt_cursor\030\005 \001(\0132\026.authzed.api.v1.CursorR" +
-      "\021afterResultCursor\"\234\010\n\025LookupSubjectsReq" +
-      "uest\022=\n\013consistency\030\001 \001(\0132\033.authzed.api." +
-      "v1.ConsistencyR\013consistency\022K\n\010resource\030" +
-      "\002 \001(\0132\037.authzed.api.v1.ObjectReferenceB\016" +
-      "\372B\005\212\001\002\020\001\272H\003\310\001\001R\010resource\022t\n\npermission\030\003" +
-      " \001(\tBT\372B\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-" +
-      "z0-9])?$\272H\'r%(@2!^([a-z][a-z0-9_]{1,62}[" +
-      "a-z0-9])?$R\npermission\022\301\001\n\023subject_objec" +
-      "t_type\030\004 \001(\tB\220\001\372BErC(\200\0012>^([a-z][a-z0-9_" +
-      "]{1,61}[a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a" +
-      "-z0-9]$\272HErC(\200\0012>^([a-z][a-z0-9_]{1,61}[" +
-      "a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]$R" +
-      "\021subjectObjectType\022\220\001\n\031optional_subject_" +
-      "relation\030\005 \001(\tBT\372B\'r%(@2!^([a-z][a-z0-9_" +
-      "]{1,62}[a-z0-9])?$\272H\'r%(@2!^([a-z][a-z0-" +
-      "9_]{1,62}[a-z0-9])?$R\027optionalSubjectRel" +
-      "ation\022A\n\007context\030\006 \001(\0132\027.google.protobuf" +
-      ".StructB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\007context\022F\n\027opti" +
-      "onal_concrete_limit\030\007 \001(\rB\016\372B\004*\002(\000\272H\004*\002(" +
-      "\000R\025optionalConcreteLimit\022?\n\017optional_cur" +
-      "sor\030\010 \001(\0132\026.authzed.api.v1.CursorR\016optio" +
-      "nalCursor\022]\n\017wildcard_option\030\t \001(\01624.aut" +
-      "hzed.api.v1.LookupSubjectsRequest.Wildca" +
-      "rdOptionR\016wildcardOption\"\177\n\016WildcardOpti" +
-      "on\022\037\n\033WILDCARD_OPTION_UNSPECIFIED\020\000\022%\n!W" +
-      "ILDCARD_OPTION_INCLUDE_WILDCARDS\020\001\022%\n!WI" +
-      "LDCARD_OPTION_EXCLUDE_WILDCARDS\020\002\"\326\004\n\026Lo" +
-      "okupSubjectsResponse\022:\n\014looked_up_at\030\001 \001" +
-      "(\0132\030.authzed.api.v1.ZedTokenR\nlookedUpAt" +
-      "\022.\n\021subject_object_id\030\002 \001(\tB\002\030\001R\017subject" +
-      "ObjectId\0224\n\024excluded_subject_ids\030\003 \003(\tB\002" +
-      "\030\001R\022excludedSubjectIds\022d\n\016permissionship" +
-      "\030\004 \001(\0162$.authzed.api.v1.LookupPermission" +
-      "shipB\026\030\001\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permission" +
-      "ship\022c\n\023partial_caveat_info\030\005 \001(\0132!.auth" +
-      "zed.api.v1.PartialCaveatInfoB\020\030\001\372B\005\212\001\002\020\000" +
-      "\272H\003\310\001\000R\021partialCaveatInfo\0229\n\007subject\030\006 \001" +
-      "(\0132\037.authzed.api.v1.ResolvedSubjectR\007sub" +
-      "ject\022L\n\021excluded_subjects\030\007 \003(\0132\037.authze" +
-      "d.api.v1.ResolvedSubjectR\020excludedSubjec" +
-      "ts\022F\n\023after_result_cursor\030\010 \001(\0132\026.authze" +
-      "d.api.v1.CursorR\021afterResultCursor\"\204\002\n\017R" +
-      "esolvedSubject\022*\n\021subject_object_id\030\001 \001(" +
-      "\tR\017subjectObjectId\022b\n\016permissionship\030\002 \001" +
-      "(\0162$.authzed.api.v1.LookupPermissionship" +
-      "B\024\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permissionship\022a" +
-      "\n\023partial_caveat_info\030\003 \001(\0132!.authzed.ap" +
-      "i.v1.PartialCaveatInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021" +
-      "partialCaveatInfo\"s\n\036ImportBulkRelations" +
-      "hipsRequest\022Q\n\rrelationships\030\001 \003(\0132\034.aut" +
-      "hzed.api.v1.RelationshipB\r\372B\n\222\001\007\"\005\212\001\002\020\001R" +
-      "\rrelationships\"@\n\037ImportBulkRelationship" +
-      "sResponse\022\035\n\nnum_loaded\030\001 \001(\004R\tnumLoaded" +
-      "\"\275\002\n\036ExportBulkRelationshipsRequest\022=\n\013c" +
-      "onsistency\030\001 \001(\0132\033.authzed.api.v1.Consis" +
-      "tencyR\013consistency\0225\n\016optional_limit\030\002 \001" +
-      "(\rB\016\372B\004*\002(\000\272H\004*\002(\000R\roptionalLimit\022?\n\017opt" +
-      "ional_cursor\030\003 \001(\0132\026.authzed.api.v1.Curs" +
-      "orR\016optionalCursor\022d\n\034optional_relations" +
-      "hip_filter\030\004 \001(\0132\".authzed.api.v1.Relati" +
-      "onshipFilterR\032optionalRelationshipFilter" +
-      "\"\255\001\n\037ExportBulkRelationshipsResponse\022F\n\023" +
-      "after_result_cursor\030\001 \001(\0132\026.authzed.api." +
-      "v1.CursorR\021afterResultCursor\022B\n\rrelation" +
-      "ships\030\002 \003(\0132\034.authzed.api.v1.Relationshi" +
-      "pR\rrelationships*\231\001\n\024LookupPermissionshi" +
-      "p\022%\n!LOOKUP_PERMISSIONSHIP_UNSPECIFIED\020\000" +
-      "\022(\n$LOOKUP_PERMISSIONSHIP_HAS_PERMISSION" +
-      "\020\001\0220\n,LOOKUP_PERMISSIONSHIP_CONDITIONAL_" +
-      "PERMISSION\020\0022\212\r\n\022PermissionsService\022\235\001\n\021" +
-      "ReadRelationships\022(.authzed.api.v1.ReadR" +
-      "elationshipsRequest\032).authzed.api.v1.Rea" +
-      "dRelationshipsResponse\"1\222A\r\n\013Permissions" +
-      "\202\323\344\223\002\033\"\026/v1/relationships/read:\001*0\001\022\237\001\n\022" +
-      "WriteRelationships\022).authzed.api.v1.Writ" +
-      "eRelationshipsRequest\032*.authzed.api.v1.W" +
-      "riteRelationshipsResponse\"2\222A\r\n\013Permissi" +
-      "ons\202\323\344\223\002\034\"\027/v1/relationships/write:\001*\022\243\001" +
-      "\n\023DeleteRelationships\022*.authzed.api.v1.D" +
-      "eleteRelationshipsRequest\032+.authzed.api." +
-      "v1.DeleteRelationshipsResponse\"3\222A\r\n\013Per" +
-      "missions\202\323\344\223\002\035\"\030/v1/relationships/delete" +
-      ":\001*\022\224\001\n\017CheckPermission\022&.authzed.api.v1" +
-      ".CheckPermissionRequest\032\'.authzed.api.v1" +
-      ".CheckPermissionResponse\"0\222A\r\n\013Permissio" +
-      "ns\202\323\344\223\002\032\"\025/v1/permissions/check:\001*\022\247\001\n\024C" +
-      "heckBulkPermissions\022+.authzed.api.v1.Che" +
-      "ckBulkPermissionsRequest\032,.authzed.api.v" +
-      "1.CheckBulkPermissionsResponse\"4\222A\r\n\013Per" +
-      "missions\202\323\344\223\002\036\"\031/v1/permissions/checkbul" +
-      "k:\001*\022\244\001\n\024ExpandPermissionTree\022+.authzed." +
-      "api.v1.ExpandPermissionTreeRequest\032,.aut" +
-      "hzed.api.v1.ExpandPermissionTreeResponse" +
-      "\"1\222A\r\n\013Permissions\202\323\344\223\002\033\"\026/v1/permission" +
-      "s/expand:\001*\022\232\001\n\017LookupResources\022&.authze" +
-      "d.api.v1.LookupResourcesRequest\032\'.authze" +
-      "d.api.v1.LookupResourcesResponse\"4\222A\r\n\013P" +
-      "ermissions\202\323\344\223\002\036\"\031/v1/permissions/resour" +
-      "ces:\001*0\001\022\226\001\n\016LookupSubjects\022%.authzed.ap" +
-      "i.v1.LookupSubjectsRequest\032&.authzed.api" +
-      ".v1.LookupSubjectsResponse\"3\222A\r\n\013Permiss" +
-      "ions\202\323\344\223\002\035\"\030/v1/permissions/subjects:\001*0" +
-      "\001\022\265\001\n\027ImportBulkRelationships\022..authzed." +
-      "api.v1.ImportBulkRelationshipsRequest\032/." +
-      "authzed.api.v1.ImportBulkRelationshipsRe" +
-      "sponse\"7\222A\r\n\013Permissions\202\323\344\223\002!\"\034/v1/rela" +
-      "tionships/importbulk:\001*(\001\022\265\001\n\027ExportBulk" +
-      "Relationships\022..authzed.api.v1.ExportBul" +
-      "kRelationshipsRequest\032/.authzed.api.v1.E" +
-      "xportBulkRelationshipsResponse\"7\222A\r\n\013Per" +
-      "missions\202\323\344\223\002!\"\034/v1/relationships/export" +
-      "bulk:\001*0\001BJ\n\022com.authzed.api.v1P\001Z2githu" +
-      "b.com/authzed/authzed-go/proto/authzed/a" +
-      "pi/v1b\006proto3"
+      "(\010R\twithDebug\022?\n\034optional_response_batch" +
+      "_size\030\t \001(\rR\031optionalResponseBatchSize\"\322" +
+      "\003\n\027LookupResourcesResponse\022:\n\014looked_up_" +
+      "at\030\001 \001(\0132\030.authzed.api.v1.ZedTokenR\nlook" +
+      "edUpAt\022,\n\022resource_object_id\030\002 \001(\tR\020reso" +
+      "urceObjectId\022b\n\016permissionship\030\003 \001(\0162$.a" +
+      "uthzed.api.v1.LookupPermissionshipB\024\372B\007\202" +
+      "\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permissionship\022a\n\023part" +
+      "ial_caveat_info\030\004 \001(\0132!.authzed.api.v1.P" +
+      "artialCaveatInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021partia" +
+      "lCaveatInfo\022F\n\023after_result_cursor\030\005 \001(\013" +
+      "2\026.authzed.api.v1.CursorR\021afterResultCur" +
+      "sor\022>\n\007batched\030\006 \001(\0132$.authzed.api.v1.Lo" +
+      "okupResourcesBatchR\007batched\"\222\001\n\024LookupRe" +
+      "sourcesBatch\022?\n\007results\030\001 \003(\0132%.authzed." +
+      "api.v1.LookupResourcesResultR\007results\0229\n" +
+      "\014after_cursor\030\002 \001(\0132\026.authzed.api.v1.Cur" +
+      "sorR\013afterCursor\"\214\002\n\025LookupResourcesResu" +
+      "lt\022,\n\022resource_object_id\030\001 \001(\tR\020resource" +
+      "ObjectId\022b\n\016permissionship\030\002 \001(\0162$.authz" +
+      "ed.api.v1.LookupPermissionshipB\024\372B\007\202\001\004\020\001" +
+      " \000\272H\007\202\001\004\020\001 \000R\016permissionship\022a\n\023partial_" +
+      "caveat_info\030\003 \001(\0132!.authzed.api.v1.Parti" +
+      "alCaveatInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021partialCav" +
+      "eatInfo\"\234\010\n\025LookupSubjectsRequest\022=\n\013con" +
+      "sistency\030\001 \001(\0132\033.authzed.api.v1.Consiste" +
+      "ncyR\013consistency\022K\n\010resource\030\002 \001(\0132\037.aut" +
+      "hzed.api.v1.ObjectReferenceB\016\372B\005\212\001\002\020\001\272H\003" +
+      "\310\001\001R\010resource\022t\n\npermission\030\003 \001(\tBT\372B\'r%" +
+      "(@2!^([a-z][a-z0-9_]{1,62}[a-z0-9])?$\272H\'" +
+      "r%(@2!^([a-z][a-z0-9_]{1,62}[a-z0-9])?$R" +
+      "\npermission\022\301\001\n\023subject_object_type\030\004 \001(" +
+      "\tB\220\001\372BErC(\200\0012>^([a-z][a-z0-9_]{1,61}[a-z" +
+      "0-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]$\272HEr" +
+      "C(\200\0012>^([a-z][a-z0-9_]{1,61}[a-z0-9]/)*[" +
+      "a-z][a-z0-9_]{1,62}[a-z0-9]$R\021subjectObj" +
+      "ectType\022\220\001\n\031optional_subject_relation\030\005 " +
+      "\001(\tBT\372B\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-z" +
+      "0-9])?$\272H\'r%(@2!^([a-z][a-z0-9_]{1,62}[a" +
+      "-z0-9])?$R\027optionalSubjectRelation\022A\n\007co" +
+      "ntext\030\006 \001(\0132\027.google.protobuf.StructB\016\372B" +
+      "\005\212\001\002\020\000\272H\003\310\001\000R\007context\022F\n\027optional_concre" +
+      "te_limit\030\007 \001(\rB\016\372B\004*\002(\000\272H\004*\002(\000R\025optional" +
+      "ConcreteLimit\022?\n\017optional_cursor\030\010 \001(\0132\026" +
+      ".authzed.api.v1.CursorR\016optionalCursor\022]" +
+      "\n\017wildcard_option\030\t \001(\01624.authzed.api.v1" +
+      ".LookupSubjectsRequest.WildcardOptionR\016w" +
+      "ildcardOption\"\177\n\016WildcardOption\022\037\n\033WILDC" +
+      "ARD_OPTION_UNSPECIFIED\020\000\022%\n!WILDCARD_OPT" +
+      "ION_INCLUDE_WILDCARDS\020\001\022%\n!WILDCARD_OPTI" +
+      "ON_EXCLUDE_WILDCARDS\020\002\"\326\004\n\026LookupSubject" +
+      "sResponse\022:\n\014looked_up_at\030\001 \001(\0132\030.authze" +
+      "d.api.v1.ZedTokenR\nlookedUpAt\022.\n\021subject" +
+      "_object_id\030\002 \001(\tB\002\030\001R\017subjectObjectId\0224\n" +
+      "\024excluded_subject_ids\030\003 \003(\tB\002\030\001R\022exclude" +
+      "dSubjectIds\022d\n\016permissionship\030\004 \001(\0162$.au" +
+      "thzed.api.v1.LookupPermissionshipB\026\030\001\372B\007" +
+      "\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permissionship\022c\n\023par" +
+      "tial_caveat_info\030\005 \001(\0132!.authzed.api.v1." +
+      "PartialCaveatInfoB\020\030\001\372B\005\212\001\002\020\000\272H\003\310\001\000R\021par" +
+      "tialCaveatInfo\0229\n\007subject\030\006 \001(\0132\037.authze" +
+      "d.api.v1.ResolvedSubjectR\007subject\022L\n\021exc" +
+      "luded_subjects\030\007 \003(\0132\037.authzed.api.v1.Re" +
+      "solvedSubjectR\020excludedSubjects\022F\n\023after" +
+      "_result_cursor\030\010 \001(\0132\026.authzed.api.v1.Cu" +
+      "rsorR\021afterResultCursor\"\204\002\n\017ResolvedSubj" +
+      "ect\022*\n\021subject_object_id\030\001 \001(\tR\017subjectO" +
+      "bjectId\022b\n\016permissionship\030\002 \001(\0162$.authze" +
+      "d.api.v1.LookupPermissionshipB\024\372B\007\202\001\004\020\001 " +
+      "\000\272H\007\202\001\004\020\001 \000R\016permissionship\022a\n\023partial_c" +
+      "aveat_info\030\003 \001(\0132!.authzed.api.v1.Partia" +
+      "lCaveatInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021partialCave" +
+      "atInfo\"s\n\036ImportBulkRelationshipsRequest" +
+      "\022Q\n\rrelationships\030\001 \003(\0132\034.authzed.api.v1" +
+      ".RelationshipB\r\372B\n\222\001\007\"\005\212\001\002\020\001R\rrelationsh" +
+      "ips\"@\n\037ImportBulkRelationshipsResponse\022\035" +
+      "\n\nnum_loaded\030\001 \001(\004R\tnumLoaded\"\275\002\n\036Export" +
+      "BulkRelationshipsRequest\022=\n\013consistency\030" +
+      "\001 \001(\0132\033.authzed.api.v1.ConsistencyR\013cons" +
+      "istency\0225\n\016optional_limit\030\002 \001(\rB\016\372B\004*\002(\000" +
+      "\272H\004*\002(\000R\roptionalLimit\022?\n\017optional_curso" +
+      "r\030\003 \001(\0132\026.authzed.api.v1.CursorR\016optiona" +
+      "lCursor\022d\n\034optional_relationship_filter\030" +
+      "\004 \001(\0132\".authzed.api.v1.RelationshipFilte" +
+      "rR\032optionalRelationshipFilter\"\255\001\n\037Export" +
+      "BulkRelationshipsResponse\022F\n\023after_resul" +
+      "t_cursor\030\001 \001(\0132\026.authzed.api.v1.CursorR\021" +
+      "afterResultCursor\022B\n\rrelationships\030\002 \003(\013" +
+      "2\034.authzed.api.v1.RelationshipR\rrelation" +
+      "ships*\231\001\n\024LookupPermissionship\022%\n!LOOKUP" +
+      "_PERMISSIONSHIP_UNSPECIFIED\020\000\022(\n$LOOKUP_" +
+      "PERMISSIONSHIP_HAS_PERMISSION\020\001\0220\n,LOOKU" +
+      "P_PERMISSIONSHIP_CONDITIONAL_PERMISSION\020" +
+      "\0022\212\r\n\022PermissionsService\022\235\001\n\021ReadRelatio" +
+      "nships\022(.authzed.api.v1.ReadRelationship" +
+      "sRequest\032).authzed.api.v1.ReadRelationsh" +
+      "ipsResponse\"1\222A\r\n\013Permissions\202\323\344\223\002\033\"\026/v1" +
+      "/relationships/read:\001*0\001\022\237\001\n\022WriteRelati" +
+      "onships\022).authzed.api.v1.WriteRelationsh" +
+      "ipsRequest\032*.authzed.api.v1.WriteRelatio" +
+      "nshipsResponse\"2\222A\r\n\013Permissions\202\323\344\223\002\034\"\027" +
+      "/v1/relationships/write:\001*\022\243\001\n\023DeleteRel" +
+      "ationships\022*.authzed.api.v1.DeleteRelati" +
+      "onshipsRequest\032+.authzed.api.v1.DeleteRe" +
+      "lationshipsResponse\"3\222A\r\n\013Permissions\202\323\344" +
+      "\223\002\035\"\030/v1/relationships/delete:\001*\022\224\001\n\017Che" +
+      "ckPermission\022&.authzed.api.v1.CheckPermi" +
+      "ssionRequest\032\'.authzed.api.v1.CheckPermi" +
+      "ssionResponse\"0\222A\r\n\013Permissions\202\323\344\223\002\032\"\025/" +
+      "v1/permissions/check:\001*\022\247\001\n\024CheckBulkPer" +
+      "missions\022+.authzed.api.v1.CheckBulkPermi" +
+      "ssionsRequest\032,.authzed.api.v1.CheckBulk" +
+      "PermissionsResponse\"4\222A\r\n\013Permissions\202\323\344" +
+      "\223\002\036\"\031/v1/permissions/checkbulk:\001*\022\244\001\n\024Ex" +
+      "pandPermissionTree\022+.authzed.api.v1.Expa" +
+      "ndPermissionTreeRequest\032,.authzed.api.v1" +
+      ".ExpandPermissionTreeResponse\"1\222A\r\n\013Perm" +
+      "issions\202\323\344\223\002\033\"\026/v1/permissions/expand:\001*" +
+      "\022\232\001\n\017LookupResources\022&.authzed.api.v1.Lo" +
+      "okupResourcesRequest\032\'.authzed.api.v1.Lo" +
+      "okupResourcesResponse\"4\222A\r\n\013Permissions\202" +
+      "\323\344\223\002\036\"\031/v1/permissions/resources:\001*0\001\022\226\001" +
+      "\n\016LookupSubjects\022%.authzed.api.v1.Lookup" +
+      "SubjectsRequest\032&.authzed.api.v1.LookupS" +
+      "ubjectsResponse\"3\222A\r\n\013Permissions\202\323\344\223\002\035\"" +
+      "\030/v1/permissions/subjects:\001*0\001\022\265\001\n\027Impor" +
+      "tBulkRelationships\022..authzed.api.v1.Impo" +
+      "rtBulkRelationshipsRequest\032/.authzed.api" +
+      ".v1.ImportBulkRelationshipsResponse\"7\222A\r" +
+      "\n\013Permissions\202\323\344\223\002!\"\034/v1/relationships/i" +
+      "mportbulk:\001*(\001\022\265\001\n\027ExportBulkRelationshi" +
+      "ps\022..authzed.api.v1.ExportBulkRelationsh" +
+      "ipsRequest\032/.authzed.api.v1.ExportBulkRe" +
+      "lationshipsResponse\"7\222A\r\n\013Permissions\202\323\344" +
+      "\223\002!\"\034/v1/relationships/exportbulk:\001*0\001BJ" +
+      "\n\022com.authzed.api.v1P\001Z2github.com/authz" +
+      "ed/authzed-go/proto/authzed/api/v1b\006prot" +
+      "o3"
     };
     descriptor = com.google.protobuf.Descriptors.FileDescriptor
       .internalBuildGeneratedFileFrom(descriptorData,
@@ -635,51 +659,63 @@ public final class PermissionService extends com.google.protobuf.GeneratedFile {
     internal_static_authzed_api_v1_LookupResourcesRequest_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_LookupResourcesRequest_descriptor,
-        new java.lang.String[] { "Consistency", "ResourceObjectType", "Permission", "Subject", "Context", "OptionalLimit", "OptionalCursor", "WithDebug", });
+        new java.lang.String[] { "Consistency", "ResourceObjectType", "Permission", "Subject", "Context", "OptionalLimit", "OptionalCursor", "WithDebug", "OptionalResponseBatchSize", });
     internal_static_authzed_api_v1_LookupResourcesResponse_descriptor =
       getDescriptor().getMessageType(20);
     internal_static_authzed_api_v1_LookupResourcesResponse_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_LookupResourcesResponse_descriptor,
-        new java.lang.String[] { "LookedUpAt", "ResourceObjectId", "Permissionship", "PartialCaveatInfo", "AfterResultCursor", });
-    internal_static_authzed_api_v1_LookupSubjectsRequest_descriptor =
+        new java.lang.String[] { "LookedUpAt", "ResourceObjectId", "Permissionship", "PartialCaveatInfo", "AfterResultCursor", "Batched", });
+    internal_static_authzed_api_v1_LookupResourcesBatch_descriptor =
       getDescriptor().getMessageType(21);
+    internal_static_authzed_api_v1_LookupResourcesBatch_fieldAccessorTable = new
+      com.google.protobuf.GeneratedMessage.FieldAccessorTable(
+        internal_static_authzed_api_v1_LookupResourcesBatch_descriptor,
+        new java.lang.String[] { "Results", "AfterCursor", });
+    internal_static_authzed_api_v1_LookupResourcesResult_descriptor =
+      getDescriptor().getMessageType(22);
+    internal_static_authzed_api_v1_LookupResourcesResult_fieldAccessorTable = new
+      com.google.protobuf.GeneratedMessage.FieldAccessorTable(
+        internal_static_authzed_api_v1_LookupResourcesResult_descriptor,
+        new java.lang.String[] { "ResourceObjectId", "Permissionship", "PartialCaveatInfo", });
+    internal_static_authzed_api_v1_LookupSubjectsRequest_descriptor =
+      getDescriptor().getMessageType(23);
     internal_static_authzed_api_v1_LookupSubjectsRequest_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_LookupSubjectsRequest_descriptor,
         new java.lang.String[] { "Consistency", "Resource", "Permission", "SubjectObjectType", "OptionalSubjectRelation", "Context", "OptionalConcreteLimit", "OptionalCursor", "WildcardOption", });
     internal_static_authzed_api_v1_LookupSubjectsResponse_descriptor =
-      getDescriptor().getMessageType(22);
+      getDescriptor().getMessageType(24);
     internal_static_authzed_api_v1_LookupSubjectsResponse_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_LookupSubjectsResponse_descriptor,
         new java.lang.String[] { "LookedUpAt", "SubjectObjectId", "ExcludedSubjectIds", "Permissionship", "PartialCaveatInfo", "Subject", "ExcludedSubjects", "AfterResultCursor", });
     internal_static_authzed_api_v1_ResolvedSubject_descriptor =
-      getDescriptor().getMessageType(23);
+      getDescriptor().getMessageType(25);
     internal_static_authzed_api_v1_ResolvedSubject_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_ResolvedSubject_descriptor,
         new java.lang.String[] { "SubjectObjectId", "Permissionship", "PartialCaveatInfo", });
     internal_static_authzed_api_v1_ImportBulkRelationshipsRequest_descriptor =
-      getDescriptor().getMessageType(24);
+      getDescriptor().getMessageType(26);
     internal_static_authzed_api_v1_ImportBulkRelationshipsRequest_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_ImportBulkRelationshipsRequest_descriptor,
         new java.lang.String[] { "Relationships", });
     internal_static_authzed_api_v1_ImportBulkRelationshipsResponse_descriptor =
-      getDescriptor().getMessageType(25);
+      getDescriptor().getMessageType(27);
     internal_static_authzed_api_v1_ImportBulkRelationshipsResponse_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_ImportBulkRelationshipsResponse_descriptor,
         new java.lang.String[] { "NumLoaded", });
     internal_static_authzed_api_v1_ExportBulkRelationshipsRequest_descriptor =
-      getDescriptor().getMessageType(26);
+      getDescriptor().getMessageType(28);
     internal_static_authzed_api_v1_ExportBulkRelationshipsRequest_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_ExportBulkRelationshipsRequest_descriptor,
         new java.lang.String[] { "Consistency", "OptionalLimit", "OptionalCursor", "OptionalRelationshipFilter", });
     internal_static_authzed_api_v1_ExportBulkRelationshipsResponse_descriptor =
-      getDescriptor().getMessageType(27);
+      getDescriptor().getMessageType(29);
     internal_static_authzed_api_v1_ExportBulkRelationshipsResponse_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_ExportBulkRelationshipsResponse_descriptor,

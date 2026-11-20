@@ -106,7 +106,7 @@ public interface LookupResourcesResponseOrBuilder extends
   /**
    * <pre>
    * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-   * result.
+   * result. Used only for the singular, one-resource-per-message form.
    * </pre>
    *
    * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -116,7 +116,7 @@ public interface LookupResourcesResponseOrBuilder extends
   /**
    * <pre>
    * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-   * result.
+   * result. Used only for the singular, one-resource-per-message form.
    * </pre>
    *
    * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
@@ -126,10 +126,49 @@ public interface LookupResourcesResponseOrBuilder extends
   /**
    * <pre>
    * after_result_cursor holds a cursor that can be used to resume the LookupResources stream after this
-   * result.
+   * result. Used only for the singular, one-resource-per-message form.
    * </pre>
    *
    * <code>.authzed.api.v1.Cursor after_result_cursor = 5 [json_name = "afterResultCursor"];</code>
    */
   com.authzed.api.v1.CursorOrBuilder getAfterResultCursorOrBuilder();
+
+  /**
+   * <pre>
+   * batched, when set, holds multiple found resources in a single response
+   * message along with a single resume cursor for the batch. It is populated
+   * instead of the singular fields above when the request set
+   * optional_response_batch_size &gt; 0. A response message uses either the
+   * singular fields or batched, never both.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+   * @return Whether the batched field is set.
+   */
+  boolean hasBatched();
+  /**
+   * <pre>
+   * batched, when set, holds multiple found resources in a single response
+   * message along with a single resume cursor for the batch. It is populated
+   * instead of the singular fields above when the request set
+   * optional_response_batch_size &gt; 0. A response message uses either the
+   * singular fields or batched, never both.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+   * @return The batched.
+   */
+  com.authzed.api.v1.LookupResourcesBatch getBatched();
+  /**
+   * <pre>
+   * batched, when set, holds multiple found resources in a single response
+   * message along with a single resume cursor for the batch. It is populated
+   * instead of the singular fields above when the request set
+   * optional_response_batch_size &gt; 0. A response message uses either the
+   * singular fields or batched, never both.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.LookupResourcesBatch batched = 6 [json_name = "batched"];</code>
+   */
+  com.authzed.api.v1.LookupResourcesBatchOrBuilder getBatchedOrBuilder();
 }

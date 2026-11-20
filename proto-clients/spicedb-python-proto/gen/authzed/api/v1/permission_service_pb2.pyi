@@ -264,7 +264,7 @@ class ExpandPermissionTreeResponse(_message.Message):
     def __init__(self, expanded_at: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., tree_root: _Optional[_Union[_core_pb2.PermissionRelationshipTree, _Mapping]] = ...) -> None: ...
 
 class LookupResourcesRequest(_message.Message):
-    __slots__ = ("consistency", "resource_object_type", "permission", "subject", "context", "optional_limit", "optional_cursor", "with_debug")
+    __slots__ = ("consistency", "resource_object_type", "permission", "subject", "context", "optional_limit", "optional_cursor", "with_debug", "optional_response_batch_size")
     CONSISTENCY_FIELD_NUMBER: _ClassVar[int]
     RESOURCE_OBJECT_TYPE_FIELD_NUMBER: _ClassVar[int]
     PERMISSION_FIELD_NUMBER: _ClassVar[int]
@@ -273,6 +273,7 @@ class LookupResourcesRequest(_message.Message):
     OPTIONAL_LIMIT_FIELD_NUMBER: _ClassVar[int]
     OPTIONAL_CURSOR_FIELD_NUMBER: _ClassVar[int]
     WITH_DEBUG_FIELD_NUMBER: _ClassVar[int]
+    OPTIONAL_RESPONSE_BATCH_SIZE_FIELD_NUMBER: _ClassVar[int]
     consistency: Consistency
     resource_object_type: str
     permission: str
@@ -281,21 +282,42 @@ class LookupResourcesRequest(_message.Message):
     optional_limit: int
     optional_cursor: _core_pb2.Cursor
     with_debug: bool
-    def __init__(self, consistency: _Optional[_Union[Consistency, _Mapping]] = ..., resource_object_type: _Optional[str] = ..., permission: _Optional[str] = ..., subject: _Optional[_Union[_core_pb2.SubjectReference, _Mapping]] = ..., context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., optional_limit: _Optional[int] = ..., optional_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ..., with_debug: bool = ...) -> None: ...
+    optional_response_batch_size: int
+    def __init__(self, consistency: _Optional[_Union[Consistency, _Mapping]] = ..., resource_object_type: _Optional[str] = ..., permission: _Optional[str] = ..., subject: _Optional[_Union[_core_pb2.SubjectReference, _Mapping]] = ..., context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., optional_limit: _Optional[int] = ..., optional_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ..., with_debug: bool = ..., optional_response_batch_size: _Optional[int] = ...) -> None: ...
 
 class LookupResourcesResponse(_message.Message):
-    __slots__ = ("looked_up_at", "resource_object_id", "permissionship", "partial_caveat_info", "after_result_cursor")
+    __slots__ = ("looked_up_at", "resource_object_id", "permissionship", "partial_caveat_info", "after_result_cursor", "batched")
     LOOKED_UP_AT_FIELD_NUMBER: _ClassVar[int]
     RESOURCE_OBJECT_ID_FIELD_NUMBER: _ClassVar[int]
     PERMISSIONSHIP_FIELD_NUMBER: _ClassVar[int]
     PARTIAL_CAVEAT_INFO_FIELD_NUMBER: _ClassVar[int]
     AFTER_RESULT_CURSOR_FIELD_NUMBER: _ClassVar[int]
+    BATCHED_FIELD_NUMBER: _ClassVar[int]
     looked_up_at: _core_pb2.ZedToken
     resource_object_id: str
     permissionship: LookupPermissionship
     partial_caveat_info: _core_pb2.PartialCaveatInfo
     after_result_cursor: _core_pb2.Cursor
-    def __init__(self, looked_up_at: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., resource_object_id: _Optional[str] = ..., permissionship: _Optional[_Union[LookupPermissionship, str]] = ..., partial_caveat_info: _Optional[_Union[_core_pb2.PartialCaveatInfo, _Mapping]] = ..., after_result_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ...) -> None: ...
+    batched: LookupResourcesBatch
+    def __init__(self, looked_up_at: _Optional[_Union[_core_pb2.ZedToken, _Mapping]] = ..., resource_object_id: _Optional[str] = ..., permissionship: _Optional[_Union[LookupPermissionship, str]] = ..., partial_caveat_info: _Optional[_Union[_core_pb2.PartialCaveatInfo, _Mapping]] = ..., after_result_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ..., batched: _Optional[_Union[LookupResourcesBatch, _Mapping]] = ...) -> None: ...
+
+class LookupResourcesBatch(_message.Message):
+    __slots__ = ("results", "after_cursor")
+    RESULTS_FIELD_NUMBER: _ClassVar[int]
+    AFTER_CURSOR_FIELD_NUMBER: _ClassVar[int]
+    results: _containers.RepeatedCompositeFieldContainer[LookupResourcesResult]
+    after_cursor: _core_pb2.Cursor
+    def __init__(self, results: _Optional[_Iterable[_Union[LookupResourcesResult, _Mapping]]] = ..., after_cursor: _Optional[_Union[_core_pb2.Cursor, _Mapping]] = ...) -> None: ...
+
+class LookupResourcesResult(_message.Message):
+    __slots__ = ("resource_object_id", "permissionship", "partial_caveat_info")
+    RESOURCE_OBJECT_ID_FIELD_NUMBER: _ClassVar[int]
+    PERMISSIONSHIP_FIELD_NUMBER: _ClassVar[int]
+    PARTIAL_CAVEAT_INFO_FIELD_NUMBER: _ClassVar[int]
+    resource_object_id: str
+    permissionship: LookupPermissionship
+    partial_caveat_info: _core_pb2.PartialCaveatInfo
+    def __init__(self, resource_object_id: _Optional[str] = ..., permissionship: _Optional[_Union[LookupPermissionship, str]] = ..., partial_caveat_info: _Optional[_Union[_core_pb2.PartialCaveatInfo, _Mapping]] = ...) -> None: ...
 
 class LookupSubjectsRequest(_message.Message):
     __slots__ = ("consistency", "resource", "permission", "subject_object_type", "optional_subject_relation", "context", "optional_concrete_limit", "optional_cursor", "wildcard_option")

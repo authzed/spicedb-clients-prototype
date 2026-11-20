@@ -378,3 +378,114 @@ func TestLookupResourcesRejectsUnknownPermissionshipFilter(t *testing.T) {
 	WithLookupResourcesPermissionshipFilter(LookupPermissionshipFilter(99))(&o)
 	require.Error(t, o.err)
 }
+
+// TestLookupResources_ResponseBatchSizeSetsRequestField proves
+// WithLookupResourcesResponseBatchSize sets the proto request field the
+// server uses to decide whether to batch results, and that it is unset (0)
+// by default.
+func TestLookupResources_ResponseBatchSizeSetsRequestField(t *testing.T) {
+	stub := &lookupStubServer{}
+	dialer := startLookupStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	for range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}) {
+	}
+	require.NotNil(t, stub.lastLookupResourcesRequest)
+	require.EqualValues(t, 0, stub.lastLookupResourcesRequest.GetOptionalResponseBatchSize())
+
+	for range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}, WithLookupResourcesResponseBatchSize(1000)) {
+	}
+	require.NotNil(t, stub.lastLookupResourcesRequest)
+	require.EqualValues(t, 1000, stub.lastLookupResourcesRequest.GetOptionalResponseBatchSize())
+}
+
+func TestLookupResourcesRejectsNonPositiveResponseBatchSize(t *testing.T) {
+	o := operationOptions{}
+	WithLookupResourcesResponseBatchSize(0)(&o)
+	require.Error(t, o.err)
+}
+
+// TestLookupResources_BatchedResponseFlattensIntoResultsSharingOneCursor
+// proves that a batched response (the server's reply to
+// WithLookupResourcesResponseBatchSize) is flattened into the same
+// LookupResource sequence a one-resource-per-message response would yield,
+// and that every result from one batch carries that batch's single
+// AfterResultCursor -- coarser than, but otherwise like, the per-result
+// cursor of the unbatched form.
+func TestLookupResources_BatchedResponseFlattensIntoResultsSharingOneCursor(t *testing.T) {
+	stub := &lookupStubServer{
+		lookupResourcesResponses: []*v1.LookupResourcesResponse{
+			{
+				LookedUpAt: &v1.ZedToken{Token: "snapshot"},
+				Batched: &v1.LookupResourcesBatch{
+					Results: []*v1.LookupResourcesResult{
+						{ResourceObjectId: "doc1", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION},
+						{
+							ResourceObjectId: "doc2",
+							Permissionship:   v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+							PartialCaveatInfo: &v1.PartialCaveatInfo{
+								MissingRequiredContext: []string{"ip_address"},
+							},
+						},
+					},
+					AfterCursor: &v1.Cursor{Token: "batch-1"},
+				},
+			},
+		},
+	}
+	dialer := startLookupStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	var got []LookupResource
+	for r, err := range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}, WithLookupResourcesResponseBatchSize(1000)) {
+		require.NoError(t, err)
+		got = append(got, r)
+	}
+
+	require.Len(t, got, 2)
+
+	require.Equal(t, "doc1", got[0].ResourceID)
+	require.Equal(t, PermissionshipHasPermission, got[0].Permissionship)
+	require.Nil(t, got[0].PartialCaveat)
+	require.Equal(t, "batch-1", got[0].AfterResultCursor)
+
+	require.Equal(t, "doc2", got[1].ResourceID)
+	require.Equal(t, PermissionshipConditionalPermission, got[1].Permissionship)
+	require.NotNil(t, got[1].PartialCaveat)
+	require.Equal(t, []string{"ip_address"}, got[1].PartialCaveat.MissingRequiredContext)
+	require.Equal(t, "batch-1", got[1].AfterResultCursor)
+}
+
+// TestLookupResources_BatchedResponseMalformedResultFailsCall proves a
+// malformed result within a batch (here, a missing resource object id) fails
+// the whole call the same way a malformed singular response would, instead
+// of being skipped.
+func TestLookupResources_BatchedResponseMalformedResultFailsCall(t *testing.T) {
+	stub := &lookupStubServer{
+		lookupResourcesResponses: []*v1.LookupResourcesResponse{
+			{
+				Batched: &v1.LookupResourcesBatch{
+					Results: []*v1.LookupResourcesResult{
+						{ResourceObjectId: "doc1", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION},
+						{Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION},
+					},
+					AfterCursor: &v1.Cursor{Token: "batch-1"},
+				},
+			},
+		},
+	}
+	dialer := startLookupStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	var (
+		yields int
+		gotErr error
+	)
+	for _, err := range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}, WithLookupResourcesResponseBatchSize(1000)) {
+		yields++
+		gotErr = err
+	}
+	require.Equal(t, 2, yields)
+	require.Error(t, gotErr)
+	require.Contains(t, gotErr.Error(), "resource object id is missing")
+}

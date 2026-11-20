@@ -50,7 +50,7 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 		// limit is enforced here.
 		size := o.pageRequestLimit()
 		for {
-			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug}
+			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug, OptionalResponseBatchSize: o.responseBatchSize}
 			// The page's clock pauses while the caller holds an item.
 			pageCtx, clock, pageCancel := c.serverClock(ctx, true)
 			count := uint32(0)
@@ -65,33 +65,37 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 					yield(LookupResource{}, e)
 					return
 				}
-				count++
-				cur = resp.GetAfterResultCursor()
+				results, after := lookupResourcesResults(resp)
+				count += uint32(len(results))
+				cur = after
 				exposed = true
-				if resp.GetResourceObjectId() == "" {
-					pageCancel()
-					yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
-					return
-				}
-				if resp.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
-					pageCancel()
-					yield(LookupResource{}, malformed("lookup resources", "permissionship is unset"))
-					return
-				}
-				if o.lookupPermissionshipFilter == LookupHasPermissionOnly && resp.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
-					continue
-				}
-				total++
-				r := LookupResource{ResourceID: resp.GetResourceObjectId(), Permissionship: permissionshipFromProto(resp.GetPermissionship()), PartialCaveat: partialCaveatFromProto(resp.GetPartialCaveatInfo()), LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken()), AfterResultCursor: cur.GetToken()}
-				if !yield(r, nil) {
-					pageCancel()
-					return
+				lookedUpAt := consistency.NewZedToken(resp.GetLookedUpAt().GetToken())
+				for _, result := range results {
+					if result.GetResourceObjectId() == "" {
+						pageCancel()
+						yield(LookupResource{}, malformed("lookup resources", "resource object id is missing"))
+						return
+					}
+					if result.GetPermissionship() == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_UNSPECIFIED {
+						pageCancel()
+						yield(LookupResource{}, malformed("lookup resources", "permissionship is unset"))
+						return
+					}
+					if o.lookupPermissionshipFilter == LookupHasPermissionOnly && result.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
+						continue
+					}
+					total++
+					r := LookupResource{ResourceID: result.GetResourceObjectId(), Permissionship: permissionshipFromProto(result.GetPermissionship()), PartialCaveat: partialCaveatFromProto(result.GetPartialCaveatInfo()), LookedUpAt: lookedUpAt, AfterResultCursor: cur.GetToken()}
+					if !yield(r, nil) {
+						pageCancel()
+						return
+					}
+					if o.limit > 0 && total >= o.limit {
+						pageCancel()
+						return
+					}
 				}
 				clock.wait()
-				if o.limit > 0 && total >= o.limit {
-					pageCancel()
-					return
-				}
 			}
 			pageCancel()
 			if o.singleRequest || count < size {
@@ -103,6 +107,23 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 			}
 		}
 	}
+}
+
+// lookupResourcesResults returns a response's found resources and the cursor
+// that resumes the stream after all of them, whether the response used the
+// singular, one-resource-per-message form or (with
+// WithLookupResourcesResponseBatchSize) the batched form. Every result in a
+// batch shares the batch's one cursor, like ExportedRelationship's batch
+// cursor.
+func lookupResourcesResults(resp *v1.LookupResourcesResponse) ([]*v1.LookupResourcesResult, *v1.Cursor) {
+	if b := resp.GetBatched(); b != nil {
+		return b.GetResults(), b.GetAfterCursor()
+	}
+	return []*v1.LookupResourcesResult{{
+		ResourceObjectId:  resp.GetResourceObjectId(),
+		Permissionship:    resp.GetPermissionship(),
+		PartialCaveatInfo: resp.GetPartialCaveatInfo(),
+	}}, resp.GetAfterResultCursor()
 }
 
 type LookupSubjectsRequest struct {

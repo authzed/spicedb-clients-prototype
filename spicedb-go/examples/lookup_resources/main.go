@@ -7,6 +7,10 @@
 // It also demonstrates WithLookupResourcesDebug: when a call fails because it
 // exceeds SpiceDB's maximum dispatch depth, this option asks the server to
 // attach a traversal trace to the failure's ReasonMetadata.
+//
+// It also demonstrates WithLookupResourcesResponseBatchSize: asking the
+// server to pack several results into one response message instead of one
+// does not change the yielded LookupResource sequence.
 package main
 
 import (
@@ -94,6 +98,40 @@ definition document {
 	// SpiceDB instance).
 	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
+	}
+
+	// WithLookupResourcesResponseBatchSize asks the server to pack several
+	// results into one response message instead of one, trading
+	// time-to-first-result for throughput on large result sets. It never
+	// changes the yielded LookupResource sequence -- only message packing --
+	// but every result from one batched message shares that message's
+	// AfterResultCursor, the same tradeoff ExportedRelationship's batch
+	// cursor already makes.
+	const batchDocCount = 5
+	var batchTxn rel.Txn
+	for i := range batchDocCount {
+		if err := batchTxn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Must(rel.NewObject("document", fmt.Sprintf("batchdoc%d", i))), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
+			log.Fatalf("failed to add relationship to transaction: %v", err)
+		}
+	}
+	if _, err := c.Write(ctx, client.WriteRequest{Transaction: batchTxn}); err != nil {
+		log.Fatalf("write relationships (batch demo) failed: %v", err)
+	}
+
+	batched := map[string]bool{}
+	for resource, err := range c.LookupResources(ctx, client.LookupResourcesRequest{Consistency: consistency.Full(), ResourceType: "document", Permission: "view", Subject: exampleutil.Subject(exampleutil.Object("user", "alice"), "")}, client.WithLookupResourcesResponseBatchSize(1000)) {
+		if err != nil {
+			log.Fatalf("batched lookup failed: %v", err)
+		}
+		batched[resource.ResourceID] = true
+	}
+	if len(batched) != batchDocCount {
+		log.Fatalf("expected %d batched results, got %d", batchDocCount, len(batched))
+	}
+	fmt.Printf("WithLookupResourcesResponseBatchSize: found %d resources\n", len(batched))
+
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
+		log.Fatalf("cleanup (batch demo) failed: %v", err)
 	}
 
 	// WithLookupResourcesDebug: schema built specifically to hit SpiceDB's

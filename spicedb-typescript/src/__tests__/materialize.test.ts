@@ -67,8 +67,8 @@ describe("native materialize permission-set APIs",()=>{
  it("preserves snapshot file names, URLs, native timestamp and revision without fetching files",async()=>{
   const c=client();let revision:string|undefined;
   (c as unknown as {proto:SpiceDBProtoClient}).proto=new SpiceDBProtoClient(createRouterTransport(router=>router.service(WatchPermissionSetsService,{
-   downloadPermissionSets(request){revision=request.optionalAtRevision?.token;return {files:[{name:"snapshot.avro",url:"https://download.invalid/snapshot"}],timestamp:{seconds:1767225600n,nanos:123000000},atRevision:{token:"snapshot"}};},
+   downloadPermissionSets(request){revision=request.optionalAtRevision?.token;return {files:[{name:"snapshot.parquet",url:"https://download.invalid/snapshot"}],timestamp:{seconds:1767225600n,nanos:123000000},atRevision:{token:"snapshot"}};},
   })));
-  const result=await c.experimentalDownloadPermissionSets({revision:new ZedToken("requested")});expect(revision).toBe("requested");expect(result.files).toEqual([{name:"snapshot.avro",url:"https://download.invalid/snapshot"}]);expect(result.timestamp?.toISOString()).toBe("2026-01-01T00:00:00.123Z");expect(result.revision.toString()).toBe("snapshot");expect(Object.isFrozen(result.files[0])).toBe(true);c.close();
+  const result=await c.experimentalDownloadPermissionSets({revision:new ZedToken("requested")});expect(revision).toBe("requested");expect(result.files).toEqual([{name:"snapshot.parquet",url:"https://download.invalid/snapshot"}]);expect(result.timestamp?.toISOString()).toBe("2026-01-01T00:00:00.123Z");expect(result.revision.toString()).toBe("snapshot");expect(Object.isFrozen(result.files[0])).toBe(true);c.close();
  });
 });

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"unicode"
 
+	materializev0 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/materialize/v0"
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -205,10 +206,11 @@ func badPort(port string) string {
 
 // Client wraps all generated gRPC service clients for SpiceDB.
 type Client struct {
-	PermissionsServiceClient  v1.PermissionsServiceClient
-	SchemaServiceClient       v1.SchemaServiceClient
-	WatchServiceClient        v1.WatchServiceClient
-	ExperimentalServiceClient v1.ExperimentalServiceClient
+	PermissionsServiceClient            v1.PermissionsServiceClient
+	SchemaServiceClient                 v1.SchemaServiceClient
+	WatchServiceClient                  v1.WatchServiceClient
+	ExperimentalServiceClient           v1.ExperimentalServiceClient
+	RoaringLookupResourcesServiceClient materializev0.RoaringLookupResourcesServiceClient
 
 	conn   *grpc.ClientConn
 	closed atomic.Bool
@@ -223,11 +225,12 @@ type Client struct {
 // not close it, and no credentials or transport options are added.
 func NewClientFromConn(conn grpc.ClientConnInterface) *Client {
 	return &Client{
-		PermissionsServiceClient:  v1.NewPermissionsServiceClient(conn),
-		SchemaServiceClient:       v1.NewSchemaServiceClient(conn),
-		WatchServiceClient:        v1.NewWatchServiceClient(conn),
-		ExperimentalServiceClient: v1.NewExperimentalServiceClient(conn),
-		borrowed:                  conn,
+		PermissionsServiceClient:            v1.NewPermissionsServiceClient(conn),
+		SchemaServiceClient:                 v1.NewSchemaServiceClient(conn),
+		WatchServiceClient:                  v1.NewWatchServiceClient(conn),
+		ExperimentalServiceClient:           v1.NewExperimentalServiceClient(conn),
+		RoaringLookupResourcesServiceClient: materializev0.NewRoaringLookupResourcesServiceClient(conn),
+		borrowed:                            conn,
 	}
 }
 
@@ -664,11 +667,12 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 	}
 
 	return &Client{
-		PermissionsServiceClient:  v1.NewPermissionsServiceClient(conn),
-		SchemaServiceClient:       v1.NewSchemaServiceClient(conn),
-		WatchServiceClient:        v1.NewWatchServiceClient(conn),
-		ExperimentalServiceClient: v1.NewExperimentalServiceClient(conn),
-		conn:                      conn,
+		PermissionsServiceClient:            v1.NewPermissionsServiceClient(conn),
+		SchemaServiceClient:                 v1.NewSchemaServiceClient(conn),
+		WatchServiceClient:                  v1.NewWatchServiceClient(conn),
+		ExperimentalServiceClient:           v1.NewExperimentalServiceClient(conn),
+		RoaringLookupResourcesServiceClient: materializev0.NewRoaringLookupResourcesServiceClient(conn),
+		conn:                                conn,
 	}, nil
 }
 

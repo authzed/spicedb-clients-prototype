@@ -16,6 +16,7 @@ func TestNewClient(t *testing.T) {
 	require.NotNil(t, client.SchemaServiceClient)
 	require.NotNil(t, client.WatchServiceClient)
 	require.NotNil(t, client.ExperimentalServiceClient)
+	require.NotNil(t, client.RoaringLookupResourcesServiceClient)
 }
 
 // TestClient_CloseIsIdempotent proves Close can be called more than once

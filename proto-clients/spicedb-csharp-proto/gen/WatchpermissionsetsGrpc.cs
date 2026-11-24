@@ -160,10 +160,10 @@ namespace Authzed.Api.Materialize.V0 {
       }
 
       /// <summary>
-      /// DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+      /// DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
       /// This provides an alternative to LookupPermissionSets for customers who need to download
-      /// large datasets efficiently. The returned URLs point to compressed Avro files containing
-      /// the permission sets data in a normalized format.
+      /// large datasets efficiently. The returned URLs point to compressed Parquet files containing
+      /// the permission sets data.
       /// </summary>
       /// <param name="request">The request received from the client.</param>
       /// <param name="context">The context of the server-side call handler being invoked.</param>
@@ -334,10 +334,10 @@ namespace Authzed.Api.Materialize.V0 {
         return CallInvoker.AsyncServerStreamingCall(__Method_LookupPermissionSets, null, options, request);
       }
       /// <summary>
-      /// DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+      /// DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
       /// This provides an alternative to LookupPermissionSets for customers who need to download
-      /// large datasets efficiently. The returned URLs point to compressed Avro files containing
-      /// the permission sets data in a normalized format.
+      /// large datasets efficiently. The returned URLs point to compressed Parquet files containing
+      /// the permission sets data.
       /// </summary>
       /// <param name="request">The request to send to the server.</param>
       /// <param name="headers">The initial metadata to send with the call. This parameter is optional.</param>
@@ -350,10 +350,10 @@ namespace Authzed.Api.Materialize.V0 {
         return DownloadPermissionSets(request, new grpc::CallOptions(headers, deadline, cancellationToken));
       }
       /// <summary>
-      /// DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+      /// DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
       /// This provides an alternative to LookupPermissionSets for customers who need to download
-      /// large datasets efficiently. The returned URLs point to compressed Avro files containing
-      /// the permission sets data in a normalized format.
+      /// large datasets efficiently. The returned URLs point to compressed Parquet files containing
+      /// the permission sets data.
       /// </summary>
       /// <param name="request">The request to send to the server.</param>
       /// <param name="options">The options for the call.</param>
@@ -364,10 +364,10 @@ namespace Authzed.Api.Materialize.V0 {
         return CallInvoker.BlockingUnaryCall(__Method_DownloadPermissionSets, null, options, request);
       }
       /// <summary>
-      /// DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+      /// DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
       /// This provides an alternative to LookupPermissionSets for customers who need to download
-      /// large datasets efficiently. The returned URLs point to compressed Avro files containing
-      /// the permission sets data in a normalized format.
+      /// large datasets efficiently. The returned URLs point to compressed Parquet files containing
+      /// the permission sets data.
       /// </summary>
       /// <param name="request">The request to send to the server.</param>
       /// <param name="headers">The initial metadata to send with the call. This parameter is optional.</param>
@@ -380,10 +380,10 @@ namespace Authzed.Api.Materialize.V0 {
         return DownloadPermissionSetsAsync(request, new grpc::CallOptions(headers, deadline, cancellationToken));
       }
       /// <summary>
-      /// DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+      /// DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
       /// This provides an alternative to LookupPermissionSets for customers who need to download
-      /// large datasets efficiently. The returned URLs point to compressed Avro files containing
-      /// the permission sets data in a normalized format.
+      /// large datasets efficiently. The returned URLs point to compressed Parquet files containing
+      /// the permission sets data.
       /// </summary>
       /// <param name="request">The request to send to the server.</param>
       /// <param name="options">The options for the call.</param>

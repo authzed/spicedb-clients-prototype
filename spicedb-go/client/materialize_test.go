@@ -56,7 +56,7 @@ func (s *materializeServer) DownloadPermissionSets(ctx context.Context, r *mater
 	require.Equal(s.t, "revision", r.OptionalAtRevision.Token)
 	_, hasDeadline := ctx.Deadline()
 	require.True(s.t, hasDeadline)
-	return &materialize.DownloadPermissionSetsResponse{Files: []*materialize.File{{Name: "sets.avro", Url: "https://download.invalid/file"}}, Timestamp: timestamppb.New(time.Unix(123, 0)), AtRevision: &v1.ZedToken{Token: "download"}}, nil
+	return &materialize.DownloadPermissionSetsResponse{Files: []*materialize.File{{Name: "sets.parquet", Url: "https://download.invalid/file"}}, Timestamp: timestamppb.New(time.Unix(123, 0)), AtRevision: &v1.ZedToken{Token: "download"}}, nil
 }
 func setChangeFixture() *materialize.PermissionSetChange {
 	return &materialize.PermissionSetChange{AtRevision: &v1.ZedToken{Token: "change"}, Operation: materialize.PermissionSetChange_SET_OPERATION_ADDED, ParentSet: &materialize.SetReference{ObjectType: "document", ObjectId: "d", PermissionOrRelation: "view"}, Child: &materialize.PermissionSetChange_ChildMember{ChildMember: &materialize.MemberReference{ObjectType: "user", ObjectId: "alice"}}}
@@ -102,7 +102,7 @@ func TestMaterializeNativeCoverageAndStreamRelease(t *testing.T) {
 	}
 	download, e := c.DownloadPermissionSets(ctx, DownloadPermissionSetsRequest{}, WithDownloadPermissionSetsRevision(consistency.NewZedToken("revision")))
 	require.NoError(t, e)
-	require.Equal(t, []PermissionSetFile{{Name: "sets.avro", URL: "https://download.invalid/file"}}, download.Files)
+	require.Equal(t, []PermissionSetFile{{Name: "sets.parquet", URL: "https://download.invalid/file"}}, download.Files)
 	require.EqualValues(t, "download", download.Revision.String())
 	require.Equal(t, time.Unix(123, 0).UTC(), *download.Timestamp)
 }

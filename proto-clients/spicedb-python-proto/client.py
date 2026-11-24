@@ -5,6 +5,7 @@ import warnings
 import grpc
 import grpc.aio
 
+from authzed.api.materialize.v0 import roaringlookupresources_pb2_grpc
 from authzed.api.v1 import experimental_service_pb2_grpc
 from authzed.api.v1 import permission_service_pb2_grpc
 from authzed.api.v1 import schema_service_pb2_grpc
@@ -163,6 +164,9 @@ class Client:
         *,
         insecure: bool = False,
         allow_insecure_remote_credentials: bool = False,
+        ca_cert: bytes | None = None,
+        client_cert: bytes | None = None,
+        client_key: bytes | None = None,
     ):
         # See root DESIGN.md, "RULE: Credentials over insecure transport
         # require an explicit opt-in". This is the guard for
@@ -180,6 +184,17 @@ class Client:
                 f"cleartext to a remote host"
             )
 
+        if insecure and (ca_cert is not None or client_cert is not None or client_key is not None):
+            raise ValueError(
+                "spicedb: ca_cert/client_cert/client_key are TLS material and cannot be "
+                "combined with insecure=True (a plaintext channel)"
+            )
+
+        if (client_cert is None) != (client_key is None):
+            raise ValueError(
+                "spicedb: client_cert and client_key must be provided together"
+            )
+
         if insecure:
             self._channel = grpc.aio.insecure_channel(
                 endpoint,
@@ -187,7 +202,14 @@ class Client:
             )
         else:
             call_creds = grpc.access_token_call_credentials(token)
-            channel_creds = grpc.ssl_channel_credentials()
+            # root_certificates=None / certificate_chain=None delegate to
+            # gRPC's default trust store / no client cert, same as calling
+            # grpc.ssl_channel_credentials() with no arguments.
+            channel_creds = grpc.ssl_channel_credentials(
+                root_certificates=ca_cert,
+                private_key=client_key,
+                certificate_chain=client_cert,
+            )
             composite_creds = grpc.composite_channel_credentials(
                 channel_creds, call_creds
             )
@@ -202,6 +224,9 @@ class Client:
             self._channel
         )
         _wrap_deprecated_experimental_methods(self.experimental)
+        self.materialize = roaringlookupresources_pb2_grpc.RoaringLookupResourcesServiceStub(
+            self._channel
+        )
 
     async def close(self):
         await self._channel.close()

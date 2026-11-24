@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **2026-11-24: `download_permission_sets` is documented as returning Parquet files, not Avro.**
+  This corrects the upstream proto's doc comment on `DownloadPermissionSets`; `PermissionSetFile`'s shape (`name`, `url`) and `DownloadPermissionSetsResult`'s behavior are unchanged, so no caller code needs to change. The test fixture that illustrates a downloaded file name now says `file.parquet` instead of `file.avro` to match.
+
 - **2026-11-20: `lookup_resources` requests batched responses by default; only the last item of a batch carries a cursor.**
   The client asks SpiceDB to pack several resources into each response
   message (`optional_response_batch_size`, new in the v1.58.0 API) and still

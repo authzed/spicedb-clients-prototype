@@ -132,7 +132,7 @@ impl p::watch_permission_sets_service_server::WatchPermissionSetsService for Ser
         );
         Ok(Response::new(p::DownloadPermissionSetsResponse {
             files: vec![p::File {
-                name: "file.avro".into(),
+                name: "file.parquet".into(),
                 url: "https://example.test/file".into(),
             }],
             timestamp: Some(prost_types::Timestamp {
@@ -231,7 +231,7 @@ async fn every_additional_materialize_rpc_uses_authenticated_channel_and_native_
             ))
             .await
             .unwrap();
-    assert_eq!(download.files[0].name, "file.avro");
+    assert_eq!(download.files[0].name, "file.parquet");
     assert_eq!(download.timestamp.unwrap().timestamp_subsec_nanos(), 456);
     assert_eq!(download.revision.as_ref(), "revision");
     assert_eq!(

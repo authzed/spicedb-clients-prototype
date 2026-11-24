@@ -223,10 +223,10 @@ public final class WatchPermissionSetsServiceGrpc {
 
     /**
      * <pre>
-     * DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+     * DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
      * This provides an alternative to LookupPermissionSets for customers who need to download
-     * large datasets efficiently. The returned URLs point to compressed Avro files containing
-     * the permission sets data in a normalized format.
+     * large datasets efficiently. The returned URLs point to compressed Parquet files containing
+     * the permission sets data.
      * </pre>
      */
     default void downloadPermissionSets(com.authzed.api.materialize.v0.DownloadPermissionSetsRequest request,
@@ -319,10 +319,10 @@ public final class WatchPermissionSetsServiceGrpc {
 
     /**
      * <pre>
-     * DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+     * DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
      * This provides an alternative to LookupPermissionSets for customers who need to download
-     * large datasets efficiently. The returned URLs point to compressed Avro files containing
-     * the permission sets data in a normalized format.
+     * large datasets efficiently. The returned URLs point to compressed Parquet files containing
+     * the permission sets data.
      * </pre>
      */
     public void downloadPermissionSets(com.authzed.api.materialize.v0.DownloadPermissionSetsRequest request,
@@ -407,10 +407,10 @@ public final class WatchPermissionSetsServiceGrpc {
 
     /**
      * <pre>
-     * DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+     * DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
      * This provides an alternative to LookupPermissionSets for customers who need to download
-     * large datasets efficiently. The returned URLs point to compressed Avro files containing
-     * the permission sets data in a normalized format.
+     * large datasets efficiently. The returned URLs point to compressed Parquet files containing
+     * the permission sets data.
      * </pre>
      */
     public com.authzed.api.materialize.v0.DownloadPermissionSetsResponse downloadPermissionSets(com.authzed.api.materialize.v0.DownloadPermissionSetsRequest request) throws io.grpc.StatusException {
@@ -492,10 +492,10 @@ public final class WatchPermissionSetsServiceGrpc {
 
     /**
      * <pre>
-     * DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+     * DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
      * This provides an alternative to LookupPermissionSets for customers who need to download
-     * large datasets efficiently. The returned URLs point to compressed Avro files containing
-     * the permission sets data in a normalized format.
+     * large datasets efficiently. The returned URLs point to compressed Parquet files containing
+     * the permission sets data.
      * </pre>
      */
     public com.authzed.api.materialize.v0.DownloadPermissionSetsResponse downloadPermissionSets(com.authzed.api.materialize.v0.DownloadPermissionSetsRequest request) {
@@ -522,10 +522,10 @@ public final class WatchPermissionSetsServiceGrpc {
 
     /**
      * <pre>
-     * DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+     * DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
      * This provides an alternative to LookupPermissionSets for customers who need to download
-     * large datasets efficiently. The returned URLs point to compressed Avro files containing
-     * the permission sets data in a normalized format.
+     * large datasets efficiently. The returned URLs point to compressed Parquet files containing
+     * the permission sets data.
      * </pre>
      */
     public com.google.common.util.concurrent.ListenableFuture<com.authzed.api.materialize.v0.DownloadPermissionSetsResponse> downloadPermissionSets(

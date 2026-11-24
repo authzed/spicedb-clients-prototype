@@ -76,10 +76,10 @@ export const WatchPermissionSetsService = {
       kind: MethodKind.ServerStreaming,
     },
     /**
-     * DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+     * DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
      * This provides an alternative to LookupPermissionSets for customers who need to download
-     * large datasets efficiently. The returned URLs point to compressed Avro files containing
-     * the permission sets data in a normalized format.
+     * large datasets efficiently. The returned URLs point to compressed Parquet files containing
+     * the permission sets data.
      *
      * @generated from rpc authzed.api.materialize.v0.WatchPermissionSetsService.DownloadPermissionSets
      */

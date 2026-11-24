@@ -56,7 +56,7 @@ func (s *service) DownloadPermissionSets(_ context.Context, r *materialize.Downl
 	if r.OptionalAtRevision.Token != "revision" {
 		log.Fatal("download revision missing")
 	}
-	return &materialize.DownloadPermissionSetsResponse{Files: []*materialize.File{{Name: "sets.avro", Url: "https://download.invalid/sets.avro"}}, AtRevision: &v1.ZedToken{Token: "revision"}, Timestamp: timestamppb.New(time.Unix(123, 0))}, nil
+	return &materialize.DownloadPermissionSetsResponse{Files: []*materialize.File{{Name: "sets.parquet", Url: "https://download.invalid/sets.parquet"}}, AtRevision: &v1.ZedToken{Token: "revision"}, Timestamp: timestamppb.New(time.Unix(123, 0))}, nil
 }
 func main() {
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
@@ -111,7 +111,7 @@ func main() {
 		log.Fatal("lookup produced no item")
 	}
 	download, e := c.DownloadPermissionSets(ctx, client.DownloadPermissionSetsRequest{}, client.WithDownloadPermissionSetsRevision(consistency.NewZedToken("revision")))
-	if e != nil || len(download.Files) != 1 || download.Files[0].Name != "sets.avro" || download.Timestamp == nil || download.Revision.String() != "revision" {
+	if e != nil || len(download.Files) != 1 || download.Files[0].Name != "sets.parquet" || download.Timestamp == nil || download.Revision.String() != "revision" {
 		log.Fatalf("native materialize download metadata failed: %+v %v", download, e)
 	}
 	fmt.Println("materialize: all native operations and stream cancellation verified")

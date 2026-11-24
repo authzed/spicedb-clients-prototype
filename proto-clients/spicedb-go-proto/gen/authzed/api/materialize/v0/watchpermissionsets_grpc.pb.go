@@ -73,10 +73,10 @@ type WatchPermissionSetsServiceClient interface {
 	// cursor received. Once completed, the consumer may start streaming permission set changes using WatchPermissionSets
 	// and the revision token from the last LookupPermissionSets response.
 	LookupPermissionSets(ctx context.Context, in *LookupPermissionSetsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LookupPermissionSetsResponse], error)
-	// DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+	// DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
 	// This provides an alternative to LookupPermissionSets for customers who need to download
-	// large datasets efficiently. The returned URLs point to compressed Avro files containing
-	// the permission sets data in a normalized format.
+	// large datasets efficiently. The returned URLs point to compressed Parquet files containing
+	// the permission sets data.
 	DownloadPermissionSets(ctx context.Context, in *DownloadPermissionSetsRequest, opts ...grpc.CallOption) (*DownloadPermissionSetsResponse, error)
 }
 
@@ -185,10 +185,10 @@ type WatchPermissionSetsServiceServer interface {
 	// cursor received. Once completed, the consumer may start streaming permission set changes using WatchPermissionSets
 	// and the revision token from the last LookupPermissionSets response.
 	LookupPermissionSets(*LookupPermissionSetsRequest, grpc.ServerStreamingServer[LookupPermissionSetsResponse]) error
-	// DownloadPermissionSets returns URLs to download permission sets data as Avro files.
+	// DownloadPermissionSets returns URLs to download permission sets data as Parquet files.
 	// This provides an alternative to LookupPermissionSets for customers who need to download
-	// large datasets efficiently. The returned URLs point to compressed Avro files containing
-	// the permission sets data in a normalized format.
+	// large datasets efficiently. The returned URLs point to compressed Parquet files containing
+	// the permission sets data.
 	DownloadPermissionSets(context.Context, *DownloadPermissionSetsRequest) (*DownloadPermissionSetsResponse, error)
 	mustEmbedUnimplementedWatchPermissionSetsServiceServer()
 }

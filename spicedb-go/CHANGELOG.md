@@ -252,6 +252,17 @@
 
 ### Added
 
+- **2026-11-24: regenerated proto client picks up a `DownloadPermissionSets` doc fix and a redundant service-client field; no behavior changed.**
+  The generated `WatchPermissionSetsServiceClient`/`Server`'s doc comments now say
+  `DownloadPermissionSets` returns Parquet files, not Avro, matching what the materialize
+  service actually serves; `PermissionSetFile.Name`/`.URL` stay opaque strings, so no code
+  here depended on the format and nothing behaves differently. The example's illustrative
+  download filename is updated to `sets.parquet` to match. The proto-tier `Client` wrapper
+  also gained a `RoaringLookupResourcesServiceClient` field (set by `NewClient` and
+  `NewClientFromConn`), but `RoaringLookupResources` already reached that service through
+  its own `materialize.NewRoaringLookupResourcesServiceClient(c.proto.Connection())` call,
+  the same pattern the other materialize operations use, so it is unaffected.
+
 - **2026-11-20: `LookupResources` asks the server for batched responses by default.**
   SpiceDB can now pack many resources into each response message, which makes
   large lookups cheaper. The call still yields one `LookupResource` at a time

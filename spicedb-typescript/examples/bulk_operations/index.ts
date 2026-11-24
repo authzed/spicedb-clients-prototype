@@ -155,7 +155,7 @@ const materializeServer = http2.createServer(connectNodeAdapter({routes:router=>
  router.service(WatchPermissionSetsService,{
   async *watchPermissionSets(request,context){authenticate(context.requestHeader.get("authorization"));assert(request.optionalStartingAfter?.token==="snapshot","expected resumable snapshot token");yield {response:{case:"completedRevision",value:{token:"snapshot"}}};},
   async *lookupPermissionSets(_request,context){authenticate(context.requestHeader.get("authorization"));yield {change:{atRevision:{token:"snapshot"},operation:1,parentSet:{objectType:"document",objectId:"a",permissionOrRelation:"view"},child:{case:"childMember",value:{objectType:"user",objectId:"alice"}}},cursor:{limit:1000,startingIndex:1,completedMembers:true,startingKey:"last",cursor:"opaque",token:{token:"snapshot"}}};},
-  downloadPermissionSets(_request,context){authenticate(context.requestHeader.get("authorization"));return {files:[{name:"snapshot.avro",url:"https://download.invalid/snapshot.avro"}],atRevision:{token:"snapshot"},timestamp:{seconds:1767225600n,nanos:0}};},
+  downloadPermissionSets(_request,context){authenticate(context.requestHeader.get("authorization"));return {files:[{name:"snapshot.parquet",url:"https://download.invalid/snapshot.parquet"}],atRevision:{token:"snapshot"},timestamp:{seconds:1767225600n,nanos:0}};},
  });
  router.service(RoaringLookupResourcesService,{experimentalRoaringLookupResources(_request,context){authenticate(context.requestHeader.get("authorization"));return {bitmap:new Uint8Array([1,2,3]),cardinality:2n,atRevision:{token:"snapshot"}};}});
 }}));
@@ -167,7 +167,7 @@ try {
  const count=await materialize.experimentalCountRelationshipsByFilter({resourceType:"document",subject:{subjectType:"user",relation:{kind:SubjectRelationKind.Direct}}});
  assert(count.count===2n,"expected bigint filtered count");
  const snapshot=await materialize.experimentalDownloadPermissionSets();
- assert(snapshot.files[0].name==="snapshot.avro"&&snapshot.timestamp?.toISOString()==="2026-01-01T00:00:00.000Z","expected native snapshot metadata");
+ assert(snapshot.files[0].name==="snapshot.parquet"&&snapshot.timestamp?.toISOString()==="2026-01-01T00:00:00.000Z","expected native snapshot metadata");
  let sets=0;
  for await(const set of materialize.experimentalLookupPermissionSets({revision:snapshot.revision})) {assert(set.change?.child.kind==="member"&&set.cursor?.completedMembers===true,"expected native member and complete cursor");sets++;}
  assert(sets===1,"expected one materialized permission set");

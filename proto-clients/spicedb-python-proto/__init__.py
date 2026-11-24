@@ -1,5 +1,9 @@
 """SpiceDB Python proto client."""
 
+from authzed.api.materialize.v0.roaringlookupresources_pb2 import (
+    ExperimentalRoaringLookupResourcesRequest,
+    ExperimentalRoaringLookupResourcesResponse,
+)
 from authzed.api.v1.core_pb2 import (
     AlgebraicSubjectSet,
     ContextualizedCaveat,
@@ -69,6 +73,9 @@ from client import Client
 
 __all__ = [
     "Client",
+    # Materialize service
+    "ExperimentalRoaringLookupResourcesRequest",
+    "ExperimentalRoaringLookupResourcesResponse",
     # Core types
     "AlgebraicSubjectSet",
     "ContextualizedCaveat",

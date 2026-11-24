@@ -2,6 +2,7 @@ import warnings
 
 import pytest
 
+from authzed.api.materialize.v0 import roaringlookupresources_pb2_grpc
 from authzed.api.v1 import experimental_service_pb2_grpc
 from authzed.api.v1 import permission_service_pb2_grpc
 from authzed.api.v1 import schema_service_pb2_grpc
@@ -20,6 +21,10 @@ def test_constructor_creates_all_stubs():
     assert isinstance(
         c.experimental, experimental_service_pb2_grpc.ExperimentalServiceStub
     )
+    assert isinstance(
+        c.materialize,
+        roaringlookupresources_pb2_grpc.RoaringLookupResourcesServiceStub,
+    )
 
 
 @pytest.mark.asyncio
@@ -33,6 +38,35 @@ async def test_context_manager():
         assert isinstance(
             c.experimental, experimental_service_pb2_grpc.ExperimentalServiceStub
         )
+        assert isinstance(
+            c.materialize,
+            roaringlookupresources_pb2_grpc.RoaringLookupResourcesServiceStub,
+        )
+
+
+def test_tls_material_rejected_with_insecure():
+    with pytest.raises(ValueError, match="insecure=True"):
+        Client("localhost:50051", "test-token", insecure=True, ca_cert=b"ca")
+
+
+def test_incomplete_client_cert_pair_rejected():
+    with pytest.raises(ValueError, match="client_cert and client_key"):
+        Client("localhost:50051", "test-token", client_cert=b"cert")
+    with pytest.raises(ValueError, match="client_cert and client_key"):
+        Client("localhost:50051", "test-token", client_key=b"key")
+
+
+def test_constructor_accepts_tls_material():
+    c = Client(
+        "localhost:50051",
+        "test-token",
+        ca_cert=b"ca",
+        client_cert=b"cert",
+        client_key=b"key",
+    )
+    assert isinstance(
+        c.permissions, permission_service_pb2_grpc.PermissionsServiceStub
+    )
 
 
 @pytest.mark.parametrize("method_name", sorted(_DEPRECATED_EXPERIMENTAL_METHODS))

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **2026-11-24: `ExperimentalDownloadPermissionSetsAsync` now documents Parquet output.**
+  The underlying `DownloadPermissionSets` RPC doc comment changed upstream: the URLs
+  it returns point to compressed Parquet files rather than Avro. The client's
+  signature, `PermissionSetFile` shape, and behavior are unchanged; only the file
+  format a caller should expect when fetching the returned URLs differs.
 - **2026-11-20: `LookupResourcesAsync` requests batched responses by default.**
   The server packs up to `LookupOptions.ResponseBatchSize` resources into each response
   message (default: the page size, capped at 1,000; under `Paging.SingleRequest` the
